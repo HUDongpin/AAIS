@@ -497,9 +497,12 @@ function getExternalActions(input) {
     actions.push({
       id: "set-sso-only-runtime-mode",
       status: "required-after-sso-verification",
-      command: "vercel env add AAIS_TRIAL_LOGIN_ENABLED production",
+      commands: [
+        "vercel env rm AAIS_TRIAL_LOGIN_ENABLED production -y",
+        "printf '%s' 'false' | vercel env add AAIS_TRIAL_LOGIN_ENABLED production",
+      ],
       requiredValue: "false",
-      note: "Set the value to false only after OIDC login is verified, then redeploy production.",
+      note: "Set the value to false only after OIDC login is verified, then redeploy production. Remove the existing value first if Vercel already has one.",
     });
     actions.push({
       id: "redeploy-vercel-production-after-sso-only",
@@ -708,6 +711,7 @@ function renderMarkdown(report) {
       ...(action.templatePath ? [`  - template: ${action.templatePath}`] : []),
       ...(action.privateEnvFilePath ? [`  - private env: ${action.privateEnvFilePath}`] : []),
       ...(action.privateRestoreEnvFilePath ? [`  - private restore env: ${action.privateRestoreEnvFilePath}`] : []),
+      ...(action.requiredValue ? [`  - required value: ${action.requiredValue}`] : []),
       ...(action.note ? [`  - note: ${action.note}`] : []),
       ...(action.command ? [`  - ${action.command}`] : []),
       ...(action.commands ? action.commands.map((command) => `  - ${command}`) : []),

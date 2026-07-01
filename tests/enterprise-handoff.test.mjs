@@ -565,7 +565,10 @@ describe("AAIS enterprise handoff generator", () => {
         expect.objectContaining({
           id: "set-sso-only-runtime-mode",
           status: "required-after-sso-verification",
-          command: "vercel env add AAIS_TRIAL_LOGIN_ENABLED production",
+          commands: [
+            "vercel env rm AAIS_TRIAL_LOGIN_ENABLED production -y",
+            "printf '%s' 'false' | vercel env add AAIS_TRIAL_LOGIN_ENABLED production",
+          ],
           requiredValue: "false",
         }),
       ]),
@@ -573,6 +576,9 @@ describe("AAIS enterprise handoff generator", () => {
     const markdown = await readFile(markdownOutputPath, "utf8");
     expect(markdown).toContain("set-sso-only-runtime-mode");
     expect(markdown).toContain("AAIS_TRIAL_LOGIN_ENABLED");
+    expect(markdown).toContain("required value: false");
+    expect(markdown).toContain("vercel env rm AAIS_TRIAL_LOGIN_ENABLED production -y");
+    expect(markdown).toContain("printf '%s' 'false' | vercel env add AAIS_TRIAL_LOGIN_ENABLED production");
     expect(JSON.stringify(report)).not.toContain('"requiredValue":"true"');
   });
 
