@@ -44,6 +44,7 @@ export async function refreshAaisReleaseEvidence(input = {}) {
   const paths = resolvePaths(input);
   const baseUrl = input.baseUrl ?? process.env.AAIS_RELEASE_DEPLOYMENT_URL ?? defaultBaseUrl;
   const releaseId = input.releaseId ?? process.env.AAIS_RELEASE_ID ?? defaultReleaseId;
+  const deploymentGitCommit = input.deploymentGitCommit ?? process.env.AAIS_DEPLOYMENT_GIT_COMMIT_SHA;
   const enterpriseReleaseChecker = input.enterpriseReleaseChecker ?? runAaisEnterpriseReleaseCheck;
   const envTemplateGenerator = input.envTemplateGenerator ?? generateAaisPrivateEnvTemplate;
   const restoreTemplateGenerator = input.restoreTemplateGenerator ?? generateAaisPostgresRestoreTemplate;
@@ -78,6 +79,7 @@ export async function refreshAaisReleaseEvidence(input = {}) {
     baseUrl,
     environment: "production",
     releaseId,
+    deploymentGitCommit,
     now: input.now,
   }));
 
@@ -102,6 +104,7 @@ export async function refreshAaisReleaseEvidence(input = {}) {
     outputPath: paths.provisionReportPath,
     environment: "production",
     releaseId,
+    deploymentGitCommit,
     apply: false,
     now: input.now,
   }));
@@ -280,6 +283,7 @@ async function main() {
   const report = await refreshAaisReleaseEvidence({
     baseUrl: args.get("base-url"),
     releaseId: args.get("release-id"),
+    deploymentGitCommit: args.get("deployment-git-commit"),
     envFilePath: args.get("env-file"),
     maxAgeHours: args.get("max-age-hours"),
     outputPath: args.get("output"),

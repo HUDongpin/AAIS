@@ -24,6 +24,7 @@ describe("AAIS release evidence refresh workflow", () => {
       ...paths,
       baseUrl: "https://aais-six.vercel.app",
       releaseId: "aais-2026-06-30-rc-live-ai-deepseek-v4-flash",
+      deploymentGitCommit: "ffec998b638c1234567890abcdef1234567890ab",
       envFilePath: ".env.local",
       now: new Date("2026-06-30T11:00:00.000Z"),
       enterpriseReleaseChecker: async (input) => {
@@ -131,6 +132,7 @@ describe("AAIS release evidence refresh workflow", () => {
       baseUrl: "https://aais-six.vercel.app",
       environment: "production",
       releaseId: "aais-2026-06-30-rc-live-ai-deepseek-v4-flash",
+      deploymentGitCommit: "ffec998b638c1234567890abcdef1234567890ab",
     });
     expect(calls[2][1]).toMatchObject({
       outputPath: paths.postgresRestoreTemplatePath,
@@ -148,6 +150,7 @@ describe("AAIS release evidence refresh workflow", () => {
       vercelEnvReportPath: paths.vercelEnvReportPath,
       outputPath: paths.provisionReportPath,
       releaseId: "aais-2026-06-30-rc-live-ai-deepseek-v4-flash",
+      deploymentGitCommit: "ffec998b638c1234567890abcdef1234567890ab",
       apply: false,
     });
     expect(calls[5][1]).toMatchObject({
