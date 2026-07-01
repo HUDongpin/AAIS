@@ -854,16 +854,20 @@ function getLrsOutboxEvidence(details = {}) {
   const storage = readLrsOutboxStorage(details?.lrsOutboxStorage);
   const metricsPresent = details?.lrsOutboxMetricsPresent === true;
   const artifactCoalescing = getArtifactCoalescingEvidence(details);
+  const deadLetterRecovery = getLrsOutboxRecoveryEvidence(details);
   return {
     mode,
     storage,
     metricsPresent,
     artifactCoalescing: artifactCoalescing.policy,
     artifactCoalescingComplete: artifactCoalescing.complete,
+    deadLetterRecovery: deadLetterRecovery.policy,
+    deadLetterRecoveryComplete: deadLetterRecovery.complete,
     complete: mode === "persistent"
       && storage === "postgres"
       && metricsPresent
-      && artifactCoalescing.complete,
+      && artifactCoalescing.complete
+      && deadLetterRecovery.complete,
   };
 }
 
@@ -875,6 +879,7 @@ function getLrsHealthEvidence(details = {}) {
   const outboxRedaction = details?.lrsOutboxRedaction === "redacted" ? "redacted" : "unknown";
   const configured = details?.configured === true;
   const artifactCoalescing = getArtifactCoalescingEvidence(details);
+  const deadLetterRecovery = getLrsOutboxRecoveryEvidence(details);
   return {
     status,
     configured,
@@ -884,13 +889,16 @@ function getLrsHealthEvidence(details = {}) {
     outboxRedaction,
     artifactCoalescing: artifactCoalescing.policy,
     artifactCoalescingComplete: artifactCoalescing.complete,
+    deadLetterRecovery: deadLetterRecovery.policy,
+    deadLetterRecoveryComplete: deadLetterRecovery.complete,
     complete: status === "connected"
       && configured
       && outboxMode === "persistent"
       && outboxStorage === "postgres"
       && outboxMetricsPresent
       && outboxRedaction === "redacted"
-      && artifactCoalescing.complete,
+      && artifactCoalescing.complete
+      && deadLetterRecovery.complete,
   };
 }
 
@@ -939,6 +947,32 @@ function getArtifactCoalescingEvidence(details = {}) {
     complete: enabled
       && windowSeconds === 30
       && events.length === expectedEvents.length,
+  };
+}
+
+function getLrsOutboxRecoveryEvidence(details = {}) {
+  const expectedAction = "POST /api/learning/lrs/outbox/flush?action=requeue-dead-letter";
+  const expectedAuth = ["admin-session-csrf", "bearer-token"];
+  const rawAuth = Array.isArray(details?.lrsOutboxRecoveryAuth)
+    ? details.lrsOutboxRecoveryAuth
+    : [];
+  const auth = expectedAuth.filter((mode) => rawAuth.includes(mode));
+  const deadLetterRequeue = details?.lrsOutboxDeadLetterRequeue === true;
+  const action = details?.lrsOutboxRecoveryAction === expectedAction ? expectedAction : null;
+  const redaction = details?.lrsOutboxRecoveryRedaction === "payloads-excluded"
+    ? "payloads-excluded"
+    : "unknown";
+  return {
+    policy: {
+      deadLetterRequeue,
+      action,
+      auth,
+      redaction,
+    },
+    complete: deadLetterRequeue
+      && action === expectedAction
+      && auth.length === expectedAuth.length
+      && redaction === "payloads-excluded",
   };
 }
 

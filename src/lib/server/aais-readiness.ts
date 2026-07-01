@@ -68,6 +68,12 @@ export type AaisReadinessReport = {
           events: string[];
           strategy: "latest-write-wins";
         };
+        recovery: {
+          deadLetterRequeue: boolean;
+          action: string;
+          auth: string[];
+          redaction: "payloads-excluded";
+        };
       };
     };
     oidc: AaisReadinessCheck & {
@@ -179,6 +185,7 @@ export async function getAaisReadinessReport(now = new Date()): Promise<AaisRead
             total: persistentOutbox.total,
           },
           coalescing: persistentOutbox.coalescing,
+          recovery: persistentOutbox.recovery,
         },
       },
       oidc: {
@@ -336,6 +343,12 @@ async function readPersistentOutboxStatus() {
         windowSeconds: 30,
         events: ["artifact_saved", "artifact_edited", "planning_submitted"],
         strategy: "latest-write-wins" as const,
+      },
+      recovery: {
+        deadLetterRequeue: false,
+        action: "POST /api/learning/lrs/outbox/flush?action=requeue-dead-letter",
+        auth: ["admin-session-csrf", "bearer-token"],
+        redaction: "payloads-excluded" as const,
       },
     };
   }

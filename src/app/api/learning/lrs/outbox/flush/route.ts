@@ -1,15 +1,26 @@
 import { timingSafeEqual } from "node:crypto";
 import { NextResponse } from "next/server";
 import { isAaisCsrfError, requireAaisCsrf } from "@/lib/server/aais-csrf";
-import { flushAaisPersistentLrsOutbox } from "@/lib/server/aais-learning-store";
+import {
+  flushAaisPersistentLrsOutbox,
+  requeueAaisPersistentLrsDeadLetters,
+} from "@/lib/server/aais-learning-store";
 import { isAaisAuthError, requireAaisSessionActor } from "@/lib/server/aais-request-auth";
 
 type FlushAuthorization = {
   mode: "admin-session" | "bearer-token";
 };
 
+type OutboxAction = "flush" | "requeue-dead-letter";
+
 class AaisOutboxFlushAuthorizationError extends Error {
   constructor(message = "AAIS LRS outbox flush requires administrator authorization.") {
+    super(message);
+  }
+}
+
+class AaisOutboxFlushActionError extends Error {
+  constructor(message = "AAIS LRS outbox action is not supported.") {
     super(message);
   }
 }
@@ -30,11 +41,29 @@ async function handleFlushRequest(
 ) {
   try {
     const authorization = authorizeFlushRequest(request, input);
+    const searchParams = new URL(request.url).searchParams;
+    const action = readOutboxAction(searchParams.get("action"), input);
+    if (action === "requeue-dead-letter") {
+      const result = await requeueAaisPersistentLrsDeadLetters({
+        limit: readFlushLimit(searchParams.get("limit")),
+      });
+      return NextResponse.json(
+        {
+          action,
+          authorization,
+          outbox: sanitizeRequeueResult(result),
+          secrets: "redacted",
+        },
+        { status: result.status === "not_configured" ? 503 : 200 },
+      );
+    }
+
     const result = await flushAaisPersistentLrsOutbox({
-      limit: readFlushLimit(new URL(request.url).searchParams.get("limit")),
+      limit: readFlushLimit(searchParams.get("limit")),
     });
     return NextResponse.json(
       {
+        action,
         authorization,
         outbox: sanitizeFlushResult(result),
         secrets: "redacted",
@@ -101,6 +130,25 @@ function readFlushLimit(value: string | null) {
   return Math.min(200, Math.max(1, parsed));
 }
 
+function readOutboxAction(
+  value: string | null,
+  input: {
+    allowAdminSession: boolean;
+  },
+): OutboxAction {
+  const action = String(value ?? "flush").trim() || "flush";
+  if (action === "flush") {
+    return "flush";
+  }
+  if (action === "requeue-dead-letter") {
+    if (!input.allowAdminSession) {
+      throw new AaisOutboxFlushActionError("AAIS LRS outbox GET only supports flush.");
+    }
+    return "requeue-dead-letter";
+  }
+  throw new AaisOutboxFlushActionError();
+}
+
 function sanitizeFlushResult(result: Awaited<ReturnType<typeof flushAaisPersistentLrsOutbox>>) {
   return {
     status: result.status,
@@ -111,9 +159,20 @@ function sanitizeFlushResult(result: Awaited<ReturnType<typeof flushAaisPersiste
   };
 }
 
+function sanitizeRequeueResult(result: Awaited<ReturnType<typeof requeueAaisPersistentLrsDeadLetters>>) {
+  return {
+    status: result.status,
+    requeued: result.requeued,
+    secrets: "redacted" as const,
+  };
+}
+
 function getErrorStatus(error: unknown) {
   if (isAaisAuthError(error)) {
     return 401;
+  }
+  if (error instanceof AaisOutboxFlushActionError) {
+    return 400;
   }
   if (error instanceof AaisOutboxFlushAuthorizationError || isAaisCsrfError(error)) {
     return 403;

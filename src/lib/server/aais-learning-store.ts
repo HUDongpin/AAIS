@@ -1224,6 +1224,40 @@ export async function flushAaisPersistentLrsOutbox(input: {
   };
 }
 
+export async function requeueAaisPersistentLrsDeadLetters(input: {
+  database?: AaisDatabaseClient;
+  limit?: number;
+} = {}) {
+  const database = input.database ?? getConfiguredDatabaseClient();
+  if (!database) {
+    return {
+      status: "not_configured" as const,
+      requeued: 0,
+      secrets: "redacted" as const,
+    };
+  }
+  await database.query(ensureLrsOutboxTableSql);
+  const result = await database.query(
+    `update aais_lrs_outbox
+     set status = 'retry', attempts = 0, last_error = null, updated_at = now()
+     where id in (
+       select id
+       from aais_lrs_outbox
+       where status = 'dead_letter'
+       order by updated_at asc
+       limit $1
+     )
+     returning id`,
+    [input.limit ?? 50],
+  );
+  const requeued = result.rows.length;
+  return {
+    status: requeued > 0 ? "requeued" as const : "empty" as const,
+    requeued,
+    secrets: "redacted" as const,
+  };
+}
+
 export async function getAaisPersistentLrsOutboxStatus(input: {
   database?: AaisDatabaseClient;
 } = {}) {
@@ -1239,6 +1273,7 @@ export async function getAaisPersistentLrsOutboxStatus(input: {
       deadLetter: 0,
       total: 0,
       coalescing: getLrsOutboxCoalescingStatus(false),
+      recovery: getLrsOutboxRecoveryStatus(false),
       secrets: "redacted" as const,
     };
   }
@@ -1263,6 +1298,7 @@ export async function getAaisPersistentLrsOutboxStatus(input: {
     deadLetter,
     total: pending + retry + sent + deadLetter,
     coalescing: getLrsOutboxCoalescingStatus(true),
+    recovery: getLrsOutboxRecoveryStatus(true),
     secrets: "redacted" as const,
   };
 }
@@ -1332,6 +1368,15 @@ function getLrsOutboxCoalescingStatus(enabled: boolean) {
     windowSeconds: aaisLrsOutboxCoalescingPolicy.windowSeconds,
     events: [...aaisLrsOutboxCoalescingPolicy.events],
     strategy: aaisLrsOutboxCoalescingPolicy.strategy,
+  };
+}
+
+function getLrsOutboxRecoveryStatus(enabled: boolean) {
+  return {
+    deadLetterRequeue: enabled,
+    action: "POST /api/learning/lrs/outbox/flush?action=requeue-dead-letter",
+    auth: ["admin-session-csrf", "bearer-token"],
+    redaction: "payloads-excluded" as const,
   };
 }
 

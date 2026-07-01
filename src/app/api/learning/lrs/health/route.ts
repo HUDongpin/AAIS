@@ -77,6 +77,12 @@ function sanitizePersistentOutboxStatus(
       events: [...status.coalescing.events],
       strategy: status.coalescing.strategy,
     },
+    recovery: {
+      deadLetterRequeue: status.recovery.deadLetterRequeue,
+      action: status.recovery.action,
+      auth: [...status.recovery.auth],
+      redaction: status.recovery.redaction,
+    },
     secrets: "redacted" as const,
   };
 }

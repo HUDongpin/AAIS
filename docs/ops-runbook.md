@@ -76,7 +76,8 @@ AAIS production is deployed on Vercel and uses Neon Postgres. Release evidence m
 10. Confirm `/api/system/readiness` reports `checks.lrs.outbox.mode: "persistent"`, `checks.lrs.outbox.storage: "postgres"`, numeric `checks.lrs.outbox.metrics`, and `checks.lrs.outbox.coalescing.enabled: true` on Vercel/Neon production.
 11. Confirm `CRON_SECRET` is set in Vercel Production and `vercel.json` has the daily Cron path `/api/learning/lrs/outbox/flush`; this Cron call uses `GET` with `Authorization: Bearer <CRON_SECRET>`.
 12. POST `/api/learning/lrs/outbox/flush` with an admin session plus actor-bound CSRF token, or with `Authorization: Bearer <AAIS_LRS_OUTBOX_FLUSH_TOKEN>` when that optional operations token is configured, and confirm the response reports only `status`, `sent`, `batches`, optional `failed`, and `secrets: "redacted"`.
-13. Confirm `npm run verify:enterprise` reports the read-only `lrs-health` check and the artifact coalescing policy as `passed`; in staging with trial smoke variables set, also confirm `trial-learning-session` as `passed`.
+13. If `delivery.persistentOutbox.deadLetter` grows after an LRS provider outage, POST `/api/learning/lrs/outbox/flush?action=requeue-dead-letter&limit=<batch-size>` with the same admin session or operations bearer token, confirm the response reports only `status`, `requeued`, and `secrets: "redacted"`, then run the normal flush again. Do not use GET for dead-letter requeue; Vercel Cron GET is flush-only.
+14. Confirm `npm run verify:enterprise` reports the read-only `lrs-health` check and the artifact coalescing policy as `passed`; in staging with trial smoke variables set, also confirm `trial-learning-session` as `passed`.
 
 ## Enterprise xAPI Event Model
 
@@ -90,8 +91,9 @@ AAIS production is deployed on Vercel and uses Neon Postgres. Release evidence m
 8. Keep learner-session persistence on the fast path and LRS mirroring in the persistent Postgres outbox plus asynchronous retry queue so network or LRS failures do not block learning interactions.
 9. Monitor persistent outbox counts in health/readiness so pending/retry/dead-letter growth is visible without reading raw xAPI payloads.
 10. Keep a controlled batched drain path for the persistent outbox so serverless interruptions do not rely only on fire-and-forget in-process flushing or one network call per xAPI statement.
-11. Debounce high-frequency artifact autosaves in the learner UI, flush the pending save when the learner leaves the editor, and coalesce again before LRS delivery; the API and LRS should receive the latest `artifact_edited`, `artifact_saved`, and `planning_submitted` facts with merge metadata instead of every keystroke.
-12. Treat A2 `monitoring_pause_detected`, `coaching_push`, and keyed `ai_acceptance_recorded` as first-class evidence for teacher dashboards and later BI/LMS joins; verify low-progress autosaves and significant artifact regressions create low-interruption coaching signals, count unique AI acceptance decision keys as interaction evidence, allow explicit decision revisions, and keep learner rationale text plus raw message ids out of analytics and LRS statements.
+11. Use the protected dead-letter requeue action after provider recovery so failed xAPI rows can return to retry without direct database edits or payload exposure.
+12. Debounce high-frequency artifact autosaves in the learner UI, flush the pending save when the learner leaves the editor, and coalesce again before LRS delivery; the API and LRS should receive the latest `artifact_edited`, `artifact_saved`, and `planning_submitted` facts with merge metadata instead of every keystroke.
+13. Treat A2 `monitoring_pause_detected`, `coaching_push`, and keyed `ai_acceptance_recorded` as first-class evidence for teacher dashboards and later BI/LMS joins; verify low-progress autosaves and significant artifact regressions create low-interruption coaching signals, count unique AI acceptance decision keys as interaction evidence, allow explicit decision revisions, and keep learner rationale text plus raw message ids out of analytics and LRS statements.
 
 ## Backup And Restore
 

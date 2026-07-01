@@ -7,6 +7,7 @@ import {
   flushAaisPersistentLrsOutbox,
   getAaisPersistentLrsOutboxStatus,
   getAaisDatabaseConfiguration,
+  requeueAaisPersistentLrsDeadLetters,
 } from "@/lib/server/aais-learning-store";
 import * as lrsClient from "@/lib/server/aais-lrs-client";
 import type { AaisEvent } from "@/data/aais";
@@ -295,10 +296,52 @@ describe("AAIS backend learning store", () => {
         events: ["artifact_saved", "artifact_edited", "planning_submitted"],
         strategy: "latest-write-wins",
       },
+      recovery: {
+        deadLetterRequeue: true,
+        action: "POST /api/learning/lrs/outbox/flush?action=requeue-dead-letter",
+        auth: ["admin-session-csrf", "bearer-token"],
+        redaction: "payloads-excluded",
+      },
       secrets: "redacted",
     });
     expect(JSON.stringify(status)).not.toContain("outbox payload text must not leak");
     expect(JSON.stringify(status)).not.toContain("test-password");
+  });
+
+  it("requeues persistent LRS dead-letter rows without exposing payloads", async () => {
+    const database = createFakeDatabaseClient();
+    const store = createAaisLearningStore({ database });
+
+    await store.getOrCreateSession("S001");
+    await store.saveArtifact("S001", "training_task_1", "dead-letter learner payload must not leak");
+    await flushAaisPersistentLrsOutbox({
+      database,
+      config: {
+        endpoint: "https://lrs.example.test/xapi",
+        username: "test-user",
+        password: "test-password",
+      },
+      fetchImpl: vi.fn<typeof fetch>(async () => new Response(null, { status: 503 })) as unknown as typeof fetch,
+      maxAttempts: 1,
+    });
+
+    expect(database.outboxRows.every((row) => row.status === "dead_letter")).toBe(true);
+    expect(database.outboxRows.every((row) => row.attempts === 1)).toBe(true);
+
+    const requeue = await requeueAaisPersistentLrsDeadLetters({
+      database,
+      limit: 2,
+    });
+
+    expect(requeue).toEqual({
+      status: "requeued",
+      requeued: 2,
+      secrets: "redacted",
+    });
+    expect(database.outboxRows.filter((row) => row.status === "retry")).toHaveLength(2);
+    expect(database.outboxRows.filter((row) => row.status === "retry").every((row) => row.attempts === 0)).toBe(true);
+    expect(JSON.stringify(requeue)).not.toContain("dead-letter learner payload must not leak");
+    expect(JSON.stringify(requeue)).not.toContain("test-password");
   });
 
   it("coalesces rapid artifact autosaves into the latest LRS outbox facts", async () => {
@@ -743,6 +786,17 @@ function createFakeDatabaseClient() {
         }
         this.outboxRows = Array.from(outbox.values());
         return { rows: [] };
+      }
+      if (/^update aais_lrs_outbox\s+set status = 'retry', attempts = 0/i.test(sql.trim())) {
+        const rows = Array.from(outbox.values())
+          .filter((row) => row.status === "dead_letter")
+          .slice(0, Number(params[0]));
+        for (const row of rows) {
+          row.status = "retry";
+          row.attempts = 0;
+        }
+        this.outboxRows = Array.from(outbox.values());
+        return { rows: rows.map((row) => ({ id: row.id })) };
       }
       if (/^update aais_lrs_outbox set status =/i.test(sql.trim())) {
         const row = outbox.get(String(params[2]));

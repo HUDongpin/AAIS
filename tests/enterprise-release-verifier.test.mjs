@@ -279,6 +279,10 @@ describe("AAIS enterprise release verifier", () => {
       lrsOutboxCoalescingEnabled: true,
       lrsOutboxCoalescingWindowSeconds: 30,
       lrsOutboxCoalescingEvents: ["artifact_saved", "artifact_edited", "planning_submitted"],
+      lrsOutboxDeadLetterRequeue: true,
+      lrsOutboxRecoveryAction: "POST /api/learning/lrs/outbox/flush?action=requeue-dead-letter",
+      lrsOutboxRecoveryAuth: ["admin-session-csrf", "bearer-token"],
+      lrsOutboxRecoveryRedaction: "payloads-excluded",
       deploymentPlatform: "vercel",
       vercelRequestIdPresent: true,
       releaseId: "aais-2026-06-30-rc1",
@@ -767,6 +771,94 @@ describe("AAIS enterprise release verifier", () => {
         lrsOutboxCoalescingEnabled: false,
         lrsOutboxCoalescingWindowSeconds: null,
         lrsOutboxCoalescingEvents: [],
+      },
+    });
+  });
+
+  it("fails readiness when the LRS outbox lacks dead-letter requeue recovery proof", async () => {
+    const fetchMock = vi.fn(async (url) => {
+      if (url === "https://aais.example.test/api/system/readiness") {
+        const body = readinessBody();
+        delete body.checks.lrs.outbox.recovery;
+        return Response.json(body, { headers: createSecurityHeaders() });
+      }
+      if (url === "https://aais.example.test/api/learning/lrs/health") {
+        return Response.json(lrsHealthBody());
+      }
+      if (url === "https://aais.example.test/api/auth/oidc/start?from=%2Flearning") {
+        return new Response(null, {
+          status: 307,
+          headers: {
+            location: oidcAuthorizationLocation(),
+            "set-cookie": "aais_oidc_state=opaque-start; Path=/; HttpOnly; Secure; SameSite=Lax",
+          },
+        });
+      }
+      if (isLegalPageUrl(String(url))) {
+        return legalPageResponse(String(url));
+      }
+      return new Response("unexpected", { status: 500 });
+    });
+
+    const report = await runEnterpriseReleaseVerification({
+      baseUrl: "https://aais.example.test",
+      fetchImpl: fetchMock,
+      releaseId: "aais-2026-06-30-rc1",
+    });
+
+    const readiness = report.checks.find((check) => check.name === "readiness");
+    expect(report.status).toBe("failed");
+    expect(readiness).toMatchObject({
+      status: "failed",
+      details: {
+        lrsOutboxDeadLetterRequeue: false,
+        lrsOutboxRecoveryAction: null,
+        lrsOutboxRecoveryAuth: [],
+        lrsOutboxRecoveryRedaction: "unknown",
+      },
+    });
+  });
+
+  it("fails LRS health when the persistent outbox lacks dead-letter requeue recovery proof", async () => {
+    const fetchMock = vi.fn(async (url) => {
+      if (url === "https://aais.example.test/api/system/readiness") {
+        return Response.json(readinessBody(), { headers: createSecurityHeaders() });
+      }
+      if (url === "https://aais.example.test/api/learning/lrs/health") {
+        const body = lrsHealthBody();
+        delete body.delivery.persistentOutbox.recovery;
+        return Response.json(body);
+      }
+      if (url === "https://aais.example.test/api/auth/oidc/start?from=%2Flearning") {
+        return new Response(null, {
+          status: 307,
+          headers: {
+            location: oidcAuthorizationLocation(),
+            "set-cookie": "aais_oidc_state=opaque-start; Path=/; HttpOnly; Secure; SameSite=Lax",
+          },
+        });
+      }
+      if (isLegalPageUrl(String(url))) {
+        return legalPageResponse(String(url));
+      }
+      return new Response("unexpected", { status: 500 });
+    });
+
+    const report = await runEnterpriseReleaseVerification({
+      baseUrl: "https://aais.example.test",
+      fetchImpl: fetchMock,
+      releaseId: "aais-2026-06-30-rc1",
+    });
+
+    const lrsHealth = report.checks.find((check) => check.name === "lrs-health");
+    expect(report.status).toBe("failed");
+    expect(lrsHealth).toMatchObject({
+      status: "failed",
+      details: {
+        lrsOutboxDeadLetterRequeue: false,
+        lrsOutboxRecoveryAction: null,
+        lrsOutboxRecoveryAuth: [],
+        lrsOutboxRecoveryRedaction: "unknown",
       },
     });
   });
@@ -2408,6 +2500,12 @@ function lrsReadyCheck() {
         events: ["artifact_saved", "artifact_edited", "planning_submitted"],
         strategy: "latest-write-wins",
       },
+      recovery: {
+        deadLetterRequeue: true,
+        action: "POST /api/learning/lrs/outbox/flush?action=requeue-dead-letter",
+        auth: ["admin-session-csrf", "bearer-token"],
+        redaction: "payloads-excluded",
+      },
       metrics: {
         pending: 0,
         retry: 0,
@@ -2416,6 +2514,40 @@ function lrsReadyCheck() {
         total: 4,
       },
     },
+  };
+}
+
+function readinessBody(input = {}) {
+  return {
+    status: "ready",
+    runtime: "production",
+    release: {
+      id: "aais-2026-06-30-rc1",
+      source: "AAIS_RELEASE_ID",
+      deployment: {
+        provider: "vercel",
+        gitCommit: {
+          present: true,
+          shortSha: "0123456789ab",
+          source: "VERCEL_GIT_COMMIT_SHA",
+        },
+      },
+    },
+    checks: {
+      session: { status: "ok" },
+      trialAccounts: { status: "disabled", configured: false, accountCount: 0 },
+      storage: { status: "ok", mode: "postgres", provider: "neon", probe: "connected" },
+      lrs: input.lrs ?? lrsReadyCheck(),
+      oidc: oidcReadyCheck(),
+      ai: {
+        status: "ok",
+        provider: "deterministic",
+        evalVersion: null,
+        evalManifest: "not-required",
+      },
+    },
+    issues: [],
+    secrets: "redacted",
   };
 }
 
@@ -2433,6 +2565,12 @@ function lrsHealthBody(input = {}) {
           windowSeconds: 30,
           events: ["artifact_saved", "artifact_edited", "planning_submitted"],
           strategy: "latest-write-wins",
+        },
+        recovery: {
+          deadLetterRequeue: true,
+          action: "POST /api/learning/lrs/outbox/flush?action=requeue-dead-letter",
+          auth: ["admin-session-csrf", "bearer-token"],
+          redaction: "payloads-excluded",
         },
         pending: 0,
         retry: 0,

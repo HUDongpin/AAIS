@@ -184,11 +184,13 @@ async function verifyLrsHealth({ baseUrl, fetchImpl }) {
   const connected = response.status === 200 && body?.status === "connected";
   const persistentOutbox = body?.delivery?.persistentOutbox ?? {};
   const coalescing = getLrsOutboxCoalescingEvidence(persistentOutbox.coalescing);
+  const recovery = getLrsOutboxRecoveryEvidence(persistentOutbox.recovery);
   const lrsOutboxOk = persistentOutbox.mode === "persistent"
     && persistentOutbox.storage === "postgres"
     && hasLrsOutboxMetrics(persistentOutbox)
     && persistentOutbox.secrets === "redacted"
-    && coalescing.complete;
+    && coalescing.complete
+    && recovery.complete;
   return {
     name: "lrs-health",
     status: connected && configured && lrsOutboxOk && body?.secrets === "redacted" ? "passed" : "failed",
@@ -204,6 +206,10 @@ async function verifyLrsHealth({ baseUrl, fetchImpl }) {
       lrsOutboxCoalescingWindowSeconds: coalescing.windowSeconds,
       lrsOutboxCoalescingEvents: coalescing.events,
       lrsOutboxCoalescingStrategy: coalescing.strategy,
+      lrsOutboxDeadLetterRequeue: recovery.deadLetterRequeue,
+      lrsOutboxRecoveryAction: recovery.action,
+      lrsOutboxRecoveryAuth: recovery.auth,
+      lrsOutboxRecoveryRedaction: recovery.redaction,
       secrets: body?.secrets === "redacted" ? "redacted" : "unknown",
     },
   };
@@ -540,10 +546,12 @@ function getReadinessSubcheckStatus(body) {
   const oidcRoleMapping = checks.oidc?.roleMapping ?? {};
   const lrsOutbox = checks.lrs?.outbox ?? {};
   const coalescing = getLrsOutboxCoalescingEvidence(lrsOutbox.coalescing);
+  const recovery = getLrsOutboxRecoveryEvidence(lrsOutbox.recovery);
   const lrsOutboxOk = lrsOutbox.mode === "persistent"
     && lrsOutbox.storage === "postgres"
     && hasLrsOutboxMetrics(lrsOutbox.metrics)
-    && coalescing.complete;
+    && coalescing.complete
+    && recovery.complete;
   return {
     sessionOk: checks.session?.status === "ok",
     trialAccountsOk: checks.trialAccounts?.status === "disabled"
@@ -576,6 +584,7 @@ function getReadinessMetadata(body, headers) {
   const roleMapping = oidc.roleMapping ?? {};
   const lrsOutbox = body?.checks?.lrs?.outbox ?? {};
   const coalescing = getLrsOutboxCoalescingEvidence(lrsOutbox.coalescing);
+  const recovery = getLrsOutboxRecoveryEvidence(lrsOutbox.recovery);
   const vercelRequestIdPresent = Boolean(headers.get("x-vercel-id"));
   return {
     aiProvider: ai.provider === "deterministic" || ai.provider === "openai-compatible"
@@ -597,6 +606,10 @@ function getReadinessMetadata(body, headers) {
     lrsOutboxCoalescingWindowSeconds: coalescing.windowSeconds,
     lrsOutboxCoalescingEvents: coalescing.events,
     lrsOutboxCoalescingStrategy: coalescing.strategy,
+    lrsOutboxDeadLetterRequeue: recovery.deadLetterRequeue,
+    lrsOutboxRecoveryAction: recovery.action,
+    lrsOutboxRecoveryAuth: recovery.auth,
+    lrsOutboxRecoveryRedaction: recovery.redaction,
     deploymentPlatform: vercelRequestIdPresent ? "vercel" : "unknown",
     vercelRequestIdPresent,
   };
@@ -701,6 +714,26 @@ function getLrsOutboxCoalescingEvidence(policy) {
       && windowSeconds === 30
       && strategy === "latest-write-wins"
       && events.length === expectedEvents.length,
+  };
+}
+
+function getLrsOutboxRecoveryEvidence(policy) {
+  const expectedAction = "POST /api/learning/lrs/outbox/flush?action=requeue-dead-letter";
+  const expectedAuth = ["admin-session-csrf", "bearer-token"];
+  const rawAuth = Array.isArray(policy?.auth) ? policy.auth : [];
+  const auth = expectedAuth.filter((mode) => rawAuth.includes(mode));
+  const action = policy?.action === expectedAction ? expectedAction : null;
+  const redaction = policy?.redaction === "payloads-excluded" ? "payloads-excluded" : "unknown";
+  const deadLetterRequeue = policy?.deadLetterRequeue === true;
+  return {
+    deadLetterRequeue,
+    action,
+    auth,
+    redaction,
+    complete: deadLetterRequeue
+      && action === expectedAction
+      && auth.length === expectedAuth.length
+      && redaction === "payloads-excluded",
   };
 }
 

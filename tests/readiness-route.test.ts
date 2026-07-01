@@ -192,6 +192,12 @@ describe("AAIS readiness route", () => {
               events: ["artifact_saved", "artifact_edited", "planning_submitted"],
               strategy: "latest-write-wins",
             },
+            recovery: {
+              deadLetterRequeue: true,
+              action: "POST /api/learning/lrs/outbox/flush?action=requeue-dead-letter",
+              auth: ["admin-session-csrf", "bearer-token"],
+              redaction: "payloads-excluded",
+            },
           },
         },
         oidc: {
