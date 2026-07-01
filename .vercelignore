@@ -1,0 +1,11 @@
+.DS_Store
+.aais-data/
+.next/
+.playwright-cli/
+.vercel/
+All API Keys.docx
+.env
+.env.*
+node_modules/
+output/
+tsconfig.tsbuildinfo

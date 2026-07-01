@@ -1,0 +1,61 @@
+{
+  "name": "aais",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "eslint",
+    "test": "vitest run",
+    "type-check": "tsc --noEmit",
+    "ci": "npm run lint && npm run type-check && npm test && npm run build",
+    "ai:evaluate": "node -- scripts/run-ai-eval.mjs",
+    "provision:vercel-env": "node -- scripts/provision-vercel-env.mjs",
+    "verify:vercel-env": "node -- scripts/verify-vercel-env.mjs",
+    "verify:source-provenance": "node -- scripts/verify-source-provenance.mjs",
+    "verify:vercel-deployment": "node -- scripts/verify-vercel-deployment.mjs",
+    "verify:oidc-config": "node -- scripts/verify-oidc-configuration.mjs",
+    "verify:postgres-restore": "node -- scripts/verify-postgres-restore.mjs",
+    "verify:release-evidence": "node -- scripts/verify-release-evidence.mjs",
+    "verify:enterprise": "node -- scripts/verify-enterprise-release.mjs",
+    "verify:enterprise-release": "node -- scripts/run-enterprise-release-check.mjs",
+    "release:env-template": "node -- scripts/generate-private-env-template.mjs",
+    "release:restore-template": "node -- scripts/generate-postgres-restore-template.mjs",
+    "release:handoff": "node -- scripts/generate-enterprise-handoff.mjs",
+    "release:audit": "node -- scripts/audit-enterprise-readiness.mjs",
+    "release:bundle": "node -- scripts/create-release-evidence-bundle.mjs",
+    "release:refresh": "node -- scripts/refresh-release-evidence.mjs"
+  },
+  "dependencies": {
+    "@langchain/langgraph": "^1.4.4",
+    "@phosphor-icons/react": "^2.1.10",
+    "@vercel/analytics": "^2.0.1",
+    "jose": "^6.2.3",
+    "next": "16.2.9",
+    "pg": "^8.22.0",
+    "react": "19.2.4",
+    "react-dom": "19.2.4",
+    "ws": "^8.21.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4",
+    "@testing-library/dom": "^10.4.1",
+    "@testing-library/react": "^16.3.2",
+    "@types/node": "^20",
+    "@types/pg": "^8.20.0",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "@types/ws": "^8.18.1",
+    "@vitejs/plugin-react": "^6.0.2",
+    "eslint": "^9",
+    "eslint-config-next": "16.2.9",
+    "jsdom": "^29.1.1",
+    "tailwindcss": "^4",
+    "typescript": "^5",
+    "vitest": "^4.1.9"
+  },
+  "overrides": {
+    "postcss": "8.5.10"
+  }
+}

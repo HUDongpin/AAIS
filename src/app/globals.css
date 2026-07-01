@@ -1,0 +1,82 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+:root {
+  --background: #f5f9ff;
+  --foreground: #172033;
+  --muted: #59657a;
+  --placeholder: #7a8599;
+  --surface: #fbfdff;
+  --surface-elevated: #edf5ff;
+  --surface-soft: #e5f0ff;
+  --border: #cfe0f5;
+  --accent: #1f6feb;
+  --accent-strong: #1557c0;
+  --accent-soft: #dbeafe;
+  --accent-border: #93c5fd;
+  --danger: #a12f56;
+  --shadow: rgb(22 78 150 / 0.1);
+  --shadow-strong: rgb(22 78 150 / 0.17);
+  --shadow-accent: rgb(31 111 235 / 0.24);
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: Arial, Helvetica, sans-serif;
+  --font-mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+}
+
+.dark {
+  --background: #0b1220;
+  --foreground: #eef6ff;
+  --muted: #b8c7dc;
+  --placeholder: #89a0ba;
+  --surface: #111c2e;
+  --surface-elevated: #17243a;
+  --surface-soft: #1e3150;
+  --border: #2f4770;
+  --accent: #2b6fe8;
+  --accent-strong: #1f5fcf;
+  --accent-soft: #1d355a;
+  --accent-border: #3b6ea8;
+  --danger: #ff9aba;
+  --shadow: rgb(0 0 0 / 0.22);
+  --shadow-strong: rgb(0 0 0 / 0.34);
+  --shadow-accent: rgb(43 111 232 / 0.24);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  min-height: 100dvh;
+  background: var(--background);
+  color: var(--foreground);
+  font-family: Arial, Helvetica, sans-serif;
+}
+
+button,
+a,
+input,
+textarea {
+  -webkit-tap-highlight-color: transparent;
+}
+
+::selection {
+  background: var(--accent-soft);
+  color: var(--foreground);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
+}

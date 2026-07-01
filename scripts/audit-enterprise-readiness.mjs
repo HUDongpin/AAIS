@@ -1,0 +1,386 @@
+#!/usr/bin/env node
+
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import path from "node:path";
+
+const defaultReleaseCheckReportPath = "output/aais-enterprise-release-check-latest.json";
+const defaultHandoffReportPath = "output/aais-enterprise-handoff-latest.json";
+const defaultOutputPath = "output/aais-enterprise-readiness-audit-latest.json";
+const defaultMarkdownOutputPath = "output/aais-enterprise-readiness-audit-latest.md";
+
+export async function auditAaisEnterpriseReadiness(input = {}) {
+  const generatedAt = (input.now ?? new Date()).toISOString();
+  const releaseCheckReportPath = input.releaseCheckReportPath ?? defaultReleaseCheckReportPath;
+  const handoffReportPath = input.handoffReportPath ?? defaultHandoffReportPath;
+  const outputPath = input.outputPath ?? process.env.AAIS_ENTERPRISE_AUDIT_REPORT_PATH ?? defaultOutputPath;
+  const markdownOutputPath = input.markdownOutputPath
+    ?? process.env.AAIS_ENTERPRISE_AUDIT_MARKDOWN_PATH
+    ?? defaultMarkdownOutputPath;
+  const releaseCheck = await readJsonIfExists(releaseCheckReportPath);
+  const handoff = await readJsonIfExists(handoffReportPath);
+  const requiredControls = buildRequiredControls(releaseCheck.value, handoff.value);
+  const passed = requiredControls.filter((control) => control.status === "passed").length;
+  const actionRequired = requiredControls.length - passed;
+  const report = {
+    schemaVersion: 1,
+    status: actionRequired === 0 ? "ready" : "action-required",
+    generatedAt,
+    sourceReports: {
+      releaseCheck: releaseCheckReportPath,
+      handoff: handoffReportPath,
+    },
+    gate: {
+      status: normalizeStatus(releaseCheck.value?.status),
+      checkedAt: readIsoTimestamp(releaseCheck.value?.checkedAt),
+    },
+    summary: {
+      total: requiredControls.length,
+      passed,
+      actionRequired,
+    },
+    requiredControls,
+    redaction: {
+      secrets: "omitted",
+      values: "not-read",
+    },
+  };
+
+  if (outputPath) {
+    await writeTextFile(outputPath, `${JSON.stringify(report, null, 2)}\n`);
+  }
+  if (markdownOutputPath) {
+    await writeTextFile(markdownOutputPath, renderMarkdown(report));
+  }
+
+  return report;
+}
+
+function buildRequiredControls(releaseCheck, handoff) {
+  const artifacts = releaseCheck?.artifacts ?? {};
+  const vercelEnv = artifacts.vercelEnv ?? {};
+  const enterprise = artifacts.enterprise ?? {};
+  const requiredChecks = enterprise.requiredChecks ?? {};
+  const readiness = enterprise.readiness ?? {};
+  const vercelDeployment = artifacts.vercelDeployment ?? {};
+  const aiEval = artifacts.aiEval ?? {};
+  const postgresRestore = artifacts.postgresRestore ?? {};
+  const vercelConfig = artifacts.vercelConfig ?? {};
+  const handoffActionIds = new Set(
+    Array.isArray(handoff?.externalActions)
+      ? handoff.externalActions
+        .map((action) => readSafeActionId(action?.id))
+        .filter(Boolean)
+      : [],
+  );
+  const missingEnv = getSafeEnvNames(vercelEnv.missing);
+
+  return [
+    control({
+      id: "vercel-production-env",
+      passed: vercelEnv.status === "passed" && missingEnv.length === 0,
+      missing: missingEnv,
+      actions: [
+        "fill-private-env-template",
+        "set-vercel-production-env",
+        "redeploy-vercel-production",
+        "inspect-vercel-production-deployment",
+        "rerun-final-gate",
+      ],
+      handoffActionIds,
+    }),
+    control({
+      id: "neon-storage-readiness",
+      passed: (
+        readiness.storagePostgresConnected === true
+        && readiness.storageProvider === "neon"
+      ) || (
+        requiredChecks.readiness === true
+        && !hasMissingStorageEnv(missingEnv)
+      ),
+      actions: [
+        "fill-private-env-template",
+        "set-vercel-production-env",
+        "redeploy-vercel-production",
+        "inspect-vercel-production-deployment",
+        "rerun-final-gate",
+      ],
+      handoffActionIds,
+    }),
+    control({
+      id: "deployment-release-identity",
+      passed: readiness.releaseIdMatchesExpected === true,
+      actions: [
+        "fill-private-env-template",
+        "set-vercel-production-env",
+        "redeploy-vercel-production",
+        "inspect-vercel-production-deployment",
+        "rerun-final-gate",
+      ],
+      note: "Requires deployed /api/system/readiness to report the expected AAIS_RELEASE_ID; Vercel git short SHA is recorded when available.",
+      handoffActionIds,
+    }),
+    control({
+      id: "vercel-deployment-ready",
+      passed: vercelDeployment.status === "passed"
+        && vercelDeployment.readyState === "READY"
+        && vercelDeployment.urlMatchesExpected === true
+        && vercelDeployment.targetMatchesProduction === true,
+      actions: [
+        "redeploy-vercel-production",
+        "inspect-vercel-production-deployment",
+        "rerun-final-gate",
+      ],
+      note: "Requires redacted Vercel inspect evidence from the deployment URL returned by vercel deploy --prod -y --no-wait.",
+      handoffActionIds,
+    }),
+    control({
+      id: "security-headers",
+      passed: requiredChecks.securityHeaders === true,
+      actions: ["rerun-final-gate"],
+      handoffActionIds,
+    }),
+    control({
+      id: "legal-pages",
+      passed: requiredChecks.legalPages === true,
+      actions: ["redeploy-vercel-production", "inspect-vercel-production-deployment", "rerun-final-gate"],
+      note: "Requires deployed /terms and /privacy to return redacted 200/HTML/content-presence evidence.",
+      handoffActionIds,
+    }),
+    control({
+      id: "lrs-health",
+      passed: requiredChecks.lrsHealth === true,
+      actions: ["rerun-final-gate"],
+      handoffActionIds,
+    }),
+    control({
+      id: "scheduled-outbox-drain",
+      passed: vercelConfig.status === "passed"
+        && vercelConfig.path === "/api/learning/lrs/outbox/flush"
+        && vercelConfig.outboxCronPresent === true
+        && vercelConfig.outboxCronDaily === true
+        && vercelConfig.secretScanStatus === "passed",
+      actions: ["redeploy-vercel-production", "inspect-vercel-production-deployment", "rerun-final-gate"],
+      note: "Requires final release evidence to prove the daily Vercel Cron drain for /api/learning/lrs/outbox/flush.",
+      handoffActionIds,
+    }),
+    control({
+      id: "artifact-event-coalescing",
+      passed: enterprise.artifactCoalescing?.complete === true,
+      actions: ["redeploy-vercel-production", "inspect-vercel-production-deployment", "rerun-final-gate"],
+      handoffActionIds,
+    }),
+    control({
+      id: "cohort-analytics",
+      passed: requiredChecks.cohortAnalytics === true,
+      actions: ["run-teacher-cohort-analytics-smoke", "rerun-final-gate"],
+      note: "Requires teacher/admin cohort analytics and cohort export proof from the same OIDC callback session.",
+      handoffActionIds,
+    }),
+    control({
+      id: "oidc-start",
+      passed: requiredChecks.oidcStart === true,
+      actions: [
+        "fill-private-env-template",
+        "set-vercel-production-env",
+        "redeploy-vercel-production",
+        "inspect-vercel-production-deployment",
+        "rerun-final-gate",
+      ],
+      handoffActionIds,
+    }),
+    control({
+      id: "oidc-callback-handoff",
+      passed: requiredChecks.oidcCallback === true,
+      actions: ["run-real-oidc-callback-smoke", "rerun-final-gate"],
+      handoffActionIds,
+    }),
+    control({
+      id: "sso-only-mode",
+      passed: requiredChecks.ssoOnlyMode === true,
+      actions: [
+        "run-real-oidc-callback-smoke",
+        "set-sso-only-runtime-mode",
+        "redeploy-vercel-production-after-sso-only",
+        "inspect-vercel-production-deployment-after-sso-only",
+        "rerun-final-gate",
+      ],
+      handoffActionIds,
+    }),
+    control({
+      id: "live-ai-eval",
+      passed: aiEval.status === "passed"
+        && aiEval.compatibleWithEnterpriseReadiness === true
+        && aiEval.blockedCount === 0
+        && aiEval.modelFingerprintMatchesEnterprise === true,
+      actions: ["rerun-final-gate"],
+      handoffActionIds,
+    }),
+    control({
+      id: "neon-restore-rehearsal",
+      passed: postgresRestore.status === "passed",
+      actions: ["fill-postgres-restore-template", "run-neon-restore-rehearsal", "rerun-final-gate"],
+      handoffActionIds,
+    }),
+    control({
+      id: "evidence-order",
+      passed: enterprise.evidenceOrder?.enterpriseAfterVercelEnv === true
+        && enterprise.evidenceOrder?.enterpriseAfterVercelDeployment === true,
+      actions: ["rerun-final-gate"],
+      handoffActionIds,
+    }),
+    control({
+      id: "release-consistency",
+      passed: releaseCheck?.release?.consistent === true,
+      actions: [
+        "fill-postgres-restore-template",
+        "run-neon-restore-rehearsal",
+        "run-real-oidc-callback-smoke",
+        "rerun-final-gate",
+      ],
+      handoffActionIds,
+    }),
+  ];
+}
+
+function control({ id, passed, missing = undefined, actions, note = undefined, handoffActionIds }) {
+  const status = passed ? "passed" : "action-required";
+  const row = {
+    id,
+    status,
+  };
+  if (Array.isArray(missing) && missing.length > 0) {
+    row.missing = missing;
+  }
+  if (status !== "passed") {
+    row.actions = actions.filter((action) => handoffActionIds.size === 0 || handoffActionIds.has(action));
+    if (note) {
+      row.note = note;
+    }
+  }
+  return row;
+}
+
+async function readJsonIfExists(filePath) {
+  try {
+    const raw = await readFile(filePath, "utf8");
+    return {
+      ok: true,
+      value: JSON.parse(raw),
+    };
+  } catch {
+    return {
+      ok: false,
+      value: null,
+    };
+  }
+}
+
+function renderMarkdown(report) {
+  const lines = [
+    "# AAIS Enterprise Readiness Audit",
+    "",
+    `Status: ${report.status}`,
+    `Generated: ${report.generatedAt}`,
+    `Gate: ${report.gate.status}`,
+    `Summary: ${report.summary.passed}/${report.summary.total} passed`,
+    "",
+    "## Required Controls",
+    "",
+    ...report.requiredControls.flatMap((controlRow) => [
+      `- ${controlRow.id}: ${controlRow.status}`,
+      ...(controlRow.missing ? [`  - missing: ${controlRow.missing.join(", ")}`] : []),
+      ...(controlRow.actions ? [`  - actions: ${controlRow.actions.join(", ")}`] : []),
+      ...(controlRow.note ? [`  - note: ${controlRow.note}`] : []),
+    ]),
+    "",
+    "## Redaction",
+    "",
+    "- Secret values are omitted.",
+    "- This audit reports statuses, variable names, and action ids only.",
+    "",
+  ];
+  return lines.join("\n");
+}
+
+async function writeTextFile(filePath, text) {
+  await mkdir(path.dirname(filePath), { recursive: true });
+  await writeFile(filePath, text, "utf8");
+}
+
+function getSafeEnvNames(value) {
+  return Array.isArray(value)
+    ? value
+      .map((item) => String(item ?? "").trim())
+      .filter((item) => /^[A-Z][A-Z0-9_*\\/-]{1,127}$/.test(item))
+    : [];
+}
+
+function hasMissingStorageEnv(missingEnv) {
+  return missingEnv.some((name) => (
+    name === "AAIS_DATABASE_URL"
+    || name === "DATABASE_URL"
+    || name === "POSTGRES_URL"
+    || name === "POSTGRES_PRISMA_URL"
+    || name === "DATABASE_URL_UNPOOLED"
+    || name === "POSTGRES_URL_NON_POOLING"
+    || name === "PGHOST/PGUSER/PGDATABASE/PGPASSWORD"
+    || name === "POSTGRES_HOST/POSTGRES_USER/POSTGRES_DATABASE/POSTGRES_PASSWORD"
+  ));
+}
+
+function readSafeActionId(value) {
+  const text = String(value ?? "").trim();
+  return /^[a-z][a-z0-9-]{1,63}$/.test(text) ? text : null;
+}
+
+function normalizeStatus(value) {
+  const status = String(value ?? "").trim().toLowerCase();
+  return /^[a-z][a-z0-9_-]{1,31}$/.test(status) ? status : "unknown";
+}
+
+function readIsoTimestamp(value) {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
+}
+
+function parseCliArgs(argv) {
+  const args = new Map();
+  for (let index = 0; index < argv.length; index += 1) {
+    const current = argv[index];
+    if (!current.startsWith("--")) {
+      continue;
+    }
+    const [rawKey, inlineValue] = current.slice(2).split("=");
+    const nextValue = argv[index + 1];
+    const value = inlineValue ?? (nextValue && !nextValue.startsWith("--") ? nextValue : true);
+    if (inlineValue === undefined && value === nextValue) {
+      index += 1;
+    }
+    args.set(rawKey, value);
+  }
+  return args;
+}
+
+async function main() {
+  const args = parseCliArgs(process.argv.slice(2));
+  const report = await auditAaisEnterpriseReadiness({
+    releaseCheckReportPath: args.get("release-check-report"),
+    handoffReportPath: args.get("handoff-report"),
+    outputPath: args.get("output"),
+    markdownOutputPath: args.get("markdown-output"),
+  });
+  process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
+  if (report.status !== "ready") {
+    process.exitCode = 1;
+  }
+}
+
+if (import.meta.url === `file://${process.argv[1]}`) {
+  main().catch((error) => {
+    process.stderr.write(`${error instanceof Error ? error.message : "AAIS enterprise readiness audit failed."}\n`);
+    process.exitCode = 1;
+  });
+}

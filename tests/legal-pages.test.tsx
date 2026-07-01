@@ -1,0 +1,24 @@
+import { render, screen } from "@testing-library/react";
+import { describe, expect, it } from "vitest";
+import PrivacyPage, { metadata as privacyMetadata } from "@/app/privacy/page";
+import TermsPage, { metadata as termsMetadata } from "@/app/terms/page";
+
+describe("AAIS legal notice pages", () => {
+  it("renders the privacy page linked from login", () => {
+    render(<PrivacyPage />);
+
+    expect(privacyMetadata.title).toBe("Privacy | AAIS");
+    expect(screen.getByRole("heading", { name: "隐私与学习数据说明" })).toBeTruthy();
+    expect(screen.getByText(/CSV 字段会进行 spreadsheet-safe escaping/)).toBeTruthy();
+    expect(screen.getByRole("link", { name: "返回登录" }).getAttribute("href")).toBe("/login");
+  });
+
+  it("renders the terms page linked from login", () => {
+    render(<TermsPage />);
+
+    expect(termsMetadata.title).toBe("Terms | AAIS");
+    expect(screen.getByRole("heading", { name: "使用条款" })).toBeTruthy();
+    expect(screen.getByText(/不得共享账号、cookie、CSRF token/)).toBeTruthy();
+    expect(screen.getByRole("link", { name: "返回登录" }).getAttribute("href")).toBe("/login");
+  });
+});

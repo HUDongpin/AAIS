@@ -1,0 +1,8 @@
+{
+  "crons": [
+    {
+      "path": "/api/learning/lrs/outbox/flush",
+      "schedule": "7 3 * * *"
+    }
+  ]
+}

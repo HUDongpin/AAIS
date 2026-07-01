@@ -1,0 +1,193 @@
+import { randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
+import type { AaisSessionActor } from "@/lib/server/aais-session";
+
+type PasswordRecord = {
+  algorithm: "scrypt";
+  salt: string;
+  hash: string;
+};
+
+type TrialAccountRecord = {
+  id: string;
+  displayName: string;
+  role: "student";
+  password: PasswordRecord;
+};
+
+type AccountLookupResult =
+  | {
+      status: "ok";
+      actor: AaisSessionActor;
+    }
+  | {
+      status: "invalid";
+    }
+  | {
+      status: "not_configured";
+    };
+
+export type AaisTrialAccountConfigurationStatus = {
+  status: "configured" | "missing" | "invalid" | "disabled";
+  configured: boolean;
+  accountCount: number;
+};
+
+type ConfiguredTrialAccountLookup =
+  | {
+      status: "configured";
+      accounts: TrialAccountRecord[];
+    }
+  | {
+      status: "missing" | "invalid";
+      accounts: null;
+    };
+
+const devTrialAccounts: TrialAccountRecord[] = [
+  {
+    id: "Bobie",
+    displayName: "Bobie",
+    role: "student",
+    password: createPasswordRecord("12345", "aais-dev-bobie"),
+  },
+  {
+    id: "Phoebe",
+    displayName: "Phoebe",
+    role: "student",
+    password: createPasswordRecord("12345", "aais-dev-phoebe"),
+  },
+];
+
+export function createPasswordRecord(password: string, salt = randomBytes(16).toString("base64url")) {
+  return {
+    algorithm: "scrypt" as const,
+    salt,
+    hash: scryptSync(password, salt, 32).toString("base64url"),
+  };
+}
+
+export function authenticateAaisTrialAccount(accountId: string, password: string): AccountLookupResult {
+  if (!isAaisTrialLoginEnabled()) {
+    return {
+      status: "not_configured",
+    };
+  }
+  const accounts = readTrialAccounts();
+  if (!accounts) {
+    return {
+      status: "not_configured",
+    };
+  }
+  const account = accounts.find((candidate) => candidate.id === accountId);
+  if (!account || !passwordMatches(password, account.password)) {
+    return {
+      status: "invalid",
+    };
+  }
+  return {
+    status: "ok",
+    actor: {
+      id: account.id,
+      role: account.role,
+      displayName: account.displayName,
+    },
+  };
+}
+
+export function getAaisTrialAccountConfigurationStatus(): AaisTrialAccountConfigurationStatus {
+  if (!isAaisTrialLoginEnabled()) {
+    return {
+      status: "disabled",
+      configured: false,
+      accountCount: 0,
+    };
+  }
+  const result = readConfiguredTrialAccountLookup();
+  return {
+    status: result.status,
+    configured: result.status === "configured",
+    accountCount: result.accounts?.length ?? 0,
+  };
+}
+
+export function isAaisTrialLoginEnabled() {
+  return process.env.AAIS_TRIAL_LOGIN_ENABLED !== "false";
+}
+
+function readTrialAccounts() {
+  const configuredAccounts = readConfiguredTrialAccounts();
+  if (configuredAccounts) {
+    return configuredAccounts;
+  }
+  return isProductionRuntime() ? null : devTrialAccounts;
+}
+
+function readConfiguredTrialAccounts() {
+  const result = readConfiguredTrialAccountLookup();
+  return result.accounts;
+}
+
+function readConfiguredTrialAccountLookup(): ConfiguredTrialAccountLookup {
+  const raw = process.env.AAIS_TRIAL_ACCOUNTS_JSON?.trim();
+  if (!raw) {
+    return {
+      status: "missing",
+      accounts: null,
+    };
+  }
+  try {
+    const parsed = JSON.parse(raw) as Partial<TrialAccountRecord>[];
+    if (!Array.isArray(parsed)) {
+      return {
+        status: "invalid",
+        accounts: null,
+      };
+    }
+    const accounts = parsed.map(requireTrialAccount);
+    if (accounts.length === 0) {
+      return {
+        status: "invalid",
+        accounts: null,
+      };
+    }
+    return {
+      status: "configured",
+      accounts,
+    };
+  } catch {
+    return {
+      status: "invalid",
+      accounts: null,
+    };
+  }
+}
+
+function requireTrialAccount(account: Partial<TrialAccountRecord>): TrialAccountRecord {
+  if (
+    typeof account.id !== "string"
+    || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(account.id)
+    || typeof account.displayName !== "string"
+    || account.displayName.trim().length === 0
+    || account.role !== "student"
+    || account.password?.algorithm !== "scrypt"
+    || typeof account.password.salt !== "string"
+    || typeof account.password.hash !== "string"
+  ) {
+    throw new Error("Invalid AAIS trial account configuration.");
+  }
+  return {
+    id: account.id,
+    displayName: account.displayName.trim(),
+    role: account.role,
+    password: account.password,
+  };
+}
+
+function passwordMatches(password: string, record: PasswordRecord) {
+  const actual = scryptSync(password, record.salt, 32);
+  const expected = Buffer.from(record.hash, "base64url");
+  return actual.length === expected.length && timingSafeEqual(actual, expected);
+}
+
+function isProductionRuntime() {
+  return process.env.NODE_ENV === "production" || process.env.VERCEL_ENV === "production";
+}

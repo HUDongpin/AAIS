@@ -1,0 +1,43 @@
+import type { Metadata } from "next";
+import { LegalNoticePage } from "@/components/pages/legal-notice-page";
+
+export const metadata: Metadata = {
+  title: "Terms | AAIS",
+  description: "AAIS use terms and responsible-use notice.",
+};
+
+export default function Page() {
+  return (
+    <LegalNoticePage
+      eyebrow="Responsible use"
+      title="使用条款"
+      summary="AAIS 是面向 Cognitive Apprenticeship 的学习支持系统。使用者应把它作为学习过程、教师判断和机构治理的辅助，而不是替代责任主体。"
+      sections={[
+        {
+          title: "学习使用边界",
+          items: [
+            "A1-A4 智能体用于示范、监督、反思和支架支持；系统输出不应被视为最终成绩、纪律处分或高风险决策的唯一依据。",
+            "学习者应提交自己的理解、计划、反思和产出，不应把 AI 回复直接当作自己的完整答案。",
+            "教师 dashboard 用于发现需要跟进的学习信号，实际教学判断仍应结合课堂、作业和机构政策。",
+          ],
+        },
+        {
+          title: "账号与授权",
+          items: [
+            "生产环境应使用机构 SSO、OIDC role mapping 和签名 session 保护学习与 cohort 数据。",
+            "教师和管理员账号只能访问其授权范围内的 cohort analytics 和导出文件。",
+            "不得共享账号、cookie、CSRF token、OIDC callback evidence 或任何 provider/API/database secret。",
+          ],
+        },
+        {
+          title: "运维与证据",
+          items: [
+            "正式发布前应通过 Vercel env preflight、Neon storage readiness、LRS health、OIDC smoke、teacher cohort smoke 和 release evidence bundle。",
+            "Release evidence 只应保存状态、变量名、哈希、布尔证明和 redacted 指标，不保存真实 secret 或 transient login material。",
+            "外部 LMS、HRIS、BI 集成应使用受控导出和安全 join keys；AAIS 不应成为机构身份或人事数据的源系统。",
+          ],
+        },
+      ]}
+    />
+  );
+}
