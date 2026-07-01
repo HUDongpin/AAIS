@@ -92,6 +92,28 @@ describe("AAIS private env template generator", () => {
         releaseId: "aais-2026-06-30-rc-live-ai-deepseek-v4-flash",
         deploymentGitCommit: "0123456789abcdef0123456789abcdef01234567",
         oidcRedirectUri: "https://aais-six.vercel.app/api/auth/oidc/callback",
+        oidc: {
+          idpRedirectUri: "https://aais-six.vercel.app/api/auth/oidc/callback",
+          requiredNames: [
+            "AAIS_OIDC_ISSUER",
+            "AAIS_OIDC_CLIENT_ID",
+            "AAIS_OIDC_CLIENT_SECRET",
+            "AAIS_OIDC_REDIRECT_URI",
+          ],
+          acceptedRoleMappingNames: [
+            "AAIS_OIDC_TEACHER_GROUPS",
+            "AAIS_OIDC_TEACHER_EMAILS",
+            "AAIS_OIDC_ADMIN_GROUPS",
+            "AAIS_OIDC_ADMIN_EMAILS",
+          ],
+          optionalExplicitEndpointNames: [
+            "AAIS_OIDC_AUTHORIZATION_ENDPOINT",
+            "AAIS_OIDC_TOKEN_ENDPOINT",
+            "AAIS_OIDC_JWKS_URI",
+          ],
+          explicitEndpointsRule: "all-or-none",
+          validationCommand: "npm run verify:oidc-config -- --env-file .env.production.local --base-url https://aais-six.vercel.app --output output/aais-oidc-config-report-latest.json",
+        },
       },
       nextCommands: [
         `npm run provision:vercel-env -- --env-file .env.production.local --report ${vercelEnvReportPath} --release-id aais-2026-06-30-rc-live-ai-deepseek-v4-flash --deployment-git-commit 0123456789abcdef0123456789abcdef01234567 --output output/aais-vercel-env-provision-dry-run-latest.json`,
@@ -109,6 +131,9 @@ describe("AAIS private env template generator", () => {
     expect(template).toContain("# Copy this template to .env.production.local, then fill the copy with real values.");
     expect(template).toContain("# Placeholder values intentionally fail closed in provision:vercel-env.");
     expect(template).toContain("# Suggested AAIS_OIDC_REDIRECT_URI: https://aais-six.vercel.app/api/auth/oidc/callback");
+    expect(template).toContain("# Register this exact OIDC callback URL with the IdP: https://aais-six.vercel.app/api/auth/oidc/callback");
+    expect(template).toContain("# Educator role mapping can use any one of AAIS_OIDC_TEACHER_GROUPS, AAIS_OIDC_TEACHER_EMAILS, AAIS_OIDC_ADMIN_GROUPS, or AAIS_OIDC_ADMIN_EMAILS.");
+    expect(template).toContain("# Optional explicit OIDC endpoints are all-or-none: set AAIS_OIDC_AUTHORIZATION_ENDPOINT, AAIS_OIDC_TOKEN_ENDPOINT, and AAIS_OIDC_JWKS_URI together, or omit all three for issuer discovery.");
     expect(template).toContain("AAIS_RELEASE_ID=aais-2026-06-30-rc-live-ai-deepseek-v4-flash");
     expect(template).toContain("AAIS_DEPLOYMENT_GIT_COMMIT_SHA=0123456789abcdef0123456789abcdef01234567");
     expect(template).toContain("AAIS_DATABASE_URL=<REQUIRED:NEON_POSTGRES_URL>");
@@ -164,6 +189,9 @@ describe("AAIS private env template generator", () => {
     expect(report.status).toBe("template-created");
     expect(report.target.baseUrl).toBe("https://www.aais.site");
     expect(report.suggestions.oidcRedirectUri).toBe("https://www.aais.site/api/auth/oidc/callback");
+    expect(report.suggestions.oidc.validationCommand).toBe(
+      "npm run verify:oidc-config -- --env-file .env.production.local --base-url https://www.aais.site --output output/aais-oidc-config-report-latest.json",
+    );
     expect(report.missing).toEqual(["AAIS_DATABASE_URL"]);
     const template = await readFile(outputPath, "utf8");
     expect(template).toContain("# Suggested AAIS_OIDC_REDIRECT_URI: https://www.aais.site/api/auth/oidc/callback");

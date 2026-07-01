@@ -19,6 +19,26 @@ const placeholderLabels = new Map([
   ["AAIS_OIDC_TEACHER_GROUPS", "OIDC_TEACHER_GROUPS"],
 ]);
 
+const oidcRequiredNames = [
+  "AAIS_OIDC_ISSUER",
+  "AAIS_OIDC_CLIENT_ID",
+  "AAIS_OIDC_CLIENT_SECRET",
+  "AAIS_OIDC_REDIRECT_URI",
+];
+
+const oidcRoleMappingNames = [
+  "AAIS_OIDC_TEACHER_GROUPS",
+  "AAIS_OIDC_TEACHER_EMAILS",
+  "AAIS_OIDC_ADMIN_GROUPS",
+  "AAIS_OIDC_ADMIN_EMAILS",
+];
+
+const oidcExplicitEndpointNames = [
+  "AAIS_OIDC_AUTHORIZATION_ENDPOINT",
+  "AAIS_OIDC_TOKEN_ENDPOINT",
+  "AAIS_OIDC_JWKS_URI",
+];
+
 export async function generateAaisPrivateEnvTemplate(input = {}) {
   const generatedAt = (input.now ?? new Date()).toISOString();
   const vercelEnvReportPath = input.vercelEnvReportPath ?? defaultVercelEnvReportPath;
@@ -63,6 +83,19 @@ export async function generateAaisPrivateEnvTemplate(input = {}) {
       ...(releaseId ? { releaseId } : {}),
       ...(deploymentGitCommit ? { deploymentGitCommit } : {}),
       oidcRedirectUri,
+      oidc: {
+        idpRedirectUri: oidcRedirectUri,
+        requiredNames: oidcRequiredNames,
+        acceptedRoleMappingNames: oidcRoleMappingNames,
+        optionalExplicitEndpointNames: oidcExplicitEndpointNames,
+        explicitEndpointsRule: "all-or-none",
+        validationCommand: [
+          "npm run verify:oidc-config --",
+          `--env-file ${privateEnvFilePath}`,
+          `--base-url ${baseUrl}`,
+          "--output output/aais-oidc-config-report-latest.json",
+        ].join(" "),
+      },
     },
     nextCommands: buildProvisionCommands({
       privateEnvFilePath,
@@ -106,6 +139,9 @@ function renderTemplate({ environment, missing, oidcRedirectUri, privateEnvFileP
     "# Placeholder values intentionally fail closed in provision:vercel-env.",
     "# For Neon, prefer AAIS_DATABASE_URL; Vercel Neon aliases are also accepted by the provisioner.",
     `# Suggested AAIS_OIDC_REDIRECT_URI: ${oidcRedirectUri}`,
+    `# Register this exact OIDC callback URL with the IdP: ${oidcRedirectUri}`,
+    "# Educator role mapping can use any one of AAIS_OIDC_TEACHER_GROUPS, AAIS_OIDC_TEACHER_EMAILS, AAIS_OIDC_ADMIN_GROUPS, or AAIS_OIDC_ADMIN_EMAILS.",
+    "# Optional explicit OIDC endpoints are all-or-none: set AAIS_OIDC_AUTHORIZATION_ENDPOINT, AAIS_OIDC_TOKEN_ENDPOINT, and AAIS_OIDC_JWKS_URI together, or omit all three for issuer discovery.",
     "",
     ...missing.map((name) => `${name}=${templateValueFor(name, { releaseId, deploymentGitCommit })}`),
     "",

@@ -62,6 +62,11 @@ const oidcRoleMappingNames = [
   "AAIS_OIDC_ADMIN_GROUPS",
   "AAIS_OIDC_ADMIN_EMAILS",
 ];
+const oidcExplicitEndpointNames = [
+  "AAIS_OIDC_AUTHORIZATION_ENDPOINT",
+  "AAIS_OIDC_TOKEN_ENDPOINT",
+  "AAIS_OIDC_JWKS_URI",
+];
 const releaseNames = ["AAIS_RELEASE_ID", "AAIS_DEPLOYMENT_GIT_COMMIT_SHA"];
 
 export async function generateAaisEnterpriseHandoff(input = {}) {
@@ -115,6 +120,7 @@ export async function generateAaisEnterpriseHandoff(input = {}) {
     releaseCheck: releaseCheck.value,
     missing,
   });
+  const oidc = summarizeOidcState({ missing, baseUrl });
   const localCredentialInventory = await getLocalCredentialInventory(
     input.localCredentialFiles ?? [defaultPrivateEnvFilePath, ".env.local", "All API Keys.docx"],
     [...new Set([...storageNames, ...oidcNames, ...oidcRoleMappingNames, ...releaseNames])],
@@ -160,6 +166,7 @@ export async function generateAaisEnterpriseHandoff(input = {}) {
     },
     missing,
     storage,
+    oidc,
     localCredentialInventory,
     provisionDryRun: {
       status: normalizeStatus(provision.value?.status),
@@ -186,6 +193,53 @@ export async function generateAaisEnterpriseHandoff(input = {}) {
   }
 
   return report;
+}
+
+function summarizeOidcState({ missing, baseUrl }) {
+  const missingRequiredNames = oidcNames.filter((name) => missing.oidc.includes(name));
+  const missingRoleMappingNames = missing.oidcRoleMapping.length > 0
+    ? [oidcRoleMappingRequestName]
+    : [];
+  const callbackUrl = `${baseUrl}/api/auth/oidc/callback`;
+  const configured = missingRequiredNames.length === 0 && missingRoleMappingNames.length === 0;
+  const smokeReady = configured && !missing.realOidcCallbackSmoke && !missing.teacherCohortAnalyticsSmoke;
+  const ssoOnlyReady = smokeReady && !missing.ssoOnlyRuntimeMode;
+
+  return {
+    status: ssoOnlyReady ? "satisfied" : "action-required",
+    callbackUrl,
+    requiredNames: oidcNames,
+    missingRequiredNames,
+    acceptedRoleMappingNames: oidcRoleMappingNames,
+    missingRoleMappingNames,
+    optionalExplicitEndpointNames: oidcExplicitEndpointNames,
+    explicitEndpointsRule: "all-or-none",
+    requiredProofOrder: [
+      "verify-oidc-config-dry-run",
+      "set-vercel-production-env",
+      "redeploy-vercel-production",
+      "inspect-vercel-production-deployment",
+      "run-real-oidc-callback-smoke",
+      "run-teacher-cohort-analytics-smoke",
+      "set-sso-only-runtime-mode",
+      "redeploy-vercel-production-after-sso-only",
+      "inspect-vercel-production-deployment-after-sso-only",
+      "rerun-final-gate",
+    ],
+    transientEvidence: [
+      "AAIS_VERIFY_OIDC_CALLBACK_URL",
+      "AAIS_VERIFY_OIDC_STATE_COOKIE",
+    ],
+    notes: [
+      "Register the callback URL with the institution IdP before running verify:oidc-config.",
+      "Use one teacher/admin role-mapping source; group mappings are preferred when the IdP can provide groups or roles.",
+      "Run real OIDC callback smoke before disabling trial login.",
+    ],
+    redaction: {
+      values: "not-read",
+      transientEvidence: "not-stored",
+    },
+  };
 }
 
 function summarizeStorageState({ vercelEnv, releaseCheck, missing }) {
@@ -635,6 +689,17 @@ function renderMarkdown(report) {
     `- connected: ${report.storage.connected === null ? "unknown" : report.storage.connected}`,
     `- action: ${report.storage.action}`,
     `- note: ${report.storage.note}`,
+    "",
+    "## OIDC / SSO",
+    "",
+    `- status: ${report.oidc.status}`,
+    `- callback URL to register: ${report.oidc.callbackUrl}`,
+    `- missing required names: ${report.oidc.missingRequiredNames.join(", ") || "none"}`,
+    `- accepted role mapping names: ${report.oidc.acceptedRoleMappingNames.join(", ")}`,
+    `- missing role mapping names: ${report.oidc.missingRoleMappingNames.join(", ") || "none"}`,
+    `- optional explicit endpoints: ${report.oidc.optionalExplicitEndpointNames.join(", ")}`,
+    `- explicit endpoint rule: ${report.oidc.explicitEndpointsRule}`,
+    ...report.oidc.notes.map((note) => `- note: ${note}`),
     "",
     "## Required Actions",
     "",

@@ -198,6 +198,43 @@ describe("AAIS enterprise handoff generator", () => {
           values: "not-read",
         },
       },
+      oidc: {
+        status: "action-required",
+        callbackUrl: "https://aais-six.vercel.app/api/auth/oidc/callback",
+        requiredNames: [
+          "AAIS_OIDC_ISSUER",
+          "AAIS_OIDC_CLIENT_ID",
+          "AAIS_OIDC_CLIENT_SECRET",
+          "AAIS_OIDC_REDIRECT_URI",
+        ],
+        missingRequiredNames: [
+          "AAIS_OIDC_ISSUER",
+          "AAIS_OIDC_CLIENT_ID",
+          "AAIS_OIDC_CLIENT_SECRET",
+          "AAIS_OIDC_REDIRECT_URI",
+        ],
+        acceptedRoleMappingNames: [
+          "AAIS_OIDC_TEACHER_GROUPS",
+          "AAIS_OIDC_TEACHER_EMAILS",
+          "AAIS_OIDC_ADMIN_GROUPS",
+          "AAIS_OIDC_ADMIN_EMAILS",
+        ],
+        missingRoleMappingNames: [],
+        optionalExplicitEndpointNames: [
+          "AAIS_OIDC_AUTHORIZATION_ENDPOINT",
+          "AAIS_OIDC_TOKEN_ENDPOINT",
+          "AAIS_OIDC_JWKS_URI",
+        ],
+        explicitEndpointsRule: "all-or-none",
+        transientEvidence: [
+          "AAIS_VERIFY_OIDC_CALLBACK_URL",
+          "AAIS_VERIFY_OIDC_STATE_COOKIE",
+        ],
+        redaction: {
+          values: "not-read",
+          transientEvidence: "not-stored",
+        },
+      },
       localCredentialInventory: {
         values: "not-read",
         storageUsable: false,
@@ -353,6 +390,9 @@ describe("AAIS enterprise handoff generator", () => {
     const markdown = await readFile(markdownOutputPath, "utf8");
     expect(markdown).toContain("AAIS Enterprise Handoff");
     expect(markdown).toContain("Storage / Neon");
+    expect(markdown).toContain("OIDC / SSO");
+    expect(markdown).toContain("callback URL to register: https://aais-six.vercel.app/api/auth/oidc/callback");
+    expect(markdown).toContain("accepted role mapping names: AAIS_OIDC_TEACHER_GROUPS, AAIS_OIDC_TEACHER_EMAILS, AAIS_OIDC_ADMIN_GROUPS, AAIS_OIDC_ADMIN_EMAILS");
     expect(markdown).toContain("cohort export JSON");
     expect(markdown).toContain(privateEnvTemplatePath);
     expect(markdown).toContain(".env.production.local");
@@ -908,6 +948,8 @@ describe("AAIS enterprise handoff generator", () => {
     expect(markdown).toContain("Storage / Neon");
     expect(markdown).toContain("source env: DATABASE_URL");
     expect(markdown).toContain("action: none");
+    expect(markdown).toContain("OIDC / SSO");
+    expect(markdown).toContain("missing required names: AAIS_OIDC_ISSUER, AAIS_OIDC_CLIENT_ID, AAIS_OIDC_CLIENT_SECRET, AAIS_OIDC_REDIRECT_URI");
   });
 
   it("accepts alternate local OIDC role mapping names when Vercel requests the canonical teacher-group slot", async () => {
