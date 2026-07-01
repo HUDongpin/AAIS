@@ -10,6 +10,7 @@ describe("AAIS git secret guardrails", () => {
       .filter(Boolean);
 
     expect(patterns).toEqual(expect.arrayContaining([
+      ".aais-data/",
       ".env",
       ".env.*",
       "output/",
@@ -25,6 +26,7 @@ describe("AAIS git secret guardrails", () => {
       .filter(Boolean);
 
     expect(patterns).toEqual(expect.arrayContaining([
+      ".aais-data/",
       ".env",
       ".env.*",
       ".vercel/",

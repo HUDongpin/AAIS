@@ -20,6 +20,8 @@
     "verify:release-evidence": "node -- scripts/verify-release-evidence.mjs",
     "verify:enterprise": "node -- scripts/verify-enterprise-release.mjs",
     "verify:enterprise-release": "node -- scripts/run-enterprise-release-check.mjs",
+    "backup:file": "node -- scripts/manage-file-backup.mjs backup",
+    "restore:file": "node -- scripts/manage-file-backup.mjs restore",
     "release:env-template": "node -- scripts/generate-private-env-template.mjs",
     "release:restore-template": "node -- scripts/generate-postgres-restore-template.mjs",
     "release:handoff": "node -- scripts/generate-enterprise-handoff.mjs",

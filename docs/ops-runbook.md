@@ -98,8 +98,12 @@ AAIS production is deployed on Vercel and uses Neon Postgres. Release evidence m
 For file-backed development or controlled single-node runs:
 
 1. Run `npm test -- tests/aais-backup.test.ts`.
-2. Confirm the backup manifest includes a session count and SHA-256 checksums.
-3. Confirm restoring the manifest into a clean data directory preserves learner artifacts.
+2. Run `npm run backup:file -- --root-dir <file-data-dir> --manifest-output <private-backup-manifest-path> --report <redacted-backup-report-path>`.
+3. Treat `<private-backup-manifest-path>` as learner data: it contains learner-session payloads and SHA-256 checksums, must stay in an ignored/private location, and must not be committed, staged, uploaded to Vercel, or attached to release evidence.
+4. Confirm `<redacted-backup-report-path>` has `status: "passed"`, `action: "backup"`, the expected `backup.sessionCount`, session ids plus hashes only, and `redaction.learnerPayloads: "manifest-private-not-in-report"`.
+5. Restore into a clean data directory with `npm run restore:file -- --root-dir <restore-data-dir> --manifest <private-backup-manifest-path> --report <redacted-restore-report-path>`.
+6. Confirm `<redacted-restore-report-path>` has `status: "passed"`, `action: "restore"`, and `restore.restoredSessions` equal to the backup session count. If any session payload is changed after backup, restore must fail with a checksum mismatch instead of writing unverified learner data.
+7. Confirm the restored directory preserves learner artifacts, then delete or rotate the private manifest according to the institution data-retention policy.
 
 For production Neon Postgres:
 
