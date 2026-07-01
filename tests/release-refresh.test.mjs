@@ -130,6 +130,7 @@ describe("AAIS release evidence refresh workflow", () => {
       outputPath: paths.releaseCheckReportPath,
       aiEvalManifestPath: paths.aiEvalManifestPath,
       postgresRestoreReportPath: paths.postgresRestoreReportPath,
+      deploymentGitCommit: "ffec998b638c1234567890abcdef1234567890ab",
     });
     expect(calls[1][1]).toMatchObject({
       vercelEnvReportPath: paths.vercelEnvReportPath,

@@ -66,6 +66,7 @@ export async function refreshAaisReleaseEvidence(input = {}) {
     aiEvalManifestPath: paths.aiEvalManifestPath,
     postgresRestoreReportPath: paths.postgresRestoreReportPath,
     deploymentUrl: baseUrl,
+    deploymentGitCommit,
     deploymentPlatform: "vercel",
     databaseProvider: "neon",
     maxAgeHours: input.maxAgeHours,

@@ -50,6 +50,7 @@ export async function runAaisEnterpriseReleaseCheck(input = {}) {
     ?? process.env.AAIS_ENTERPRISE_RELEASE_CHECK_REPORT_PATH
     ?? defaultOutputPath;
   const deploymentUrl = input.deploymentUrl ?? baseUrl;
+  const deploymentGitCommit = input.deploymentGitCommit ?? process.env.AAIS_DEPLOYMENT_GIT_COMMIT_SHA;
   const deploymentPlatform = input.deploymentPlatform ?? process.env.AAIS_RELEASE_DEPLOYMENT_PLATFORM ?? "vercel";
   const databaseProvider = input.databaseProvider ?? process.env.AAIS_RELEASE_DATABASE_PROVIDER ?? "neon";
   const requireSsoOnly = input.requireSsoOnly ?? true;
@@ -78,6 +79,7 @@ export async function runAaisEnterpriseReleaseCheck(input = {}) {
   const vercelDeploymentReport = await vercelDeploymentVerifier({
     deploymentUrl,
     releaseId,
+    deploymentGitCommit,
     outputPath: vercelDeploymentReportPath,
     now: input.now,
   });
@@ -445,6 +447,7 @@ async function main() {
     aiEvalManifestPath: args.get("ai-eval-manifest"),
     postgresRestoreReportPath: args.get("postgres-restore-report"),
     deploymentUrl: args.get("deployment-url"),
+    deploymentGitCommit: args.get("deployment-git-commit"),
     deploymentPlatform: args.get("deployment-platform"),
     databaseProvider: args.get("database-provider"),
     maxAgeHours: args.get("max-age-hours"),

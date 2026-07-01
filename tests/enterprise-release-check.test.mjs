@@ -28,6 +28,7 @@ describe("AAIS enterprise release check runner", () => {
     const report = await runAaisEnterpriseReleaseCheck({
       baseUrl: "https://aais-six.vercel.app",
       releaseId: "aais-2026-06-30-rc1",
+      deploymentGitCommit: "0123456789abcdef0123456789abcdef01234567",
       aiEvalManifestPath: path.join(tempDir, "ai-eval.json"),
       postgresRestoreReportPath: path.join(tempDir, "restore.json"),
       vercelConfigPath,
@@ -195,6 +196,7 @@ describe("AAIS enterprise release check runner", () => {
     expect(calls[2][1]).toMatchObject({
       deploymentUrl: "https://aais-six.vercel.app",
       releaseId: "aais-2026-06-30-rc1",
+      deploymentGitCommit: "0123456789abcdef0123456789abcdef01234567",
       outputPath: vercelDeploymentReportPath,
     });
     expect(calls[3][1]).toMatchObject({
@@ -319,6 +321,7 @@ describe("AAIS enterprise release check runner", () => {
     const report = await runAaisEnterpriseReleaseCheck({
       baseUrl: "https://aais-six.vercel.app",
       releaseId: "aais-2026-06-30-rc1",
+      deploymentGitCommit: "0123456789abcdef0123456789abcdef01234567",
       sourceProvenanceReportPath,
       vercelEnvReportPath: path.join(tempDir, "vercel-env.json"),
       enterpriseReportPath: path.join(tempDir, "enterprise.json"),
