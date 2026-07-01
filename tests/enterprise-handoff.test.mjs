@@ -190,6 +190,14 @@ describe("AAIS enterprise handoff generator", () => {
         postgresRestoreReport: true,
         teacherCohortAnalyticsSmoke: true,
       },
+      storage: {
+        status: "action-required",
+        sourceEnv: null,
+        action: "set-vercel-production-env",
+        redaction: {
+          values: "not-read",
+        },
+      },
       localCredentialInventory: {
         values: "not-read",
         storageUsable: false,
@@ -344,6 +352,7 @@ describe("AAIS enterprise handoff generator", () => {
     expect(JSON.parse(await readFile(outputPath, "utf8"))).toEqual(report);
     const markdown = await readFile(markdownOutputPath, "utf8");
     expect(markdown).toContain("AAIS Enterprise Handoff");
+    expect(markdown).toContain("Storage / Neon");
     expect(markdown).toContain("cohort export JSON");
     expect(markdown).toContain(privateEnvTemplatePath);
     expect(markdown).toContain(".env.production.local");
@@ -877,6 +886,15 @@ describe("AAIS enterprise handoff generator", () => {
     });
 
     expect(report.missing.storage).toEqual([]);
+    expect(report.storage).toMatchObject({
+      status: "satisfied",
+      sourceEnv: "DATABASE_URL",
+      action: "none",
+      note: expect.stringContaining("Vercel-connected Neon storage is already accepted"),
+      redaction: {
+        values: "not-read",
+      },
+    });
     expect(report.localCredentialInventory.storageUsable).toBe(true);
     expect(report.localCredentialInventory.oidcRoleMappingUsable).toBe(true);
     expect(report.localCredentialInventory.releaseUsable).toBe(true);
@@ -886,6 +904,10 @@ describe("AAIS enterprise handoff generator", () => {
       "AAIS_OIDC_CLIENT_SECRET",
       "AAIS_OIDC_REDIRECT_URI",
     ]);
+    const markdown = await readFile(path.join(tempDir, "handoff.md"), "utf8");
+    expect(markdown).toContain("Storage / Neon");
+    expect(markdown).toContain("source env: DATABASE_URL");
+    expect(markdown).toContain("action: none");
   });
 
   it("accepts alternate local OIDC role mapping names when Vercel requests the canonical teacher-group slot", async () => {

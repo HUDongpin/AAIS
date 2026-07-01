@@ -110,6 +110,11 @@ export async function generateAaisEnterpriseHandoff(input = {}) {
     currentCodeDeploy: currentCodeDeployReasons.length > 0,
     currentCodeDeployReasons,
   };
+  const storage = summarizeStorageState({
+    vercelEnv: vercelEnv.value,
+    releaseCheck: releaseCheck.value,
+    missing,
+  });
   const localCredentialInventory = await getLocalCredentialInventory(
     input.localCredentialFiles ?? [defaultPrivateEnvFilePath, ".env.local", "All API Keys.docx"],
     [...new Set([...storageNames, ...oidcNames, ...oidcRoleMappingNames, ...releaseNames])],
@@ -154,6 +159,7 @@ export async function generateAaisEnterpriseHandoff(input = {}) {
       sequence: sanitizeSequence(releaseCheck.value?.sequence),
     },
     missing,
+    storage,
     localCredentialInventory,
     provisionDryRun: {
       status: normalizeStatus(provision.value?.status),
@@ -180,6 +186,31 @@ export async function generateAaisEnterpriseHandoff(input = {}) {
   }
 
   return report;
+}
+
+function summarizeStorageState({ vercelEnv, releaseCheck, missing }) {
+  const storageUrl = vercelEnv?.storageUrl ?? {};
+  const readiness = releaseCheck?.artifacts?.enterprise?.readiness ?? {};
+  const sourceEnv = readSafeStorageSource(storageUrl.sourceEnv);
+  const provider = readSafeToken(readiness.storageProvider);
+  const connected = readOptionalBoolean(readiness.storagePostgresConnected);
+  const satisfied = missing.storage.length === 0
+    && (storageUrl.present === true || connected === true);
+
+  return {
+    status: satisfied ? "satisfied" : "action-required",
+    provider,
+    connected,
+    sourceEnv,
+    acceptedSources: getSafeEnvNames(storageUrl.acceptedNames),
+    action: satisfied ? "none" : "set-vercel-production-env",
+    note: satisfied
+      ? "Vercel-connected Neon storage is already accepted; do not add AAIS_DATABASE_URL unless replacing the current source intentionally."
+      : "Set one accepted Neon/Postgres source before production learner-session writes.",
+    redaction: {
+      values: "not-read",
+    },
+  };
 }
 
 async function readJsonIfExists(filePath) {
@@ -596,6 +627,15 @@ function renderMarkdown(report) {
     "",
     ...report.missing.vercelProductionEnv.map((name) => `- ${name}`),
     "",
+    "## Storage / Neon",
+    "",
+    `- status: ${report.storage.status}`,
+    `- source env: ${report.storage.sourceEnv ?? "unknown"}`,
+    `- provider: ${report.storage.provider ?? "unknown"}`,
+    `- connected: ${report.storage.connected === null ? "unknown" : report.storage.connected}`,
+    `- action: ${report.storage.action}`,
+    `- note: ${report.storage.note}`,
+    "",
     "## Required Actions",
     "",
     ...report.externalActions.flatMap((action) => [
@@ -666,6 +706,15 @@ function readSafeCheckName(value) {
 function readSafeErrorCategory(value) {
   const token = String(value ?? "").trim();
   return /^(connect-timeout|response-timeout|dns|tls|network|unknown)$/.test(token) ? token : null;
+}
+
+function readOptionalBoolean(value) {
+  return typeof value === "boolean" ? value : null;
+}
+
+function readSafeStorageSource(value) {
+  const source = String(value ?? "").trim();
+  return /^[A-Z][A-Z0-9_/*-]{1,127}$/.test(source) ? source : null;
 }
 
 function readIsoTimestamp(value) {
