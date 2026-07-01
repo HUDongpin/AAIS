@@ -117,9 +117,9 @@ describe("AAIS enterprise readiness audit", () => {
         handoff: handoffReportPath,
       },
       summary: {
-        total: 17,
+        total: 18,
         passed: 5,
-        actionRequired: 12,
+        actionRequired: 13,
       },
       requiredControls: [
         {
@@ -193,6 +193,12 @@ describe("AAIS enterprise readiness audit", () => {
           id: "artifact-event-coalescing",
           status: "action-required",
           actions: ["redeploy-vercel-production", "inspect-vercel-production-deployment", "rerun-final-gate"],
+        },
+        {
+          id: "a2-monitoring-evidence",
+          status: "action-required",
+          actions: ["redeploy-vercel-production", "inspect-vercel-production-deployment", "rerun-final-gate"],
+          note: "Requires deployed readiness evidence for A2 low-progress monitoring, artifact-regression coaching, keyed AI acceptance revisions, and raw learner-text exclusion.",
         },
         {
           id: "cohort-analytics",
@@ -287,6 +293,7 @@ describe("AAIS enterprise readiness audit", () => {
             securityHeaders: true,
             legalPages: true,
             lrsHealth: true,
+            a2Monitoring: true,
             cohortAnalytics: true,
             oidcStart: true,
             oidcCallback: true,
@@ -343,8 +350,8 @@ describe("AAIS enterprise readiness audit", () => {
     expect(JSON.parse(await readFile(process.env.AAIS_ENTERPRISE_AUDIT_REPORT_PATH, "utf8"))).toMatchObject({
       status: "ready",
       summary: {
-        total: 17,
-        passed: 17,
+        total: 18,
+        passed: 18,
         actionRequired: 0,
       },
     });

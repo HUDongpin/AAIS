@@ -363,6 +363,7 @@ async function verifyEnterpriseReport(filePath, freshnessInput) {
   const releaseIdentityEvidence = getReadinessReleaseIdentityEvidence(readinessCheck?.details);
   const lrsOutboxEvidence = getLrsOutboxEvidence(readinessCheck?.details);
   const lrsHealthEvidence = getLrsHealthEvidence(checkDetails.get("lrs-health"));
+  const a2MonitoringEvidence = getA2MonitoringEvidence(readinessCheck?.details);
   const legalPagesEvidence = getLegalPagesEvidence(checkDetails.get("legal-pages"));
   const ssoOnlyRuntimeEvidence = getSsoOnlyRuntimeEvidence(checkDetails.get("sso-only-mode"));
   const requiredChecks = Object.fromEntries(
@@ -374,6 +375,7 @@ async function verifyEnterpriseReport(filePath, freshnessInput) {
   requiredChecks.lrsHealth = requiredChecks.lrsHealth
     && lrsOutboxEvidence.complete
     && lrsHealthEvidence.complete;
+  requiredChecks.a2Monitoring = a2MonitoringEvidence.complete;
   requiredChecks.legalPages = requiredChecks.legalPages
     && legalPagesEvidence.complete;
   requiredChecks.cohortAnalytics = requiredChecks.cohortAnalytics
@@ -442,6 +444,7 @@ async function verifyEnterpriseReport(filePath, freshnessInput) {
     releaseIdentityEvidence,
     lrsOutboxEvidence,
     lrsHealthEvidence,
+    a2MonitoringEvidence,
     legalPagesEvidence,
     oidcStartEvidence,
     oidcCallbackEvidence,
@@ -899,6 +902,69 @@ function getLrsHealthEvidence(details = {}) {
       && outboxRedaction === "redacted"
       && artifactCoalescing.complete
       && deadLetterRecovery.complete,
+  };
+}
+
+function getA2MonitoringEvidence(details = {}) {
+  const expectedTriggers = [
+    "monitoring_pause_detected",
+    "coaching_push",
+    "ai_acceptance_recorded",
+  ];
+  const expectedSignals = [
+    "low_progress_artifact_autosave",
+    "artifact_regression_autosave",
+  ];
+  const rawTriggers = Array.isArray(details?.a2MonitoringTriggers)
+    ? details.a2MonitoringTriggers
+    : [];
+  const rawSignals = Array.isArray(details?.a2MonitoringSignals)
+    ? details.a2MonitoringSignals
+    : [];
+  const triggers = expectedTriggers.filter((trigger) => rawTriggers.includes(trigger));
+  const signals = expectedSignals.filter((signal) => rawSignals.includes(signal));
+  const evidence = {
+    enabled: details?.a2MonitoringEnabled === true,
+    triggers,
+    signals,
+    coachingInterruption: details?.a2CoachingInterruption === "low" ? "low" : "unknown",
+    coachingCooldownSeconds: Number.isInteger(details?.a2CoachingCooldownSeconds)
+      ? details.a2CoachingCooldownSeconds
+      : null,
+    artifactRegression: {
+      minimumPreviousCharacters: Number.isInteger(details?.a2ArtifactRegressionMinimumPreviousCharacters)
+        ? details.a2ArtifactRegressionMinimumPreviousCharacters
+        : null,
+      minimumDropCharacters: Number.isInteger(details?.a2ArtifactRegressionMinimumDropCharacters)
+        ? details.a2ArtifactRegressionMinimumDropCharacters
+        : null,
+      rawTextExcluded: details?.a2ArtifactRegressionRawTextExcluded === true,
+    },
+    aiAcceptance: {
+      decisionKeyed: details?.a2AiAcceptanceDecisionKeyed === true,
+      revisions: details?.a2AiAcceptanceRevisions === true,
+      rawMessageIdsExcluded: details?.a2AiAcceptanceRawMessageIdsExcluded === true,
+      rationaleTextExcluded: details?.a2AiAcceptanceRationaleTextExcluded === true,
+    },
+    redaction: details?.a2MonitoringRedaction === "raw-learner-text-excluded"
+      ? "raw-learner-text-excluded"
+      : "unknown",
+  };
+  return {
+    ...evidence,
+    complete: evidence.enabled
+      && triggers.length === expectedTriggers.length
+      && signals.length === expectedSignals.length
+      && evidence.coachingInterruption === "low"
+      && evidence.coachingCooldownSeconds === 600
+      && evidence.artifactRegression.minimumPreviousCharacters === 80
+      && evidence.artifactRegression.minimumDropCharacters === 40
+      && evidence.artifactRegression.rawTextExcluded
+      && evidence.aiAcceptance.decisionKeyed
+      && evidence.aiAcceptance.revisions
+      && evidence.aiAcceptance.rawMessageIdsExcluded
+      && evidence.aiAcceptance.rationaleTextExcluded
+      && evidence.redaction === "raw-learner-text-excluded",
   };
 }
 

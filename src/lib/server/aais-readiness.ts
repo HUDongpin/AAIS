@@ -6,9 +6,11 @@ import {
   type AaisOidcRoleMappingStatus,
 } from "@/lib/server/aais-oidc";
 import {
+  getAaisA2MonitoringCapability,
   getAaisDatabaseConfiguration,
   getAaisPersistentLrsOutboxStatus,
   probeAaisLearningStorage,
+  type AaisA2MonitoringCapability,
   type AaisDatabaseSourceEnv,
 } from "@/lib/server/aais-learning-store";
 import { getAaisTrialAccountConfigurationStatus } from "@/lib/server/aais-trial-accounts";
@@ -76,6 +78,7 @@ export type AaisReadinessReport = {
         };
       };
     };
+    a2Monitoring: AaisReadinessCheck & AaisA2MonitoringCapability;
     oidc: AaisReadinessCheck & {
       mode: "explicit" | "discovery" | "missing";
       roleMapping: AaisReadinessCheck & AaisOidcRoleMappingStatus;
@@ -103,6 +106,7 @@ export async function getAaisReadinessReport(now = new Date()): Promise<AaisRead
     : "file";
   const storageProbe = await probeAaisLearningStorage();
   const persistentOutbox = await readPersistentOutboxStatus();
+  const a2Monitoring = getAaisA2MonitoringCapability();
   const lrsConfigured = getLrsConfigurationStatus().configured;
   const oidcConfig = getAaisOidcConfigurationStatus();
   const oidcRoleMapping = getAaisOidcRoleMappingStatus();
@@ -187,6 +191,10 @@ export async function getAaisReadinessReport(now = new Date()): Promise<AaisRead
           coalescing: persistentOutbox.coalescing,
           recovery: persistentOutbox.recovery,
         },
+      },
+      a2Monitoring: {
+        status: a2Monitoring.enabled ? "ok" : "blocked",
+        ...a2Monitoring,
       },
       oidc: {
         status: getOidcStatus({

@@ -170,6 +170,14 @@ function buildRequiredControls(releaseCheck, handoff) {
       handoffActionIds,
     }),
     control({
+      id: "a2-monitoring-evidence",
+      passed: requiredChecks.a2Monitoring === true
+        || enterprise.a2MonitoringEvidence?.complete === true,
+      actions: ["redeploy-vercel-production", "inspect-vercel-production-deployment", "rerun-final-gate"],
+      note: "Requires deployed readiness evidence for A2 low-progress monitoring, artifact-regression coaching, keyed AI acceptance revisions, and raw learner-text exclusion.",
+      handoffActionIds,
+    }),
+    control({
       id: "cohort-analytics",
       passed: requiredChecks.cohortAnalytics === true,
       actions: ["run-teacher-cohort-analytics-smoke", "rerun-final-gate"],

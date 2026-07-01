@@ -128,6 +128,7 @@ describe("AAIS enterprise release verifier", () => {
                 probe: "connected",
               },
               lrs: lrsReadyCheck(),
+              a2Monitoring: a2MonitoringReadyCheck(),
               oidc: {
                 status: "ok",
                 mode: "explicit",
@@ -283,6 +284,27 @@ describe("AAIS enterprise release verifier", () => {
       lrsOutboxRecoveryAction: "POST /api/learning/lrs/outbox/flush?action=requeue-dead-letter",
       lrsOutboxRecoveryAuth: ["admin-session-csrf", "bearer-token"],
       lrsOutboxRecoveryRedaction: "payloads-excluded",
+      a2MonitoringEnabled: true,
+      a2MonitoringTriggers: [
+        "monitoring_pause_detected",
+        "coaching_push",
+        "ai_acceptance_recorded",
+      ],
+      a2MonitoringSignals: [
+        "low_progress_artifact_autosave",
+        "artifact_regression_autosave",
+      ],
+      a2CoachingInterruption: "low",
+      a2CoachingCooldownSeconds: 600,
+      a2ArtifactRegressionMinimumPreviousCharacters: 80,
+      a2ArtifactRegressionMinimumDropCharacters: 40,
+      a2ArtifactRegressionRawTextExcluded: true,
+      a2AiAcceptanceDecisionKeyed: true,
+      a2AiAcceptanceRevisions: true,
+      a2AiAcceptanceRawMessageIdsExcluded: true,
+      a2AiAcceptanceRationaleTextExcluded: true,
+      a2MonitoringRedaction: "raw-learner-text-excluded",
+      a2MonitoringComplete: true,
       deploymentPlatform: "vercel",
       vercelRequestIdPresent: true,
       releaseId: "aais-2026-06-30-rc1",
@@ -2538,6 +2560,7 @@ function readinessBody(input = {}) {
       trialAccounts: { status: "disabled", configured: false, accountCount: 0 },
       storage: { status: "ok", mode: "postgres", provider: "neon", probe: "connected" },
       lrs: input.lrs ?? lrsReadyCheck(),
+      a2Monitoring: input.a2Monitoring ?? a2MonitoringReadyCheck(),
       oidc: oidcReadyCheck(),
       ai: {
         status: "ok",
@@ -2548,6 +2571,38 @@ function readinessBody(input = {}) {
     },
     issues: [],
     secrets: "redacted",
+  };
+}
+
+function a2MonitoringReadyCheck() {
+  return {
+    status: "ok",
+    enabled: true,
+    triggers: [
+      "monitoring_pause_detected",
+      "coaching_push",
+      "ai_acceptance_recorded",
+    ],
+    signals: [
+      "low_progress_artifact_autosave",
+      "artifact_regression_autosave",
+    ],
+    coaching: {
+      interruption: "low",
+      cooldownSeconds: 600,
+    },
+    artifactRegression: {
+      minimumPreviousCharacters: 80,
+      minimumDropCharacters: 40,
+      rawTextExcluded: true,
+    },
+    aiAcceptance: {
+      decisionKeyed: true,
+      revisions: true,
+      rawMessageIdsExcluded: true,
+      rationaleTextExcluded: true,
+    },
+    redaction: "raw-learner-text-excluded",
   };
 }
 

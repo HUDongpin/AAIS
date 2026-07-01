@@ -585,6 +585,7 @@ function getReadinessMetadata(body, headers) {
   const lrsOutbox = body?.checks?.lrs?.outbox ?? {};
   const coalescing = getLrsOutboxCoalescingEvidence(lrsOutbox.coalescing);
   const recovery = getLrsOutboxRecoveryEvidence(lrsOutbox.recovery);
+  const a2Monitoring = getA2MonitoringCapabilityEvidence(body?.checks?.a2Monitoring);
   const vercelRequestIdPresent = Boolean(headers.get("x-vercel-id"));
   return {
     aiProvider: ai.provider === "deterministic" || ai.provider === "openai-compatible"
@@ -610,6 +611,20 @@ function getReadinessMetadata(body, headers) {
     lrsOutboxRecoveryAction: recovery.action,
     lrsOutboxRecoveryAuth: recovery.auth,
     lrsOutboxRecoveryRedaction: recovery.redaction,
+    a2MonitoringEnabled: a2Monitoring.enabled,
+    a2MonitoringTriggers: a2Monitoring.triggers,
+    a2MonitoringSignals: a2Monitoring.signals,
+    a2CoachingInterruption: a2Monitoring.coachingInterruption,
+    a2CoachingCooldownSeconds: a2Monitoring.coachingCooldownSeconds,
+    a2ArtifactRegressionMinimumPreviousCharacters: a2Monitoring.artifactRegressionMinimumPreviousCharacters,
+    a2ArtifactRegressionMinimumDropCharacters: a2Monitoring.artifactRegressionMinimumDropCharacters,
+    a2ArtifactRegressionRawTextExcluded: a2Monitoring.artifactRegressionRawTextExcluded,
+    a2AiAcceptanceDecisionKeyed: a2Monitoring.aiAcceptanceDecisionKeyed,
+    a2AiAcceptanceRevisions: a2Monitoring.aiAcceptanceRevisions,
+    a2AiAcceptanceRawMessageIdsExcluded: a2Monitoring.aiAcceptanceRawMessageIdsExcluded,
+    a2AiAcceptanceRationaleTextExcluded: a2Monitoring.aiAcceptanceRationaleTextExcluded,
+    a2MonitoringRedaction: a2Monitoring.redaction,
+    a2MonitoringComplete: a2Monitoring.complete,
     deploymentPlatform: vercelRequestIdPresent ? "vercel" : "unknown",
     vercelRequestIdPresent,
   };
@@ -734,6 +749,71 @@ function getLrsOutboxRecoveryEvidence(policy) {
       && action === expectedAction
       && auth.length === expectedAuth.length
       && redaction === "payloads-excluded",
+  };
+}
+
+function getA2MonitoringCapabilityEvidence(policy) {
+  const expectedTriggers = [
+    "monitoring_pause_detected",
+    "coaching_push",
+    "ai_acceptance_recorded",
+  ];
+  const expectedSignals = [
+    "low_progress_artifact_autosave",
+    "artifact_regression_autosave",
+  ];
+  const rawTriggers = Array.isArray(policy?.triggers) ? policy.triggers : [];
+  const rawSignals = Array.isArray(policy?.signals) ? policy.signals : [];
+  const triggers = expectedTriggers.filter((trigger) => rawTriggers.includes(trigger));
+  const signals = expectedSignals.filter((signal) => rawSignals.includes(signal));
+  const coachingInterruption = policy?.coaching?.interruption === "low" ? "low" : "unknown";
+  const coachingCooldownSeconds = Number.isInteger(policy?.coaching?.cooldownSeconds)
+    ? policy.coaching.cooldownSeconds
+    : null;
+  const artifactRegressionMinimumPreviousCharacters =
+    Number.isInteger(policy?.artifactRegression?.minimumPreviousCharacters)
+      ? policy.artifactRegression.minimumPreviousCharacters
+      : null;
+  const artifactRegressionMinimumDropCharacters =
+    Number.isInteger(policy?.artifactRegression?.minimumDropCharacters)
+      ? policy.artifactRegression.minimumDropCharacters
+      : null;
+  const artifactRegressionRawTextExcluded = policy?.artifactRegression?.rawTextExcluded === true;
+  const aiAcceptanceDecisionKeyed = policy?.aiAcceptance?.decisionKeyed === true;
+  const aiAcceptanceRevisions = policy?.aiAcceptance?.revisions === true;
+  const aiAcceptanceRawMessageIdsExcluded = policy?.aiAcceptance?.rawMessageIdsExcluded === true;
+  const aiAcceptanceRationaleTextExcluded = policy?.aiAcceptance?.rationaleTextExcluded === true;
+  const redaction = policy?.redaction === "raw-learner-text-excluded"
+    ? "raw-learner-text-excluded"
+    : "unknown";
+  const enabled = policy?.enabled === true;
+  return {
+    enabled,
+    triggers,
+    signals,
+    coachingInterruption,
+    coachingCooldownSeconds,
+    artifactRegressionMinimumPreviousCharacters,
+    artifactRegressionMinimumDropCharacters,
+    artifactRegressionRawTextExcluded,
+    aiAcceptanceDecisionKeyed,
+    aiAcceptanceRevisions,
+    aiAcceptanceRawMessageIdsExcluded,
+    aiAcceptanceRationaleTextExcluded,
+    redaction,
+    complete: enabled
+      && triggers.length === expectedTriggers.length
+      && signals.length === expectedSignals.length
+      && coachingInterruption === "low"
+      && coachingCooldownSeconds === 600
+      && artifactRegressionMinimumPreviousCharacters === 80
+      && artifactRegressionMinimumDropCharacters === 40
+      && artifactRegressionRawTextExcluded
+      && aiAcceptanceDecisionKeyed
+      && aiAcceptanceRevisions
+      && aiAcceptanceRawMessageIdsExcluded
+      && aiAcceptanceRationaleTextExcluded
+      && redaction === "raw-learner-text-excluded",
   };
 }
 

@@ -200,6 +200,35 @@ describe("AAIS readiness route", () => {
             },
           },
         },
+        a2Monitoring: {
+          status: "ok",
+          enabled: true,
+          triggers: [
+            "monitoring_pause_detected",
+            "coaching_push",
+            "ai_acceptance_recorded",
+          ],
+          signals: [
+            "low_progress_artifact_autosave",
+            "artifact_regression_autosave",
+          ],
+          coaching: {
+            interruption: "low",
+            cooldownSeconds: 600,
+          },
+          artifactRegression: {
+            minimumPreviousCharacters: 80,
+            minimumDropCharacters: 40,
+            rawTextExcluded: true,
+          },
+          aiAcceptance: {
+            decisionKeyed: true,
+            revisions: true,
+            rawMessageIdsExcluded: true,
+            rationaleTextExcluded: true,
+          },
+          redaction: "raw-learner-text-excluded",
+        },
         oidc: {
           status: "ok",
           roleMapping: {

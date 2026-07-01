@@ -141,6 +141,35 @@ type AaisCohortPriorityReason =
   | "high_scaffold_dependency"
   | "no_ai_interaction_after_coaching";
 
+export type AaisA2MonitoringCapability = {
+  enabled: true;
+  triggers: [
+    "monitoring_pause_detected",
+    "coaching_push",
+    "ai_acceptance_recorded",
+  ];
+  signals: [
+    "low_progress_artifact_autosave",
+    "artifact_regression_autosave",
+  ];
+  coaching: {
+    interruption: "low";
+    cooldownSeconds: number;
+  };
+  artifactRegression: {
+    minimumPreviousCharacters: number;
+    minimumDropCharacters: number;
+    rawTextExcluded: true;
+  };
+  aiAcceptance: {
+    decisionKeyed: true;
+    revisions: true;
+    rawMessageIdsExcluded: true;
+    rationaleTextExcluded: true;
+  };
+  redaction: "raw-learner-text-excluded";
+};
+
 const aaisLrsOutboxCoalescingPolicy = {
   windowSeconds: 30,
   events: ["artifact_saved", "artifact_edited", "planning_submitted"] as const,
@@ -874,6 +903,37 @@ export function summarizeAaisLearningAnalytics(session: AaisLearnerSession) {
       rawPromptStorage: "excluded_from_lrs",
       minimumNecessaryFields: true,
     },
+  };
+}
+
+export function getAaisA2MonitoringCapability(): AaisA2MonitoringCapability {
+  return {
+    enabled: true,
+    triggers: [
+      "monitoring_pause_detected",
+      "coaching_push",
+      "ai_acceptance_recorded",
+    ],
+    signals: [
+      "low_progress_artifact_autosave",
+      "artifact_regression_autosave",
+    ],
+    coaching: {
+      interruption: "low",
+      cooldownSeconds: aaisA2CoachingCooldownMs / 1000,
+    },
+    artifactRegression: {
+      minimumPreviousCharacters: aaisA2ArtifactRegressionMinimumPreviousCharacters,
+      minimumDropCharacters: aaisA2ArtifactRegressionMinimumDropCharacters,
+      rawTextExcluded: true,
+    },
+    aiAcceptance: {
+      decisionKeyed: true,
+      revisions: true,
+      rawMessageIdsExcluded: true,
+      rationaleTextExcluded: true,
+    },
+    redaction: "raw-learner-text-excluded",
   };
 }
 
