@@ -31,9 +31,15 @@ describe("AAIS release evidence refresh workflow", () => {
         calls.push(["enterprise-release", input]);
         return {
           status: "failed",
+          sequence: [
+            {
+              name: "source-provenance",
+              status: "passed",
+            },
+          ],
           artifacts: {
             sourceProvenance: {
-              status: "passed",
+              status: "failed",
             },
           },
           leakedValue: "postgres://user:secret@host/db",

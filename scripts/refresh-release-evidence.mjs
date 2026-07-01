@@ -157,7 +157,11 @@ export async function refreshAaisReleaseEvidence(input = {}) {
 
   const sequence = [
     step("enterprise-release", enterpriseRelease, paths.releaseCheckReportPath),
-    step("source-provenance", enterpriseRelease?.artifacts?.sourceProvenance, paths.sourceProvenanceReportPath),
+    step(
+      "source-provenance",
+      findSequenceStep(enterpriseRelease, "source-provenance") ?? enterpriseRelease?.artifacts?.sourceProvenance,
+      paths.sourceProvenanceReportPath,
+    ),
     step("env-template", privateEnvTemplate, paths.privateEnvTemplateReportPath),
     step("restore-template", postgresRestoreTemplate, paths.postgresRestoreTemplateReportPath),
     step("oidc-config-dry-run", oidcConfig, paths.oidcConfigReportPath),
@@ -225,6 +229,12 @@ function step(name, report, outputPath) {
     status: normalizeStatus(report?.status),
     outputPath,
   };
+}
+
+function findSequenceStep(report, name) {
+  return Array.isArray(report?.sequence)
+    ? report.sequence.find((item) => item?.name === name)
+    : null;
 }
 
 function summarizeReadinessAudit(report) {
