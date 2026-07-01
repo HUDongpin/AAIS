@@ -1,5 +1,6 @@
 import { timingSafeEqual } from "node:crypto";
 import { NextResponse } from "next/server";
+import { recordAaisAuditEvent } from "@/lib/server/aais-audit-log";
 import { isAaisCsrfError, requireAaisCsrf } from "@/lib/server/aais-csrf";
 import {
   flushAaisPersistentLrsOutbox,
@@ -9,6 +10,7 @@ import { isAaisAuthError, requireAaisSessionActor } from "@/lib/server/aais-requ
 
 type FlushAuthorization = {
   mode: "admin-session" | "bearer-token";
+  actorId?: string;
 };
 
 type OutboxAction = "flush" | "requeue-dead-letter";
@@ -39,18 +41,28 @@ async function handleFlushRequest(
     allowAdminSession: boolean;
   },
 ) {
+  const searchParams = new URL(request.url).searchParams;
+  const limit = readFlushLimit(searchParams.get("limit"));
+  let action = readRequestedOutboxActionName(searchParams.get("action"));
+  let authorization: FlushAuthorization | null = null;
   try {
-    const authorization = authorizeFlushRequest(request, input);
-    const searchParams = new URL(request.url).searchParams;
-    const action = readOutboxAction(searchParams.get("action"), input);
+    authorization = authorizeFlushRequest(request, input);
+    action = readOutboxAction(searchParams.get("action"), input);
     if (action === "requeue-dead-letter") {
       const result = await requeueAaisPersistentLrsDeadLetters({
-        limit: readFlushLimit(searchParams.get("limit")),
+        limit,
+      });
+      recordOutboxAudit({
+        action,
+        authorization,
+        limit,
+        outcome: result.status === "not_configured" ? "failure" : "success",
+        result: sanitizeRequeueResult(result),
       });
       return NextResponse.json(
         {
           action,
-          authorization,
+          authorization: sanitizeAuthorization(authorization),
           outbox: sanitizeRequeueResult(result),
           secrets: "redacted",
         },
@@ -59,18 +71,33 @@ async function handleFlushRequest(
     }
 
     const result = await flushAaisPersistentLrsOutbox({
-      limit: readFlushLimit(searchParams.get("limit")),
+      limit,
+    });
+    recordOutboxAudit({
+      action,
+      authorization,
+      limit,
+      outcome: result.status === "not_configured" ? "failure" : "success",
+      result: sanitizeFlushResult(result),
     });
     return NextResponse.json(
       {
         action,
-        authorization,
+        authorization: sanitizeAuthorization(authorization),
         outbox: sanitizeFlushResult(result),
         secrets: "redacted",
       },
       { status: result.status === "not_configured" ? 503 : 200 },
     );
   } catch (error) {
+    recordOutboxAudit({
+      action,
+      authorization,
+      limit,
+      outcome: "failure",
+      errorStatus: getErrorStatus(error),
+      errorKind: getAuditErrorKind(error),
+    });
     return NextResponse.json(
       {
         error: error instanceof Error ? error.message : "AAIS LRS outbox flush failed.",
@@ -107,7 +134,7 @@ function authorizeFlushRequest(
     throw new AaisOutboxFlushAuthorizationError();
   }
   requireAaisCsrf(request, actor.id);
-  return { mode: "admin-session" };
+  return { mode: "admin-session", actorId: actor.id };
 }
 
 function readBearerToken(value: string | null) {
@@ -149,6 +176,14 @@ function readOutboxAction(
   throw new AaisOutboxFlushActionError();
 }
 
+function readRequestedOutboxActionName(value: string | null): OutboxAction | "unsupported" {
+  const action = String(value ?? "flush").trim() || "flush";
+  if (action === "flush" || action === "requeue-dead-letter") {
+    return action;
+  }
+  return "unsupported";
+}
+
 function sanitizeFlushResult(result: Awaited<ReturnType<typeof flushAaisPersistentLrsOutbox>>) {
   return {
     status: result.status,
@@ -156,6 +191,12 @@ function sanitizeFlushResult(result: Awaited<ReturnType<typeof flushAaisPersiste
     ...(typeof result.batches === "number" ? { batches: result.batches } : {}),
     ...(typeof result.failed === "number" ? { failed: result.failed } : {}),
     secrets: "redacted" as const,
+  };
+}
+
+function sanitizeAuthorization(authorization: FlushAuthorization) {
+  return {
+    mode: authorization.mode,
   };
 }
 
@@ -178,4 +219,44 @@ function getErrorStatus(error: unknown) {
     return 403;
   }
   return 500;
+}
+
+function recordOutboxAudit(input: {
+  action: OutboxAction | "unsupported";
+  authorization: FlushAuthorization | null;
+  limit: number;
+  outcome: "success" | "failure";
+  result?: Record<string, unknown>;
+  errorStatus?: number;
+  errorKind?: string;
+}) {
+  recordAaisAuditEvent({
+    event: input.action === "requeue-dead-letter"
+      ? "lrs_outbox_requeue_dead_letter"
+      : "lrs_outbox_flush",
+    actorId: input.authorization?.actorId,
+    outcome: input.outcome,
+    metadata: {
+      action: input.action,
+      authMode: input.authorization?.mode ?? "none",
+      limit: input.limit,
+      ...(input.result ?? {}),
+      ...(typeof input.errorStatus === "number" ? { errorStatus: input.errorStatus } : {}),
+      ...(input.errorKind ? { errorKind: input.errorKind } : {}),
+      secrets: "redacted",
+    },
+  });
+}
+
+function getAuditErrorKind(error: unknown) {
+  if (isAaisAuthError(error)) {
+    return "auth_required";
+  }
+  if (error instanceof AaisOutboxFlushActionError) {
+    return "unsupported_action";
+  }
+  if (error instanceof AaisOutboxFlushAuthorizationError || isAaisCsrfError(error)) {
+    return "authorization_failed";
+  }
+  return "operation_failed";
 }

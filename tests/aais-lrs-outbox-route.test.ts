@@ -9,6 +9,7 @@ beforeEach(() => {
   process.env.AAIS_SESSION_SECRET = "test-session-secret-with-at-least-32-characters";
   flushMock.mockReset();
   requeueMock.mockReset();
+  vi.spyOn(console, "info").mockImplementation(() => undefined);
   vi.resetModules();
   vi.doMock("@/lib/server/aais-learning-store", () => ({
     flushAaisPersistentLrsOutbox: flushMock,
@@ -42,6 +43,21 @@ describe("AAIS LRS persistent outbox flush route", () => {
       secrets: "redacted",
     });
     expect(flushMock).not.toHaveBeenCalled();
+    expect(readAuditEvents()).toMatchObject([
+      {
+        type: "aais.audit",
+        event: "lrs_outbox_flush",
+        outcome: "failure",
+        metadata: {
+          action: "flush",
+          authMode: "none",
+          limit: 50,
+          errorStatus: 401,
+          errorKind: "auth_required",
+          secrets: "redacted",
+        },
+      },
+    ]);
   });
 
   it("requires an admin session and actor-bound CSRF token", async () => {
@@ -110,6 +126,23 @@ describe("AAIS LRS persistent outbox flush route", () => {
       secrets: "redacted",
     });
     expect(JSON.stringify(body)).not.toContain("lrs-secret-that-must-not-leak");
+    expect(readAuditEvents()).toMatchObject([
+      {
+        type: "aais.audit",
+        event: "lrs_outbox_flush",
+        actorId: "admin-a",
+        outcome: "success",
+        metadata: {
+          action: "flush",
+          authMode: "admin-session",
+          limit: 25,
+          status: "sent",
+          sent: 3,
+          failed: 0,
+          secrets: "redacted",
+        },
+      },
+    ]);
   });
 
   it("requeues dead-letter rows for an admin session without exposing payloads", async () => {
@@ -148,6 +181,24 @@ describe("AAIS LRS persistent outbox flush route", () => {
       secrets: "redacted",
     });
     expect(JSON.stringify(body)).not.toContain("raw learner payload must not leak");
+    const auditEvents = readAuditEvents();
+    expect(auditEvents).toMatchObject([
+      {
+        type: "aais.audit",
+        event: "lrs_outbox_requeue_dead_letter",
+        actorId: "admin-a",
+        outcome: "success",
+        metadata: {
+          action: "requeue-dead-letter",
+          authMode: "admin-session",
+          limit: 10,
+          status: "requeued",
+          requeued: 4,
+          secrets: "redacted",
+        },
+      },
+    ]);
+    expect(JSON.stringify(auditEvents)).not.toContain("raw learner payload must not leak");
   });
 
   it("accepts a configured bearer token for scheduled outbox drains", async () => {
@@ -174,6 +225,23 @@ describe("AAIS LRS persistent outbox flush route", () => {
     expect(flushMock).toHaveBeenCalledWith({ limit: 200 });
     expect(body.authorization.mode).toBe("bearer-token");
     expect(JSON.stringify(body)).not.toContain(process.env.AAIS_LRS_OUTBOX_FLUSH_TOKEN);
+    const auditEvents = readAuditEvents();
+    expect(auditEvents).toMatchObject([
+      {
+        event: "lrs_outbox_flush",
+        outcome: "success",
+        metadata: {
+          action: "flush",
+          authMode: "bearer-token",
+          limit: 200,
+          status: "partial",
+          sent: 2,
+          failed: 1,
+          secrets: "redacted",
+        },
+      },
+    ]);
+    expect(JSON.stringify(auditEvents)).not.toContain(process.env.AAIS_LRS_OUTBOX_FLUSH_TOKEN);
   });
 
   it("accepts a configured bearer token for dead-letter requeue operations", async () => {
@@ -210,6 +278,22 @@ describe("AAIS LRS persistent outbox flush route", () => {
       secrets: "redacted",
     });
     expect(JSON.stringify(body)).not.toContain(process.env.AAIS_LRS_OUTBOX_FLUSH_TOKEN);
+    const auditEvents = readAuditEvents();
+    expect(auditEvents).toMatchObject([
+      {
+        event: "lrs_outbox_requeue_dead_letter",
+        outcome: "success",
+        metadata: {
+          action: "requeue-dead-letter",
+          authMode: "bearer-token",
+          limit: 200,
+          status: "empty",
+          requeued: 0,
+          secrets: "redacted",
+        },
+      },
+    ]);
+    expect(JSON.stringify(auditEvents)).not.toContain(process.env.AAIS_LRS_OUTBOX_FLUSH_TOKEN);
   });
 
   it("accepts Vercel Cron GET requests signed with CRON_SECRET", async () => {
@@ -273,6 +357,20 @@ describe("AAIS LRS persistent outbox flush route", () => {
     });
     expect(flushMock).not.toHaveBeenCalled();
     expect(requeueMock).not.toHaveBeenCalled();
+    expect(readAuditEvents()).toMatchObject([
+      {
+        event: "lrs_outbox_requeue_dead_letter",
+        outcome: "failure",
+        metadata: {
+          action: "requeue-dead-letter",
+          authMode: "bearer-token",
+          limit: 50,
+          errorStatus: 400,
+          errorKind: "unsupported_action",
+          secrets: "redacted",
+        },
+      },
+    ]);
   });
 
   it("still allows an admin session when the scheduled bearer token is configured", async () => {
@@ -334,4 +432,8 @@ function createAuthedCookie(id: string, role: "student" | "teacher" | "admin") {
     displayName: id,
   });
   return `aais_session=${sessionToken}; ${getAaisCsrfCookieName()}=${csrfToken}`;
+}
+
+function readAuditEvents() {
+  return vi.mocked(console.info).mock.calls.map((call) => JSON.parse(String(call[0])));
 }
