@@ -44,6 +44,7 @@ describe("AAIS Postgres restore rehearsal template", () => {
         variables: [
           "AAIS_RESTORE_DATABASE_URL",
           "AAIS_RESTORE_DATABASE_PROVIDER",
+          "AAIS_RESTORE_TARGET_PURPOSE",
           "AAIS_RELEASE_ID",
         ],
       },
@@ -52,7 +53,7 @@ describe("AAIS Postgres restore rehearsal template", () => {
         postgresRestoreReportPath,
       },
       nextCommands: [
-        `npm run verify:postgres-restore -- --env-file .env.postgres-restore.local --database-provider neon --output ${postgresRestoreReportPath} --release-id aais-2026-06-30-rc-live-ai-deepseek-v4-flash`,
+        `npm run verify:postgres-restore -- --env-file .env.postgres-restore.local --database-provider neon --target-purpose restored-staging --output ${postgresRestoreReportPath} --release-id aais-2026-06-30-rc-live-ai-deepseek-v4-flash`,
       ],
       redaction: {
         secrets: "omitted",
@@ -67,6 +68,7 @@ describe("AAIS Postgres restore rehearsal template", () => {
     expect(template).toContain("# Use a restored staging Neon database, never the production database.");
     expect(template).toContain("AAIS_RESTORE_DATABASE_URL=<REQUIRED:RESTORED_NEON_STAGING_DATABASE_URL>");
     expect(template).toContain("AAIS_RESTORE_DATABASE_PROVIDER=neon");
+    expect(template).toContain("AAIS_RESTORE_TARGET_PURPOSE=restored-staging");
     expect(template).toContain("AAIS_RELEASE_ID=aais-2026-06-30-rc-live-ai-deepseek-v4-flash");
     expect(JSON.parse(await readFile(reportPath, "utf8"))).toEqual(report);
     expect(`${JSON.stringify(report)}\n${template}`).not.toContain("postgres://");

@@ -22,7 +22,10 @@ describe("AAIS Postgres restore rehearsal verifier", () => {
     const database = {
       async query(sql, params = []) {
         queries.push({ sql, params });
-        if (/to_regclass/i.test(sql)) {
+        if (/aais_lrs_outbox/i.test(sql)) {
+          return { rows: [{ table_name: "aais_lrs_outbox" }] };
+        }
+        if (/aais_learner_sessions/i.test(sql) && /to_regclass/i.test(sql)) {
           return { rows: [{ table_name: "aais_learner_sessions" }] };
         }
         if (/count\(\*\)/i.test(sql)) {
@@ -56,6 +59,7 @@ describe("AAIS Postgres restore rehearsal verifier", () => {
       outputPath,
       smokeStudentId: "restore-smoke",
       releaseId: "aais-2026-06-30-rc1",
+      targetPurpose: "restored-staging",
       now: new Date("2026-06-30T02:00:00.000Z"),
     });
 
@@ -69,10 +73,12 @@ describe("AAIS Postgres restore rehearsal verifier", () => {
       target: {
         databaseUrl: "redacted",
         provider: "neon",
+        purpose: "restored-staging",
         sameAsSource: false,
       },
       checks: {
         tablePresent: true,
+        lrsOutboxTablePresent: true,
         existingSessionCount: 12,
         smokeInserted: true,
         smokeReadBack: true,
@@ -105,11 +111,15 @@ describe("AAIS Postgres restore rehearsal verifier", () => {
     await writeFile(envFilePath, [
       "AAIS_RESTORE_DATABASE_URL=postgres://restore-user:restore-secret@ep-restored.us-east-1.aws.neon.tech/aais_restore",
       "AAIS_RESTORE_DATABASE_PROVIDER=neon",
+      "AAIS_RESTORE_TARGET_PURPOSE=restored-staging",
       "",
     ].join("\n"), "utf8");
     const database = {
       async query(sql) {
-        if (/to_regclass/i.test(sql)) {
+        if (/aais_lrs_outbox/i.test(sql)) {
+          return { rows: [{ table_name: "aais_lrs_outbox" }] };
+        }
+        if (/aais_learner_sessions/i.test(sql) && /to_regclass/i.test(sql)) {
           return { rows: [{ table_name: "aais_learner_sessions" }] };
         }
         if (/count\(\*\)/i.test(sql)) {
@@ -135,6 +145,7 @@ describe("AAIS Postgres restore rehearsal verifier", () => {
       target: {
         databaseUrl: "redacted",
         provider: "neon",
+        purpose: "restored-staging",
       },
     });
     expect(JSON.stringify(report)).not.toContain("restore-secret");
@@ -192,8 +203,12 @@ describe("AAIS Postgres restore rehearsal verifier", () => {
   it("fails when the restored database is missing the learner sessions table", async () => {
     const report = await runAaisPostgresRestoreRehearsal({
       databaseUrl: "postgres://restore-user:restore-secret@example.test/aais_restore",
+      targetPurpose: "restored-staging",
       database: {
         async query(sql) {
+          if (/aais_lrs_outbox/i.test(sql)) {
+            return { rows: [{ table_name: "aais_lrs_outbox" }] };
+          }
           if (/to_regclass/i.test(sql)) {
             return { rows: [{ table_name: null }] };
           }
@@ -207,6 +222,7 @@ describe("AAIS Postgres restore rehearsal verifier", () => {
       status: "failed",
       checks: {
         tablePresent: false,
+        lrsOutboxTablePresent: true,
         smokeInserted: false,
         smokeReadBack: false,
         smokeDeleted: false,
@@ -217,4 +233,75 @@ describe("AAIS Postgres restore rehearsal verifier", () => {
     });
     expect(JSON.stringify(report)).not.toContain("restore-secret");
   });
+
+  it("fails when the restore target purpose is not explicitly restored staging", async () => {
+    const report = await runAaisPostgresRestoreRehearsal({
+      databaseUrl: "postgres://restore-user:restore-secret@ep-restored.us-east-1.aws.neon.tech/aais_restore",
+      database: passingRestoreDatabase(),
+      smokeStudentId: "restore-smoke",
+      now: new Date("2026-06-30T02:00:00.000Z"),
+    });
+
+    expect(report).toMatchObject({
+      status: "failed",
+      target: {
+        purpose: "invalid",
+      },
+      checks: {
+        tablePresent: true,
+        lrsOutboxTablePresent: true,
+        smokeInserted: true,
+        smokeReadBack: true,
+        smokeDeleted: true,
+      },
+    });
+    expect(JSON.stringify(report)).not.toContain("restore-secret");
+  });
+
+  it("fails when the restored database is missing the LRS outbox table", async () => {
+    const report = await runAaisPostgresRestoreRehearsal({
+      databaseUrl: "postgres://restore-user:restore-secret@ep-restored.us-east-1.aws.neon.tech/aais_restore",
+      targetPurpose: "restored-staging",
+      database: passingRestoreDatabase({ lrsOutboxTablePresent: false }),
+      smokeStudentId: "restore-smoke",
+      now: new Date("2026-06-30T02:00:00.000Z"),
+    });
+
+    expect(report).toMatchObject({
+      status: "failed",
+      target: {
+        purpose: "restored-staging",
+      },
+      checks: {
+        tablePresent: true,
+        lrsOutboxTablePresent: false,
+        smokeInserted: true,
+        smokeReadBack: true,
+        smokeDeleted: true,
+      },
+    });
+    expect(JSON.stringify(report)).not.toContain("restore-secret");
+  });
 });
+
+function passingRestoreDatabase(input = {}) {
+  const lrsOutboxTablePresent = input.lrsOutboxTablePresent ?? true;
+  return {
+    async query(sql) {
+      if (/aais_lrs_outbox/i.test(sql)) {
+        return { rows: [{ table_name: lrsOutboxTablePresent ? "aais_lrs_outbox" : null }] };
+      }
+      if (/aais_learner_sessions/i.test(sql) && /to_regclass/i.test(sql)) {
+        return { rows: [{ table_name: "aais_learner_sessions" }] };
+      }
+      if (/count\(\*\)/i.test(sql)) {
+        return { rows: [{ session_count: "1" }] };
+      }
+      if (/select payload from aais_learner_sessions/i.test(sql)) {
+        return { rows: [{ payload: { schemaVersion: 1, studentId: "restore-smoke" } }] };
+      }
+      return { rows: [] };
+    },
+    async end() {},
+  };
+}

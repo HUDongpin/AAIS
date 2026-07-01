@@ -217,7 +217,14 @@ function buildRequiredControls(releaseCheck, handoff) {
     }),
     control({
       id: "neon-restore-rehearsal",
-      passed: postgresRestore.status === "passed",
+      passed: postgresRestore.status === "passed"
+        && postgresRestore.targetPurpose === "restored-staging"
+        && postgresRestore.sameAsSource === false
+        && postgresRestore.tablePresent === true
+        && postgresRestore.lrsOutboxTablePresent === true
+        && postgresRestore.smokeInserted === true
+        && postgresRestore.smokeReadBack === true
+        && postgresRestore.smokeDeleted === true,
       actions: ["fill-postgres-restore-template", "run-neon-restore-rehearsal", "rerun-final-gate"],
       handoffActionIds,
     }),

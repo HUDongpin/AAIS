@@ -19,6 +19,9 @@ export async function runAaisPostgresRestoreRehearsal(input = {}) {
     input.databaseUrl ?? envValues.get("AAIS_RESTORE_DATABASE_URL") ?? process.env.AAIS_RESTORE_DATABASE_URL,
     "AAIS_RESTORE_DATABASE_URL",
   );
+  const targetPurpose = readRestoreTargetPurpose(
+    input.targetPurpose ?? envValues.get("AAIS_RESTORE_TARGET_PURPOSE") ?? process.env.AAIS_RESTORE_TARGET_PURPOSE,
+  );
   const sourceDatabaseUrls = getProductionDatabaseUrls(input.sourceDatabaseUrl);
   const sameAsSource = sourceDatabaseUrls.some((sourceDatabaseUrl) => (
     normalizeDatabaseUrl(databaseUrl) === normalizeDatabaseUrl(sourceDatabaseUrl)
@@ -39,6 +42,7 @@ export async function runAaisPostgresRestoreRehearsal(input = {}) {
   const database = input.database ?? createDatabaseClient(databaseUrl);
   const checks = {
     tablePresent: false,
+    lrsOutboxTablePresent: false,
     existingSessionCount: 0,
     smokeInserted: false,
     smokeReadBack: false,
@@ -48,6 +52,8 @@ export async function runAaisPostgresRestoreRehearsal(input = {}) {
   try {
     const table = await database.query("select to_regclass('public.aais_learner_sessions') as table_name");
     checks.tablePresent = table.rows[0]?.table_name === "aais_learner_sessions";
+    const lrsOutboxTable = await database.query("select to_regclass('public.aais_lrs_outbox') as table_name");
+    checks.lrsOutboxTablePresent = lrsOutboxTable.rows[0]?.table_name === "aais_lrs_outbox";
     if (checks.tablePresent) {
       const count = await database.query("select count(*)::int as session_count from aais_learner_sessions");
       checks.existingSessionCount = Number(count.rows[0]?.session_count ?? 0);
@@ -91,7 +97,9 @@ export async function runAaisPostgresRestoreRehearsal(input = {}) {
 
   const report = {
     schemaVersion: 1,
-    status: checks.tablePresent
+    status: targetPurpose === "restored-staging"
+      && checks.tablePresent
+      && checks.lrsOutboxTablePresent
       && checks.smokeInserted
       && checks.smokeReadBack
       && checks.smokeDeleted
@@ -102,6 +110,7 @@ export async function runAaisPostgresRestoreRehearsal(input = {}) {
     target: {
       databaseUrl: "redacted",
       provider: databaseProvider,
+      purpose: targetPurpose,
       sameAsSource,
     },
     checks,
@@ -280,6 +289,11 @@ function getVerifiedDatabaseProvider({ databaseUrl, configuredProvider }) {
   return requested ?? inferred;
 }
 
+function readRestoreTargetPurpose(value) {
+  const trimmed = String(value ?? "").trim().toLowerCase();
+  return trimmed === "restored-staging" ? "restored-staging" : "invalid";
+}
+
 function inferDatabaseProvider(databaseUrl) {
   try {
     const hostname = new URL(databaseUrl).hostname.toLowerCase();
@@ -316,6 +330,7 @@ async function main() {
     smokeStudentId: args.get("smoke-student-id"),
     releaseId: args.get("release-id"),
     databaseProvider: args.get("database-provider"),
+    targetPurpose: args.get("target-purpose"),
   });
   process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
   if (report.status !== "passed") {

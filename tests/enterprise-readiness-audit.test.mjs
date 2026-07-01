@@ -313,6 +313,13 @@ describe("AAIS enterprise readiness audit", () => {
         },
         postgresRestore: {
           status: "passed",
+          targetPurpose: "restored-staging",
+          sameAsSource: false,
+          tablePresent: true,
+          lrsOutboxTablePresent: true,
+          smokeInserted: true,
+          smokeReadBack: true,
+          smokeDeleted: true,
         },
         vercelConfig: {
           status: "passed",
@@ -387,6 +394,13 @@ describe("AAIS enterprise readiness audit", () => {
         },
         postgresRestore: {
           status: "passed",
+          targetPurpose: "restored-staging",
+          sameAsSource: false,
+          tablePresent: true,
+          lrsOutboxTablePresent: true,
+          smokeInserted: true,
+          smokeReadBack: true,
+          smokeDeleted: true,
         },
       },
     });

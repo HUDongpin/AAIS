@@ -270,7 +270,9 @@ function summarizePostgresRestore(artifact) {
         }
       : undefined,
     sameAsSource: readOptionalBoolean(artifact?.sameAsSource),
+    targetPurpose: artifact?.targetPurpose === "restored-staging" ? "restored-staging" : "invalid",
     tablePresent: readOptionalBoolean(artifact?.tablePresent),
+    lrsOutboxTablePresent: readOptionalBoolean(artifact?.lrsOutboxTablePresent),
     smokeInserted: readOptionalBoolean(artifact?.smokeInserted),
     smokeReadBack: readOptionalBoolean(artifact?.smokeReadBack),
     smokeDeleted: readOptionalBoolean(artifact?.smokeDeleted),

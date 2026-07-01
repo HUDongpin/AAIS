@@ -30,6 +30,7 @@ export async function generateAaisPostgresRestoreTemplate(input = {}) {
       variables: [
         "AAIS_RESTORE_DATABASE_URL",
         "AAIS_RESTORE_DATABASE_PROVIDER",
+        "AAIS_RESTORE_TARGET_PURPOSE",
         "AAIS_RELEASE_ID",
       ],
     },
@@ -42,6 +43,7 @@ export async function generateAaisPostgresRestoreTemplate(input = {}) {
         "npm run verify:postgres-restore --",
         `--env-file ${privateRestoreEnvFilePath}`,
         "--database-provider neon",
+        "--target-purpose restored-staging",
         `--output ${postgresRestoreReportPath}`,
         `--release-id ${releaseId}`,
       ].join(" "),
@@ -68,6 +70,7 @@ function renderTemplate({ releaseId, privateRestoreEnvFilePath }) {
     "",
     "AAIS_RESTORE_DATABASE_URL=<REQUIRED:RESTORED_NEON_STAGING_DATABASE_URL>",
     "AAIS_RESTORE_DATABASE_PROVIDER=neon",
+    "AAIS_RESTORE_TARGET_PURPOSE=restored-staging",
     `AAIS_RELEASE_ID=${releaseId}`,
     "",
   ].join("\n");

@@ -299,10 +299,12 @@ describe("AAIS enterprise handoff generator", () => {
     ]);
     const fillRestoreTemplate = report.externalActions.find((action) => action.id === "fill-postgres-restore-template");
     expect(fillRestoreTemplate.commands).toEqual([
-      "npm run verify:postgres-restore -- --env-file .env.postgres-restore.local --database-provider neon --output output/aais-postgres-restore-report-latest.json --release-id aais-2026-06-30-rc-live-ai-deepseek-v4-flash",
+      "npm run verify:postgres-restore -- --env-file .env.postgres-restore.local --database-provider neon --target-purpose restored-staging --output output/aais-postgres-restore-report-latest.json --release-id aais-2026-06-30-rc-live-ai-deepseek-v4-flash",
     ]);
     expect(report.externalActions.find((action) => action.id === "run-neon-restore-rehearsal").command)
       .toContain("npm run verify:postgres-restore");
+    expect(report.externalActions.find((action) => action.id === "run-neon-restore-rehearsal").command)
+      .toContain("--target-purpose restored-staging");
     const inspectProductionDeploy = report.externalActions.find(
       (action) => action.id === "inspect-vercel-production-deployment",
     );

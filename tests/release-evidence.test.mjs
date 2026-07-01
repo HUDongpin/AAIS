@@ -100,10 +100,12 @@ describe("AAIS release evidence verifier", () => {
       target: {
         databaseUrl: "redacted",
         provider: "neon",
+        purpose: "restored-staging",
         sameAsSource: false,
       },
       checks: {
         tablePresent: true,
+        lrsOutboxTablePresent: true,
         smokeInserted: true,
         smokeReadBack: true,
         smokeDeleted: true,
@@ -337,7 +339,9 @@ describe("AAIS release evidence verifier", () => {
             matchesExpected: true,
           },
           sameAsSource: false,
+          targetPurpose: "restored-staging",
           tablePresent: true,
+          lrsOutboxTablePresent: true,
           smokeInserted: true,
           smokeReadBack: true,
           smokeDeleted: true,
@@ -375,6 +379,64 @@ describe("AAIS release evidence verifier", () => {
     expect(serialized).not.toContain("restore-secret");
     expect(serialized).not.toContain("provider reply");
     expect(serialized).not.toContain("enterprise-model");
+  });
+
+  it("fails restore evidence without restored-staging purpose and LRS outbox schema proof", async () => {
+    const {
+      sourceProvenanceReportPath,
+      enterpriseReportPath,
+      vercelDeploymentReportPath,
+      aiEvalManifestPath,
+    } = await writePassingReleaseArtifacts();
+    const postgresRestoreReportPath = await writeJson("restore-report.json", {
+      schemaVersion: 1,
+      status: "passed",
+      checkedAt: "2026-06-30T04:00:00.000Z",
+      release: {
+        id: "aais-2026-06-30-rc1",
+      },
+      target: {
+        databaseUrl: "redacted",
+        provider: "neon",
+        sameAsSource: false,
+      },
+      checks: {
+        tablePresent: true,
+        smokeInserted: true,
+        smokeReadBack: true,
+        smokeDeleted: true,
+      },
+      redaction: {
+        secrets: "omitted",
+      },
+    });
+    const vercelEnvReportPath = await writePassingVercelEnvReport();
+
+    const report = await verifyAaisReleaseEvidence({
+      sourceProvenanceReportPath,
+      enterpriseReportPath,
+      vercelDeploymentReportPath,
+      aiEvalManifestPath,
+      postgresRestoreReportPath,
+      vercelEnvReportPath,
+      deploymentUrl: "https://aais-six.vercel.app",
+      deploymentPlatform: "vercel",
+      databaseProvider: "neon",
+      releaseId: "aais-2026-06-30-rc1",
+      now: new Date("2026-06-30T05:00:00.000Z"),
+      maxAgeHours: 24,
+    });
+
+    expect(report.status).toBe("failed");
+    expect(report.artifacts.postgresRestore).toMatchObject({
+      status: "failed",
+      targetPurpose: "invalid",
+      tablePresent: true,
+      lrsOutboxTablePresent: false,
+      smokeInserted: true,
+      smokeReadBack: true,
+      smokeDeleted: true,
+    });
   });
 
   it("fails final release evidence when the Vercel Cron outbox drain is missing", async () => {
@@ -1131,10 +1193,12 @@ describe("AAIS release evidence verifier", () => {
       target: {
         databaseUrl: "redacted",
         provider: "neon",
+        purpose: "restored-staging",
         sameAsSource: false,
       },
       checks: {
         tablePresent: true,
+        lrsOutboxTablePresent: true,
         smokeInserted: true,
         smokeReadBack: true,
         smokeDeleted: true,
@@ -1453,10 +1517,12 @@ describe("AAIS release evidence verifier", () => {
       target: {
         databaseUrl: "redacted",
         provider: "neon",
+        purpose: "restored-staging",
         sameAsSource: false,
       },
       checks: {
         tablePresent: true,
+        lrsOutboxTablePresent: true,
         smokeInserted: true,
         smokeReadBack: true,
         smokeDeleted: true,
@@ -1555,10 +1621,12 @@ describe("AAIS release evidence verifier", () => {
       target: {
         databaseUrl: "redacted",
         provider: "neon",
+        purpose: "restored-staging",
         sameAsSource: false,
       },
       checks: {
         tablePresent: true,
+        lrsOutboxTablePresent: true,
         smokeInserted: true,
         smokeReadBack: true,
         smokeDeleted: true,
@@ -1722,10 +1790,12 @@ describe("AAIS release evidence verifier", () => {
       },
       target: {
         databaseUrl: "redacted",
+        purpose: "restored-staging",
         sameAsSource: true,
       },
       checks: {
         tablePresent: true,
+        lrsOutboxTablePresent: true,
         smokeInserted: false,
         smokeReadBack: true,
         smokeDeleted: true,
@@ -1827,10 +1897,12 @@ describe("AAIS release evidence verifier", () => {
       },
       target: {
         databaseUrl: "redacted",
+        purpose: "restored-staging",
         sameAsSource: false,
       },
       checks: {
         tablePresent: true,
+        lrsOutboxTablePresent: true,
         smokeInserted: true,
         smokeReadBack: true,
         smokeDeleted: true,
@@ -1913,10 +1985,12 @@ describe("AAIS release evidence verifier", () => {
       },
       target: {
         databaseUrl: "redacted",
+        purpose: "restored-staging",
         sameAsSource: false,
       },
       checks: {
         tablePresent: true,
+        lrsOutboxTablePresent: true,
         smokeInserted: true,
         smokeReadBack: true,
         smokeDeleted: true,
@@ -2035,10 +2109,12 @@ describe("AAIS release evidence verifier", () => {
       },
       target: {
         databaseUrl: "redacted",
+        purpose: "restored-staging",
         sameAsSource: false,
       },
       checks: {
         tablePresent: true,
+        lrsOutboxTablePresent: true,
         smokeInserted: true,
         smokeReadBack: true,
         smokeDeleted: true,
@@ -2127,10 +2203,12 @@ describe("AAIS release evidence verifier", () => {
       target: {
         databaseUrl: "redacted",
         provider: "postgres",
+        purpose: "restored-staging",
         sameAsSource: false,
       },
       checks: {
         tablePresent: true,
+        lrsOutboxTablePresent: true,
         smokeInserted: true,
         smokeReadBack: true,
         smokeDeleted: true,
@@ -2272,10 +2350,12 @@ async function writePassingReleaseArtifacts(input = {}) {
     target: {
       databaseUrl: "redacted",
       provider: "neon",
+      purpose: "restored-staging",
       sameAsSource: false,
     },
     checks: {
       tablePresent: true,
+      lrsOutboxTablePresent: true,
       smokeInserted: true,
       smokeReadBack: true,
       smokeDeleted: true,

@@ -528,7 +528,9 @@ async function verifyPostgresRestoreReport(filePath, expectedReleaseId, expected
   const restore = artifact.value;
   const checks = restore?.checks ?? {};
   const sameAsSource = restore?.target?.sameAsSource === true;
+  const targetPurpose = restore?.target?.purpose === "restored-staging" ? "restored-staging" : "invalid";
   const tablePresent = checks.tablePresent === true;
+  const lrsOutboxTablePresent = checks.lrsOutboxTablePresent === true;
   const smokeInserted = checks.smokeInserted === true;
   const smokeReadBack = checks.smokeReadBack === true;
   const smokeDeleted = checks.smokeDeleted === true;
@@ -540,8 +542,10 @@ async function verifyPostgresRestoreReport(filePath, expectedReleaseId, expected
   const provider = getDatabaseProviderStatus(restore?.target?.provider, expectedDatabaseProvider);
   const status = restore?.schemaVersion === 1
     && restore?.status === "passed"
+    && targetPurpose === "restored-staging"
     && !sameAsSource
     && tablePresent
+    && lrsOutboxTablePresent
     && smokeInserted
     && smokeReadBack
     && smokeDeleted
@@ -561,8 +565,10 @@ async function verifyPostgresRestoreReport(filePath, expectedReleaseId, expected
     secretScan,
     release,
     provider,
+    targetPurpose,
     sameAsSource,
     tablePresent,
+    lrsOutboxTablePresent,
     smokeInserted,
     smokeReadBack,
     smokeDeleted,
