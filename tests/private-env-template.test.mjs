@@ -85,6 +85,17 @@ describe("AAIS private env template generator", () => {
           "AAIS_OIDC_REDIRECT_URI",
           "AAIS_OIDC_TEACHER_GROUPS",
         ],
+        provisionVariables: [
+          "AAIS_RELEASE_ID",
+          "AAIS_DEPLOYMENT_GIT_COMMIT_SHA",
+          "AAIS_DATABASE_URL",
+          "AAIS_OIDC_ISSUER",
+          "AAIS_OIDC_CLIENT_ID",
+          "AAIS_OIDC_CLIENT_SECRET",
+          "AAIS_OIDC_REDIRECT_URI",
+          "AAIS_OIDC_TEACHER_GROUPS",
+        ],
+        validationOnlyVariables: [],
       },
       suggestions: {
         storageProvider: "neon",
@@ -129,7 +140,9 @@ describe("AAIS private env template generator", () => {
     expect(template).toContain("# AAIS private production env template");
     expect(template).toContain("# Do not commit this file.");
     expect(template).toContain("# Copy this template to .env.production.local, then fill the copy with real values.");
-    expect(template).toContain("# Placeholder values intentionally fail closed in provision:vercel-env.");
+    expect(template).toContain("# Provider placeholders intentionally fail closed in provision:vercel-env.");
+    expect(template).toContain("# Some OIDC names may already exist in Vercel; they are included here for local verify:oidc-config only.");
+    expect(template).toContain("# provision:vercel-env applies only names requested by the Vercel env report.");
     expect(template).toContain("# Suggested AAIS_OIDC_REDIRECT_URI: https://aais-six.vercel.app/api/auth/oidc/callback");
     expect(template).toContain("# Register this exact OIDC callback URL with the IdP: https://aais-six.vercel.app/api/auth/oidc/callback");
     expect(template).toContain("# Educator role mapping can use any one of AAIS_OIDC_TEACHER_GROUPS, AAIS_OIDC_TEACHER_EMAILS, AAIS_OIDC_ADMIN_GROUPS, or AAIS_OIDC_ADMIN_EMAILS.");
@@ -140,13 +153,98 @@ describe("AAIS private env template generator", () => {
     expect(template).toContain("AAIS_OIDC_ISSUER=<REQUIRED:OIDC_ISSUER>");
     expect(template).toContain("AAIS_OIDC_CLIENT_ID=<REQUIRED:OIDC_CLIENT_ID>");
     expect(template).toContain("AAIS_OIDC_CLIENT_SECRET=<REQUIRED:OIDC_CLIENT_SECRET>");
-    expect(template).toContain("AAIS_OIDC_REDIRECT_URI=<REQUIRED:OIDC_REDIRECT_URI>");
+    expect(template).toContain("AAIS_OIDC_REDIRECT_URI=https://aais-six.vercel.app/api/auth/oidc/callback");
     expect(template).toContain("AAIS_OIDC_TEACHER_GROUPS=<REQUIRED:OIDC_TEACHER_GROUPS>");
     expect(JSON.parse(await readFile(reportPath, "utf8"))).toEqual(report);
 
     const serialized = `${JSON.stringify(report)}\n${template}`;
     expect(serialized).not.toContain("postgres://aais:secret@example.neon.tech/aais");
     expect(serialized).not.toContain("secret@example");
+  });
+
+  it("adds OIDC redirect URI as a local validation-only variable when Vercel already has it", async () => {
+    const vercelEnvReportPath = await writeJson("vercel-env.json", {
+      schemaVersion: 1,
+      status: "failed",
+      required: {
+        missing: [
+          "AAIS_OIDC_ISSUER",
+          "AAIS_OIDC_CLIENT_ID",
+          "AAIS_OIDC_CLIENT_SECRET",
+          "AAIS_OIDC_TEACHER_GROUPS",
+        ],
+      },
+    });
+    const outputPath = path.join(tempDir, "template.env");
+    const reportPath = path.join(tempDir, "report.json");
+
+    const report = await generateAaisPrivateEnvTemplate({
+      vercelEnvReportPath,
+      outputPath,
+      reportPath,
+      baseUrl: "https://www.aais.site",
+      now: new Date("2026-06-30T07:30:00.000Z"),
+    });
+
+    expect(report.missing).toEqual([
+      "AAIS_OIDC_ISSUER",
+      "AAIS_OIDC_CLIENT_ID",
+      "AAIS_OIDC_CLIENT_SECRET",
+      "AAIS_OIDC_TEACHER_GROUPS",
+    ]);
+    expect(report.template).toMatchObject({
+      variables: [
+        "AAIS_OIDC_ISSUER",
+        "AAIS_OIDC_CLIENT_ID",
+        "AAIS_OIDC_CLIENT_SECRET",
+        "AAIS_OIDC_TEACHER_GROUPS",
+        "AAIS_OIDC_REDIRECT_URI",
+      ],
+      provisionVariables: [
+        "AAIS_OIDC_ISSUER",
+        "AAIS_OIDC_CLIENT_ID",
+        "AAIS_OIDC_CLIENT_SECRET",
+        "AAIS_OIDC_TEACHER_GROUPS",
+      ],
+      validationOnlyVariables: ["AAIS_OIDC_REDIRECT_URI"],
+    });
+
+    const template = await readFile(outputPath, "utf8");
+    expect(template).toContain("AAIS_OIDC_REDIRECT_URI=https://www.aais.site/api/auth/oidc/callback");
+    expect(template).toContain("# provision:vercel-env applies only names requested by the Vercel env report.");
+  });
+
+  it("adds full OIDC validation shape when only one OIDC value is missing", async () => {
+    const vercelEnvReportPath = await writeJson("vercel-env.json", {
+      required: {
+        missing: ["AAIS_OIDC_CLIENT_SECRET"],
+      },
+    });
+    const outputPath = path.join(tempDir, "template.env");
+    const reportPath = path.join(tempDir, "report.json");
+
+    const report = await generateAaisPrivateEnvTemplate({
+      vercelEnvReportPath,
+      outputPath,
+      reportPath,
+      baseUrl: "https://www.aais.site",
+      now: new Date("2026-06-30T07:30:00.000Z"),
+    });
+
+    expect(report.template.provisionVariables).toEqual(["AAIS_OIDC_CLIENT_SECRET"]);
+    expect(report.template.validationOnlyVariables).toEqual([
+      "AAIS_OIDC_ISSUER",
+      "AAIS_OIDC_CLIENT_ID",
+      "AAIS_OIDC_REDIRECT_URI",
+      "AAIS_OIDC_TEACHER_GROUPS",
+    ]);
+
+    const template = await readFile(outputPath, "utf8");
+    expect(template).toContain("AAIS_OIDC_CLIENT_SECRET=<REQUIRED:OIDC_CLIENT_SECRET>");
+    expect(template).toContain("AAIS_OIDC_ISSUER=<REQUIRED:OIDC_ISSUER>");
+    expect(template).toContain("AAIS_OIDC_CLIENT_ID=<REQUIRED:OIDC_CLIENT_ID>");
+    expect(template).toContain("AAIS_OIDC_TEACHER_GROUPS=<REQUIRED:OIDC_TEACHER_GROUPS>");
+    expect(template).toContain("AAIS_OIDC_REDIRECT_URI=https://www.aais.site/api/auth/oidc/callback");
   });
 
   it("uses environment output paths when explicit output paths are omitted", async () => {

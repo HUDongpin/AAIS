@@ -17,6 +17,12 @@ const placeholderLabels = new Map([
   ["AAIS_OIDC_CLIENT_SECRET", "OIDC_CLIENT_SECRET"],
   ["AAIS_OIDC_REDIRECT_URI", "OIDC_REDIRECT_URI"],
   ["AAIS_OIDC_TEACHER_GROUPS", "OIDC_TEACHER_GROUPS"],
+  ["AAIS_OIDC_TEACHER_EMAILS", "OIDC_TEACHER_EMAILS"],
+  ["AAIS_OIDC_ADMIN_GROUPS", "OIDC_ADMIN_GROUPS"],
+  ["AAIS_OIDC_ADMIN_EMAILS", "OIDC_ADMIN_EMAILS"],
+  ["AAIS_OIDC_AUTHORIZATION_ENDPOINT", "OIDC_AUTHORIZATION_ENDPOINT"],
+  ["AAIS_OIDC_TOKEN_ENDPOINT", "OIDC_TOKEN_ENDPOINT"],
+  ["AAIS_OIDC_JWKS_URI", "OIDC_JWKS_URI"],
 ]);
 
 const oidcRequiredNames = [
@@ -39,6 +45,12 @@ const oidcExplicitEndpointNames = [
   "AAIS_OIDC_JWKS_URI",
 ];
 
+const oidcNames = new Set([
+  ...oidcRequiredNames,
+  ...oidcRoleMappingNames,
+  ...oidcExplicitEndpointNames,
+]);
+
 export async function generateAaisPrivateEnvTemplate(input = {}) {
   const generatedAt = (input.now ?? new Date()).toISOString();
   const vercelEnvReportPath = input.vercelEnvReportPath ?? defaultVercelEnvReportPath;
@@ -58,6 +70,8 @@ export async function generateAaisPrivateEnvTemplate(input = {}) {
     ? explicitNames
     : getSafeEnvNames((await readJsonIfExists(vercelEnvReportPath))?.required?.missing);
   const oidcRedirectUri = `${baseUrl}/api/auth/oidc/callback`;
+  const templateVariables = getTemplateVariables(missing);
+  const validationOnlyVariables = templateVariables.filter((name) => !missing.includes(name));
 
   const report = {
     schemaVersion: 1,
@@ -75,7 +89,9 @@ export async function generateAaisPrivateEnvTemplate(input = {}) {
       outputPath,
       privateEnvFilePath,
       placeholderValues: "fail-closed",
-      variables: missing,
+      variables: templateVariables,
+      provisionVariables: missing,
+      validationOnlyVariables,
     },
     suggestions: {
       storageProvider: "neon",
@@ -111,7 +127,7 @@ export async function generateAaisPrivateEnvTemplate(input = {}) {
 
   await writeTextFile(outputPath, renderTemplate({
     environment,
-    missing,
+    templateVariables,
     oidcRedirectUri,
     privateEnvFilePath,
     releaseId,
@@ -130,31 +146,74 @@ async function readJsonIfExists(filePath) {
   }
 }
 
-function renderTemplate({ environment, missing, oidcRedirectUri, privateEnvFilePath, releaseId, deploymentGitCommit }) {
+function renderTemplate({
+  environment,
+  templateVariables,
+  oidcRedirectUri,
+  privateEnvFilePath,
+  releaseId,
+  deploymentGitCommit,
+}) {
   const lines = [
     `# AAIS private ${environment} env template`,
     "# Do not commit this file.",
     `# Copy this template to ${privateEnvFilePath}, then fill the copy with real values.`,
     "# Rerun the dry-run, and apply only after status is ready.",
-    "# Placeholder values intentionally fail closed in provision:vercel-env.",
+    "# Provider placeholders intentionally fail closed in provision:vercel-env.",
+    "# Some OIDC names may already exist in Vercel; they are included here for local verify:oidc-config only.",
+    "# provision:vercel-env applies only names requested by the Vercel env report.",
     "# For Neon, prefer AAIS_DATABASE_URL; Vercel Neon aliases are also accepted by the provisioner.",
     `# Suggested AAIS_OIDC_REDIRECT_URI: ${oidcRedirectUri}`,
     `# Register this exact OIDC callback URL with the IdP: ${oidcRedirectUri}`,
     "# Educator role mapping can use any one of AAIS_OIDC_TEACHER_GROUPS, AAIS_OIDC_TEACHER_EMAILS, AAIS_OIDC_ADMIN_GROUPS, or AAIS_OIDC_ADMIN_EMAILS.",
     "# Optional explicit OIDC endpoints are all-or-none: set AAIS_OIDC_AUTHORIZATION_ENDPOINT, AAIS_OIDC_TOKEN_ENDPOINT, and AAIS_OIDC_JWKS_URI together, or omit all three for issuer discovery.",
     "",
-    ...missing.map((name) => `${name}=${templateValueFor(name, { releaseId, deploymentGitCommit })}`),
+    ...templateVariables.map((name) => `${name}=${templateValueFor(name, {
+      releaseId,
+      deploymentGitCommit,
+      oidcRedirectUri,
+    })}`),
     "",
   ];
   return lines.join("\n");
 }
 
-function templateValueFor(name, { releaseId, deploymentGitCommit }) {
+function getTemplateVariables(missing) {
+  const variables = [...missing];
+  const hasOidcVariable = missing.some((name) => oidcNames.has(name));
+  if (!hasOidcVariable) {
+    return variables;
+  }
+
+  for (const name of oidcRequiredNames) {
+    appendUnique(variables, name);
+  }
+  if (!variables.some((name) => oidcRoleMappingNames.includes(name))) {
+    appendUnique(variables, "AAIS_OIDC_TEACHER_GROUPS");
+  }
+  if (variables.some((name) => oidcExplicitEndpointNames.includes(name))) {
+    for (const name of oidcExplicitEndpointNames) {
+      appendUnique(variables, name);
+    }
+  }
+  return variables;
+}
+
+function appendUnique(values, value) {
+  if (!values.includes(value)) {
+    values.push(value);
+  }
+}
+
+function templateValueFor(name, { releaseId, deploymentGitCommit, oidcRedirectUri }) {
   if (name === "AAIS_RELEASE_ID" && releaseId) {
     return releaseId;
   }
   if (name === "AAIS_DEPLOYMENT_GIT_COMMIT_SHA" && deploymentGitCommit) {
     return deploymentGitCommit;
+  }
+  if (name === "AAIS_OIDC_REDIRECT_URI") {
+    return oidcRedirectUri;
   }
   return `<REQUIRED:${placeholderFor(name)}>`;
 }
