@@ -141,10 +141,16 @@ describe("AAIS enterprise release check runner", () => {
                 securityHeaders: true,
                 legalPages: true,
                 lrsHealth: true,
+                a2Monitoring: true,
                 cohortAnalytics: true,
                 oidcStart: true,
                 oidcCallback: true,
                 ssoOnlyMode: true,
+              },
+              a2MonitoringEvidence: {
+                enabled: true,
+                complete: true,
+                redaction: "raw-learner-text-excluded",
               },
               lrsOutboxEvidence: {
                 artifactCoalescingComplete: true,
@@ -279,10 +285,16 @@ describe("AAIS enterprise release check runner", () => {
             securityHeaders: true,
             legalPages: true,
             lrsHealth: true,
+            a2Monitoring: true,
             cohortAnalytics: true,
             oidcStart: true,
             oidcCallback: true,
             ssoOnlyMode: true,
+          },
+          a2MonitoringEvidence: {
+            enabled: true,
+            complete: true,
+            redaction: "raw-learner-text-excluded",
           },
           artifactCoalescing: {
             readiness: true,

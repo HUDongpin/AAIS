@@ -20,6 +20,7 @@ const requiredEnterpriseCheckNames = [
   "securityHeaders",
   "legalPages",
   "lrsHealth",
+  "a2Monitoring",
   "cohortAnalytics",
   "oidcStart",
   "oidcCallback",
@@ -230,6 +231,7 @@ function summarizeEnterprise(enterpriseReport, evidenceArtifact) {
     readiness: summarizeEnterpriseReadiness(enterpriseReport),
     requiredChecks: getRequiredChecks(evidenceArtifact?.requiredChecks),
     artifactCoalescing: summarizeArtifactCoalescing(evidenceArtifact),
+    a2MonitoringEvidence: summarizeA2Monitoring(evidenceArtifact),
     evidenceOrder: getEvidenceOrder(evidenceArtifact?.evidenceOrder),
   };
 }
@@ -298,6 +300,17 @@ function summarizeArtifactCoalescing(artifact) {
     readiness,
     lrsHealth,
     complete: readiness === true && lrsHealth === true,
+  };
+}
+
+function summarizeA2Monitoring(artifact) {
+  const evidence = artifact?.a2MonitoringEvidence ?? {};
+  return {
+    enabled: readOptionalBoolean(evidence.enabled),
+    complete: readOptionalBoolean(evidence.complete),
+    redaction: evidence.redaction === "raw-learner-text-excluded"
+      ? "raw-learner-text-excluded"
+      : "unknown",
   };
 }
 
