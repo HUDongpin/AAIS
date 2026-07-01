@@ -686,7 +686,7 @@ function hasLrsOutboxMetrics(metrics) {
 }
 
 function getLrsOutboxCoalescingEvidence(policy) {
-  const expectedEvents = ["artifact_saved", "artifact_edited"];
+  const expectedEvents = ["artifact_saved", "artifact_edited", "planning_submitted"];
   const rawEvents = Array.isArray(policy?.events) ? policy.events : [];
   const events = expectedEvents.filter((event) => rawEvents.includes(event));
   const windowSeconds = Number.isInteger(policy?.windowSeconds) ? policy.windowSeconds : null;

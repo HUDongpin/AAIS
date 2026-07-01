@@ -265,7 +265,7 @@ describe("AAIS release evidence verifier", () => {
             artifactCoalescing: {
               enabled: true,
               windowSeconds: 30,
-              events: ["artifact_saved", "artifact_edited"],
+              events: ["artifact_saved", "artifact_edited", "planning_submitted"],
             },
             artifactCoalescingComplete: true,
             complete: true,
@@ -278,7 +278,7 @@ describe("AAIS release evidence verifier", () => {
             artifactCoalescing: {
               enabled: true,
               windowSeconds: 30,
-              events: ["artifact_saved", "artifact_edited"],
+              events: ["artifact_saved", "artifact_edited", "planning_submitted"],
             },
             artifactCoalescingComplete: true,
             complete: true,
@@ -995,6 +995,58 @@ describe("AAIS release evidence verifier", () => {
         outboxMode: "persistent",
         outboxStorage: "postgres",
         outboxMetricsPresent: true,
+        artifactCoalescingComplete: false,
+        complete: false,
+      },
+    });
+  });
+
+  it("fails final release evidence when artifact coalescing omits planning submissions", async () => {
+    const legacyCoalescingEvents = ["artifact_saved", "artifact_edited"];
+    const {
+      enterpriseReportPath,
+      aiEvalManifestPath,
+      postgresRestoreReportPath,
+    } = await writePassingReleaseArtifacts({
+      readinessDetails: passingReadinessDetails({
+        lrsOutboxCoalescingEvents: legacyCoalescingEvents,
+      }),
+      lrsHealthCheck: {
+        ...passingLrsHealthCheck(),
+        details: {
+          ...passingLrsHealthCheck().details,
+          lrsOutboxCoalescingEvents: legacyCoalescingEvents,
+        },
+      },
+    });
+    const vercelEnvReportPath = await writePassingVercelEnvReport();
+
+    const report = await verifyAaisReleaseEvidence({
+      enterpriseReportPath,
+      aiEvalManifestPath,
+      postgresRestoreReportPath,
+      vercelEnvReportPath,
+      deploymentUrl: "https://aais-six.vercel.app",
+      deploymentPlatform: "vercel",
+      databaseProvider: "neon",
+      now: new Date("2026-06-30T05:00:00.000Z"),
+      maxAgeHours: 24,
+    });
+
+    expect(report.status).toBe("failed");
+    expect(report.artifacts.enterprise).toMatchObject({
+      status: "failed",
+      lrsOutboxEvidence: {
+        artifactCoalescing: {
+          events: legacyCoalescingEvents,
+        },
+        artifactCoalescingComplete: false,
+        complete: false,
+      },
+      lrsHealthEvidence: {
+        artifactCoalescing: {
+          events: legacyCoalescingEvents,
+        },
         artifactCoalescingComplete: false,
         complete: false,
       },
@@ -2268,7 +2320,7 @@ function passingReadinessDetails(input = {}) {
     lrsOutboxMetricsPresent: true,
     lrsOutboxCoalescingEnabled: true,
     lrsOutboxCoalescingWindowSeconds: 30,
-    lrsOutboxCoalescingEvents: ["artifact_saved", "artifact_edited"],
+    lrsOutboxCoalescingEvents: ["artifact_saved", "artifact_edited", "planning_submitted"],
     deploymentPlatform: "vercel",
     vercelRequestIdPresent: true,
     releaseId: "aais-2026-06-30-rc1",
@@ -2399,7 +2451,7 @@ function passingLrsHealthCheck() {
       lrsOutboxRedaction: "redacted",
       lrsOutboxCoalescingEnabled: true,
       lrsOutboxCoalescingWindowSeconds: 30,
-      lrsOutboxCoalescingEvents: ["artifact_saved", "artifact_edited"],
+      lrsOutboxCoalescingEvents: ["artifact_saved", "artifact_edited", "planning_submitted"],
       secrets: "redacted",
     },
   };

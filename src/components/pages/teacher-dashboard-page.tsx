@@ -66,7 +66,7 @@ type AaisCohortAnalyticsResponse = {
 type CohortFilterState = {
   phase: "all" | "training" | "practice";
   agent: "all" | "A1" | "A2" | "A3" | "A4" | "platform";
-  event: "all" | "artifact_saved" | "artifact_edited" | "ai_acceptance_recorded" | "coaching_push" | "scaffold_request" | "self_report_saved";
+  event: "all" | "artifact_saved" | "artifact_edited" | "planning_submitted" | "ai_acceptance_recorded" | "coaching_push" | "scaffold_request" | "self_report_saved";
 };
 
 const defaultFilters: CohortFilterState = {
@@ -234,6 +234,7 @@ export function TeacherDashboardPage() {
                 ["ai_acceptance_recorded", "AI acceptance"],
                 ["artifact_saved", "Artifact saved"],
                 ["artifact_edited", "Artifact edited"],
+                ["planning_submitted", "Planning submitted"],
                 ["scaffold_request", "Scaffold"],
                 ["self_report_saved", "Self report"],
               ]}

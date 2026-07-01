@@ -278,7 +278,7 @@ describe("AAIS enterprise release verifier", () => {
       oidcRoleMappingRedaction: "names-only",
       lrsOutboxCoalescingEnabled: true,
       lrsOutboxCoalescingWindowSeconds: 30,
-      lrsOutboxCoalescingEvents: ["artifact_saved", "artifact_edited"],
+      lrsOutboxCoalescingEvents: ["artifact_saved", "artifact_edited", "planning_submitted"],
       deploymentPlatform: "vercel",
       vercelRequestIdPresent: true,
       releaseId: "aais-2026-06-30-rc1",
@@ -2405,7 +2405,7 @@ function lrsReadyCheck() {
       coalescing: {
         enabled: true,
         windowSeconds: 30,
-        events: ["artifact_saved", "artifact_edited"],
+        events: ["artifact_saved", "artifact_edited", "planning_submitted"],
         strategy: "latest-write-wins",
       },
       metrics: {
@@ -2431,7 +2431,7 @@ function lrsHealthBody(input = {}) {
         coalescing: {
           enabled: true,
           windowSeconds: 30,
-          events: ["artifact_saved", "artifact_edited"],
+          events: ["artifact_saved", "artifact_edited", "planning_submitted"],
           strategy: "latest-write-wins",
         },
         pending: 0,

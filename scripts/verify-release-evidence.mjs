@@ -915,7 +915,7 @@ function getLegalPagesEvidence(details = {}) {
 }
 
 function getArtifactCoalescingEvidence(details = {}) {
-  const expectedEvents = ["artifact_saved", "artifact_edited"];
+  const expectedEvents = ["artifact_saved", "artifact_edited", "planning_submitted"];
   const rawEvents = Array.isArray(details?.lrsOutboxCoalescingEvents)
     ? details.lrsOutboxCoalescingEvents
     : [];
