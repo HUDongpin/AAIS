@@ -128,6 +128,7 @@ export async function refreshAaisReleaseEvidence(input = {}) {
     postgresRestoreTemplateReportPath: paths.postgresRestoreTemplateReportPath,
     baseUrl,
     releaseId,
+    deploymentGitCommit,
     now: input.now,
   }));
 

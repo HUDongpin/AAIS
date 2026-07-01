@@ -166,6 +166,7 @@ describe("AAIS release evidence refresh workflow", () => {
       provisionReportPath: paths.provisionReportPath,
       oidcConfigReportPath: paths.oidcConfigReportPath,
       sourceProvenanceReportPath: paths.sourceProvenanceReportPath,
+      deploymentGitCommit: "ffec998b638c1234567890abcdef1234567890ab",
       outputPath: paths.handoffReportPath,
       markdownOutputPath: paths.handoffMarkdownPath,
       privateEnvTemplatePath: paths.privateEnvTemplatePath,

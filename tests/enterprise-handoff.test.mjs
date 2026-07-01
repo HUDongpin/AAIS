@@ -281,8 +281,8 @@ describe("AAIS enterprise handoff generator", () => {
       },
     });
     expect(report.externalActions[0].commands).toEqual([
-      `npm run provision:vercel-env -- --env-file .env.production.local --report ${vercelEnvReportPath} --output output/aais-vercel-env-provision-dry-run-latest.json`,
-      `npm run provision:vercel-env -- --env-file .env.production.local --report ${vercelEnvReportPath} --apply --output output/aais-vercel-env-provision-apply-latest.json`,
+      `npm run provision:vercel-env -- --env-file .env.production.local --report ${vercelEnvReportPath} --release-id aais-2026-06-30-rc-live-ai-deepseek-v4-flash --deployment-git-commit <git-sha> --output output/aais-vercel-env-provision-dry-run-latest.json`,
+      `npm run provision:vercel-env -- --env-file .env.production.local --report ${vercelEnvReportPath} --release-id aais-2026-06-30-rc-live-ai-deepseek-v4-flash --deployment-git-commit <git-sha> --apply --output output/aais-vercel-env-provision-apply-latest.json`,
     ]);
     const oidcConfigDryRun = report.externalActions.find((action) => action.id === "verify-oidc-config-dry-run");
     expect(oidcConfigDryRun).toMatchObject({

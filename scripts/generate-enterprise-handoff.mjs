@@ -89,6 +89,9 @@ export async function generateAaisEnterpriseHandoff(input = {}) {
   const privateRestoreEnvFilePath = input.privateRestoreEnvFilePath ?? defaultPrivateRestoreEnvFilePath;
   const baseUrl = normalizeUrl(input.baseUrl ?? process.env.AAIS_RELEASE_DEPLOYMENT_URL ?? defaultBaseUrl);
   const releaseId = readSafeReleaseId(input.releaseId ?? process.env.AAIS_RELEASE_ID ?? defaultReleaseId);
+  const deploymentGitCommit = readSafeGitCommitSha(
+    input.deploymentGitCommit ?? process.env.AAIS_DEPLOYMENT_GIT_COMMIT_SHA,
+  );
   const releaseCheck = await readJsonIfExists(releaseCheckReportPath);
   const vercelEnv = await readJsonIfExists(vercelEnvReportPath);
   const provision = await readJsonIfExists(provisionReportPath);
@@ -132,6 +135,7 @@ export async function generateAaisEnterpriseHandoff(input = {}) {
     postgresRestoreTemplatePath,
     postgresRestoreTemplateReportPath,
     privateRestoreEnvFilePath,
+    deploymentGitCommit,
   });
 
   const report = {
@@ -270,6 +274,7 @@ async function readCredentialSearchText(file) {
 function getExternalActions(input) {
   const actions = [];
   if (input.missing.vercelProductionEnv.length > 0) {
+    const deploymentGitCommitArg = getDeploymentGitCommitArg(input);
     actions.push({
       id: "fill-private-env-template",
       status: "required",
@@ -281,12 +286,16 @@ function getExternalActions(input) {
           "npm run provision:vercel-env --",
           `--env-file ${input.privateEnvFilePath}`,
           `--report ${input.vercelEnvReportPath}`,
+          `--release-id ${input.releaseId}`,
+          `--deployment-git-commit ${deploymentGitCommitArg}`,
           "--output output/aais-vercel-env-provision-dry-run-latest.json",
         ].join(" "),
         [
           "npm run provision:vercel-env --",
           `--env-file ${input.privateEnvFilePath}`,
           `--report ${input.vercelEnvReportPath}`,
+          `--release-id ${input.releaseId}`,
+          `--deployment-git-commit ${deploymentGitCommitArg}`,
           "--apply",
           "--output output/aais-vercel-env-provision-apply-latest.json",
         ].join(" "),
@@ -434,7 +443,7 @@ function getExternalActions(input) {
       "npm run verify:enterprise-release --",
       `--base-url ${input.baseUrl}`,
       `--release-id ${input.releaseId}`,
-      "--deployment-git-commit <git-sha>",
+      `--deployment-git-commit ${getDeploymentGitCommitArg(input)}`,
       `--vercel-env-report ${input.vercelEnvReportPath}`,
       `--source-provenance-report ${input.sourceProvenanceReportPath}`,
       `--vercel-deployment-report ${input.vercelDeploymentReportPath}`,
@@ -500,11 +509,15 @@ function createProductionDeployInspectAction(id, input) {
       "npm run verify:vercel-deployment --",
       "--deployment-url <deployment-url>",
       `--release-id ${input.releaseId}`,
-      "--deployment-git-commit <git-sha>",
+      `--deployment-git-commit ${getDeploymentGitCommitArg(input)}`,
       `--output ${input.vercelDeploymentReportPath}`,
     ].join(" "),
     note: "Use the deployment URL returned by vercel deploy --prod -y --no-wait; pass the same git SHA recorded in source provenance and AAIS_DEPLOYMENT_GIT_COMMIT_SHA. The verifier runs Vercel inspect and fails until the deployment is READY.",
   };
+}
+
+function getDeploymentGitCommitArg(input) {
+  return input.deploymentGitCommit ?? "<git-sha>";
 }
 
 function summarizeEnterpriseDiagnostics(enterpriseReport) {
@@ -633,6 +646,11 @@ function readSafeReleaseId(value) {
   return /^[A-Za-z0-9][A-Za-z0-9._:-]{2,127}$/.test(trimmed) ? trimmed : defaultReleaseId;
 }
 
+function readSafeGitCommitSha(value) {
+  const trimmed = String(value ?? "").trim().toLowerCase();
+  return /^[a-f0-9]{7,40}$/.test(trimmed) ? trimmed : null;
+}
+
 function readSafeToken(value) {
   const token = String(value ?? "").trim();
   return /^[A-Za-z0-9][A-Za-z0-9._:-]{1,127}$/.test(token) ? token : null;
@@ -704,6 +722,7 @@ async function main() {
     markdownOutputPath: args.get("markdown-output"),
     baseUrl: args.get("base-url"),
     releaseId: args.get("release-id"),
+    deploymentGitCommit: args.get("deployment-git-commit"),
   });
   process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
 }
