@@ -80,6 +80,41 @@ describe("AAIS release evidence refresh workflow", () => {
         calls.push(["handoff", input]);
         return {
           status: "action-required",
+          externalActions: [
+            {
+              id: "fill-private-env-template",
+              status: "required",
+              templatePath: paths.privateEnvTemplatePath,
+              privateEnvFilePath: ".env.local",
+              commands: [
+                "npm run provision:vercel-env -- --env-file .env.local --apply",
+              ],
+            },
+            {
+              id: "set-vercel-production-env",
+              status: "required",
+              missing: ["AAIS_OIDC_CLIENT_SECRET", "not-safe"],
+              commands: [
+                "vercel env add AAIS_OIDC_CLIENT_SECRET production",
+                "printf '%s' 'postgres://user:secret@host/db' | vercel env add AAIS_DATABASE_URL production",
+              ],
+            },
+            {
+              id: "run-real-oidc-callback-smoke",
+              status: "required",
+              command:
+                "AAIS_VERIFY_OIDC_CALLBACK_URL=https://idp.example/callback?code=real npm run verify:enterprise",
+            },
+            {
+              id: "set-sso-only-runtime-mode",
+              status: "required-after-sso-verification",
+              requiredValue: "false",
+              commands: [
+                "vercel env rm AAIS_TRIAL_LOGIN_ENABLED production -y",
+                "printf '%s' 'false' | vercel env add AAIS_TRIAL_LOGIN_ENABLED production",
+              ],
+            },
+          ],
         };
       },
       readinessAuditor: async (input) => {
@@ -210,6 +245,50 @@ describe("AAIS release evidence refresh workflow", () => {
         { name: "readiness-audit", status: "action-required", outputPath: paths.readinessAuditReportPath },
         { name: "evidence-bundle", status: "action-required", outputPath: paths.bundleReportPath },
       ],
+      nextActions: {
+        source: "enterprise-handoff",
+        total: 4,
+        required: 4,
+        actions: [
+          {
+            id: "fill-private-env-template",
+            status: "required",
+            templatePath: paths.privateEnvTemplatePath,
+            privateEnvFilePath: ".env.local",
+            commands: [
+              "npm run provision:vercel-env -- --env-file .env.local --apply",
+            ],
+          },
+          {
+            id: "set-vercel-production-env",
+            status: "required",
+            missing: ["AAIS_OIDC_CLIENT_SECRET"],
+            commands: [
+              "vercel env add AAIS_OIDC_CLIENT_SECRET production",
+              "<redacted:secret-like-command>",
+            ],
+          },
+          {
+            id: "run-real-oidc-callback-smoke",
+            status: "required",
+            command: "<redacted:secret-like-command>",
+          },
+          {
+            id: "set-sso-only-runtime-mode",
+            status: "required-after-sso-verification",
+            requiredValue: "false",
+            commands: [
+              "vercel env rm AAIS_TRIAL_LOGIN_ENABLED production -y",
+              "printf '%s' 'false' | vercel env add AAIS_TRIAL_LOGIN_ENABLED production",
+            ],
+          },
+        ],
+        redaction: {
+          secrets: "omitted",
+          values: "not-read",
+          secretLikeCommands: "redacted",
+        },
+      },
       summaries: {
         readinessAudit: {
           total: 11,
@@ -236,6 +315,8 @@ describe("AAIS release evidence refresh workflow", () => {
     expect(serialized).not.toContain("template-secret");
     expect(serialized).not.toContain("restore-template-secret");
     expect(serialized).not.toContain("oidc-client-secret-value");
+    expect(serialized).not.toContain("postgres://user:secret@host/db");
+    expect(serialized).not.toContain("https://idp.example/callback?code=real");
   });
 
   it("reports ready when every refreshed artifact is ready or passed", async () => {

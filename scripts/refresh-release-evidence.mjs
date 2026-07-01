@@ -184,6 +184,7 @@ export async function refreshAaisReleaseEvidence(input = {}) {
       id: readSafeReleaseId(releaseId),
     },
     sequence,
+    nextActions: summarizeNextActions(handoff),
     summaries: {
       readinessAudit: summarizeReadinessAudit(readinessAudit),
       evidenceBundle: summarizeEvidenceBundle(evidenceBundle),
@@ -257,6 +258,120 @@ function summarizeEvidenceBundle(report) {
     actionRequired: readInteger(report?.summary?.actionRequired),
     secretScanFailed: readInteger(report?.summary?.secretScanFailed),
   };
+}
+
+function summarizeNextActions(handoff) {
+  const actions = Array.isArray(handoff?.externalActions)
+    ? handoff.externalActions
+    : [];
+  return {
+    source: "enterprise-handoff",
+    total: actions.length,
+    required: actions.filter((action) => isRequiredActionStatus(action?.status)).length,
+    actions: actions.map((action) => sanitizeNextAction(action)),
+    redaction: {
+      secrets: "omitted",
+      values: "not-read",
+      secretLikeCommands: "redacted",
+    },
+  };
+}
+
+function sanitizeNextAction(action) {
+  const summary = {
+    id: readSafeActionId(action?.id),
+    status: normalizeStatus(action?.status),
+  };
+  const missing = readSafeEnvNames(action?.missing);
+  if (missing.length > 0) {
+    summary.missing = missing;
+  }
+  for (const field of [
+    "templatePath",
+    "reportPath",
+    "privateEnvFilePath",
+    "privateRestoreEnvFilePath",
+  ]) {
+    const value = readSafePath(action?.[field]);
+    if (value) {
+      summary[field] = value;
+    }
+  }
+  const requiredValue = readSafeLiteral(action?.requiredValue);
+  if (requiredValue) {
+    summary.requiredValue = requiredValue;
+  }
+  const command = sanitizeActionCommand(action?.command);
+  if (command) {
+    summary.command = command;
+  }
+  const commands = Array.isArray(action?.commands)
+    ? action.commands.map(sanitizeActionCommand).filter(Boolean)
+    : [];
+  if (commands.length > 0) {
+    summary.commands = commands;
+  }
+  return summary;
+}
+
+function isRequiredActionStatus(value) {
+  const status = normalizeStatus(value);
+  return status === "required" || status.startsWith("required-");
+}
+
+function sanitizeActionCommand(value) {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const command = value.trim();
+  if (!isSafeActionText(command)) {
+    return "<redacted:secret-like-command>";
+  }
+  return command.slice(0, 1200);
+}
+
+function isSafeActionText(text) {
+  if (!text || text.length > 4000) {
+    return false;
+  }
+  const unsafePatterns = [
+    /(?:postgres|postgresql|mysql|mongodb|redis):\/\/\S+/i,
+    /:\/\/[^/\s:@]+:[^/\s@]+@/i,
+    /\bBearer\s+[A-Za-z0-9._~+/=-]{8,}/i,
+    /\b(?:password|passwd|pwd|client_secret|secret|token|api[_-]?key)=([^<\s][^\s]*)/i,
+    /\bAAIS_VERIFY_OIDC_CALLBACK_URL=https:\/\/\S+/,
+    /\bAAIS_VERIFY_OIDC_STATE_COOKIE=[^<\s]\S+/,
+  ];
+  return !unsafePatterns.some((pattern) => pattern.test(text));
+}
+
+function readSafeActionId(value) {
+  const token = String(value ?? "").trim();
+  return /^[a-z][a-z0-9-]{1,79}$/.test(token) ? token : "unknown-action";
+}
+
+function readSafeEnvNames(value) {
+  return Array.isArray(value)
+    ? value
+      .map((item) => String(item ?? "").trim())
+      .filter((item) => /^[A-Z][A-Z0-9_*\\/-]{1,127}$/.test(item))
+    : [];
+}
+
+function readSafePath(value) {
+  const text = String(value ?? "").trim();
+  if (!text || text.length > 240 || text.includes("\0") || !isSafeActionText(text)) {
+    return null;
+  }
+  return text;
+}
+
+function readSafeLiteral(value) {
+  const text = String(value ?? "").trim();
+  if (!text || text.length > 80 || !isSafeActionText(text)) {
+    return null;
+  }
+  return /^[A-Za-z0-9._:/@-]+$/.test(text) ? text : null;
 }
 
 function normalizeStatus(value) {
