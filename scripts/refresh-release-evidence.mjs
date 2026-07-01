@@ -116,6 +116,7 @@ export async function refreshAaisReleaseEvidence(input = {}) {
     provisionReportPath: paths.provisionReportPath,
     enterpriseReportPath: paths.enterpriseReportPath,
     releaseEvidenceReportPath: paths.releaseEvidenceReportPath,
+    sourceProvenanceReportPath: paths.sourceProvenanceReportPath,
     postgresRestoreReportPath: paths.postgresRestoreReportPath,
     aiEvalManifestPath: paths.aiEvalManifestPath,
     oidcConfigReportPath: paths.oidcConfigReportPath,

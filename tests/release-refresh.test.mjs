@@ -165,6 +165,7 @@ describe("AAIS release evidence refresh workflow", () => {
       vercelEnvReportPath: paths.vercelEnvReportPath,
       provisionReportPath: paths.provisionReportPath,
       oidcConfigReportPath: paths.oidcConfigReportPath,
+      sourceProvenanceReportPath: paths.sourceProvenanceReportPath,
       outputPath: paths.handoffReportPath,
       markdownOutputPath: paths.handoffMarkdownPath,
       privateEnvTemplatePath: paths.privateEnvTemplatePath,

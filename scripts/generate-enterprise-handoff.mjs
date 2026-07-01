@@ -20,6 +20,7 @@ const defaultPostgresRestoreTemplatePath = "output/aais-postgres-restore-templat
 const defaultPostgresRestoreTemplateReportPath = "output/aais-postgres-restore-template-report-latest.json";
 const defaultEnterpriseReportPath = "output/aais-enterprise-report-latest.json";
 const defaultReleaseEvidenceReportPath = "output/aais-release-evidence-latest.json";
+const defaultSourceProvenanceReportPath = "output/aais-source-provenance-latest.json";
 const defaultVercelDeploymentReportPath = "output/aais-vercel-deployment-report-latest.json";
 const defaultPostgresRestoreReportPath = "output/aais-postgres-restore-report-latest.json";
 const defaultAiEvalManifestPath = "output/aais-ai-eval-deepseek-v4-flash.json";
@@ -70,6 +71,7 @@ export async function generateAaisEnterpriseHandoff(input = {}) {
   const provisionReportPath = input.provisionReportPath ?? defaultProvisionReportPath;
   const enterpriseReportPath = input.enterpriseReportPath ?? defaultEnterpriseReportPath;
   const releaseEvidenceReportPath = input.releaseEvidenceReportPath ?? defaultReleaseEvidenceReportPath;
+  const sourceProvenanceReportPath = input.sourceProvenanceReportPath ?? defaultSourceProvenanceReportPath;
   const vercelDeploymentReportPath = input.vercelDeploymentReportPath ?? defaultVercelDeploymentReportPath;
   const postgresRestoreReportPath = input.postgresRestoreReportPath ?? defaultPostgresRestoreReportPath;
   const aiEvalManifestPath = input.aiEvalManifestPath ?? defaultAiEvalManifestPath;
@@ -119,6 +121,7 @@ export async function generateAaisEnterpriseHandoff(input = {}) {
     vercelEnvReportPath,
     enterpriseReportPath,
     releaseEvidenceReportPath,
+    sourceProvenanceReportPath,
     vercelDeploymentReportPath,
     postgresRestoreReportPath,
     aiEvalManifestPath,
@@ -431,7 +434,9 @@ function getExternalActions(input) {
       "npm run verify:enterprise-release --",
       `--base-url ${input.baseUrl}`,
       `--release-id ${input.releaseId}`,
+      "--deployment-git-commit <git-sha>",
       `--vercel-env-report ${input.vercelEnvReportPath}`,
+      `--source-provenance-report ${input.sourceProvenanceReportPath}`,
       `--vercel-deployment-report ${input.vercelDeploymentReportPath}`,
       `--enterprise-report ${input.enterpriseReportPath}`,
       `--release-evidence-output ${input.releaseEvidenceReportPath}`,
@@ -495,9 +500,10 @@ function createProductionDeployInspectAction(id, input) {
       "npm run verify:vercel-deployment --",
       "--deployment-url <deployment-url>",
       `--release-id ${input.releaseId}`,
+      "--deployment-git-commit <git-sha>",
       `--output ${input.vercelDeploymentReportPath}`,
     ].join(" "),
-    note: "Use the deployment URL returned by vercel deploy --prod -y --no-wait; the verifier runs Vercel inspect and fails until the deployment is READY.",
+    note: "Use the deployment URL returned by vercel deploy --prod -y --no-wait; pass the same git SHA recorded in source provenance and AAIS_DEPLOYMENT_GIT_COMMIT_SHA. The verifier runs Vercel inspect and fails until the deployment is READY.",
   };
 }
 
@@ -690,6 +696,7 @@ async function main() {
     provisionReportPath: args.get("provision-report"),
     enterpriseReportPath: args.get("enterprise-report"),
     releaseEvidenceReportPath: args.get("release-evidence-report"),
+    sourceProvenanceReportPath: args.get("source-provenance-report"),
     postgresRestoreReportPath: args.get("postgres-restore-report"),
     aiEvalManifestPath: args.get("ai-eval-manifest"),
     oidcConfigReportPath: args.get("oidc-config-report"),

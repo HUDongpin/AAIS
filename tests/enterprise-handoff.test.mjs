@@ -308,9 +308,10 @@ describe("AAIS enterprise handoff generator", () => {
     );
     expect(inspectProductionDeploy).toMatchObject({
       status: "required-after-production-deploy",
-      command: "npm run verify:vercel-deployment -- --deployment-url <deployment-url> --release-id aais-2026-06-30-rc-live-ai-deepseek-v4-flash --output output/aais-vercel-deployment-report-latest.json",
+      command: "npm run verify:vercel-deployment -- --deployment-url <deployment-url> --release-id aais-2026-06-30-rc-live-ai-deepseek-v4-flash --deployment-git-commit <git-sha> --output output/aais-vercel-deployment-report-latest.json",
     });
     expect(inspectProductionDeploy.note).toContain("vercel deploy --prod -y --no-wait");
+    expect(inspectProductionDeploy.note).toContain("AAIS_DEPLOYMENT_GIT_COMMIT_SHA");
     expect(inspectProductionDeploy.note).toContain("READY");
     const callbackSmoke = report.externalActions.find((action) => action.id === "run-real-oidc-callback-smoke");
     expect(callbackSmoke.command).toContain(
@@ -330,8 +331,12 @@ describe("AAIS enterprise handoff generator", () => {
     expect(cohortSmoke.command).toContain("npm run verify:enterprise");
     expect(cohortSmoke.command).not.toContain("AAIS_VERIFY_EDUCATOR_CORRECT_PASSWORD");
     expect(cohortSmoke.note).toContain("cohort export JSON");
-    expect(report.externalActions.find((action) => action.id === "rerun-final-gate").command)
-      .toContain("npm run verify:enterprise-release");
+    const finalGate = report.externalActions.find((action) => action.id === "rerun-final-gate");
+    expect(finalGate.command).toContain("npm run verify:enterprise-release");
+    expect(finalGate.command).toContain("--deployment-git-commit <git-sha>");
+    expect(finalGate.command).toContain(
+      "--source-provenance-report output/aais-source-provenance-latest.json",
+    );
     expect(JSON.parse(await readFile(outputPath, "utf8"))).toEqual(report);
     const markdown = await readFile(markdownOutputPath, "utf8");
     expect(markdown).toContain("AAIS Enterprise Handoff");
@@ -703,6 +708,8 @@ describe("AAIS enterprise handoff generator", () => {
     expect(finalGate.command).toContain("AAIS_VERIFY_OIDC_CALLBACK_URL=<REQUIRED:TRANSIENT_OIDC_CALLBACK_URL>");
     expect(finalGate.command).toContain("AAIS_VERIFY_OIDC_STATE_COOKIE=<REQUIRED:TRANSIENT_OIDC_STATE_COOKIE>");
     expect(finalGate.command).toContain("npm run verify:enterprise-release");
+    expect(finalGate.command).toContain("--deployment-git-commit <git-sha>");
+    expect(finalGate.command).toContain("--source-provenance-report output/aais-source-provenance-latest.json");
   });
 
   it("requires teacher/admin OIDC callback evidence when only cohort analytics smoke is missing", async () => {
