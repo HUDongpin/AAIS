@@ -378,12 +378,12 @@ function getExternalActions(input) {
     actions.push({
       id: "run-real-oidc-callback-smoke",
       status: "required",
+      note: "Run before disabling trial login; this proves the real IdP callback and AAIS session handoff without requiring final SSO-only mode yet.",
       command: [
         "AAIS_VERIFY_OIDC_CALLBACK_URL=<REQUIRED:TRANSIENT_OIDC_CALLBACK_URL>",
         "AAIS_VERIFY_OIDC_STATE_COOKIE=<REQUIRED:TRANSIENT_OIDC_STATE_COOKIE>",
         "npm run verify:enterprise --",
         `--base-url ${input.baseUrl}`,
-        "--require-sso-only",
         `--release-id ${input.releaseId}`,
         `--output ${input.enterpriseReportPath}`,
       ].join(" "),

@@ -320,6 +320,8 @@ describe("AAIS enterprise handoff generator", () => {
     expect(callbackSmoke.command).toContain(
       "AAIS_VERIFY_OIDC_STATE_COOKIE=<REQUIRED:TRANSIENT_OIDC_STATE_COOKIE>",
     );
+    expect(callbackSmoke.command).not.toContain("--require-sso-only");
+    expect(callbackSmoke.note).toContain("before disabling trial login");
     const cohortSmoke = report.externalActions.find((action) => action.id === "run-teacher-cohort-analytics-smoke");
     expect(cohortSmoke.command).toContain(
       "AAIS_VERIFY_OIDC_CALLBACK_URL=<REQUIRED:TRANSIENT_TEACHER_OR_ADMIN_OIDC_CALLBACK_URL>",
@@ -669,6 +671,10 @@ describe("AAIS enterprise handoff generator", () => {
     expect(report.externalActions.find((action) => action.id === "run-real-oidc-callback-smoke").command).toContain(
       "AAIS_VERIFY_OIDC_CALLBACK_URL=<REQUIRED:TRANSIENT_OIDC_CALLBACK_URL>",
     );
+    expect(report.externalActions.find((action) => action.id === "run-real-oidc-callback-smoke").command)
+      .not.toContain("--require-sso-only");
+    expect(report.externalActions.find((action) => action.id === "run-real-oidc-callback-smoke").note)
+      .toContain("before disabling trial login");
     expect(await readFile(markdownOutputPath, "utf8")).toContain("run-real-oidc-callback-smoke");
   });
 
