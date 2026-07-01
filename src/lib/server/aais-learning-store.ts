@@ -147,6 +147,8 @@ const aaisLrsOutboxCoalescingPolicy = {
   strategy: "latest-write-wins" as const,
 };
 const aaisA2CoachingCooldownMs = 10 * 60 * 1000;
+const aaisA2ArtifactRegressionMinimumPreviousCharacters = 80;
+const aaisA2ArtifactRegressionMinimumDropCharacters = 40;
 
 const taskOrder = [
   ...aaisLearningProgram.training.tasks,
@@ -1696,9 +1698,55 @@ function createArtifactMonitoringEvents(input: {
   const previousLength = input.previousValue.trim().length;
   const nextLength = input.nextValue.trim().length;
   const now = new Date();
-  if (!previousLength || nextLength > previousLength + 2 || hasRecentA2Coaching(input.session, input.task.taskId, now)) {
+  const regressionDrop = previousLength - nextLength;
+  if (
+    isSignificantArtifactRegression(previousLength, nextLength)
+    && !hasRecentA2Coaching(input.session, input.task.taskId, now, "artifact_regression_autosave")
+  ) {
+    return createA2MonitoringAndCoachingEvents({
+      session: input.session,
+      task: input.task,
+      now,
+      reason: "artifact_regression_autosave",
+      previousLength,
+      nextLength,
+      detail: {
+        delta_characters: -regressionDrop,
+        recovery_hint: "review_or_replan_before_continuing",
+      },
+    });
+  }
+  if (
+    !previousLength
+    || nextLength > previousLength + 2
+    || hasRecentA2Coaching(input.session, input.task.taskId, now, "low_progress_artifact_autosave")
+  ) {
     return [];
   }
+  return createA2MonitoringAndCoachingEvents({
+    session: input.session,
+    task: input.task,
+    now,
+    reason: "low_progress_artifact_autosave",
+    previousLength,
+    nextLength,
+  });
+}
+
+function isSignificantArtifactRegression(previousLength: number, nextLength: number) {
+  return previousLength >= aaisA2ArtifactRegressionMinimumPreviousCharacters
+    && previousLength - nextLength >= aaisA2ArtifactRegressionMinimumDropCharacters;
+}
+
+function createA2MonitoringAndCoachingEvents(input: {
+  session: AaisLearnerSession;
+  task: AaisTaskRecord;
+  now: Date;
+  reason: "low_progress_artifact_autosave" | "artifact_regression_autosave";
+  previousLength: number;
+  nextLength: number;
+  detail?: Record<string, unknown>;
+}) {
   return [
     createAaisEvent({
       studentId: input.session.studentId,
@@ -1708,12 +1756,13 @@ function createArtifactMonitoringEvents(input: {
       agent: "A2",
       event: "monitoring_pause_detected",
       detail: {
-        signal: "low_progress_artifact_autosave",
-        previous_characters: previousLength,
-        current_characters: nextLength,
+        signal: input.reason,
+        previous_characters: input.previousLength,
+        current_characters: input.nextLength,
         cooldown_seconds: aaisA2CoachingCooldownMs / 1000,
+        ...(input.detail ?? {}),
       },
-      now: () => now,
+      now: () => input.now,
     }),
     createAaisEvent({
       studentId: input.session.studentId,
@@ -1723,23 +1772,29 @@ function createArtifactMonitoringEvents(input: {
       agent: "A2",
       event: "coaching_push",
       detail: {
-        reason: "low_progress_artifact_autosave",
+        reason: input.reason,
         interruption: "low",
         cooldown_seconds: aaisA2CoachingCooldownMs / 1000,
+        ...(input.detail ?? {}),
       },
-      now: () => now,
+      now: () => input.now,
     }),
   ];
 }
 
-function hasRecentA2Coaching(session: AaisLearnerSession, taskId: string, now: Date) {
+function hasRecentA2Coaching(
+  session: AaisLearnerSession,
+  taskId: string,
+  now: Date,
+  reason: "low_progress_artifact_autosave" | "artifact_regression_autosave",
+) {
   const nowMs = now.getTime();
   return session.events.some((event) =>
     event.task === taskId
     && (event.event === "monitoring_pause_detected" || event.event === "coaching_push")
     && (
-      event.detail.reason === "low_progress_artifact_autosave"
-      || event.detail.signal === "low_progress_artifact_autosave"
+      event.detail.reason === reason
+      || event.detail.signal === reason
     )
     && isWithinA2CoachingCooldown(event.time, nowMs)
   );

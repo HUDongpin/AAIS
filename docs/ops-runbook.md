@@ -91,7 +91,7 @@ AAIS production is deployed on Vercel and uses Neon Postgres. Release evidence m
 9. Monitor persistent outbox counts in health/readiness so pending/retry/dead-letter growth is visible without reading raw xAPI payloads.
 10. Keep a controlled batched drain path for the persistent outbox so serverless interruptions do not rely only on fire-and-forget in-process flushing or one network call per xAPI statement.
 11. Debounce high-frequency artifact autosaves in the learner UI, flush the pending save when the learner leaves the editor, and coalesce again before LRS delivery; the API and LRS should receive the latest `artifact_edited`, `artifact_saved`, and `planning_submitted` facts with merge metadata instead of every keystroke.
-12. Treat A2 `monitoring_pause_detected`, `coaching_push`, and keyed `ai_acceptance_recorded` as first-class evidence for teacher dashboards and later BI/LMS joins; count unique AI acceptance decision keys as interaction evidence, allow explicit decision revisions, and keep learner rationale text plus raw message ids out of analytics and LRS statements.
+12. Treat A2 `monitoring_pause_detected`, `coaching_push`, and keyed `ai_acceptance_recorded` as first-class evidence for teacher dashboards and later BI/LMS joins; verify low-progress autosaves and significant artifact regressions create low-interruption coaching signals, count unique AI acceptance decision keys as interaction evidence, allow explicit decision revisions, and keep learner rationale text plus raw message ids out of analytics and LRS statements.
 
 ## Backup And Restore
 

@@ -342,6 +342,33 @@ describe("AAIS backend learning store", () => {
     );
   });
 
+  it("emits A2 monitoring and coaching when artifact autosaves regress significantly", async () => {
+    const store = createAaisLearningStore({ rootDir: tempDir });
+    const originalArtifact = "计划".repeat(60);
+
+    await store.saveArtifact("S001", "training_task_1", originalArtifact);
+    const session = await store.saveArtifact("S001", "training_task_1", "计划调整");
+
+    const monitoring = session.events.findLast((event) => event.event === "monitoring_pause_detected");
+    const coaching = session.events.findLast((event) => event.event === "coaching_push");
+    expect(monitoring?.detail).toMatchObject({
+      signal: "artifact_regression_autosave",
+      previous_characters: 120,
+      current_characters: 4,
+      delta_characters: -116,
+      recovery_hint: "review_or_replan_before_continuing",
+      cooldown_seconds: 600,
+    });
+    expect(coaching?.detail).toMatchObject({
+      reason: "artifact_regression_autosave",
+      interruption: "low",
+      delta_characters: -116,
+      recovery_hint: "review_or_replan_before_continuing",
+      cooldown_seconds: 600,
+    });
+    expect(JSON.stringify(session.events)).not.toContain(originalArtifact);
+  });
+
   it("throttles repeated A2 low-progress coaching within a short cooldown window", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-06-30T08:00:00.000Z"));
