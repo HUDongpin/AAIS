@@ -6,10 +6,14 @@ AAIS is a focused Cognitive Apprenticeship learning system. This project keeps t
 
 | Agent | Name | Scope | Notes |
 | --- | --- | --- | --- |
-| `A1` | 导学智能体 | Expert demonstration, checks for understanding, task release | Used in training and practice. |
-| `A2` | 监督智能体 | Behavior monitoring, low-interruption coaching, data packaging for A3 | Used throughout the task process. |
-| `A3` | 反思智能体 | Articulation prompts, student trace, expert trace comparison, self-report | Used after and during key task moments. |
-| `A4` | 支架智能体 | Metacognitive toolkit with per-task request limits | Practice stage only. Helps thinking, not answers. |
+| `A1` | 导学智能体 | Frontend guide; links the CA flow, manages four direct scaffold opportunities per task, and fades into dialogue-first support | Direct student dialogue; Scaffolding. |
+| `A2` | 专家智能体 | Frontend expert pair; demonstrates metacognitive process in Modelling and coaches practice | Direct student dialogue; Modelling + Coaching; students can use `@` to call one expert. |
+| `A3` | 监督智能体 | Backend supervision; collects task behavior data and sends scaffold signals to A1 | Interacts with A1; supports Scaffolding. |
+| `A4` | 反思智能体 | Backend reflection; records articulated metacognitive process, returns reports, asks reflective prompts, and compares with experts | Interacts with A1; Articulation + Reflection. |
+
+## Cognitive Apprenticeship Background
+
+AAIS keeps the runtime CA knowledge in `aaisCognitiveApprenticeshipBackground` inside `src/data/aais.ts`. The shared sequence is Modelling, Coaching, Scaffolding, Articulation, and Reflection; fading is handled as part of Scaffolding. LangGraph must pass this background into every A1-A4 model turn so live providers and deterministic fallbacks use the same pedagogical frame.
 
 ## Engineering Roles Kept From UAIS
 
