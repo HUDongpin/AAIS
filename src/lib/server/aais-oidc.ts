@@ -49,6 +49,7 @@ type SignedOidcStatePayload = AaisOidcState & {
 const oidcStateCookieName = "aais_oidc_state";
 const stateTtlSeconds = 10 * 60;
 const devSessionSecret = "aais-dev-session-secret-do-not-use-for-production";
+const invalidOidcEndpointConfig = Symbol("invalid-oidc-endpoints");
 
 export function getAaisOidcStateCookieName() {
   return oidcStateCookieName;
@@ -60,7 +61,7 @@ export function getAaisOidcConfig(): AaisOidcConfig | null {
     return null;
   }
   const endpoints = getAaisOidcExplicitEndpoints();
-  if (!endpoints) {
+  if (!endpoints || endpoints === invalidOidcEndpointConfig) {
     return null;
   }
   return {
@@ -77,9 +78,16 @@ export function getAaisOidcConfigurationStatus(): AaisOidcConfigurationStatus {
       mode: "missing",
     };
   }
+  const endpoints = getAaisOidcExplicitEndpoints();
+  if (endpoints === invalidOidcEndpointConfig) {
+    return {
+      configured: false,
+      mode: "missing",
+    };
+  }
   return {
     configured: true,
-    mode: getAaisOidcExplicitEndpoints() ? "explicit" : "discovery",
+    mode: endpoints ? "explicit" : "discovery",
   };
 }
 
@@ -94,13 +102,19 @@ export function getAaisOidcRoleMappingStatus(): AaisOidcRoleMappingStatus {
 }
 
 export async function resolveAaisOidcConfig(fetchImpl: typeof fetch = fetch): Promise<AaisOidcConfig | null> {
-  const explicitConfig = getAaisOidcConfig();
-  if (explicitConfig) {
-    return explicitConfig;
-  }
   const baseConfig = getAaisOidcBaseConfig();
   if (!baseConfig) {
     return null;
+  }
+  const endpoints = getAaisOidcExplicitEndpoints();
+  if (endpoints === invalidOidcEndpointConfig) {
+    return null;
+  }
+  if (endpoints) {
+    return {
+      ...baseConfig,
+      ...endpoints,
+    };
   }
   const discovery = await discoverAaisOidcEndpoints(baseConfig.issuer, fetchImpl);
   if (!discovery) {
@@ -113,10 +127,12 @@ export async function resolveAaisOidcConfig(fetchImpl: typeof fetch = fetch): Pr
 }
 
 function getAaisOidcBaseConfig() {
-  const issuer = process.env.AAIS_OIDC_ISSUER?.trim();
-  const clientId = process.env.AAIS_OIDC_CLIENT_ID?.trim();
-  const clientSecret = process.env.AAIS_OIDC_CLIENT_SECRET?.trim();
-  const redirectUri = process.env.AAIS_OIDC_REDIRECT_URI?.trim();
+  const issuer = readOidcUrlEnv("AAIS_OIDC_ISSUER");
+  const clientId = readOidcTextEnv("AAIS_OIDC_CLIENT_ID");
+  const clientSecret = readOidcTextEnv("AAIS_OIDC_CLIENT_SECRET");
+  const redirectUri = readOidcUrlEnv("AAIS_OIDC_REDIRECT_URI", {
+    allowLocalHttpInDevelopment: true,
+  });
   if (!issuer || !clientId || !clientSecret || !redirectUri) {
     return null;
   }
@@ -129,11 +145,22 @@ function getAaisOidcBaseConfig() {
 }
 
 function getAaisOidcExplicitEndpoints() {
-  const authorizationEndpoint = process.env.AAIS_OIDC_AUTHORIZATION_ENDPOINT?.trim();
-  const tokenEndpoint = process.env.AAIS_OIDC_TOKEN_ENDPOINT?.trim();
-  const jwksUri = process.env.AAIS_OIDC_JWKS_URI?.trim();
-  if (!authorizationEndpoint || !tokenEndpoint || !jwksUri) {
+  const rawAuthorizationEndpoint = process.env.AAIS_OIDC_AUTHORIZATION_ENDPOINT?.trim();
+  const rawTokenEndpoint = process.env.AAIS_OIDC_TOKEN_ENDPOINT?.trim();
+  const rawJwksUri = process.env.AAIS_OIDC_JWKS_URI?.trim();
+  const presentCount = [rawAuthorizationEndpoint, rawTokenEndpoint, rawJwksUri]
+    .filter((value) => Boolean(value)).length;
+  if (presentCount === 0) {
     return null;
+  }
+  if (presentCount !== 3) {
+    return invalidOidcEndpointConfig;
+  }
+  const authorizationEndpoint = readOidcUrlValue(rawAuthorizationEndpoint);
+  const tokenEndpoint = readOidcUrlValue(rawTokenEndpoint);
+  const jwksUri = readOidcUrlValue(rawJwksUri);
+  if (!authorizationEndpoint || !tokenEndpoint || !jwksUri) {
+    return invalidOidcEndpointConfig;
   }
   return {
     authorizationEndpoint,
@@ -160,17 +187,73 @@ async function discoverAaisOidcEndpoints(issuer: string, fetchImpl: typeof fetch
   } | null;
   if (
     metadata?.issuer !== issuer
-    || typeof metadata.authorization_endpoint !== "string"
-    || typeof metadata.token_endpoint !== "string"
-    || typeof metadata.jwks_uri !== "string"
   ) {
     return null;
   }
+  const authorizationEndpoint = readOidcUrlValue(metadata.authorization_endpoint);
+  const tokenEndpoint = readOidcUrlValue(metadata.token_endpoint);
+  const jwksUri = readOidcUrlValue(metadata.jwks_uri);
+  if (!authorizationEndpoint || !tokenEndpoint || !jwksUri) {
+    return null;
+  }
   return {
-    authorizationEndpoint: metadata.authorization_endpoint,
-    tokenEndpoint: metadata.token_endpoint,
-    jwksUri: metadata.jwks_uri,
+    authorizationEndpoint,
+    tokenEndpoint,
+    jwksUri,
   };
+}
+
+function readOidcTextEnv(name: string) {
+  const value = process.env[name]?.trim();
+  return value && !isPlaceholderValue(value) ? value : "";
+}
+
+function readOidcUrlEnv(
+  name: string,
+  options: {
+    allowLocalHttpInDevelopment?: boolean;
+  } = {},
+) {
+  return readOidcUrlValue(process.env[name], options);
+}
+
+function readOidcUrlValue(
+  value: unknown,
+  options: {
+    allowLocalHttpInDevelopment?: boolean;
+  } = {},
+) {
+  const trimmed = typeof value === "string" ? value.trim() : "";
+  if (!trimmed || isPlaceholderValue(trimmed)) {
+    return "";
+  }
+  try {
+    const url = new URL(trimmed);
+    if (url.protocol === "https:") {
+      return trimmed;
+    }
+    if (
+      !isProductionRuntime()
+      && options.allowLocalHttpInDevelopment
+      && url.protocol === "http:"
+      && isLocalhost(url.hostname)
+    ) {
+      return trimmed;
+    }
+  } catch {
+    return "";
+  }
+  return "";
+}
+
+function isPlaceholderValue(value: string) {
+  return /^<REQUIRED:/i.test(value)
+    || value === "<REQUIRED>"
+    || /^(CHANGE_ME|TODO|TBD)$/i.test(value);
+}
+
+function isLocalhost(hostname: string) {
+  return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1";
 }
 
 export function createAaisOidcState(returnTo: string, now = new Date()) {
@@ -345,7 +428,10 @@ function createActorFromClaims(payload: JWTPayload, expectedNonce: string): Aais
   if (!payload.sub) {
     throw new Error("AAIS OIDC subject is missing.");
   }
-  if (payload.email && payload.email_verified !== true) {
+  if (typeof payload.email !== "string" || !payload.email.trim()) {
+    throw new Error("AAIS OIDC email is missing.");
+  }
+  if (payload.email_verified !== true) {
     throw new Error("AAIS OIDC email is not verified.");
   }
   return {

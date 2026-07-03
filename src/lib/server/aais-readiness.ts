@@ -6,11 +6,11 @@ import {
   type AaisOidcRoleMappingStatus,
 } from "@/lib/server/aais-oidc";
 import {
-  getAaisA2MonitoringCapability,
+  getAaisAgentEvidenceCapability,
   getAaisDatabaseConfiguration,
   getAaisPersistentLrsOutboxStatus,
   probeAaisLearningStorage,
-  type AaisA2MonitoringCapability,
+  type AaisAgentEvidenceCapability,
   type AaisDatabaseSourceEnv,
 } from "@/lib/server/aais-learning-store";
 import { getAaisTrialAccountConfigurationStatus } from "@/lib/server/aais-trial-accounts";
@@ -78,7 +78,9 @@ export type AaisReadinessReport = {
         };
       };
     };
-    a2Monitoring: AaisReadinessCheck & AaisA2MonitoringCapability;
+    agentEvidence: AaisReadinessCheck & AaisAgentEvidenceCapability;
+    a3Supervision: AaisReadinessCheck & AaisAgentEvidenceCapability;
+    a2Monitoring: AaisReadinessCheck & AaisAgentEvidenceCapability;
     oidc: AaisReadinessCheck & {
       mode: "explicit" | "discovery" | "missing";
       roleMapping: AaisReadinessCheck & AaisOidcRoleMappingStatus;
@@ -106,10 +108,11 @@ export async function getAaisReadinessReport(now = new Date()): Promise<AaisRead
     : "file";
   const storageProbe = await probeAaisLearningStorage();
   const persistentOutbox = await readPersistentOutboxStatus();
-  const a2Monitoring = getAaisA2MonitoringCapability();
+  const agentEvidence = getAaisAgentEvidenceCapability();
   const lrsConfigured = getLrsConfigurationStatus().configured;
   const oidcConfig = getAaisOidcConfigurationStatus();
   const oidcRoleMapping = getAaisOidcRoleMappingStatus();
+  const ssoOnlyRequired = production && trialAccounts.status === "disabled";
   const aiProvider = getConfiguredAiProvider();
   const aiModel = process.env.AAIS_AI_MODEL?.trim() || null;
   const aiModelFingerprint = aiProvider === "openai-compatible" && aiModel
@@ -140,10 +143,10 @@ export async function getAaisReadinessReport(now = new Date()): Promise<AaisRead
   if (production && !lrsConfigured) {
     issues.push("LRS_ENDPOINT/LRS_USERNAME/LRS_PASSWORD");
   }
-  if (production && !oidcConfig.configured) {
+  if (ssoOnlyRequired && !oidcConfig.configured) {
     issues.push("AAIS_OIDC_*");
   }
-  if (production && oidcConfig.configured && !oidcRoleMapping.configured) {
+  if (ssoOnlyRequired && oidcConfig.configured && !oidcRoleMapping.configured) {
     issues.push("AAIS_OIDC_ROLE_MAPPING");
   }
   if (production && aiProvider === "openai-compatible" && !aiApproved) {
@@ -192,14 +195,22 @@ export async function getAaisReadinessReport(now = new Date()): Promise<AaisRead
           recovery: persistentOutbox.recovery,
         },
       },
+      agentEvidence: {
+        status: agentEvidence.enabled ? "ok" : "blocked",
+        ...agentEvidence,
+      },
+      a3Supervision: {
+        status: agentEvidence.enabled ? "ok" : "blocked",
+        ...agentEvidence,
+      },
       a2Monitoring: {
-        status: a2Monitoring.enabled ? "ok" : "blocked",
-        ...a2Monitoring,
+        status: agentEvidence.enabled ? "ok" : "blocked",
+        ...agentEvidence,
       },
       oidc: {
         status: getOidcStatus({
           configured: oidcConfig.configured,
-          production,
+          production: ssoOnlyRequired,
           roleMappingConfigured: oidcRoleMapping.configured,
         }),
         mode: oidcConfig.mode,
@@ -288,7 +299,7 @@ function getOidcStatus(input: {
   roleMappingConfigured: boolean;
 }): AaisReadinessCheckStatus {
   if (!input.configured) {
-    return "missing";
+    return input.production ? "missing" : "ok";
   }
   if (input.production && !input.roleMappingConfigured) {
     return "blocked";

@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import {
+  aaisAgents,
   aaisEventDefinitions,
   type AaisEvent,
 } from "@/data/aais";
@@ -137,7 +138,9 @@ export function getLrsConfigurationStatus() {
 export function buildAaisXapiStatement(event: AaisEvent): XapiStatement {
   const verb = requireMappedVerb(event.event);
   const eventDefinition = aaisEventDefinitions[event.event];
+  const agentContract = getAgentContract(event.agent);
   const actorName = createPseudonymousLearnerId(event.student_id);
+  const sessionKey = createPseudonymousSessionId(event.session_id);
   const integration = getAaisEnterpriseIntegrationMetadata();
   return {
     id: createDeterministicStatementId(event),
@@ -185,12 +188,20 @@ export function buildAaisXapiStatement(event: AaisEvent): XapiStatement {
       },
       extensions: {
         [`${aaisXapiBase}/extensions/aais-agent`]: event.agent,
+        ...(agentContract
+          ? {
+              [`${aaisXapiBase}/extensions/aais-agent-family`]: eventDefinition.family,
+              [`${aaisXapiBase}/extensions/aais-agent-role`]: agentContract.role["en-US"],
+              [`${aaisXapiBase}/extensions/aais-agent-ca-modules`]: agentContract.caModules,
+              [`${aaisXapiBase}/extensions/aais-agent-phase-scope`]: agentContract.phaseScope,
+            }
+          : {}),
         [`${aaisXapiBase}/extensions/aais-event`]: event.event,
         [`${aaisXapiBase}/extensions/aais-event-family`]: eventDefinition.family,
         [`${aaisXapiBase}/extensions/aais-evidence-kind`]: eventDefinition.evidenceKind,
         [`${aaisXapiBase}/extensions/aais-phase`]: event.phase,
         [`${aaisXapiBase}/extensions/aais-task`]: event.task,
-        [`${aaisXapiBase}/extensions/aais-session-id`]: event.session_id,
+        [`${aaisXapiBase}/extensions/aais-session-id`]: sessionKey,
         [`${aaisXapiBase}/extensions/aais-detail`]: sanitizeLrsDetail(event.detail),
         [`${aaisXapiBase}/extensions/aais-cohort`]: integration.cohort,
         [`${aaisXapiBase}/extensions/aais-role`]: integration.role,
@@ -199,6 +210,13 @@ export function buildAaisXapiStatement(event: AaisEvent): XapiStatement {
     },
     timestamp: event.time,
   };
+}
+
+function getAgentContract(agentId: AaisEvent["agent"]) {
+  if (agentId === "platform") {
+    return null;
+  }
+  return aaisAgents.find((agent) => agent.id === agentId) ?? null;
 }
 
 export async function sendAaisEventsToLrs(
@@ -486,6 +504,14 @@ function createPseudonymousLearnerId(studentId: string) {
     .digest("hex")
     .slice(0, 16);
   return `aais-learner-${digest}`;
+}
+
+function createPseudonymousSessionId(sessionId: string) {
+  const digest = createHash("sha256")
+    .update(`aais-lrs-session:${sessionId}`)
+    .digest("hex")
+    .slice(0, 12);
+  return `session-${digest}`;
 }
 
 function sanitizeLrsDetail(detail: Record<string, unknown>) {

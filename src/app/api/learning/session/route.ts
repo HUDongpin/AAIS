@@ -4,13 +4,16 @@ import {
   isAaisLearningStorageConfigurationError,
 } from "@/lib/server/aais-learning-store";
 import { isAaisCsrfError, requireAaisCsrf } from "@/lib/server/aais-csrf";
-import { isAaisAuthError, resolveAaisStudentId } from "@/lib/server/aais-request-auth";
+import {
+  isAaisAuthError,
+  requireAaisSessionActor,
+} from "@/lib/server/aais-request-auth";
 
 export async function GET(request: Request) {
   try {
-    const studentId = resolveAaisStudentId(request);
-    const session = await getAaisLearningStore().getOrCreateSession(studentId);
-    return NextResponse.json({ session });
+    const actor = requireAaisSessionActor(request);
+    const session = await getAaisLearningStore().getOrCreateSession(actor.id);
+    return jsonSession(session, actor.role);
   } catch (error) {
     return jsonError(error, 400);
   }
@@ -33,19 +36,20 @@ export async function PATCH(request: Request) {
 
   try {
     const store = getAaisLearningStore();
-    const studentId = resolveAaisStudentId(request);
+    const actor = requireAaisSessionActor(request);
+    const studentId = actor.id;
     requireAaisCsrf(request, studentId);
     if (body?.action === "select-stage") {
       const session = await store.selectStage(studentId, requireString(body.stageId, "stageId"));
-      return NextResponse.json({ session });
+      return jsonSession(session, actor.role);
     }
     if (body?.action === "select-task") {
       const session = await store.selectTask(studentId, requireString(body.taskId, "taskId"));
-      return NextResponse.json({ session });
+      return jsonSession(session, actor.role);
     }
     if (body?.action === "complete-task") {
       const session = await store.completeTask(studentId, requireString(body.taskId, "taskId"));
-      return NextResponse.json({ session });
+      return jsonSession(session, actor.role);
     }
     if (body?.action === "save-artifact") {
       const session = await store.saveArtifact(
@@ -53,7 +57,7 @@ export async function PATCH(request: Request) {
         requireString(body.taskId, "taskId"),
         body.artifactText ?? "",
       );
-      return NextResponse.json({ session });
+      return jsonSession(session, actor.role);
     }
     if (body?.action === "save-self-report") {
       const session = await store.saveSelfReport(
@@ -61,7 +65,7 @@ export async function PATCH(request: Request) {
         requireString(body.taskId, "taskId"),
         body.selfReport ?? "",
       );
-      return NextResponse.json({ session });
+      return jsonSession(session, actor.role);
     }
     if (body?.action === "record-ai-acceptance") {
       const session = await store.recordAiAcceptance(
@@ -73,13 +77,25 @@ export async function PATCH(request: Request) {
           reason: body.reason,
         },
       );
-      return NextResponse.json({ session });
+      return jsonSession(session, actor.role);
     }
 
     return NextResponse.json({ error: "Unsupported AAIS session action." }, { status: 400 });
   } catch (error) {
     return jsonError(error, 400);
   }
+}
+
+function jsonSession(
+  session: Awaited<ReturnType<ReturnType<typeof getAaisLearningStore>["getOrCreateSession"]>>,
+  role: "student" | "teacher" | "admin",
+) {
+  return NextResponse.json({
+    session,
+    actor: {
+      role,
+    },
+  });
 }
 
 function requireString(value: string | undefined, label: string) {

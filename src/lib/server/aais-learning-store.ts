@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { mkdir, readFile, readdir, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { neon } from "@neondatabase/serverless";
 import { Pool } from "pg";
 import {
   aaisEventDefinitions,
@@ -22,6 +23,7 @@ import {
 
 export type AaisDatabaseClient = {
   query(sql: string, params?: unknown[]): Promise<{ rows: Array<Record<string, unknown>> }>;
+  end?(): Promise<void>;
 };
 
 export type AaisDatabaseSourceEnv =
@@ -29,6 +31,7 @@ export type AaisDatabaseSourceEnv =
   | "DATABASE_URL"
   | "POSTGRES_URL"
   | "POSTGRES_PRISMA_URL"
+  | "POSTGRES_URL_NO_SSL"
   | "DATABASE_URL_UNPOOLED"
   | "POSTGRES_URL_NON_POOLING"
   | "PG*"
@@ -141,8 +144,43 @@ type AaisCohortPriorityReason =
   | "high_scaffold_dependency"
   | "no_ai_interaction_after_coaching";
 
-export type AaisA2MonitoringCapability = {
+export type AaisAgentEvidenceCapability = {
   enabled: true;
+  agentContract: {
+    version: "aais-a1-a4-ca-v2";
+    requiredAgents: ["A1", "A2", "A3", "A4"];
+    caModules: {
+      A1: ["Scaffolding", "Fading"];
+      A2: ["Modelling", "Coaching"];
+      A3: ["Scaffolding"];
+      A4: ["Articulation", "Reflection"];
+    };
+    roles: {
+      A1: "frontend-direct-dialogue";
+      A2: "frontend-direct-dialogue";
+      A3: "backend-a1-signal";
+      A4: "backend-a1-reflection";
+    };
+    xapiExtensions: {
+      agentRole: true;
+      agentCaModules: true;
+      agentFamily: true;
+      agentPhaseScope: true;
+      pseudonymousSessionId: true;
+    };
+    complete: true;
+  };
+  agentResponsibilities: {
+    A1: ["scaffold_request", "scaffold_self_check_started"];
+    A2: ["expert_model_viewed", "coaching_push", "ai_acceptance_recorded"];
+    A3: [
+      "artifact_edited",
+      "artifact_saved",
+      "planning_submitted",
+      "monitoring_pause_detected",
+    ];
+    A4: ["articulation_submitted", "expert_trace_compared", "self_report_saved"];
+  };
   triggers: [
     "monitoring_pause_detected",
     "coaching_push",
@@ -169,6 +207,9 @@ export type AaisA2MonitoringCapability = {
   };
   redaction: "raw-learner-text-excluded";
 };
+
+export type AaisA3SupervisionCapability = AaisAgentEvidenceCapability;
+export type AaisA2MonitoringCapability = AaisAgentEvidenceCapability;
 
 const aaisLrsOutboxCoalescingPolicy = {
   windowSeconds: 30,
@@ -409,7 +450,7 @@ export function createAaisLearningStore(input: StoreInput = {}) {
     const session = await getOrCreateSession(studentId);
     const task = requireTask(session, taskId);
     if (task.phase !== "practice") {
-      throw new Error("A4 scaffolding is only available in practice tasks");
+      throw new Error("A1 scaffolding is only available in practice tasks");
     }
     const tool = scaffoldTools.find((candidate) => candidate.id === toolId) ?? scaffoldTools[0];
     const requestCount = task.scaffoldRequests + 1;
@@ -442,7 +483,7 @@ export function createAaisLearningStore(input: StoreInput = {}) {
           sessionId: session.sessionId,
           phase: "practice",
           task: taskId,
-          agent: "A4",
+          agent: "A1",
           event: "scaffold_request",
           detail: {
             request_count: requestCount,
@@ -458,7 +499,7 @@ export function createAaisLearningStore(input: StoreInput = {}) {
                 sessionId: session.sessionId,
                 phase: "practice",
                 task: taskId,
-                agent: "A4",
+                agent: "A1",
                 event: "scaffold_self_check_started",
                 detail: {
                   request_count: requestCount,
@@ -669,7 +710,7 @@ export function createAaisLearningStore(input: StoreInput = {}) {
           sessionId: session.sessionId,
           phase: task.phase,
           task: task.taskId,
-          agent: "A2",
+          agent: "A3",
           event: "artifact_edited",
           detail: {
             characters: value.length,
@@ -683,7 +724,7 @@ export function createAaisLearningStore(input: StoreInput = {}) {
       sessionId: session.sessionId,
       phase: task.phase,
       task: task.taskId,
-      agent: input.field === "artifactText" ? "A2" : "A3",
+      agent: input.field === "artifactText" ? "A3" : "A4",
       event: input.event,
       detail: {
         characters: value.length,
@@ -906,9 +947,44 @@ export function summarizeAaisLearningAnalytics(session: AaisLearnerSession) {
   };
 }
 
-export function getAaisA2MonitoringCapability(): AaisA2MonitoringCapability {
+export function getAaisAgentEvidenceCapability(): AaisAgentEvidenceCapability {
   return {
     enabled: true,
+    agentContract: {
+      version: "aais-a1-a4-ca-v2",
+      requiredAgents: ["A1", "A2", "A3", "A4"],
+      caModules: {
+        A1: ["Scaffolding", "Fading"],
+        A2: ["Modelling", "Coaching"],
+        A3: ["Scaffolding"],
+        A4: ["Articulation", "Reflection"],
+      },
+      roles: {
+        A1: "frontend-direct-dialogue",
+        A2: "frontend-direct-dialogue",
+        A3: "backend-a1-signal",
+        A4: "backend-a1-reflection",
+      },
+      xapiExtensions: {
+        agentRole: true,
+        agentCaModules: true,
+        agentFamily: true,
+        agentPhaseScope: true,
+        pseudonymousSessionId: true,
+      },
+      complete: true,
+    },
+    agentResponsibilities: {
+      A1: ["scaffold_request", "scaffold_self_check_started"],
+      A2: ["expert_model_viewed", "coaching_push", "ai_acceptance_recorded"],
+      A3: [
+        "artifact_edited",
+        "artifact_saved",
+        "planning_submitted",
+        "monitoring_pause_detected",
+      ],
+      A4: ["articulation_submitted", "expert_trace_compared", "self_report_saved"],
+    },
     triggers: [
       "monitoring_pause_detected",
       "coaching_push",
@@ -937,6 +1013,14 @@ export function getAaisA2MonitoringCapability(): AaisA2MonitoringCapability {
   };
 }
 
+export function getAaisA3SupervisionCapability(): AaisA3SupervisionCapability {
+  return getAaisAgentEvidenceCapability();
+}
+
+export function getAaisA2MonitoringCapability(): AaisA2MonitoringCapability {
+  return getAaisAgentEvidenceCapability();
+}
+
 export function summarizeAaisCohortAnalytics(
   sessions: AaisLearnerSession[],
   filters: AaisCohortAnalyticsFilters = {},
@@ -959,7 +1043,7 @@ export function summarizeAaisCohortAnalytics(
     const analytics = summarizeAaisLearningAnalytics(session);
     const learnerSummary = {
       learnerKey: createPseudonymousAnalyticsLearnerKey(session.studentId),
-      sessionId: session.sessionId,
+      sessionKey: createPseudonymousAnalyticsSessionKey(session.sessionId),
       updatedAt: session.updatedAt,
       trainingCompleted: analytics.dashboard.trainingToPractice.trainingCompleted,
       activePracticeTaskId: analytics.dashboard.trainingToPractice.activePracticeTaskId,
@@ -1020,7 +1104,7 @@ function buildAaisCohortAnalyticsExport(analytics: ReturnType<typeof summarizeAa
     dashboard: analytics.dashboard,
     learners: analytics.learners.map((learner) => ({
       learnerKey: learner.learnerKey,
-      sessionKey: learner.sessionId,
+      sessionKey: learner.sessionKey,
       updatedAt: learner.updatedAt,
       trainingCompleted: learner.trainingCompleted,
       activePracticeTaskId: learner.activePracticeTaskId,
@@ -1542,10 +1626,53 @@ function getConfiguredDatabaseClient() {
   if (!cachedDatabase || cachedDatabase.url !== config.url) {
     cachedDatabase = {
       url: config.url,
-      client: new Pool({ connectionString: config.url }) as AaisDatabaseClient,
+      client: createConfiguredDatabaseClient(config.url),
     };
   }
   return cachedDatabase.client;
+}
+
+function createConfiguredDatabaseClient(databaseUrl: string): AaisDatabaseClient {
+  if (shouldUseNeonServerlessDriver(databaseUrl)) {
+    return createNeonServerlessDatabaseClient(databaseUrl);
+  }
+  return new Pool({ connectionString: databaseUrl }) as AaisDatabaseClient;
+}
+
+function createNeonServerlessDatabaseClient(databaseUrl: string): AaisDatabaseClient {
+  const sql = neon(databaseUrl);
+  return {
+    async query(query, params = []) {
+      const result = await sql.query(query, params);
+      return normalizeDatabaseQueryResult(result);
+    },
+    async end() {},
+  };
+}
+
+function normalizeDatabaseQueryResult(result: unknown): { rows: Array<Record<string, unknown>> } {
+  if (Array.isArray(result)) {
+    return { rows: result as Array<Record<string, unknown>> };
+  }
+  if (result && typeof result === "object" && "rows" in result && Array.isArray(result.rows)) {
+    return { rows: result.rows as Array<Record<string, unknown>> };
+  }
+  return { rows: [] };
+}
+
+function shouldUseNeonServerlessDriver(databaseUrl: string) {
+  const configuredDriver = process.env.AAIS_DATABASE_DRIVER?.trim().toLowerCase();
+  if (configuredDriver === "pg") {
+    return false;
+  }
+  if (configuredDriver === "neon-serverless") {
+    return true;
+  }
+  try {
+    return new URL(databaseUrl).hostname.toLowerCase().endsWith(".neon.tech");
+  } catch {
+    return false;
+  }
 }
 
 export function getAaisDatabaseConfiguration(): AaisDatabaseConfiguration | null {
@@ -1554,6 +1681,7 @@ export function getAaisDatabaseConfiguration(): AaisDatabaseConfiguration | null
     "DATABASE_URL",
     "POSTGRES_URL",
     "POSTGRES_PRISMA_URL",
+    "POSTGRES_URL_NO_SSL",
     "DATABASE_URL_UNPOOLED",
     "POSTGRES_URL_NON_POOLING",
   ];
@@ -1717,7 +1845,7 @@ function createStageEvidenceEvents(
     detail: Record<string, unknown>;
   }> = {
     guide: {
-      agent: "A1",
+      agent: "A2",
       event: "expert_model_viewed",
       detail: {
         stageId,
@@ -1732,7 +1860,7 @@ function createStageEvidenceEvents(
       },
     },
     reflection: {
-      agent: "A3",
+      agent: "A4",
       event: "articulation_submitted",
       detail: {
         stageId,
@@ -1740,7 +1868,7 @@ function createStageEvidenceEvents(
       },
     },
     comparison: {
-      agent: "A3",
+      agent: "A4",
       event: "expert_trace_compared",
       detail: {
         stageId,
@@ -1777,7 +1905,7 @@ function createTaskTextEvidenceEvents(input: {
   const event: AaisEventName = input.event === "artifact_saved"
     ? "planning_submitted"
     : "articulation_submitted";
-  const agent: AaisAgentId = input.event === "artifact_saved" ? "A2" : "A3";
+  const agent: AaisAgentId = input.event === "artifact_saved" ? "A3" : "A4";
   return [
     createAaisEvent({
       studentId: input.session.studentId,
@@ -1806,9 +1934,9 @@ function createArtifactMonitoringEvents(input: {
   const regressionDrop = previousLength - nextLength;
   if (
     isSignificantArtifactRegression(previousLength, nextLength)
-    && !hasRecentA2Coaching(input.session, input.task.taskId, now, "artifact_regression_autosave")
+    && !hasRecentAgentCoaching(input.session, input.task.taskId, now, "artifact_regression_autosave")
   ) {
-    return createA2MonitoringAndCoachingEvents({
+    return createA3SupervisionAndA2CoachingEvents({
       session: input.session,
       task: input.task,
       now,
@@ -1824,11 +1952,11 @@ function createArtifactMonitoringEvents(input: {
   if (
     !previousLength
     || nextLength > previousLength + 2
-    || hasRecentA2Coaching(input.session, input.task.taskId, now, "low_progress_artifact_autosave")
+    || hasRecentAgentCoaching(input.session, input.task.taskId, now, "low_progress_artifact_autosave")
   ) {
     return [];
   }
-  return createA2MonitoringAndCoachingEvents({
+  return createA3SupervisionAndA2CoachingEvents({
     session: input.session,
     task: input.task,
     now,
@@ -1843,7 +1971,7 @@ function isSignificantArtifactRegression(previousLength: number, nextLength: num
     && previousLength - nextLength >= aaisA2ArtifactRegressionMinimumDropCharacters;
 }
 
-function createA2MonitoringAndCoachingEvents(input: {
+function createA3SupervisionAndA2CoachingEvents(input: {
   session: AaisLearnerSession;
   task: AaisTaskRecord;
   now: Date;
@@ -1858,7 +1986,7 @@ function createA2MonitoringAndCoachingEvents(input: {
       sessionId: input.session.sessionId,
       phase: input.task.phase,
       task: input.task.taskId,
-      agent: "A2",
+      agent: "A3",
       event: "monitoring_pause_detected",
       detail: {
         signal: input.reason,
@@ -1887,7 +2015,7 @@ function createA2MonitoringAndCoachingEvents(input: {
   ];
 }
 
-function hasRecentA2Coaching(
+function hasRecentAgentCoaching(
   session: AaisLearnerSession,
   taskId: string,
   now: Date,
@@ -1901,11 +2029,11 @@ function hasRecentA2Coaching(
       event.detail.reason === reason
       || event.detail.signal === reason
     )
-    && isWithinA2CoachingCooldown(event.time, nowMs)
+    && isWithinAgentCoachingCooldown(event.time, nowMs)
   );
 }
 
-function isWithinA2CoachingCooldown(eventTime: string, nowMs: number) {
+function isWithinAgentCoachingCooldown(eventTime: string, nowMs: number) {
   const eventMs = Date.parse(eventTime);
   return Number.isFinite(eventMs) && nowMs - eventMs < aaisA2CoachingCooldownMs;
 }
@@ -1937,6 +2065,10 @@ function hashForId(seed: string) {
 
 function createPseudonymousAnalyticsLearnerKey(studentId: string) {
   return `learner-${createHash("sha256").update(`aais-analytics:${studentId}`).digest("hex").slice(0, 12)}`;
+}
+
+function createPseudonymousAnalyticsSessionKey(sessionId: string) {
+  return `session-${createHash("sha256").update(`aais-analytics-session:${sessionId}`).digest("hex").slice(0, 12)}`;
 }
 
 function createAiAcceptanceDecisionKey(

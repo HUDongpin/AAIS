@@ -25,7 +25,13 @@ import {
 export async function GET(request: Request) {
   const config = await resolveAaisOidcConfig();
   if (!config) {
-    return NextResponse.json({ error: "AAIS OIDC is not configured." }, { status: 503 });
+    return NextResponse.json(
+      {
+        error: "AAIS OIDC is not configured.",
+        secrets: "redacted",
+      },
+      { status: 503 },
+    );
   }
   const url = new URL(request.url);
   const code = url.searchParams.get("code");
@@ -96,7 +102,13 @@ export async function GET(request: Request) {
 }
 
 function createOidcFailureResponse(message: string) {
-  const response = NextResponse.json({ error: message }, { status: 401 });
+  const response = NextResponse.json(
+    {
+      error: message,
+      secrets: "redacted",
+    },
+    { status: 401 },
+  );
   response.cookies.set(getAaisOidcStateCookieName(), "", getAaisOidcExpiredCookieOptions());
   return response;
 }
@@ -134,6 +146,9 @@ function classifyOidcCallbackFailure(error: unknown) {
   }
   if (error.message === "AAIS OIDC subject is missing.") {
     return "missing_subject";
+  }
+  if (error.message === "AAIS OIDC email is missing.") {
+    return "missing_email";
   }
   if (error.message === "AAIS OIDC email is not verified.") {
     return "unverified_email";

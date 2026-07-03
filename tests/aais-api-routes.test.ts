@@ -88,6 +88,27 @@ describe("AAIS learning API routes", () => {
     expect(response.status).toBe(401);
   });
 
+  it("returns role-only actor evidence for authenticated session reads", async () => {
+    const sessionRoute = await import("@/app/api/learning/session/route");
+
+    const response = await sessionRoute.GET(
+      new Request("http://localhost/api/learning/session", {
+        headers: {
+          cookie: createAuthedCookie("teacher-a", "teacher"),
+        },
+      }),
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.actor).toEqual({
+      role: "teacher",
+    });
+    expect(body.actor?.id).toBeUndefined();
+    expect(body.actor?.displayName).toBeUndefined();
+    expect(JSON.stringify(body)).not.toContain("aais_session");
+  });
+
   it("fails closed in production when persistent learner storage is not configured", async () => {
     vi.stubEnv("NODE_ENV", "production");
     vi.stubEnv("VERCEL_ENV", "production");
@@ -95,7 +116,10 @@ describe("AAIS learning API routes", () => {
     vi.stubEnv("AAIS_DATABASE_URL", "");
     vi.stubEnv("DATABASE_URL", "");
     vi.stubEnv("POSTGRES_URL", "");
+    vi.stubEnv("POSTGRES_PRISMA_URL", "");
+    vi.stubEnv("POSTGRES_URL_NO_SSL", "");
     vi.stubEnv("DATABASE_URL_UNPOOLED", "");
+    vi.stubEnv("POSTGRES_URL_NON_POOLING", "");
     vi.stubEnv("PGHOST", "");
     vi.stubEnv("PGHOST_UNPOOLED", "");
     vi.stubEnv("PGUSER", "");
@@ -126,7 +150,10 @@ describe("AAIS learning API routes", () => {
     vi.stubEnv("AAIS_DATABASE_URL", "");
     vi.stubEnv("DATABASE_URL", "");
     vi.stubEnv("POSTGRES_URL", "");
+    vi.stubEnv("POSTGRES_PRISMA_URL", "");
+    vi.stubEnv("POSTGRES_URL_NO_SSL", "");
     vi.stubEnv("DATABASE_URL_UNPOOLED", "");
+    vi.stubEnv("POSTGRES_URL_NON_POOLING", "");
     vi.stubEnv("PGHOST", "");
     vi.stubEnv("PGHOST_UNPOOLED", "");
     vi.stubEnv("PGUSER", "");
@@ -397,6 +424,15 @@ describe("AAIS learning API routes", () => {
         }),
       }),
     );
+    const rawSessionResponse = await sessionRoute.GET(
+      new Request("http://localhost/api/learning/session", {
+        headers: {
+          cookie: s001Cookie,
+        },
+      }),
+    );
+    const rawSessionBody = await rawSessionResponse.json();
+    const rawSessionId = rawSessionBody.session.sessionId;
 
     const studentResponse = await exportRoute.GET(
       new Request("http://localhost/api/learning/export?scope=cohort&format=json", {
@@ -459,8 +495,11 @@ describe("AAIS learning API routes", () => {
     });
     expect(json.learners).toHaveLength(1);
     expect(json.learners[0].learnerKey).toMatch(/^learner-/);
+    expect(json.learners[0].sessionKey).toMatch(/^session-[a-f0-9]{12}$/);
+    expect(json.learners[0]).not.toHaveProperty("sessionId");
     expect(jsonText).not.toContain("S001");
     expect(jsonText).not.toContain("S002");
+    expect(jsonText).not.toContain(rawSessionId);
     expect(jsonText).not.toContain("第一位学习者不应出现在 cohort export 的原文");
     expect(jsonText).not.toContain("第二位学习者也不应进入 cohort export 原文");
     expect(jsonText).not.toContain("test-session-secret");
@@ -657,7 +696,85 @@ describe("AAIS learning API routes", () => {
     expect(JSON.stringify(body)).not.toContain("第一位学习者的低进展 API 记录");
     expect(JSON.stringify(body)).not.toContain("第二位学习者的训练 API 记录");
   });
+
+  it("authorizes cohort analytics before filter validation and validates filters before storage access", async () => {
+    stubProductionWithoutDatabase();
+    vi.resetModules();
+    const analyticsRoute = await import("@/app/api/learning/analytics/route");
+    const exportRoute = await import("@/app/api/learning/export/route");
+
+    const anonymousResponse = await analyticsRoute.GET(
+      new Request("http://localhost/api/learning/analytics?scope=cohort&phase=lecture"),
+    );
+    const anonymousBody = await anonymousResponse.json();
+
+    expect(anonymousResponse.status).toBe(401);
+    expect(anonymousBody.error).toBe("AAIS authentication is required.");
+    expect(anonymousBody.secrets).toBe("redacted");
+
+    const studentResponse = await analyticsRoute.GET(
+      new Request("http://localhost/api/learning/analytics?scope=cohort&phase=lecture", {
+        headers: {
+          cookie: createAuthedCookie("S001"),
+        },
+      }),
+    );
+    const studentBody = await studentResponse.json();
+
+    expect(studentResponse.status).toBe(403);
+    expect(studentBody.error).toBe("AAIS teacher analytics requires educator authorization.");
+    expect(studentBody.secrets).toBe("redacted");
+
+    const teacherAnalyticsResponse = await analyticsRoute.GET(
+      new Request("http://localhost/api/learning/analytics?scope=cohort&phase=lecture", {
+        headers: {
+          cookie: createAuthedCookie("teacher-a", "teacher"),
+        },
+      }),
+    );
+    const teacherAnalyticsBody = await teacherAnalyticsResponse.json();
+
+    expect(teacherAnalyticsResponse.status).toBe(400);
+    expect(teacherAnalyticsBody.error).toBe("Invalid AAIS cohort analytics phase filter.");
+    expect(teacherAnalyticsBody.secrets).toBe("redacted");
+
+    const teacherExportResponse = await exportRoute.GET(
+      new Request("http://localhost/api/learning/export?scope=cohort&format=json&event=raw_dump", {
+        headers: {
+          cookie: createAuthedCookie("teacher-a", "teacher"),
+        },
+      }),
+    );
+    const teacherExportBody = await teacherExportResponse.json();
+
+    expect(teacherExportResponse.status).toBe(400);
+    expect(teacherExportBody.error).toBe("Invalid AAIS cohort analytics event filter.");
+    expect(teacherExportBody.secrets).toBe("redacted");
+  });
 });
+
+function stubProductionWithoutDatabase() {
+  vi.stubEnv("NODE_ENV", "production");
+  vi.stubEnv("VERCEL_ENV", "production");
+  vi.stubEnv("AAIS_DATA_DIR", "");
+  vi.stubEnv("AAIS_DATABASE_URL", "");
+  vi.stubEnv("DATABASE_URL", "");
+  vi.stubEnv("POSTGRES_URL", "");
+  vi.stubEnv("DATABASE_URL_UNPOOLED", "");
+  vi.stubEnv("POSTGRES_PRISMA_URL", "");
+  vi.stubEnv("POSTGRES_URL_NO_SSL", "");
+  vi.stubEnv("POSTGRES_URL_NON_POOLING", "");
+  vi.stubEnv("PGHOST", "");
+  vi.stubEnv("PGHOST_UNPOOLED", "");
+  vi.stubEnv("PGUSER", "");
+  vi.stubEnv("PGDATABASE", "");
+  vi.stubEnv("PGPASSWORD", "");
+  vi.stubEnv("POSTGRES_HOST", "");
+  vi.stubEnv("POSTGRES_HOST_NON_POOLING", "");
+  vi.stubEnv("POSTGRES_USER", "");
+  vi.stubEnv("POSTGRES_DATABASE", "");
+  vi.stubEnv("POSTGRES_PASSWORD", "");
+}
 
 function createAuthedCookie(id: string, role: "student" | "teacher" | "admin" = "student") {
   const csrfToken = createAaisCsrfToken(id);

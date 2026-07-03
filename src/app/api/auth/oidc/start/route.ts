@@ -9,7 +9,13 @@ import {
 export async function GET(request: Request) {
   const config = await resolveAaisOidcConfig();
   if (!config) {
-    return NextResponse.json({ error: "AAIS OIDC is not configured." }, { status: 503 });
+    return NextResponse.json(
+      {
+        error: "AAIS OIDC is not configured.",
+        secrets: "redacted",
+      },
+      { status: 503 },
+    );
   }
   const url = new URL(request.url);
   const state = createAaisOidcState(url.searchParams.get("from") ?? "/learning");

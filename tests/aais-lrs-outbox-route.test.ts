@@ -130,7 +130,8 @@ describe("AAIS LRS persistent outbox flush route", () => {
       {
         type: "aais.audit",
         event: "lrs_outbox_flush",
-        actorId: "admin-a",
+        actorId: expect.stringMatching(/^actor:[a-f0-9]{16}$/),
+        actorIdRedaction: "sha256-16",
         outcome: "success",
         metadata: {
           action: "flush",
@@ -143,6 +144,7 @@ describe("AAIS LRS persistent outbox flush route", () => {
         },
       },
     ]);
+    expect(JSON.stringify(readAuditEvents())).not.toContain("admin-a");
   });
 
   it("requeues dead-letter rows for an admin session without exposing payloads", async () => {
@@ -186,7 +188,8 @@ describe("AAIS LRS persistent outbox flush route", () => {
       {
         type: "aais.audit",
         event: "lrs_outbox_requeue_dead_letter",
-        actorId: "admin-a",
+        actorId: expect.stringMatching(/^actor:[a-f0-9]{16}$/),
+        actorIdRedaction: "sha256-16",
         outcome: "success",
         metadata: {
           action: "requeue-dead-letter",
@@ -198,6 +201,7 @@ describe("AAIS LRS persistent outbox flush route", () => {
         },
       },
     ]);
+    expect(JSON.stringify(auditEvents)).not.toContain("admin-a");
     expect(JSON.stringify(auditEvents)).not.toContain("raw learner payload must not leak");
   });
 

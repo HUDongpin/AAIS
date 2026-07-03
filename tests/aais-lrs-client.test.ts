@@ -18,7 +18,7 @@ const scaffoldEvent: AaisEvent = {
   session_id: "session-phoebe-2026",
   phase: "practice",
   task: "practice_task_1",
-  agent: "A4",
+  agent: "A1",
   event: "scaffold_request",
   time: "2026-06-29T17:00:00.000Z",
   detail: {
@@ -53,12 +53,16 @@ describe("AAIS LRS xAPI client", () => {
       tool_id: "stage-checklist",
     });
     expect(statement.context.extensions).toMatchObject({
-      "https://www.aais.site/xapi/extensions/aais-session-id": "session-phoebe-2026",
-      "https://www.aais.site/xapi/extensions/aais-event-family": "A4_SCAFFOLD",
+      "https://www.aais.site/xapi/extensions/aais-session-id": expect.stringMatching(/^session-[a-f0-9]{12}$/),
+      "https://www.aais.site/xapi/extensions/aais-event-family": "A1_GUIDE",
       "https://www.aais.site/xapi/extensions/aais-evidence-kind": "scaffold",
+      "https://www.aais.site/xapi/extensions/aais-agent-role": "Front end, direct student dialogue",
+      "https://www.aais.site/xapi/extensions/aais-agent-ca-modules": ["Scaffolding", "Fading"],
+      "https://www.aais.site/xapi/extensions/aais-agent-phase-scope": "both",
       "https://www.aais.site/xapi/extensions/aais-role": "learner",
       "https://www.aais.site/xapi/extensions/aais-course-id": "cognitive-apprenticeship",
     });
+    expect(JSON.stringify(statement.context.extensions)).not.toContain("session-phoebe-2026");
   });
 
   it("uses session-aware deterministic ids so LRS retries stay idempotent per session", () => {
@@ -89,6 +93,10 @@ describe("AAIS LRS xAPI client", () => {
       prompt: "[redacted]",
       prompt_length: 10,
       accepted_ai_suggestion: true,
+    });
+    expect(statement.context.extensions).toMatchObject({
+      "https://www.aais.site/xapi/extensions/aais-agent-family": "A2_EXPERT",
+      "https://www.aais.site/xapi/extensions/aais-agent-ca-modules": ["Modelling", "Coaching"],
     });
     expect(JSON.stringify(statement)).not.toContain("请直接给我完整答案");
   });

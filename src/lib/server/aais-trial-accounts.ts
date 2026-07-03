@@ -10,7 +10,7 @@ type PasswordRecord = {
 type TrialAccountRecord = {
   id: string;
   displayName: string;
-  role: "student";
+  role: AaisSessionActor["role"];
   password: PasswordRecord;
 };
 
@@ -127,23 +127,35 @@ function readConfiguredTrialAccounts() {
 }
 
 function readConfiguredTrialAccountLookup(): ConfiguredTrialAccountLookup {
-  const raw = process.env.AAIS_TRIAL_ACCOUNTS_JSON?.trim();
-  if (!raw) {
+  const rawSources = [
+    process.env.AAIS_TRIAL_ACCOUNTS_JSON?.trim(),
+    process.env.AAIS_TRIAL_SMOKE_ACCOUNTS_JSON?.trim(),
+  ].filter((raw): raw is string => Boolean(raw));
+  if (!rawSources.length) {
     return {
       status: "missing",
       accounts: null,
     };
   }
+  const accounts: TrialAccountRecord[] = [];
   try {
-    const parsed = JSON.parse(raw) as Partial<TrialAccountRecord>[];
-    if (!Array.isArray(parsed)) {
+    for (const raw of rawSources) {
+      const parsed = JSON.parse(raw) as Partial<TrialAccountRecord>[];
+      if (!Array.isArray(parsed)) {
+        return {
+          status: "invalid",
+          accounts: null,
+        };
+      }
+      accounts.push(...parsed.map(requireTrialAccount));
+    }
+    if (accounts.length === 0) {
       return {
         status: "invalid",
         accounts: null,
       };
     }
-    const accounts = parsed.map(requireTrialAccount);
-    if (accounts.length === 0) {
+    if (new Set(accounts.map((account) => account.id)).size !== accounts.length) {
       return {
         status: "invalid",
         accounts: null,
@@ -167,7 +179,7 @@ function requireTrialAccount(account: Partial<TrialAccountRecord>): TrialAccount
     || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(account.id)
     || typeof account.displayName !== "string"
     || account.displayName.trim().length === 0
-    || account.role !== "student"
+    || !isAaisSessionRole(account.role)
     || account.password?.algorithm !== "scrypt"
     || typeof account.password.salt !== "string"
     || typeof account.password.hash !== "string"
@@ -180,6 +192,10 @@ function requireTrialAccount(account: Partial<TrialAccountRecord>): TrialAccount
     role: account.role,
     password: account.password,
   };
+}
+
+function isAaisSessionRole(value: unknown): value is AaisSessionActor["role"] {
+  return value === "student" || value === "teacher" || value === "admin";
 }
 
 function passwordMatches(password: string, record: PasswordRecord) {

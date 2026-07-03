@@ -3,6 +3,7 @@ import {
   type AaisCohortAnalyticsFilters,
   getAaisLearningStore,
   isAaisLearningStorageConfigurationError,
+  normalizeCohortAnalyticsFilters,
 } from "@/lib/server/aais-learning-store";
 import { isAaisAuthError, requireAaisSessionActor, resolveAaisStudentId } from "@/lib/server/aais-request-auth";
 
@@ -12,10 +13,9 @@ export async function GET(request: Request) {
   const scope = url.searchParams.get("scope");
 
   try {
-    const store = getAaisLearningStore();
     const exported = scope === "cohort"
-      ? await getAuthorizedCohortExport(request, store, format, readCohortAnalyticsFilters(url.searchParams))
-      : await store.exportEvents(resolveAaisStudentId(request), format);
+      ? await getAuthorizedCohortExport(request, format, url.searchParams)
+      : await getAaisLearningStore().exportEvents(resolveAaisStudentId(request), format);
     return new NextResponse(exported.body, {
       headers: {
         "content-type": exported.contentType,
@@ -26,6 +26,7 @@ export async function GET(request: Request) {
     return NextResponse.json(
       {
         error: error instanceof Error ? error.message : "AAIS export request failed.",
+        secrets: "redacted",
       },
       { status: getErrorStatus(error) },
     );
@@ -34,19 +35,19 @@ export async function GET(request: Request) {
 
 async function getAuthorizedCohortExport(
   request: Request,
-  store: ReturnType<typeof getAaisLearningStore>,
   format: "json" | "csv",
-  filters: AaisCohortAnalyticsFilters,
+  params: URLSearchParams,
 ) {
   const actor = requireAaisSessionActor(request);
   if (actor.role !== "teacher" && actor.role !== "admin") {
     throw new AaisExportAuthorizationError();
   }
-  return store.exportCohortAnalytics(format, filters);
+  const filters = readCohortAnalyticsFilters(params);
+  return getAaisLearningStore().exportCohortAnalytics(format, filters);
 }
 
 function readCohortAnalyticsFilters(params: URLSearchParams): AaisCohortAnalyticsFilters {
-  return {
+  return normalizeCohortAnalyticsFilters({
     phase: readOptionalFilter(params, "phase") as AaisCohortAnalyticsFilters["phase"],
     task: readOptionalFilter(params, "task"),
     agent: readOptionalFilter(params, "agent") as AaisCohortAnalyticsFilters["agent"],
@@ -54,7 +55,7 @@ function readCohortAnalyticsFilters(params: URLSearchParams): AaisCohortAnalytic
     cohort: readOptionalFilter(params, "cohort"),
     role: readOptionalFilter(params, "role"),
     courseId: readOptionalFilter(params, "courseId") ?? readOptionalFilter(params, "course_id"),
-  };
+  });
 }
 
 function readOptionalFilter(params: URLSearchParams, key: string) {

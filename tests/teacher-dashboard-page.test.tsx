@@ -87,7 +87,7 @@ describe("AAIS TeacherDashboardPage", () => {
     expect(await screen.findByRole("heading", { name: "教师看板" })).toBeTruthy();
     expect(screen.getByText("学习者")).toBeTruthy();
     expect(screen.getAllByText("2").length).toBeGreaterThan(0);
-    expect(screen.getByText("A2 监督信号")).toBeTruthy();
+    expect(screen.getByText("A3/A2 信号")).toBeTruthy();
     expect(screen.getByText("AI 采纳")).toBeTruthy();
     expect(screen.getByText("风险分层")).toBeTruthy();
     expect(screen.getAllByText("高风险").length).toBeGreaterThan(0);

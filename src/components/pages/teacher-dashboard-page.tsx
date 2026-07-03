@@ -44,7 +44,8 @@ type AaisCohortAnalytics = {
 
 type AaisCohortLearner = {
   learnerKey: string;
-  sessionId: string;
+  sessionKey?: string;
+  sessionId?: string;
   updatedAt: string;
   trainingCompleted: boolean;
   activePracticeTaskId: string | null;
@@ -179,7 +180,7 @@ export function TeacherDashboardPage() {
               <p className="text-sm font-semibold text-[#1f6feb]">Cohort learning analytics</p>
               <h1 className="mt-1 text-3xl font-black tracking-normal text-[#171b35]">教师看板</h1>
               <p className="mt-2 max-w-3xl text-sm leading-6 text-[#59657a]">
-                聚合训练完成、支架依赖、A2 监督信号、AI 互动和反思证据，帮助教师快速定位需要跟进的学习者。
+                聚合训练完成、支架依赖、A3 监督与 A2 coaching 信号、AI 互动和反思证据，帮助教师快速定位需要跟进的学习者。
               </p>
             </div>
             <div className="grid gap-2 rounded-xl border border-[#d8e6fb] bg-[#f8fbff] px-4 py-3 text-sm font-semibold text-[#3f4b69]">
@@ -274,7 +275,7 @@ export function TeacherDashboardPage() {
           <MetricTile icon={CheckCircle} label="完成训练" value={cohort.trainingCompleted} />
           <MetricTile icon={Student} label="练习完成数" value={cohort.completedPracticeTasks} />
           <MetricTile icon={ArrowsLeftRight} label="支架请求" value={cohort.scaffoldRequests} />
-          <MetricTile icon={WarningCircle} label="A2 监督信号" value={cohort.coachingSignals} />
+          <MetricTile icon={WarningCircle} label="A3/A2 信号" value={cohort.coachingSignals} />
           <MetricTile icon={ChartLineUp} label="AI 互动" value={cohort.aiInteractions} />
           <MetricTile icon={CheckCircle} label="AI 采纳" value={cohort.aiAcceptanceDecisions} />
         </section>
@@ -285,7 +286,7 @@ export function TeacherDashboardPage() {
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div>
                   <h2 className="text-lg font-black text-[#171b35]">学习者风险队列</h2>
-                  <p className="mt-1 text-sm text-[#68708a]">优先显示训练未完成、反思证据不足或 A2 监督信号较多的学习者。</p>
+                  <p className="mt-1 text-sm text-[#68708a]">优先显示训练未完成、反思证据不足或 A3/A2 信号较多的学习者。</p>
                 </div>
                 <span className="rounded-full border border-[#d8e6fb] bg-[#f8fbff] px-3 py-1 text-xs font-bold text-[#1f6feb]">
                   {followUpLearners.length || rows.length} 条
@@ -422,7 +423,7 @@ function selectSafeCohortAnalytics(analytics: AaisCohortAnalytics): AaisCohortAn
     },
     learners: analytics.learners.map((learner) => ({
       learnerKey: learner.learnerKey,
-      sessionId: learner.sessionId,
+      sessionKey: learner.sessionKey ?? learner.sessionId ?? "session-redacted",
       updatedAt: learner.updatedAt,
       trainingCompleted: learner.trainingCompleted,
       activePracticeTaskId: learner.activePracticeTaskId,
@@ -535,7 +536,7 @@ function formatPriorityReason(reason: string) {
   const labels: Record<string, string> = {
     training_incomplete: "训练未完成",
     reflection_missing: "需补反思",
-    a2_coaching_signals: "A2 已触发",
+    a2_coaching_signals: "A3/A2 已触发",
     high_scaffold_dependency: "支架依赖高",
     no_ai_interaction_after_coaching: "需要跟进 AI 使用决策",
   };

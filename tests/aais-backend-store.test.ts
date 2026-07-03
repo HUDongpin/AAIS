@@ -22,10 +22,12 @@ afterEach(async () => {
   delete process.env.LRS_ENDPOINT;
   delete process.env.LRS_USERNAME;
   delete process.env.LRS_PASSWORD;
+  delete process.env.AAIS_DATABASE_DRIVER;
   delete process.env.AAIS_DATABASE_URL;
   delete process.env.DATABASE_URL;
   delete process.env.POSTGRES_URL;
   delete process.env.POSTGRES_PRISMA_URL;
+  delete process.env.POSTGRES_URL_NO_SSL;
   delete process.env.DATABASE_URL_UNPOOLED;
   delete process.env.POSTGRES_URL_NON_POOLING;
   delete process.env.PGHOST;
@@ -374,7 +376,7 @@ describe("AAIS backend learning store", () => {
     });
   });
 
-  it("emits A2 monitoring and coaching when artifact autosaves show low progress", async () => {
+  it("emits A3 supervision and A2 coaching when artifact autosaves show low progress", async () => {
     const store = createAaisLearningStore({ rootDir: tempDir });
 
     await store.saveArtifact("S001", "training_task_1", "我先写一点");
@@ -383,9 +385,11 @@ describe("AAIS backend learning store", () => {
     expect(session.events.map((event) => event.event)).toEqual(
       expect.arrayContaining(["monitoring_pause_detected", "coaching_push"]),
     );
+    expect(session.events.findLast((event) => event.event === "monitoring_pause_detected")?.agent).toBe("A3");
+    expect(session.events.findLast((event) => event.event === "coaching_push")?.agent).toBe("A2");
   });
 
-  it("emits A2 monitoring and coaching when artifact autosaves regress significantly", async () => {
+  it("emits A3 supervision and A2 coaching when artifact autosaves regress significantly", async () => {
     const store = createAaisLearningStore({ rootDir: tempDir });
     const originalArtifact = "计划".repeat(60);
 
@@ -394,6 +398,8 @@ describe("AAIS backend learning store", () => {
 
     const monitoring = session.events.findLast((event) => event.event === "monitoring_pause_detected");
     const coaching = session.events.findLast((event) => event.event === "coaching_push");
+    expect(monitoring?.agent).toBe("A3");
+    expect(coaching?.agent).toBe("A2");
     expect(monitoring?.detail).toMatchObject({
       signal: "artifact_regression_autosave",
       previous_characters: 120,
@@ -587,7 +593,8 @@ describe("AAIS backend learning store", () => {
 
   it("filters cohort analytics by enterprise join keys without raw event payloads", async () => {
     const store = createAaisLearningStore({ rootDir: tempDir });
-    await store.completeTask("S001", "training_task_1");
+    const rawSession = await store.completeTask("S001", "training_task_1");
+    const rawSessionId = rawSession.sessionId;
     await store.selectTask("S001", "practice_task_1");
     await store.saveArtifact("S001", "practice_task_1", "第一位学习者的低进展记录");
     await store.saveArtifact("S001", "practice_task_1", "第一位学习者的低进展记录");
@@ -627,9 +634,34 @@ describe("AAIS backend learning store", () => {
       },
     });
     expect(analytics.learners[0].learnerKey).toMatch(/^learner-/);
+    expect(analytics.learners[0]).toMatchObject({
+      sessionKey: expect.stringMatching(/^session-[a-f0-9]{12}$/),
+    });
+    expect(analytics.learners[0]).not.toHaveProperty("sessionId");
     expect(JSON.stringify(analytics)).not.toContain("S001");
+    expect(JSON.stringify(analytics)).not.toContain(rawSessionId);
     expect(JSON.stringify(analytics)).not.toContain("第一位学习者的低进展记录");
     expect(JSON.stringify(analytics)).not.toContain("第二位学习者的训练记录");
+  });
+
+  it("exports pseudonymous cohort session keys instead of internal learner session ids", async () => {
+    const store = createAaisLearningStore({ rootDir: tempDir });
+    const rawSession = await store.completeTask("S001", "training_task_1");
+    await store.selectTask("S001", "practice_task_1");
+    await store.saveArtifact("S001", "practice_task_1", "第一位学习者的导出隐私记录");
+
+    const exported = await store.exportCohortAnalytics("json");
+    const body = JSON.parse(exported.body);
+    const serialized = JSON.stringify(body);
+
+    expect(body.learners[0]).toMatchObject({
+      learnerKey: expect.stringMatching(/^learner-[a-f0-9]{12}$/),
+      sessionKey: expect.stringMatching(/^session-[a-f0-9]{12}$/),
+    });
+    expect(body.learners[0]).not.toHaveProperty("sessionId");
+    expect(serialized).not.toContain(rawSession.sessionId);
+    expect(serialized).not.toContain("S001");
+    expect(serialized).not.toContain("第一位学习者的导出隐私记录");
   });
 
   it("fails closed for the default production store when Postgres is not configured", async () => {
@@ -638,7 +670,10 @@ describe("AAIS backend learning store", () => {
     vi.stubEnv("AAIS_DATABASE_URL", "");
     vi.stubEnv("DATABASE_URL", "");
     vi.stubEnv("POSTGRES_URL", "");
+    vi.stubEnv("POSTGRES_PRISMA_URL", "");
+    vi.stubEnv("POSTGRES_URL_NO_SSL", "");
     vi.stubEnv("DATABASE_URL_UNPOOLED", "");
+    vi.stubEnv("POSTGRES_URL_NON_POOLING", "");
     vi.stubEnv("PGHOST", "");
     vi.stubEnv("PGUSER", "");
     vi.stubEnv("PGDATABASE", "");
@@ -671,6 +706,15 @@ describe("AAIS backend learning store", () => {
     expect(getAaisDatabaseConfiguration()).toMatchObject({
       sourceEnv: "POSTGRES_URL_NON_POOLING",
       url: "postgres://aais:legacy@legacy.neon.tech/aais",
+    });
+  });
+
+  it("uses the Vercel Postgres no-SSL URL alias when it is the configured fallback", () => {
+    vi.stubEnv("POSTGRES_URL_NO_SSL", "postgres://aais:no-ssl@no-ssl.neon.tech/aais");
+
+    expect(getAaisDatabaseConfiguration()).toMatchObject({
+      sourceEnv: "POSTGRES_URL_NO_SSL",
+      url: "postgres://aais:no-ssl@no-ssl.neon.tech/aais",
     });
   });
 

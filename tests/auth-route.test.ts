@@ -24,6 +24,7 @@ beforeEach(() => {
 afterEach(() => {
   delete process.env.AAIS_SESSION_SECRET;
   delete process.env.AAIS_TRIAL_ACCOUNTS_JSON;
+  delete process.env.AAIS_TRIAL_SMOKE_ACCOUNTS_JSON;
   vi.unstubAllEnvs();
 });
 
@@ -94,6 +95,47 @@ describe("AAIS trial account auth route", () => {
     expect(unknown.status).toBe(401);
   });
 
+  it("allows smoke-only educator accounts without replacing configured learners", async () => {
+    process.env.AAIS_TRIAL_SMOKE_ACCOUNTS_JSON = JSON.stringify([
+      {
+        id: "teacher-smoke",
+        displayName: "Teacher Smoke",
+        role: "teacher",
+        password: createPasswordRecord("teacher-secret"),
+      },
+    ]);
+    const { POST } = await import("@/app/api/auth/app-session/route");
+
+    const learner = await POST(
+      new Request("http://localhost/api/auth/app-session", {
+        method: "POST",
+        body: JSON.stringify({
+          account: "Bobie",
+          password: "12345",
+        }),
+      }),
+    );
+    const teacher = await POST(
+      new Request("http://localhost/api/auth/app-session", {
+        method: "POST",
+        body: JSON.stringify({
+          account: "teacher-smoke",
+          password: "teacher-secret",
+        }),
+      }),
+    );
+    const teacherBody = await teacher.json();
+
+    expect(learner.status).toBe(200);
+    expect(teacher.status).toBe(200);
+    expect(teacherBody.appSession.actor).toMatchObject({
+      id: "teacher-smoke",
+      displayName: "Teacher Smoke",
+      role: "teacher",
+    });
+    expect(JSON.stringify(teacherBody)).not.toContain("teacher-secret");
+  });
+
   it("rate limits repeated failed login attempts for the same account and client", async () => {
     vi.resetModules();
     const { POST } = await import("@/app/api/auth/app-session/route");
@@ -159,7 +201,13 @@ describe("AAIS trial account auth route", () => {
     expect(auditEvents.map((event) => event.event)).toEqual(
       expect.arrayContaining(["auth.login.success", "auth.login.failure"]),
     );
-    expect(JSON.stringify(auditEvents)).toContain("Bobie");
+    expect(auditEvents.map((event) => event.actorId)).toEqual([
+      expect.stringMatching(/^actor:[a-f0-9]{16}$/),
+      expect.stringMatching(/^actor:[a-f0-9]{16}$/),
+    ]);
+    expect(new Set(auditEvents.map((event) => event.actorId)).size).toBe(1);
+    expect(auditEvents.every((event) => event.actorIdRedaction === "sha256-16")).toBe(true);
+    expect(JSON.stringify(auditEvents)).not.toContain("Bobie");
     expect(JSON.stringify(auditEvents)).not.toContain("12345");
     expect(JSON.stringify(auditEvents)).not.toContain("wrong");
   });

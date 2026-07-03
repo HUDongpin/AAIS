@@ -29,10 +29,15 @@ const enterpriseEnv = [
   "AAIS_SESSION_SECRET",
   "AAIS_TRIAL_LOGIN_ENABLED",
   "AAIS_TRIAL_ACCOUNTS_JSON",
+  "AAIS_TRIAL_SMOKE_ACCOUNTS_JSON",
+  "AAIS_DATABASE_DRIVER",
   "AAIS_DATABASE_URL",
   "DATABASE_URL",
   "POSTGRES_URL",
+  "POSTGRES_PRISMA_URL",
+  "POSTGRES_URL_NO_SSL",
   "DATABASE_URL_UNPOOLED",
+  "POSTGRES_URL_NON_POOLING",
   "PGHOST",
   "PGHOST_UNPOOLED",
   "PGPORT",
@@ -78,6 +83,70 @@ const trialAccountConfig = JSON.stringify([
   },
 ]);
 
+function passingAiEvalManifest(overrides: Record<string, unknown> = {}) {
+  return {
+    schemaVersion: 1,
+    evalVersion: "eval-2026-06-30",
+    provider: "openai-compatible",
+    model: "enterprise-model",
+    status: "passed",
+    passedAt: "2026-06-30T00:00:00.000Z",
+    sampleCount: 4,
+    blockedCount: 0,
+    agentEvidence: {
+      contractVersion: "aais-a1-a4-ca-eval-v2",
+      requiredAgents: ["A1", "A2", "A3", "A4"],
+      coveredAgents: ["A1", "A2", "A3", "A4"],
+      requiredCaModules: ["Modelling", "Coaching", "Scaffolding", "Fading", "Articulation", "Reflection"],
+      coveredCaModules: ["Modelling", "Coaching", "Scaffolding", "Fading", "Articulation", "Reflection"],
+      coverage: passingAiEvalAgentCoverage(),
+      caBackgroundIncluded: true,
+      rawPromptsStored: false,
+      rawOutputsStored: false,
+      complete: true,
+    },
+    redaction: {
+      prompts: "summarized",
+      secrets: "omitted",
+    },
+    ...overrides,
+  };
+}
+
+function passingAiEvalAgentCoverage(overrides: Record<string, unknown> = {}) {
+  return {
+    A1: {
+      label: "导学智能体",
+      responsibility: "frontend-guide-scaffolding",
+      sampleIds: ["a1-guide-training"],
+      caModules: ["Scaffolding", "Fading"],
+      complete: true,
+    },
+    A2: {
+      label: "专家智能体",
+      responsibility: "frontend-expert-modelling-coaching",
+      sampleIds: ["a2-expert-modelling-coaching"],
+      caModules: ["Modelling", "Coaching"],
+      complete: true,
+    },
+    A3: {
+      label: "监督智能体",
+      responsibility: "backend-supervision-a1-signal",
+      sampleIds: ["a3-supervision-a1-signal"],
+      caModules: ["Scaffolding"],
+      complete: true,
+    },
+    A4: {
+      label: "反思智能体",
+      responsibility: "backend-reflection-articulation",
+      sampleIds: ["a4-articulation-reflection"],
+      caModules: ["Articulation", "Reflection"],
+      complete: true,
+    },
+    ...overrides,
+  };
+}
+
 beforeEach(async () => {
   tempDir = await mkdtemp(path.join(tmpdir(), "aais-readiness-"));
   databaseProbeMode = "ok";
@@ -86,6 +155,7 @@ beforeEach(async () => {
   for (const key of enterpriseEnv) {
     vi.stubEnv(key, "");
   }
+  vi.stubEnv("AAIS_DATABASE_DRIVER", "pg");
 });
 
 afterEach(async () => {
@@ -121,20 +191,7 @@ describe("AAIS readiness route", () => {
     const manifestPath = path.join(tempDir, "aais-ai-eval.json");
     await writeFile(
       manifestPath,
-      JSON.stringify({
-        schemaVersion: 1,
-        evalVersion: "eval-2026-06-30",
-        provider: "openai-compatible",
-        model: "enterprise-model",
-        status: "passed",
-        passedAt: "2026-06-30T00:00:00.000Z",
-        sampleCount: 8,
-        blockedCount: 0,
-        redaction: {
-          prompts: "summarized",
-          secrets: "omitted",
-        },
-      }),
+      JSON.stringify(passingAiEvalManifest()),
       "utf8",
     );
     vi.stubEnv("AAIS_AI_EVAL_MANIFEST_PATH", manifestPath);
@@ -200,9 +257,64 @@ describe("AAIS readiness route", () => {
             },
           },
         },
+        agentEvidence: {
+          status: "ok",
+          enabled: true,
+          agentContract: {
+            version: "aais-a1-a4-ca-v2",
+            requiredAgents: ["A1", "A2", "A3", "A4"],
+            caModules: {
+              A1: ["Scaffolding", "Fading"],
+              A2: ["Modelling", "Coaching"],
+              A3: ["Scaffolding"],
+              A4: ["Articulation", "Reflection"],
+            },
+            roles: {
+              A1: "frontend-direct-dialogue",
+              A2: "frontend-direct-dialogue",
+              A3: "backend-a1-signal",
+              A4: "backend-a1-reflection",
+            },
+            xapiExtensions: {
+              agentRole: true,
+              agentCaModules: true,
+              agentFamily: true,
+              agentPhaseScope: true,
+              pseudonymousSessionId: true,
+            },
+            complete: true,
+          },
+          agentResponsibilities: {
+            A1: ["scaffold_request", "scaffold_self_check_started"],
+            A2: ["expert_model_viewed", "coaching_push", "ai_acceptance_recorded"],
+            A3: [
+              "artifact_edited",
+              "artifact_saved",
+              "planning_submitted",
+              "monitoring_pause_detected",
+            ],
+            A4: ["articulation_submitted", "expert_trace_compared", "self_report_saved"],
+          },
+          triggers: [
+            "monitoring_pause_detected",
+            "coaching_push",
+            "ai_acceptance_recorded",
+          ],
+        },
         a2Monitoring: {
           status: "ok",
           enabled: true,
+          agentContract: {
+            version: "aais-a1-a4-ca-v2",
+            xapiExtensions: {
+              agentRole: true,
+              agentCaModules: true,
+              agentFamily: true,
+              agentPhaseScope: true,
+              pseudonymousSessionId: true,
+            },
+            complete: true,
+          },
           triggers: [
             "monitoring_pause_detected",
             "coaching_push",
@@ -228,6 +340,51 @@ describe("AAIS readiness route", () => {
             rationaleTextExcluded: true,
           },
           redaction: "raw-learner-text-excluded",
+        },
+        a3Supervision: {
+          status: "ok",
+          enabled: true,
+          agentContract: {
+            version: "aais-a1-a4-ca-v2",
+            requiredAgents: ["A1", "A2", "A3", "A4"],
+            caModules: {
+              A1: ["Scaffolding", "Fading"],
+              A2: ["Modelling", "Coaching"],
+              A3: ["Scaffolding"],
+              A4: ["Articulation", "Reflection"],
+            },
+            roles: {
+              A1: "frontend-direct-dialogue",
+              A2: "frontend-direct-dialogue",
+              A3: "backend-a1-signal",
+              A4: "backend-a1-reflection",
+            },
+            xapiExtensions: {
+              agentRole: true,
+              agentCaModules: true,
+              agentFamily: true,
+              agentPhaseScope: true,
+              pseudonymousSessionId: true,
+            },
+            complete: true,
+          },
+          agentResponsibilities: {
+            A3: [
+              "artifact_edited",
+              "artifact_saved",
+              "planning_submitted",
+              "monitoring_pause_detected",
+            ],
+          },
+          triggers: [
+            "monitoring_pause_detected",
+            "coaching_push",
+            "ai_acceptance_recorded",
+          ],
+          signals: [
+            "low_progress_artifact_autosave",
+            "artifact_regression_autosave",
+          ],
         },
         oidc: {
           status: "ok",
@@ -370,6 +527,50 @@ describe("AAIS readiness route", () => {
     expect(JSON.stringify(body)).not.toContain("aais-teachers");
   });
 
+  it("reports ready for current-stage trial auth production without OIDC provider variables", async () => {
+    vi.stubEnv("AAIS_SESSION_SECRET", "session-secret-that-must-not-leak");
+    vi.stubEnv("AAIS_TRIAL_ACCOUNTS_JSON", trialAccountConfig);
+    vi.stubEnv("DATABASE_URL", "postgres://aais:database-secret@ep-prod.us-east-1.aws.neon.tech/aais");
+    vi.stubEnv("LRS_ENDPOINT", "https://lrs.example.test/xapi");
+    vi.stubEnv("LRS_USERNAME", "lrs-user");
+    vi.stubEnv("LRS_PASSWORD", "lrs-password-that-must-not-leak");
+    const { GET } = await import("@/app/api/system/readiness/route");
+
+    const response = await GET();
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body).toMatchObject({
+      status: "ready",
+      checks: {
+        trialAccounts: {
+          status: "ok",
+          configured: true,
+          accountCount: 1,
+        },
+        storage: {
+          status: "ok",
+          mode: "postgres",
+          provider: "neon",
+          probe: "connected",
+          sourceEnv: "DATABASE_URL",
+        },
+        oidc: {
+          status: "ok",
+          mode: "missing",
+          roleMapping: {
+            status: "missing",
+            configured: false,
+            present: [],
+          },
+        },
+      },
+    });
+    expect(body.issues).not.toContain("AAIS_OIDC_*");
+    expect(body.issues).not.toContain("AAIS_OIDC_ROLE_MAPPING");
+    expect(JSON.stringify(body)).not.toContain("database-secret");
+  });
+
   it("accepts OIDC issuer discovery when explicit provider endpoints are not set", async () => {
     vi.stubEnv("AAIS_SESSION_SECRET", "session-secret-that-must-not-leak");
     vi.stubEnv("AAIS_TRIAL_LOGIN_ENABLED", "false");
@@ -445,6 +646,42 @@ describe("AAIS readiness route", () => {
     expect(JSON.stringify(body)).not.toContain("oidc-secret-that-must-not-leak");
   });
 
+  it("fails closed when production OIDC explicit endpoints are partially configured", async () => {
+    vi.stubEnv("AAIS_SESSION_SECRET", "session-secret-that-must-not-leak");
+    vi.stubEnv("AAIS_TRIAL_LOGIN_ENABLED", "false");
+    vi.stubEnv("AAIS_DATABASE_URL", "postgres://aais:database-secret@example.test/aais");
+    vi.stubEnv("LRS_ENDPOINT", "https://lrs.example.test/xapi");
+    vi.stubEnv("LRS_USERNAME", "lrs-user");
+    vi.stubEnv("LRS_PASSWORD", "lrs-password-that-must-not-leak");
+    vi.stubEnv("AAIS_OIDC_ISSUER", "https://idp.example.test");
+    vi.stubEnv("AAIS_OIDC_CLIENT_ID", "aais-client");
+    vi.stubEnv("AAIS_OIDC_CLIENT_SECRET", "oidc-secret-that-must-not-leak");
+    vi.stubEnv("AAIS_OIDC_REDIRECT_URI", "https://aais.example.test/api/auth/oidc/callback");
+    vi.stubEnv("AAIS_OIDC_AUTHORIZATION_ENDPOINT", "https://idp.example.test/oauth2/authorize");
+    vi.stubEnv("AAIS_OIDC_TEACHER_GROUPS", "aais-teachers");
+    vi.stubEnv("AAIS_AI_PROVIDER", "deterministic");
+    const { GET } = await import("@/app/api/system/readiness/route");
+
+    const response = await GET();
+    const body = await response.json();
+
+    expect(response.status).toBe(503);
+    expect(body.checks.oidc).toMatchObject({
+      status: "missing",
+      mode: "missing",
+      roleMapping: {
+        status: "ok",
+        configured: true,
+        present: ["AAIS_OIDC_TEACHER_GROUPS"],
+        redaction: "names-only",
+      },
+    });
+    expect(body.issues).toContain("AAIS_OIDC_*");
+    expect(body.issues).not.toContain("AAIS_OIDC_ROLE_MAPPING");
+    expect(JSON.stringify(body)).not.toContain("oidc-secret-that-must-not-leak");
+    expect(JSON.stringify(body)).not.toContain("aais-teachers");
+  });
+
   it("fails closed when production is missing enterprise runtime configuration", async () => {
     const { GET } = await import("@/app/api/system/readiness/route");
 
@@ -459,7 +696,6 @@ describe("AAIS readiness route", () => {
         "AAIS_TRIAL_ACCOUNTS_JSON",
         "AAIS_DATABASE_URL",
         "LRS_ENDPOINT/LRS_USERNAME/LRS_PASSWORD",
-        "AAIS_OIDC_*",
       ]),
     );
     expect(body.secrets).toBe("redacted");
@@ -523,20 +759,7 @@ describe("AAIS readiness route", () => {
     vi.stubEnv("AAIS_AI_MODEL", "enterprise-model");
     vi.stubEnv("AAIS_AI_EVAL_APPROVED", "true");
     vi.stubEnv("AAIS_AI_EVAL_VERSION", "eval-2026-06-30");
-    vi.stubEnv("AAIS_AI_EVAL_MANIFEST_JSON", JSON.stringify({
-      schemaVersion: 1,
-      evalVersion: "eval-2026-06-30",
-      provider: "openai-compatible",
-      model: "enterprise-model",
-      status: "passed",
-      passedAt: "2026-06-30T00:00:00.000Z",
-      sampleCount: 8,
-      blockedCount: 0,
-      redaction: {
-        prompts: "summarized",
-        secrets: "omitted",
-      },
-    }));
+    vi.stubEnv("AAIS_AI_EVAL_MANIFEST_JSON", JSON.stringify(passingAiEvalManifest()));
     const { GET } = await import("@/app/api/system/readiness/route");
 
     const response = await GET();
@@ -553,6 +776,55 @@ describe("AAIS readiness route", () => {
     const serialized = JSON.stringify(body);
     expect(serialized).not.toContain("enterprise-model");
     expect(serialized).not.toContain("ai-secret-that-must-not-leak");
+  });
+
+  it("rejects inline AI evaluation manifests with mismatched A1-A4 role coverage", async () => {
+    vi.stubEnv("AAIS_SESSION_SECRET", "session-secret-that-must-not-leak");
+    vi.stubEnv("AAIS_TRIAL_ACCOUNTS_JSON", trialAccountConfig);
+    vi.stubEnv("AAIS_DATABASE_URL", "postgres://aais:database-secret@example.test/aais");
+    vi.stubEnv("LRS_ENDPOINT", "https://lrs.example.test/xapi");
+    vi.stubEnv("LRS_USERNAME", "lrs-user");
+    vi.stubEnv("LRS_PASSWORD", "lrs-password-that-must-not-leak");
+    vi.stubEnv("AAIS_OIDC_ISSUER", "https://idp.example.test");
+    vi.stubEnv("AAIS_OIDC_CLIENT_ID", "aais-client");
+    vi.stubEnv("AAIS_OIDC_CLIENT_SECRET", "oidc-secret-that-must-not-leak");
+    vi.stubEnv("AAIS_OIDC_REDIRECT_URI", "https://aais.example.test/api/auth/oidc/callback");
+    vi.stubEnv("AAIS_OIDC_TEACHER_GROUPS", "aais-teachers");
+    vi.stubEnv("AAIS_AI_PROVIDER", "openai-compatible");
+    vi.stubEnv("AAIS_AI_ENDPOINT", "https://ai.example.test/v1/chat/completions");
+    vi.stubEnv("AAIS_AI_API_KEY", "ai-secret-that-must-not-leak");
+    vi.stubEnv("AAIS_AI_MODEL", "enterprise-model");
+    vi.stubEnv("AAIS_AI_EVAL_APPROVED", "true");
+    vi.stubEnv("AAIS_AI_EVAL_VERSION", "eval-2026-06-30");
+    const agentEvidence = passingAiEvalManifest().agentEvidence;
+    vi.stubEnv("AAIS_AI_EVAL_MANIFEST_JSON", JSON.stringify(passingAiEvalManifest({
+      agentEvidence: {
+        ...agentEvidence,
+        coverage: passingAiEvalAgentCoverage({
+          A2: {
+            label: "专家智能体",
+            responsibility: "backend-supervision-a1-signal",
+            sampleIds: ["a2-expert-modelling-coaching"],
+            caModules: ["Modelling", "Coaching"],
+            complete: true,
+          },
+        }),
+      },
+    })));
+    const { GET } = await import("@/app/api/system/readiness/route");
+
+    const response = await GET();
+    const body = await response.json();
+
+    expect(response.status).toBe(503);
+    expect(body.checks.ai).toMatchObject({
+      status: "blocked",
+      provider: "openai-compatible",
+      evalVersion: "eval-2026-06-30",
+      evalManifest: "mismatch",
+    });
+    expect(body.issues).toEqual(expect.arrayContaining(["AAIS_AI_EVAL_MANIFEST"]));
+    expect(JSON.stringify(body)).not.toContain("ai-secret-that-must-not-leak");
   });
 
   it("rejects AI evaluation manifests that report blocked samples", async () => {
@@ -578,20 +850,7 @@ describe("AAIS readiness route", () => {
     const manifestPath = path.join(tempDir, "aais-ai-eval-blocked.json");
     await writeFile(
       manifestPath,
-      JSON.stringify({
-        schemaVersion: 1,
-        evalVersion: "eval-2026-06-30",
-        provider: "openai-compatible",
-        model: "enterprise-model",
-        status: "passed",
-        passedAt: "2026-06-30T00:00:00.000Z",
-        sampleCount: 8,
-        blockedCount: 1,
-        redaction: {
-          prompts: "summarized",
-          secrets: "omitted",
-        },
-      }),
+      JSON.stringify(passingAiEvalManifest({ blockedCount: 1 })),
       "utf8",
     );
     vi.stubEnv("AAIS_AI_EVAL_MANIFEST_PATH", manifestPath);
