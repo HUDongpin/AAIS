@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   aaisAgents,
+  aaisCognitiveApprenticeshipBackground,
   aaisLearningProgram,
   createAaisEvent,
   escapeAaisCsvField,
@@ -18,10 +19,112 @@ describe("AAIS cognitive apprenticeship data", () => {
     ]);
     expect(aaisAgents.map((agent) => agent.name["zh-CN"])).toEqual([
       "导学智能体",
+      "专家智能体",
       "监督智能体",
       "反思智能体",
-      "支架智能体",
     ]);
+  });
+
+  it("matches the Cognitive Apprenticeship multi-agent settings from the specification", () => {
+    expect(aaisAgents).toEqual([
+      expect.objectContaining({
+        id: "A1",
+        role: expect.objectContaining({
+          "zh-CN": "前端，与学生直接对话",
+        }),
+        mission: expect.objectContaining({
+          "zh-CN": expect.stringContaining("4 次直接辅助机会"),
+        }),
+        caModules: ["Scaffolding", "Fading"],
+      }),
+      expect.objectContaining({
+        id: "A2",
+        role: expect.objectContaining({
+          "zh-CN": "前端，与学生直接对话",
+        }),
+        mission: expect.objectContaining({
+          "zh-CN": expect.stringContaining("两位专家"),
+        }),
+        caModules: ["Modelling", "Coaching"],
+      }),
+      expect.objectContaining({
+        id: "A3",
+        role: expect.objectContaining({
+          "zh-CN": "后端，与 A1 交互",
+        }),
+        mission: expect.objectContaining({
+          "zh-CN": expect.stringContaining("向 A1 发出信号"),
+        }),
+        caModules: ["Scaffolding"],
+      }),
+      expect.objectContaining({
+        id: "A4",
+        role: expect.objectContaining({
+          "zh-CN": "后端，与 A1 交互",
+        }),
+        mission: expect.objectContaining({
+          "zh-CN": expect.stringContaining("反思性提问"),
+        }),
+        caModules: ["Articulation", "Reflection"],
+      }),
+    ]);
+  });
+
+  it("keeps a runtime Cognitive Apprenticeship background model for the agents", () => {
+    expect(aaisCognitiveApprenticeshipBackground.framework).toBe("Cognitive Apprenticeship");
+    expect(aaisCognitiveApprenticeshipBackground.sequence).toEqual([
+      "Modelling",
+      "Coaching",
+      "Scaffolding",
+      "Articulation",
+      "Reflection",
+    ]);
+    expect(aaisCognitiveApprenticeshipBackground.principles).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "modelling",
+          module: "Modelling",
+          description: expect.objectContaining({
+            "zh-CN": expect.stringContaining("专家"),
+          }),
+        }),
+        expect.objectContaining({
+          id: "coaching",
+          module: "Coaching",
+          aaisUse: expect.objectContaining({
+            "zh-CN": expect.stringContaining("练习"),
+          }),
+        }),
+        expect.objectContaining({
+          id: "scaffolding",
+          module: "Scaffolding",
+          aaisUse: expect.objectContaining({
+            "zh-CN": expect.stringContaining("4 次直接辅助"),
+          }),
+        }),
+        expect.objectContaining({
+          id: "fading",
+          module: "Fading",
+          description: expect.objectContaining({
+            "zh-CN": expect.stringContaining("逐步减少"),
+          }),
+        }),
+        expect.objectContaining({
+          id: "articulation",
+          module: "Articulation",
+          aaisUse: expect.objectContaining({
+            "zh-CN": expect.stringContaining("文字表达"),
+          }),
+        }),
+        expect.objectContaining({
+          id: "reflection",
+          module: "Reflection",
+          aaisUse: expect.objectContaining({
+            "zh-CN": expect.stringContaining("专家"),
+          }),
+        }),
+      ]),
+    );
   });
 
   it("models one guided training task and three locked practice tasks", () => {
@@ -69,8 +172,8 @@ describe("AAIS cognitive apprenticeship data", () => {
   it("defines cognitive apprenticeship event families for A1 through A4 and platform events", () => {
     expect(aaisData.aaisEventDefinitions).toMatchObject({
       expert_model_viewed: {
-        agent: "A1",
-        family: "A1_GUIDE",
+        agent: "A2",
+        family: "A2_EXPERT",
         evidenceKind: "expert_modeling",
       },
       understanding_check_completed: {
@@ -84,33 +187,33 @@ describe("AAIS cognitive apprenticeship data", () => {
         evidenceKind: "task_release",
       },
       monitoring_pause_detected: {
-        agent: "A2",
-        family: "A2_MONITOR",
+        agent: "A3",
+        family: "A3_SUPERVISION",
         evidenceKind: "monitoring",
       },
       coaching_push: {
         agent: "A2",
-        family: "A2_MONITOR",
+        family: "A2_EXPERT",
         evidenceKind: "coaching",
       },
       articulation_submitted: {
-        agent: "A3",
-        family: "A3_REFLECTION",
+        agent: "A4",
+        family: "A4_REFLECTION",
         evidenceKind: "articulation",
       },
       expert_trace_compared: {
-        agent: "A3",
-        family: "A3_REFLECTION",
+        agent: "A4",
+        family: "A4_REFLECTION",
         evidenceKind: "expert_trace_comparison",
       },
       scaffold_request: {
-        agent: "A4",
-        family: "A4_SCAFFOLD",
+        agent: "A1",
+        family: "A1_GUIDE",
         evidenceKind: "scaffold",
       },
       scaffold_self_check_started: {
-        agent: "A4",
-        family: "A4_SCAFFOLD",
+        agent: "A1",
+        family: "A1_GUIDE",
         evidenceKind: "self_check",
       },
       stage_selected: {
@@ -126,7 +229,7 @@ describe("AAIS cognitive apprenticeship data", () => {
       studentId: "S001",
       phase: "practice",
       task: "practice_task_1",
-      agent: "A4",
+      agent: "A1",
       event: "scaffold_request",
       detail: {
         tool: "阶段检查表",
@@ -152,7 +255,7 @@ describe("AAIS cognitive apprenticeship data", () => {
       sessionId: "session:=S001",
       phase: "practice",
       task: "practice_task_1",
-      agent: "A4",
+      agent: "A1",
       event: "scaffold_request",
       detail: {
         note: "=raw learner formula should be nested inside JSON detail",

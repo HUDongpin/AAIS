@@ -29,9 +29,13 @@ describe("AAIS LearningPage", () => {
     render(<LearningPage />);
 
     expect(screen.getByText("导学智能体")).toBeTruthy();
+    expect(screen.getByText("专家智能体")).toBeTruthy();
     expect(screen.getByText("监督智能体")).toBeTruthy();
     expect(screen.getByText("反思智能体")).toBeTruthy();
-    expect(screen.getByText("支架智能体")).toBeTruthy();
+    expect(screen.getAllByText("前端，与学生直接对话")).toHaveLength(2);
+    expect(screen.getAllByText("后端，与 A1 交互")).toHaveLength(2);
+    expect(screen.getByText("Modelling + Coaching")).toBeTruthy();
+    expect(screen.getByText("Articulation + Reflection")).toBeTruthy();
     expect(screen.getByText("训练阶段")).toBeTruthy();
     expect(screen.getByText("练习阶段")).toBeTruthy();
     expect(screen.getByText("专家思维轨迹")).toBeTruthy();
@@ -67,9 +71,9 @@ describe("AAIS LearningPage", () => {
             },
             {
               agentId: "A4",
-              label: "支架智能体",
-              content: "请先说明卡点再选工具。",
-              actions: ["self-check"],
+              label: "反思智能体",
+              content: "请把卡点写成元认知过程记录。",
+              actions: ["articulate", "reflect"],
             },
           ],
           orchestration: {
@@ -106,7 +110,7 @@ describe("AAIS LearningPage", () => {
       );
     });
     expect(await screen.findByText("先确认目标并拆成下一步。")).toBeTruthy();
-    expect(screen.getByText("请先说明卡点再选工具。")).toBeTruthy();
+    expect(screen.getByText("请把卡点写成元认知过程记录。")).toBeTruthy();
     expect(screen.getByText("LangGraph trace")).toBeTruthy();
     expect(screen.queryByText("LangGraph 多智能体导学已完成：A1 A2 A3 A4")).toBeNull();
   });
@@ -434,7 +438,7 @@ describe("AAIS LearningPage", () => {
 
     render(<LearningPage />);
 
-    expect(await screen.findByText("A4 元认知工具包")).toBeTruthy();
+    expect(await screen.findByText("A1 支架工具包")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "获取帮助" }));
 
     await waitFor(() => {
@@ -448,7 +452,7 @@ describe("AAIS LearningPage", () => {
         }),
       );
     });
-    expect(await screen.findByText("A4 本次支架")).toBeTruthy();
+    expect(await screen.findByText("A1 本次支架")).toBeTruthy();
     expect(screen.getByText("阶段检查表")).toBeTruthy();
     expect(screen.getByText("工具内容")).toBeTruthy();
     expect(screen.getByText(/已记录第 5 次求助/)).toBeTruthy();

@@ -1,4 +1,10 @@
-import type { AaisAgentId, AaisPhase, Locale } from "@/data/aais";
+import type {
+  AaisAgentId,
+  AaisCaModule,
+  AaisCognitiveApprenticeshipBackground,
+  AaisPhase,
+  Locale,
+} from "@/data/aais";
 
 type AaisProviderWorkspaceState = {
   currentStep: string;
@@ -9,6 +15,10 @@ type AaisProviderWorkspaceState = {
 export type AaisModelRequest = {
   agentId: AaisAgentId;
   label: string;
+  role?: string;
+  mission?: string;
+  caModules?: AaisCaModule[];
+  caBackground?: AaisCognitiveApprenticeshipBackground;
   locale: Locale;
   phase: AaisPhase;
   taskId: string;
@@ -190,6 +200,10 @@ async function callOpenAiCompatibleProvider(
             content: JSON.stringify({
               agentId: request.agentId,
               label: request.label,
+              role: request.role,
+              mission: request.mission,
+              caModules: request.caModules,
+              caBackground: request.caBackground,
               locale: request.locale,
               phase: request.phase,
               taskId: request.taskId,

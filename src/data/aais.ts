@@ -8,11 +8,42 @@ export type AaisPhase = "training" | "practice";
 
 export type AaisTaskDifficulty = "training" | "easy" | "medium" | "hard";
 
+export type AaisCaModule =
+  | "Articulation"
+  | "Coaching"
+  | "Fading"
+  | "Modelling"
+  | "Reflection"
+  | "Scaffolding";
+
+export type AaisCaPrincipleId =
+  | "articulation"
+  | "coaching"
+  | "fading"
+  | "modelling"
+  | "reflection"
+  | "scaffolding";
+
+export type AaisCaPrinciple = {
+  id: AaisCaPrincipleId;
+  module: AaisCaModule;
+  label: LocalizedText;
+  description: LocalizedText;
+  aaisUse: LocalizedText;
+};
+
+export type AaisCognitiveApprenticeshipBackground = {
+  framework: "Cognitive Apprenticeship";
+  learningGoal: LocalizedText;
+  sequence: AaisCaModule[];
+  principles: AaisCaPrinciple[];
+};
+
 export type AaisEventFamily =
   | "A1_GUIDE"
-  | "A2_MONITOR"
-  | "A3_REFLECTION"
-  | "A4_SCAFFOLD"
+  | "A2_EXPERT"
+  | "A3_SUPERVISION"
+  | "A4_REFLECTION"
   | "PLATFORM";
 
 export type AaisEvidenceKind =
@@ -67,7 +98,9 @@ export type AaisAgent = {
   id: AaisAgentId;
   handle: string;
   name: LocalizedText;
+  role: LocalizedText;
   mission: LocalizedText;
+  caModules: AaisCaModule[];
   phaseScope: "both" | "practice-only";
   evidence: string[];
 };
@@ -94,6 +127,123 @@ export type AaisLearningProgram = {
   };
 };
 
+export const aaisCognitiveApprenticeshipBackground: AaisCognitiveApprenticeshipBackground = {
+  framework: "Cognitive Apprenticeship",
+  learningGoal: {
+    "zh-CN": "让学生在真实任务中观察专家元认知、练习策略、表达过程，并通过反馈反思逐步独立完成任务。",
+    "en-US":
+      "Help learners observe expert metacognition, practice strategies, articulate process evidence, and reflect toward independent task performance.",
+  },
+  sequence: ["Modelling", "Coaching", "Scaffolding", "Articulation", "Reflection"],
+  principles: [
+    {
+      id: "modelling",
+      module: "Modelling",
+      label: {
+        "zh-CN": "专家示范",
+        "en-US": "Expert modelling",
+      },
+      description: {
+        "zh-CN": "专家公开展示如何理解任务、设定目标、监控执行并修正思路，使隐性的元认知过程可见。",
+        "en-US":
+          "Experts make task interpretation, goal setting, monitoring, and revision visible so tacit metacognition can be observed.",
+      },
+      aaisUse: {
+        "zh-CN": "A2 以两位专家共同完成一个任务的方式展示元认知过程。",
+        "en-US": "A2 uses a two-expert task demonstration to make metacognitive process visible.",
+      },
+    },
+    {
+      id: "coaching",
+      module: "Coaching",
+      label: {
+        "zh-CN": "练习教练",
+        "en-US": "Coaching",
+      },
+      description: {
+        "zh-CN": "学生练习时获得针对任务表现的提示、追问和反馈，而不是直接代做答案。",
+        "en-US":
+          "Learners receive task-responsive prompts, questions, and feedback during practice without having the work done for them.",
+      },
+      aaisUse: {
+        "zh-CN": "A2 在学生练习学习内容时继续提供专家式追问和教练反馈。",
+        "en-US": "A2 continues expert questioning and coaching feedback while learners practice.",
+      },
+    },
+    {
+      id: "scaffolding",
+      module: "Scaffolding",
+      label: {
+        "zh-CN": "支架",
+        "en-US": "Scaffolding",
+      },
+      description: {
+        "zh-CN": "系统在学习者还不能独立完成时提供结构化帮助，帮助其跨过当前任务难点。",
+        "en-US":
+          "The system provides structured help when learners cannot yet complete the task independently.",
+      },
+      aaisUse: {
+        "zh-CN": "A1 管理每个任务 4 次直接辅助机会；A3 只在后端发信号，由 A1 给出 scaffolds。",
+        "en-US":
+          "A1 manages four direct help opportunities per task; A3 only signals from the backend so A1 provides scaffolds.",
+      },
+    },
+    {
+      id: "fading",
+      module: "Fading",
+      label: {
+        "zh-CN": "逐步撤除",
+        "en-US": "Fading",
+      },
+      description: {
+        "zh-CN": "随着学生能力增长，直接帮助逐步减少，先转为对话诊断，再给一定程度协助。",
+        "en-US":
+          "Direct help is gradually reduced as learners gain capability, shifting first to diagnostic dialogue and then limited assistance.",
+      },
+      aaisUse: {
+        "zh-CN": "A1 在 4 次直接辅助用完后先询问卡点，再提供有限支架。",
+        "en-US": "After four direct assists, A1 asks about the sticking point before offering limited support.",
+      },
+    },
+    {
+      id: "articulation",
+      module: "Articulation",
+      label: {
+        "zh-CN": "表达过程",
+        "en-US": "Articulation",
+      },
+      description: {
+        "zh-CN": "学生把理解、计划、监控、调整和依据说出来或写出来，使思维过程可以被反馈。",
+        "en-US":
+          "Learners make understanding, planning, monitoring, adjustments, and evidence explicit so the process can be reviewed.",
+      },
+      aaisUse: {
+        "zh-CN": "A4 通过 A1 要求学生用文字表达解决问题时的元认知过程并形成记录。",
+        "en-US":
+          "A4 works through A1 prompts that ask learners to write their metacognitive process and create records.",
+      },
+    },
+    {
+      id: "reflection",
+      module: "Reflection",
+      label: {
+        "zh-CN": "反思",
+        "en-US": "Reflection",
+      },
+      description: {
+        "zh-CN": "学生回看自己的过程记录，与专家过程对比，回答反思性提问并调整下一轮策略。",
+        "en-US":
+          "Learners revisit their process records, compare them with expert processes, answer reflective prompts, and adjust future strategy.",
+      },
+      aaisUse: {
+        "zh-CN": "A4 将报告反馈给学生，进行反思性提问，并与专家对比评估。",
+        "en-US":
+          "A4 returns reports to learners, asks reflective questions, and compares student process with expert process.",
+      },
+    },
+  ],
+};
+
 export type AaisEvent = {
   student_id: string;
   session_id: string;
@@ -108,13 +258,13 @@ export type AaisEvent = {
 export const aaisEventDefinitions: Record<AaisEventName, AaisEventDefinition> = {
   ai_acceptance_recorded: {
     agent: "A2",
-    family: "A2_MONITOR",
+    family: "A2_EXPERT",
     evidenceKind: "ai_interaction",
     description: "Learner accepted or rejected an AI suggestion with a reason.",
   },
   ai_prompt_submitted: {
     agent: "A2",
-    family: "A2_MONITOR",
+    family: "A2_EXPERT",
     evidenceKind: "ai_interaction",
     description: "Learner submitted a prompt to the AAIS guide flow.",
   },
@@ -125,70 +275,70 @@ export const aaisEventDefinitions: Record<AaisEventName, AaisEventDefinition> = 
     description: "AAIS completed a guided multi-agent response.",
   },
   artifact_edited: {
-    agent: "A2",
-    family: "A2_MONITOR",
+    agent: "A3",
+    family: "A3_SUPERVISION",
     evidenceKind: "artifact",
-    description: "Learner edited the task artifact locally.",
+    description: "A3 captured learner artifact editing behavior locally.",
   },
   artifact_saved: {
-    agent: "A2",
-    family: "A2_MONITOR",
+    agent: "A3",
+    family: "A3_SUPERVISION",
     evidenceKind: "planning",
-    description: "Learner saved task understanding, plan, execution notes, or final artifact.",
+    description: "A3 captured saved task understanding, plan, execution notes, or final artifact.",
   },
   articulation_submitted: {
-    agent: "A3",
-    family: "A3_REFLECTION",
+    agent: "A4",
+    family: "A4_REFLECTION",
     evidenceKind: "articulation",
-    description: "Learner articulated thinking during or after a task moment.",
+    description: "A4 recorded learner-articulated thinking during or after a task moment.",
   },
   coaching_push: {
     agent: "A2",
-    family: "A2_MONITOR",
+    family: "A2_EXPERT",
     evidenceKind: "coaching",
-    description: "A2 delivered low-interruption coaching from behavior signals.",
+    description: "A2 delivered low-interruption coaching from A3 behavior signals.",
   },
   expert_model_viewed: {
-    agent: "A1",
-    family: "A1_GUIDE",
+    agent: "A2",
+    family: "A2_EXPERT",
     evidenceKind: "expert_modeling",
-    description: "Learner reached the expert modeling stage.",
+    description: "Learner reached A2 expert modeling.",
   },
   expert_trace_compared: {
-    agent: "A3",
-    family: "A3_REFLECTION",
+    agent: "A4",
+    family: "A4_REFLECTION",
     evidenceKind: "expert_trace_comparison",
-    description: "Learner reached the student trace versus expert trace comparison.",
+    description: "A4 compared the learner trace with the expert trace.",
   },
   monitoring_pause_detected: {
-    agent: "A2",
-    family: "A2_MONITOR",
+    agent: "A3",
+    family: "A3_SUPERVISION",
     evidenceKind: "monitoring",
-    description: "A2 detected a pause or possible stuck moment.",
+    description: "A3 detected a pause or possible stuck moment and signaled A1/A2.",
   },
   planning_submitted: {
-    agent: "A2",
-    family: "A2_MONITOR",
+    agent: "A3",
+    family: "A3_SUPERVISION",
     evidenceKind: "planning",
-    description: "Learner submitted a planning artifact for a task.",
+    description: "A3 captured a planning artifact for a task.",
   },
   scaffold_request: {
-    agent: "A4",
-    family: "A4_SCAFFOLD",
+    agent: "A1",
+    family: "A1_GUIDE",
     evidenceKind: "scaffold",
-    description: "Learner requested a practice-stage scaffold tool.",
+    description: "A1 provided a practice-stage scaffold tool.",
   },
   scaffold_self_check_started: {
-    agent: "A4",
-    family: "A4_SCAFFOLD",
+    agent: "A1",
+    family: "A1_GUIDE",
     evidenceKind: "self_check",
-    description: "A4 switched repeated practice-stage help into self-check mode.",
+    description: "A1 switched repeated practice-stage help into self-check mode.",
   },
   self_report_saved: {
-    agent: "A3",
-    family: "A3_REFLECTION",
+    agent: "A4",
+    family: "A4_REFLECTION",
     evidenceKind: "self_report",
-    description: "Learner saved a self-report comparing their process with the expert trace.",
+    description: "A4 saved a self-report comparing learner process with the expert trace.",
   },
   session_created: {
     agent: "platform",
@@ -242,54 +392,80 @@ export const aaisAgents: AaisAgent[] = [
       "zh-CN": "导学智能体",
       "en-US": "Guide Agent",
     },
-    mission: {
-      "zh-CN": "播放专家示范、组织测评，并按阶段分发训练与练习任务。",
-      "en-US": "Runs expert modeling, checks understanding, and releases tasks by phase.",
+    role: {
+      "zh-CN": "前端，与学生直接对话",
+      "en-US": "Front end, direct student dialogue",
     },
+    mission: {
+      "zh-CN":
+        "引导学习流程，把 CA 的核心环节串联起来；每个任务提供 4 次直接辅助机会，用完后先与学生对话，再给一定程度协助，体现 fading。",
+      "en-US":
+        "Guides the CA learning flow and provides four direct scaffold opportunities per task before fading into dialogue-first support.",
+    },
+    caModules: ["Scaffolding", "Fading"],
     phaseScope: "both",
-    evidence: ["video_watch", "quiz_score", "task_release"],
+    evidence: ["learning_flow", "scaffold_request", "fading_dialogue"],
   },
   {
     id: "A2",
-    handle: "@监督智能体",
+    handle: "@专家智能体",
     name: {
-      "zh-CN": "监督智能体",
-      "en-US": "Monitoring Agent",
+      "zh-CN": "专家智能体",
+      "en-US": "Expert Agent",
+    },
+    role: {
+      "zh-CN": "前端，与学生直接对话",
+      "en-US": "Front end, direct student dialogue",
     },
     mission: {
-      "zh-CN": "监测停顿、删改、AI 采纳和平台行为，低打扰地推送引导并打包数据给 A3。",
-      "en-US": "Monitors behavior signals, nudges without interruption, and packages data for A3.",
+      "zh-CN":
+        "作为专家智能体，在 Modelling 阶段展示元认知过程；两位专家共同完成一个任务，随后引导学生练习，学生可用 @ 引出其中一位专家对话。",
+      "en-US":
+        "Shows metacognitive processes during Modelling with two experts, then coaches practice; learners can mention one expert with @.",
     },
+    caModules: ["Modelling", "Coaching"],
     phaseScope: "both",
-    evidence: ["editing_events", "ai_interactions", "coaching_pushes"],
+    evidence: ["expert_modeling", "expert_dialogue", "coaching_practice"],
   },
   {
     id: "A3",
+    handle: "@监督智能体",
+    name: {
+      "zh-CN": "监督智能体",
+      "en-US": "Supervision Agent",
+    },
+    role: {
+      "zh-CN": "后端，与 A1 交互",
+      "en-US": "Back end, interacts with A1",
+    },
+    mission: {
+      "zh-CN": "收集学生在做任务时的行为数据，向 A1 发出信号，由 A1 给出 scaffolds。",
+      "en-US": "Collects task behavior data, signals A1, and lets A1 provide scaffolds.",
+    },
+    caModules: ["Scaffolding"],
+    phaseScope: "both",
+    evidence: ["behavior_data", "scaffold_signal", "a1_handoff"],
+  },
+  {
+    id: "A4",
     handle: "@反思智能体",
     name: {
       "zh-CN": "反思智能体",
       "en-US": "Reflection Agent",
     },
-    mission: {
-      "zh-CN": "引导 articulation，整合学生思维轨迹，并与专家轨迹并排对比形成自评。",
-      "en-US": "Elicits articulation, organizes the learner trace, and compares it with an expert trace.",
+    role: {
+      "zh-CN": "后端，与 A1 交互",
+      "en-US": "Back end, interacts with A1",
     },
+    mission: {
+      "zh-CN":
+        "收集学生解决问题时表现出的元认知过程，由 A1 要求学生用文字表达，之后形成记录和报告；报告反馈给学生后进行反思性提问，并与专家对比评估。",
+      "en-US":
+        "Collects metacognitive process evidence through A1 prompts, creates a report, then returns reflective questions and expert comparison.",
+    },
+    caModules: ["Articulation", "Reflection"],
     phaseScope: "both",
-    evidence: ["articulation_text", "reflection_report", "expert_comparison"],
-  },
-  {
-    id: "A4",
-    handle: "@支架智能体",
-    name: {
-      "zh-CN": "支架智能体",
-      "en-US": "Scaffolding Agent",
-    },
-    mission: {
-      "zh-CN": "在练习阶段按次数提供元认知工具包，只帮助思考，不代做任务。",
-      "en-US": "Provides a capped metacognitive toolkit during practice without doing the work.",
-    },
-    phaseScope: "practice-only",
-    evidence: ["scaffold_request", "tool_choice", "self_check_after_four_requests"],
+    evidence: ["metacognitive_process", "reflection_report", "expert_comparison"],
   },
 ];
 

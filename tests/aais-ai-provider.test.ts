@@ -3,6 +3,7 @@ import {
   createConfiguredAaisModelProvider,
   createOpenAiCompatibleAaisProvider,
 } from "@/lib/ai/aais-ai-provider";
+import { aaisCognitiveApprenticeshipBackground } from "@/data/aais";
 
 afterEach(() => {
   vi.unstubAllEnvs();
@@ -179,5 +180,60 @@ describe("AAIS governed AI provider", () => {
 
     const payload = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
     expect(payload.thinking).toEqual({ type: "disabled" });
+  });
+
+  it("sends the Cognitive Apprenticeship background in the redacted model context", async () => {
+    const fetchMock = vi.fn<typeof fetch>(async () =>
+      Response.json({
+        choices: [
+          {
+            message: {
+              content: "受治理 provider 的导学回复",
+            },
+          },
+        ],
+      }),
+    );
+    const provider = createOpenAiCompatibleAaisProvider({
+      endpoint: "https://ai.example.test/v1/chat/completions",
+      apiKey: "secret-api-key",
+      model: "enterprise-model",
+      fetchImpl: fetchMock,
+      timeoutMs: 1000,
+      maxRetries: 0,
+    });
+
+    await provider.generate({
+      agentId: "A2",
+      label: "专家智能体",
+      role: "前端，与学生直接对话",
+      mission: "两位专家共同完成一个任务，随后引导学生练习。",
+      caModules: ["Modelling", "Coaching"],
+      caBackground: aaisCognitiveApprenticeshipBackground,
+      locale: "zh-CN",
+      phase: "training",
+      taskId: "training_task_1",
+      learnerInput: "我想看专家怎么做。",
+      workspaceState: {
+        currentStep: "modelling",
+      },
+      fallbackText: "本地 fallback",
+    });
+
+    const payload = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
+    const userContext = JSON.parse(payload.messages[1].content);
+    expect(userContext.caBackground).toMatchObject({
+      framework: "Cognitive Apprenticeship",
+      sequence: ["Modelling", "Coaching", "Scaffolding", "Articulation", "Reflection"],
+    });
+    expect(userContext.caBackground.principles.map((principle: { id: string }) => principle.id)).toEqual([
+      "modelling",
+      "coaching",
+      "scaffolding",
+      "fading",
+      "articulation",
+      "reflection",
+    ]);
+    expect(JSON.stringify(payload)).not.toContain("secret-api-key");
   });
 });

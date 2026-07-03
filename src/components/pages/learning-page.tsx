@@ -121,31 +121,31 @@ const stageItems: Array<{
     id: "assessment",
     label: "测评",
     title: "理解测评与反馈",
-    summary: "A1 在示范后弹出 3-5 题，评分共享给 A2，错误项回到相关片段。",
+    summary: "A1 串联 CA 流程与理解检查，A2 以专家示范强化 Modelling。",
   },
   {
     id: "training",
     label: "训练任务",
     title: "有人带着做一个中等难度案例",
-    summary: "A1 引导任务要求，A2 监测行为，A3 在关键节点收集 articulation。",
+    summary: "A1 引导任务要求，A2 两位专家示范元认知过程并进行 Coaching。",
   },
   {
     id: "reflection",
     label: "训练反思",
     title: "把刚刚的元认知过程说清楚",
-    summary: "A3 汇总学生文本与行为线索，促成任务后自评。",
+    summary: "A4 通过 A1 收集学生文字表达，形成记录、报告和反思性提问。",
   },
   {
     id: "practice",
     label: "挑战练习",
     title: "练习阶段",
-    summary: "三个任务按易、中、难顺序锁定；A4 可被学生主动呼叫但有次数规则。",
+    summary: "三个任务按易、中、难顺序锁定；A1 提供 4 次直接支架并逐步 fading。",
   },
   {
     id: "comparison",
     label: "专家比对",
     title: "学生思维轨迹 vs 专家思维轨迹",
-    summary: "每个任务后，A3 并排呈现差异，让学生写下一次迁移策略。",
+    summary: "每个任务后，A4 反馈报告并与专家过程对比，引导下一次迁移策略。",
   },
   {
     id: "complete",
@@ -591,7 +591,7 @@ export function LearningPage() {
           studentId,
           phase: "practice",
           task: activeTaskId,
-          agent: "A4",
+          agent: "A1",
           event: "scaffold_request",
           detail: {
             request_count: nextCount,
@@ -782,7 +782,7 @@ export function LearningPage() {
                       aria-live="polite"
                     >
                       <div className="flex flex-wrap items-center justify-between gap-2">
-                        <p className="text-sm font-black text-[#1f6feb]">A4 本次支架</p>
+                        <p className="text-sm font-black text-[#1f6feb]">A1 本次支架</p>
                         <p className="text-xs font-semibold text-[#68708a]">
                           已记录第 {visibleScaffold.requestCount} 次求助
                         </p>
@@ -813,7 +813,7 @@ export function LearningPage() {
                   <section className="rounded-xl border border-[#d7e5fb] bg-[#f8fbff] p-4">
                     <div className="flex items-start justify-between gap-3">
                       <div>
-                        <h2 className="text-lg font-bold text-[#222842]">A4 元认知工具包</h2>
+                        <h2 className="text-lg font-bold text-[#222842]">A1 支架工具包</h2>
                         <p className="mt-1 text-sm leading-6 text-[#68708a]">
                           当前任务已求助 {currentHelpCount} 次。前 4 次直接选工具，第 5 次后先自述卡点。
                         </p>
@@ -946,6 +946,12 @@ export function LearningPage() {
                         </span>
                         <div>
                           <h3 className="text-sm font-bold text-[#303650]">{agent.name["zh-CN"]}</h3>
+                          <p className="mt-1 text-xs font-semibold text-[#1f6feb]">
+                            {agent.role["zh-CN"]}
+                          </p>
+                          <p className="mt-1 text-xs font-semibold text-[#68708a]">
+                            {agent.caModules.join(" + ")}
+                          </p>
                           <p className="mt-1 text-xs leading-5 text-[#68708a]">{agent.mission["zh-CN"]}</p>
                         </div>
                       </div>

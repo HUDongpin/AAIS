@@ -6,6 +6,7 @@ import {
 } from "@/lib/ai/aais-ai-provider";
 import {
   aaisAgents,
+  aaisCognitiveApprenticeshipBackground,
   type AaisAgentId,
   type AaisPhase,
   type Locale,
@@ -158,9 +159,10 @@ export async function runAaisLearningGuideGraph(
     },
     trace: {
       handoffs: [
-        { fromNodeId: "A1", toNodeId: "A2", reason: "task-released" },
-        { fromNodeId: "A2", toNodeId: "A3", reason: "behavior-data-packaged" },
-        { fromNodeId: "A3", toNodeId: "A4", reason: "practice-scaffold-check" },
+        { fromNodeId: "A1", toNodeId: "A2", reason: "ca-flow-to-expert-modelling" },
+        { fromNodeId: "A2", toNodeId: "A3", reason: "practice-behavior-data" },
+        { fromNodeId: "A3", toNodeId: "A1", reason: "scaffold-signal" },
+        { fromNodeId: "A4", toNodeId: "A1", reason: "reflection-report-feedback" },
       ],
       memory: {
         mode: "thread-checkpoint" as const,
@@ -182,6 +184,10 @@ async function createAgentTurn(
   const response = await modelProvider.generate({
     agentId,
     label: agent.name[state.locale],
+    role: agent.role[state.locale],
+    mission: agent.mission[state.locale],
+    caModules: agent.caModules,
+    caBackground: aaisCognitiveApprenticeshipBackground,
     locale: state.locale,
     phase: state.phase,
     taskId: state.taskId,
@@ -190,19 +196,19 @@ async function createAgentTurn(
     fallbackText,
   }).catch(() => ({
     text: fallbackText,
-      runtime: {
-        provider: "unavailable",
-        model: "fallback-template",
-        attempts: 1,
-        status: "fallback" as const,
-        guardrail: {
-          policy: "aais-age-appropriate-output-v1" as const,
-          status: "not-applicable" as const,
-          reasons: ["provider-unavailable"],
-        },
-        redaction: {
-          secrets: "omitted" as const,
-          prompt: "summarized" as const,
+    runtime: {
+      provider: "unavailable",
+      model: "fallback-template",
+      attempts: 1,
+      status: "fallback" as const,
+      guardrail: {
+        policy: "aais-age-appropriate-output-v1" as const,
+        status: "not-applicable" as const,
+        reasons: ["provider-unavailable"],
+      },
+      redaction: {
+        secrets: "omitted" as const,
+        prompt: "summarized" as const,
       },
     },
   }));
@@ -243,34 +249,32 @@ function createAgentContent(agentId: AaisAgentId, state: typeof GuideState.State
   const helpCount = state.workspaceState.helpRequestsUsed ?? 0;
 
   if (agentId === "A1") {
-    return `导学智能体：我会围绕 ${state.taskId} 明确目标、示范专家思路，并把下一步任务拆清楚。你刚才说：${input}`;
+    return `导学智能体：我会围绕 ${state.taskId} 串联 CA 学习流程，并管理本任务的 4 次直接辅助机会。若辅助机会用完，我会先与你对话确认卡点，再给一定程度的协助，体现 fading。你刚才说：${input}`;
   }
   if (agentId === "A2") {
-    return `监督智能体：我记录当前步骤 ${state.workspaceState.currentStep}，关注停顿、删改和 AI 采纳，稍后把行为线索共享给 A3。`;
+    return "专家智能体：两位专家会在 Modelling 阶段共同展示元认知过程，再用 Coaching 引导你练习。若你想和其中一位专家对话，可以用 @ 引出。";
   }
   if (agentId === "A3") {
-    return "反思智能体：请把你的任务理解、计划、执行偏差和完成前评分写出来，我会并排展示学生与专家思维轨迹。";
+    return `监督智能体：我在后端收集当前步骤 ${state.workspaceState.currentStep} 的任务行为数据，识别需要支架的信号，并向 A1 发出信号，由 A1 给出 scaffolds。`;
   }
 
-  if (state.phase === "practice") {
-    return helpCount >= 4
-      ? "支架智能体：这是第 5 次及以后求助。请先说明你卡在哪里，我再给出对应的元认知工具。"
-      : "支架智能体：练习阶段可提供阶段检查表、思维句子开头、对比案例和暂停提示。";
-  }
-  return "支架智能体：A4 只在练习阶段开放；训练阶段先跟随 A1-A3 完成示范、监控和反思。";
+  return helpCount >= 4
+    ? "反思智能体：我会整理你多次求助后的元认知过程记录和报告，反馈给你后提出反思性提问，并与专家过程进行对比评估。"
+    : "反思智能体：请把解决问题时的目标理解、计划、调整和依据用文字表达出来，我会形成 articulation 记录，并通过反思性提问支持后续 reflection。";
 }
 
 function createAgentActions(agentId: AaisAgentId, phase: AaisPhase) {
-  if (agentId === "A4" && phase === "training") {
-    return ["defer"];
+  void phase;
+  if (agentId === "A1") {
+    return ["guide-flow", "scaffold"];
   }
   if (agentId === "A2") {
-    return ["monitor", "package-data"];
+    return ["model", "coach", "mention-expert"];
   }
   if (agentId === "A3") {
-    return ["articulate", "compare"];
+    return ["monitor", "signal-a1"];
   }
-  return ["respond"];
+  return ["articulate", "reflect", "compare"];
 }
 
 function formatMessage(locale: Locale, turns: AaisGuideTurn[]) {

@@ -24,9 +24,14 @@ describe("AAIS LangGraph learning guide", () => {
     });
     expect(result.turns.map((turn) => turn.agentId)).toEqual(["A1", "A2", "A3", "A4"]);
     expect(result.turns[0].content).toContain("导学智能体");
-    expect(result.turns[1].content).toContain("监督智能体");
-    expect(result.turns[2].content).toContain("反思智能体");
-    expect(result.turns[3].content).toContain("支架智能体");
+    expect(result.turns[0].content).toContain("4 次直接辅助");
+    expect(result.turns[1].content).toContain("专家智能体");
+    expect(result.turns[1].content).toContain("两位专家");
+    expect(result.turns[1].content).toContain("@");
+    expect(result.turns[2].content).toContain("监督智能体");
+    expect(result.turns[2].content).toContain("向 A1 发出信号");
+    expect(result.turns[3].content).toContain("反思智能体");
+    expect(result.turns[3].content).toContain("反思性提问");
     expect(result.runtime.redaction).toEqual({
       secrets: "omitted",
       localFiles: "omitted",
@@ -69,6 +74,20 @@ describe("AAIS LangGraph learning guide", () => {
     });
 
     expect(generate).toHaveBeenCalledTimes(4);
+    expect(generate.mock.calls.map(([request]) => request.caBackground?.framework)).toEqual([
+      "Cognitive Apprenticeship",
+      "Cognitive Apprenticeship",
+      "Cognitive Apprenticeship",
+      "Cognitive Apprenticeship",
+    ]);
+    expect(generate.mock.calls[0]?.[0].caBackground?.principles.map((principle) => principle.id)).toEqual([
+      "modelling",
+      "coaching",
+      "scaffolding",
+      "fading",
+      "articulation",
+      "reflection",
+    ]);
     expect(result.turns.map((turn) => turn.content)).toEqual([
       "A1 governed provider response",
       "A2 governed provider response",
