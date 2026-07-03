@@ -90,7 +90,7 @@ describe("AAIS enterprise release verifier", () => {
     expect(serialized).not.toContain("UND_ERR_CONNECT_TIMEOUT");
   });
 
-  it("verifies readiness, OIDC start, optional learning session, and login throttling without leaking secrets", async () => {
+  it("verifies trial-auth readiness, optional learning session, and login throttling without leaking secrets", async () => {
     const fetchMock = vi.fn(async (input, init = {}) => {
       const url = String(input);
       if (isLegalPageUrl(url)) {
@@ -253,8 +253,9 @@ describe("AAIS enterprise release verifier", () => {
       ["legal-pages", "passed"],
       ["lrs-health", "passed"],
       ["cohort-analytics", "skipped"],
-      ["oidc-start", "passed"],
+      ["oidc-start", "skipped"],
       ["oidc-callback", "skipped"],
+      ["sso-only-mode", "skipped"],
       ["trial-learning-session", "passed"],
       ["trial-login-throttle", "passed"],
     ]);
@@ -284,6 +285,52 @@ describe("AAIS enterprise release verifier", () => {
       lrsOutboxRecoveryAction: "POST /api/learning/lrs/outbox/flush?action=requeue-dead-letter",
       lrsOutboxRecoveryAuth: ["admin-session-csrf", "bearer-token"],
       lrsOutboxRecoveryRedaction: "payloads-excluded",
+      agentEvidenceEnabled: true,
+      agentEvidenceContractVersion: "aais-a1-a4-ca-v2",
+      agentEvidenceContractRequiredAgents: ["A1", "A2", "A3", "A4"],
+      agentEvidenceContractRequiredAgentsComplete: true,
+      agentEvidenceContractCaModules: expectedAgentContractCaModules(),
+      agentEvidenceContractCaModulesComplete: true,
+      agentEvidenceContractRoles: expectedAgentContractRoles(),
+      agentEvidenceContractRolesComplete: true,
+      agentEvidenceContractXapiExtensions: expectedAgentContractXapiExtensions(),
+      agentEvidenceContractXapiExtensionsComplete: true,
+      agentEvidenceContractPseudonymousSessionId: true,
+      agentEvidenceContractComplete: true,
+      agentEvidenceResponsibilities: expectedAgentResponsibilities(),
+      agentEvidenceResponsibilitiesComplete: true,
+      agentEvidenceTriggers: [
+        "monitoring_pause_detected",
+        "coaching_push",
+        "ai_acceptance_recorded",
+      ],
+      agentEvidenceSignals: [
+        "low_progress_artifact_autosave",
+        "artifact_regression_autosave",
+      ],
+      agentEvidenceCoachingInterruption: "low",
+      agentEvidenceCoachingCooldownSeconds: 600,
+      agentEvidenceArtifactRegressionMinimumPreviousCharacters: 80,
+      agentEvidenceArtifactRegressionMinimumDropCharacters: 40,
+      agentEvidenceArtifactRegressionRawTextExcluded: true,
+      agentEvidenceAiAcceptanceDecisionKeyed: true,
+      agentEvidenceAiAcceptanceRevisions: true,
+      agentEvidenceAiAcceptanceRawMessageIdsExcluded: true,
+      agentEvidenceAiAcceptanceRationaleTextExcluded: true,
+      agentEvidenceRedaction: "raw-learner-text-excluded",
+      agentEvidenceComplete: true,
+      a3SupervisionEnabled: true,
+      a3SupervisionTriggers: [
+        "monitoring_pause_detected",
+        "coaching_push",
+        "ai_acceptance_recorded",
+      ],
+      a3SupervisionSignals: [
+        "low_progress_artifact_autosave",
+        "artifact_regression_autosave",
+      ],
+      a3SupervisionRedaction: "raw-learner-text-excluded",
+      a3SupervisionComplete: true,
       a2MonitoringEnabled: true,
       a2MonitoringTriggers: [
         "monitoring_pause_detected",
@@ -320,20 +367,11 @@ describe("AAIS enterprise release verifier", () => {
     expect(serialized).not.toContain("enterprise-model");
     expect(serialized).not.toContain("aais-teachers");
     const oidcStart = report.checks.find((check) => check.name === "oidc-start");
-    expect(oidcStart.details).toMatchObject({
-      redirectsToHttpsProvider: true,
-      responseTypeCode: true,
-      hasClientId: true,
-      hasRedirectUri: true,
-      redirectUriMatchesCallback: true,
-      hasStateParam: true,
-      hasNonceParam: true,
-      hasPkceChallenge: true,
-      pkceMethodS256: true,
-      scopeIncludesOpenid: true,
-      stateCookieHttpOnly: true,
-      stateCookieSecure: true,
-      stateCookieSameSiteLax: true,
+    expect(oidcStart).toMatchObject({
+      status: "skipped",
+      details: {
+        reason: "Trial auth current-stage gate does not require OIDC start evidence",
+      },
     });
   });
 
@@ -364,7 +402,16 @@ describe("AAIS enterprise release verifier", () => {
               trialAccounts: { status: "disabled", configured: false, accountCount: 0 },
               storage: { status: "ok", mode: "postgres", provider: "neon", probe: "connected" },
               lrs: lrsReadyCheck(),
-              oidc: oidcReadyCheck(),
+              oidc: {
+                status: "ok",
+                mode: "missing",
+                roleMapping: {
+                  status: "missing",
+                  configured: false,
+                  present: [],
+                  redaction: "names-only",
+                },
+              },
               ai: {
                 status: "ok",
                 provider: "deterministic",
@@ -476,6 +523,7 @@ describe("AAIS enterprise release verifier", () => {
     const report = await runEnterpriseReleaseVerification({
       baseUrl: "https://aais.example.test",
       fetchImpl: fetchMock,
+      requireSsoOnly: true,
     });
 
     const readiness = report.checks.find((check) => check.name === "readiness");
@@ -533,7 +581,7 @@ describe("AAIS enterprise release verifier", () => {
                   },
                 },
               },
-              oidc: oidcReadyCheck(),
+              oidc: oidcMissingCheck(),
               ai: {
                 status: "ok",
                 provider: "deterministic",
@@ -565,6 +613,7 @@ describe("AAIS enterprise release verifier", () => {
     const report = await runEnterpriseReleaseVerification({
       baseUrl: "https://aais.example.test",
       fetchImpl: fetchMock,
+      requireSsoOnly: true,
     });
 
     const readiness = report.checks.find((check) => check.name === "readiness");
@@ -607,7 +656,7 @@ describe("AAIS enterprise release verifier", () => {
               trialAccounts: { status: "disabled", configured: false, accountCount: 0 },
               storage: { status: "ok", mode: "postgres", provider: "neon", probe: "connected" },
               lrs: lrsReadyCheck(),
-              oidc: oidcReadyCheck(),
+              oidc: oidcMissingCheck(),
               ai: {
                 status: "ok",
                 provider: "deterministic",
@@ -650,6 +699,7 @@ describe("AAIS enterprise release verifier", () => {
     const report = await runEnterpriseReleaseVerification({
       baseUrl: "https://aais.example.test",
       fetchImpl: fetchMock,
+      requireSsoOnly: true,
     });
 
     const lrsHealth = report.checks.find((check) => check.name === "lrs-health");
@@ -715,6 +765,7 @@ describe("AAIS enterprise release verifier", () => {
     const report = await runEnterpriseReleaseVerification({
       baseUrl: "https://aais.example.test",
       fetchImpl: fetchMock,
+      requireSsoOnly: true,
     });
 
     const readiness = report.checks.find((check) => check.name === "readiness");
@@ -780,6 +831,7 @@ describe("AAIS enterprise release verifier", () => {
     const report = await runEnterpriseReleaseVerification({
       baseUrl: "https://aais.example.test",
       fetchImpl: fetchMock,
+      requireSsoOnly: true,
     });
 
     const lrsHealth = report.checks.find((check) => check.name === "lrs-health");
@@ -901,7 +953,7 @@ describe("AAIS enterprise release verifier", () => {
               trialAccounts: { status: "ok", configured: true, accountCount: 2 },
               storage: { status: "ok", mode: "postgres", provider: "neon", probe: "connected" },
               lrs: lrsReadyCheck(),
-              oidc: oidcReadyCheck(),
+              oidc: oidcMissingCheck(),
               ai: {
                 status: "ok",
                 provider: "deterministic",
@@ -982,7 +1034,7 @@ describe("AAIS enterprise release verifier", () => {
             learners: [
               {
                 learnerKey: "learner-123456789abc",
-                sessionId: "session-redacted",
+                sessionKey: "session-abcdef123456",
                 updatedAt: "2026-07-01T00:00:00.000Z",
                 trainingCompleted: true,
                 activePracticeTaskId: "practice_task_1",
@@ -1033,7 +1085,16 @@ describe("AAIS enterprise release verifier", () => {
     });
 
     const cohort = report.checks.find((check) => check.name === "cohort-analytics");
+    const readiness = report.checks.find((check) => check.name === "readiness");
     expect(report.status).toBe("passed");
+    expect(readiness).toMatchObject({
+      status: "passed",
+      details: {
+        oidcOk: true,
+        oidcMode: "missing",
+        oidcRoleMappingConfigured: false,
+      },
+    });
     expect(cohort).toMatchObject({
       status: "passed",
       httpStatus: 200,
@@ -1043,6 +1104,7 @@ describe("AAIS enterprise release verifier", () => {
         filtersApplied: true,
         learnerRows: 1,
         learnerKeysPseudonymous: true,
+        sessionKeysPseudonymous: true,
         aggregateCountsPresent: true,
         riskBreakdownPresent: true,
         learnerRiskLevelsPresent: true,
@@ -1057,6 +1119,7 @@ describe("AAIS enterprise release verifier", () => {
         exportFiltersApplied: true,
         exportLearnerRowsMatch: true,
         exportLearnerKeysPseudonymous: true,
+        exportSessionKeysPseudonymous: true,
         exportPrivacyPseudonymous: true,
         exportNoRawLearnerText: true,
         exportSecrets: "redacted",
@@ -1159,6 +1222,7 @@ describe("AAIS enterprise release verifier", () => {
             learners: [
               {
                 learnerKey: "learner-abcdef123456",
+                sessionKey: "session-123456abcdef",
                 coachingSignals: 1,
                 aiInteractions: 1,
                 riskLevel: "high",
@@ -1252,6 +1316,7 @@ describe("AAIS enterprise release verifier", () => {
     const report = await runEnterpriseReleaseVerification({
       baseUrl: "https://aais.example.test",
       fetchImpl: fetchMock,
+      requireSsoOnly: true,
     });
 
     const oidcStart = report.checks.find((check) => check.name === "oidc-start");
@@ -1323,6 +1388,7 @@ describe("AAIS enterprise release verifier", () => {
     const report = await runEnterpriseReleaseVerification({
       baseUrl: "https://aais.example.test",
       fetchImpl: fetchMock,
+      requireSsoOnly: true,
     });
 
     const oidcStart = report.checks.find((check) => check.name === "oidc-start");
@@ -1399,8 +1465,9 @@ describe("AAIS enterprise release verifier", () => {
       ["legal-pages", "passed"],
       ["lrs-health", "failed"],
       ["cohort-analytics", "skipped"],
-      ["oidc-start", "passed"],
+      ["oidc-start", "skipped"],
       ["oidc-callback", "skipped"],
+      ["sso-only-mode", "skipped"],
       ["trial-learning-session", "skipped"],
       ["trial-login-throttle", "skipped"],
     ]);
@@ -1591,8 +1658,9 @@ describe("AAIS enterprise release verifier", () => {
       ["legal-pages", "passed"],
       ["lrs-health", "passed"],
       ["cohort-analytics", "skipped"],
-      ["oidc-start", "passed"],
+      ["oidc-start", "skipped"],
       ["oidc-callback", "skipped"],
+      ["sso-only-mode", "skipped"],
       ["trial-learning-session", "skipped"],
       ["trial-login-throttle", "skipped"],
     ]);
@@ -1936,6 +2004,9 @@ describe("AAIS enterprise release verifier", () => {
         expect(init.headers.cookie).toContain("aais_session=");
         expect(init.headers.cookie).toContain("aais_csrf=");
         return Response.json({
+          actor: {
+            role: "teacher",
+          },
           session: {
             studentId: "teacher-oidc-user",
             activeTaskId: "training_task_1",
@@ -1973,6 +2044,7 @@ describe("AAIS enterprise release verifier", () => {
             learners: [
               {
                 learnerKey: "learner-abcdef123456",
+                sessionKey: "session-fedcba654321",
                 coachingSignals: 1,
                 aiAcceptanceDecisions: 0,
                 riskLevel: "high",
@@ -2023,6 +2095,7 @@ describe("AAIS enterprise release verifier", () => {
       fetchImpl: fetchMock,
       requireSsoOnly: true,
       requireCohortAnalytics: true,
+      expectedSessionRole: "teacher",
       oidcCallback: {
         callbackUrl: "/api/auth/oidc/callback?code=real-auth-code&state=real-state",
         stateCookie: "real-state-cookie",
@@ -2030,15 +2103,30 @@ describe("AAIS enterprise release verifier", () => {
     });
 
     const cohort = report.checks.find((check) => check.name === "cohort-analytics");
+    const callback = report.checks.find((check) => check.name === "oidc-callback");
     expect(report.status).toBe("passed");
+    expect(callback).toMatchObject({
+      status: "passed",
+      details: {
+        learningSessionRole: "teacher",
+        learningSessionEducatorRole: true,
+        expectedSessionRole: "teacher",
+        learningSessionRoleMatchesExpected: true,
+      },
+    });
     expect(cohort).toMatchObject({
       status: "passed",
       details: {
         authSource: "oidc-callback",
+        educatorSessionRole: "teacher",
+        educatorSessionRoleEvidence: true,
+        expectedSessionRole: "teacher",
+        educatorSessionRoleMatchesExpected: true,
         educatorRoleAccepted: true,
         analyticsStatus: 200,
         filtersApplied: true,
         learnerKeysPseudonymous: true,
+        sessionKeysPseudonymous: true,
         aggregateCountsPresent: true,
         riskBreakdownPresent: true,
         learnerRiskLevelsPresent: true,
@@ -2456,7 +2544,7 @@ function cohortExportJsonResponse() {
       learners: [
         {
           learnerKey: "learner-123456789abc",
-          sessionKey: "session-redacted",
+          sessionKey: "session-abcdef123456",
           riskLevel: "high",
           priorityReasons: ["a2_coaching_signals"],
         },
@@ -2505,6 +2593,19 @@ function oidcReadyCheck() {
         "AAIS_OIDC_ADMIN_GROUPS",
         "AAIS_OIDC_ADMIN_EMAILS",
       ],
+      redaction: "names-only",
+    },
+  };
+}
+
+function oidcMissingCheck() {
+  return {
+    status: "ok",
+    mode: "missing",
+    roleMapping: {
+      status: "missing",
+      configured: false,
+      present: [],
       redaction: "names-only",
     },
   };
@@ -2560,6 +2661,7 @@ function readinessBody(input = {}) {
       trialAccounts: { status: "disabled", configured: false, accountCount: 0 },
       storage: { status: "ok", mode: "postgres", provider: "neon", probe: "connected" },
       lrs: input.lrs ?? lrsReadyCheck(),
+      a3Supervision: input.a3Supervision ?? a2MonitoringReadyCheck(),
       a2Monitoring: input.a2Monitoring ?? a2MonitoringReadyCheck(),
       oidc: oidcReadyCheck(),
       ai: {
@@ -2578,6 +2680,15 @@ function a2MonitoringReadyCheck() {
   return {
     status: "ok",
     enabled: true,
+    agentContract: {
+      version: "aais-a1-a4-ca-v2",
+      requiredAgents: ["A1", "A2", "A3", "A4"],
+      caModules: expectedAgentContractCaModules(),
+      roles: expectedAgentContractRoles(),
+      xapiExtensions: expectedAgentContractXapiExtensions(),
+      complete: true,
+    },
+    agentResponsibilities: expectedAgentResponsibilities(),
     triggers: [
       "monitoring_pause_detected",
       "coaching_push",
@@ -2603,6 +2714,48 @@ function a2MonitoringReadyCheck() {
       rationaleTextExcluded: true,
     },
     redaction: "raw-learner-text-excluded",
+  };
+}
+
+function expectedAgentContractCaModules() {
+  return {
+    A1: ["Scaffolding", "Fading"],
+    A2: ["Modelling", "Coaching"],
+    A3: ["Scaffolding"],
+    A4: ["Articulation", "Reflection"],
+  };
+}
+
+function expectedAgentContractRoles() {
+  return {
+    A1: "frontend-direct-dialogue",
+    A2: "frontend-direct-dialogue",
+    A3: "backend-a1-signal",
+    A4: "backend-a1-reflection",
+  };
+}
+
+function expectedAgentContractXapiExtensions() {
+  return {
+    agentRole: true,
+    agentCaModules: true,
+    agentFamily: true,
+    agentPhaseScope: true,
+    pseudonymousSessionId: true,
+  };
+}
+
+function expectedAgentResponsibilities() {
+  return {
+    A1: ["scaffold_request", "scaffold_self_check_started"],
+    A2: ["expert_model_viewed", "coaching_push", "ai_acceptance_recorded"],
+    A3: [
+      "artifact_edited",
+      "artifact_saved",
+      "planning_submitted",
+      "monitoring_pause_detected",
+    ],
+    A4: ["articulation_submitted", "expert_trace_compared", "self_report_saved"],
   };
 }
 

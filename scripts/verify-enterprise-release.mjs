@@ -8,25 +8,37 @@ export async function runEnterpriseReleaseVerification(input) {
   const fetchImpl = input.fetchImpl ?? fetch;
   const requireSsoOnly = input.requireSsoOnly === true;
   const releaseId = readReleaseId(input.releaseId ?? process.env.AAIS_RELEASE_ID);
+  const expectedSessionRole = readSessionRole(input.expectedSessionRole ?? process.env.AAIS_VERIFY_EXPECTED_SESSION_ROLE);
   const checks = [];
+  const requireOidcEvidence = requireSsoOnly || Boolean(input.oidcCallback);
 
-  checks.push(await runOnlineCheck("readiness", () => verifyReadiness({ baseUrl, fetchImpl, expectedReleaseId: releaseId })));
+  checks.push(await runOnlineCheck("readiness", () => verifyReadiness({
+    baseUrl,
+    fetchImpl,
+    expectedReleaseId: releaseId,
+    requireOidcEvidence,
+  })));
   checks.push(await runOnlineCheck("security-headers", () => verifySecurityHeaders({ baseUrl, fetchImpl })));
   checks.push(await runOnlineCheck("legal-pages", () => verifyLegalPages({ baseUrl, fetchImpl })));
   checks.push(await runOnlineCheck("lrs-health", () => verifyLrsHealth({ baseUrl, fetchImpl })));
-  const oidcStartCheck = await runOnlineCheck("oidc-start", () => verifyOidcStart({ baseUrl, fetchImpl }));
   let oidcSessionCookies = null;
-  const oidcCallbackCheck = await runOnlineCheck(
-    "oidc-callback",
-    () => verifyOidcCallback({
-      baseUrl,
-      fetchImpl,
-      oidcCallback: input.oidcCallback,
-      onSessionCookies: (cookies) => {
-        oidcSessionCookies = cookies;
-      },
-    }),
-  );
+  const oidcStartCheck = requireOidcEvidence
+    ? await runOnlineCheck("oidc-start", () => verifyOidcStart({ baseUrl, fetchImpl }))
+    : skippedCheck("oidc-start", "Trial auth current-stage gate does not require OIDC start evidence");
+  const oidcCallbackCheck = requireOidcEvidence
+    ? await runOnlineCheck(
+      "oidc-callback",
+      () => verifyOidcCallback({
+        baseUrl,
+        fetchImpl,
+        oidcCallback: input.oidcCallback,
+        expectedSessionRole,
+        onSessionCookies: (cookies) => {
+          oidcSessionCookies = cookies;
+        },
+      }),
+    )
+    : skippedCheck("oidc-callback", "Trial auth current-stage gate does not require OIDC callback evidence");
   checks.push(await runOnlineCheck(
     "cohort-analytics",
     () => verifyCohortAnalytics({
@@ -34,6 +46,7 @@ export async function runEnterpriseReleaseVerification(input) {
       fetchImpl,
       educatorLogin: input.educatorLogin,
       educatorSession: oidcSessionCookies,
+      expectedSessionRole,
       requireCohortAnalytics: input.requireCohortAnalytics === true,
     }),
   ));
@@ -44,6 +57,7 @@ export async function runEnterpriseReleaseVerification(input) {
     checks.push(skippedCheck("trial-learning-session", "SSO-only release mode required"));
     checks.push(skippedCheck("trial-login-throttle", "SSO-only release mode required"));
   } else {
+    checks.push(skippedCheck("sso-only-mode", "Trial auth current-stage gate keeps SSO-only cutover disabled"));
     checks.push(await runOnlineCheck(
       "trial-learning-session",
       () => verifyTrialLearningSession({ baseUrl, fetchImpl, trialLogin: input.trialLogin }),
@@ -220,6 +234,7 @@ async function verifyCohortAnalytics({
   fetchImpl,
   educatorLogin,
   educatorSession,
+  expectedSessionRole,
   requireCohortAnalytics,
 }) {
   let authSource = "none";
@@ -227,10 +242,14 @@ async function verifyCohortAnalytics({
   let sessionCookie = "";
   let csrfCookie = "";
   let educatorRoleAccepted = false;
+  let educatorSessionRole = "unknown";
+  let educatorSessionRoleEvidence = false;
 
   if (requireCohortAnalytics && educatorSession?.sessionCookie && educatorSession?.csrfCookie) {
     sessionCookie = educatorSession.sessionCookie;
     csrfCookie = educatorSession.csrfCookie;
+    educatorSessionRole = readSessionRole(educatorSession.sessionRole);
+    educatorSessionRoleEvidence = isEducatorSessionRole(educatorSessionRole);
     authSource = "oidc-callback";
   } else if (educatorLogin?.account && educatorLogin.correctPassword) {
     authSource = "trial-login";
@@ -248,6 +267,8 @@ async function verifyCohortAnalytics({
     const educatorRole = loginBody?.appSession?.actor?.role;
     loginStatus = loginResponse.status;
     educatorRoleAccepted = educatorRole === "teacher" || educatorRole === "admin";
+    educatorSessionRole = readSessionRole(educatorRole);
+    educatorSessionRoleEvidence = educatorRoleAccepted;
   }
 
   if (!sessionCookie || !csrfCookie) {
@@ -299,12 +320,19 @@ async function verifyCohortAnalytics({
     authSessionEstablished: Boolean(sessionCookie && csrfCookie),
     loginSetsSessionCookie: Boolean(sessionCookie),
     loginSetsCsrfCookie: Boolean(csrfCookie),
+    educatorSessionRole,
+    educatorSessionRoleEvidence,
+    expectedSessionRole,
+    educatorSessionRoleMatchesExpected: expectedSessionRole === "unknown" || educatorSessionRole === expectedSessionRole,
     educatorRoleAccepted,
     analyticsStatus,
     filtersApplied: cohortAnalyticsFiltersApplied(analytics.filters?.applied),
     learnerRows: learners.length,
     learnerKeysPseudonymous: learners.every((learner) =>
       typeof learner?.learnerKey === "string" && /^learner-[a-f0-9]{12}$/.test(learner.learnerKey)
+    ),
+    sessionKeysPseudonymous: learners.every((learner) =>
+      typeof learner?.sessionKey === "string" && /^session-[a-f0-9]{12}$/.test(learner.sessionKey)
     ),
     aggregateCountsPresent: cohortAnalyticsAggregateCountsPresent(analytics.dashboard?.cohort),
     riskBreakdownPresent: cohortAnalyticsRiskBreakdownPresent(analytics.dashboard?.cohort?.riskBreakdown),
@@ -328,6 +356,9 @@ async function verifyCohortAnalytics({
     exportLearnerKeysPseudonymous: exportLearners.every((learner) =>
       typeof learner?.learnerKey === "string" && /^learner-[a-f0-9]{12}$/.test(learner.learnerKey)
     ),
+    exportSessionKeysPseudonymous: exportLearners.every((learner) =>
+      typeof learner?.sessionKey === "string" && /^session-[a-f0-9]{12}$/.test(learner.sessionKey)
+    ),
     exportPrivacyPseudonymous: exportBody?.privacy?.actorMode === "pseudonymous"
       && exportBody?.privacy?.rawLearnerText === "excluded",
     exportNoRawLearnerText: !containsRawLearnerPayload(exportBody),
@@ -337,9 +368,12 @@ async function verifyCohortAnalytics({
 
   const passed = details.authSessionEstablished
     && details.educatorRoleAccepted
+    && details.educatorSessionRoleEvidence
+    && details.educatorSessionRoleMatchesExpected
     && details.analyticsStatus === 200
     && details.filtersApplied
     && details.learnerKeysPseudonymous
+    && details.sessionKeysPseudonymous
     && details.aggregateCountsPresent
     && details.riskBreakdownPresent
     && details.learnerRiskLevelsPresent
@@ -354,6 +388,7 @@ async function verifyCohortAnalytics({
     && details.exportFiltersApplied
     && details.exportLearnerRowsMatch
     && details.exportLearnerKeysPseudonymous
+    && details.exportSessionKeysPseudonymous
     && details.exportPrivacyPseudonymous
     && details.exportNoRawLearnerText
     && details.exportSecrets === "redacted"
@@ -502,13 +537,13 @@ async function readLegalPage({ baseUrl, fetchImpl, path: pagePath, marker }) {
   };
 }
 
-async function verifyReadiness({ baseUrl, fetchImpl, expectedReleaseId = null }) {
+async function verifyReadiness({ baseUrl, fetchImpl, expectedReleaseId = null, requireOidcEvidence = false }) {
   const response = await fetchImpl(`${baseUrl}/api/system/readiness`, {
     method: "GET",
   });
   const jsonEvidence = await readJsonEvidence(response);
   const body = jsonEvidence.body;
-  const subchecks = getReadinessSubcheckStatus(body);
+  const subchecks = getReadinessSubcheckStatus(body, { requireOidcEvidence });
   const metadata = getReadinessMetadata(body, response.headers);
   const releaseIdentity = getReadinessReleaseIdentity(body?.release, expectedReleaseId);
   const { complete: releaseIdentityComplete, ...releaseIdentityDetails } = releaseIdentity;
@@ -540,7 +575,7 @@ async function verifyReadiness({ baseUrl, fetchImpl, expectedReleaseId = null })
   };
 }
 
-function getReadinessSubcheckStatus(body) {
+function getReadinessSubcheckStatus(body, input = {}) {
   const checks = body?.checks ?? {};
   const ai = checks.ai ?? {};
   const oidcRoleMapping = checks.oidc?.roleMapping ?? {};
@@ -564,10 +599,12 @@ function getReadinessSubcheckStatus(body) {
       && checks.storage?.mode === "postgres"
       && checks.storage?.probe === "connected",
     lrsOk: checks.lrs?.status === "ok" && lrsOutboxOk,
-    oidcOk: checks.oidc?.status === "ok"
-      && oidcRoleMapping.status === "ok"
-      && oidcRoleMapping.configured === true
-      && readOidcRoleMappingNames(oidcRoleMapping.present).length > 0,
+    oidcOk: input.requireOidcEvidence === true
+      ? checks.oidc?.status === "ok"
+        && oidcRoleMapping.status === "ok"
+        && oidcRoleMapping.configured === true
+        && readOidcRoleMappingNames(oidcRoleMapping.present).length > 0
+      : checks.oidc?.status === "ok",
     liveAiEvalOk: ai.status === "ok"
       && (
         ai.provider === "deterministic"
@@ -585,7 +622,9 @@ function getReadinessMetadata(body, headers) {
   const lrsOutbox = body?.checks?.lrs?.outbox ?? {};
   const coalescing = getLrsOutboxCoalescingEvidence(lrsOutbox.coalescing);
   const recovery = getLrsOutboxRecoveryEvidence(lrsOutbox.recovery);
-  const a2Monitoring = getA2MonitoringCapabilityEvidence(body?.checks?.a2Monitoring);
+  const agentEvidence = getA2MonitoringCapabilityEvidence(
+    body?.checks?.agentEvidence ?? body?.checks?.a3Supervision ?? body?.checks?.a2Monitoring,
+  );
   const vercelRequestIdPresent = Boolean(headers.get("x-vercel-id"));
   return {
     aiProvider: ai.provider === "deterministic" || ai.provider === "openai-compatible"
@@ -611,20 +650,54 @@ function getReadinessMetadata(body, headers) {
     lrsOutboxRecoveryAction: recovery.action,
     lrsOutboxRecoveryAuth: recovery.auth,
     lrsOutboxRecoveryRedaction: recovery.redaction,
-    a2MonitoringEnabled: a2Monitoring.enabled,
-    a2MonitoringTriggers: a2Monitoring.triggers,
-    a2MonitoringSignals: a2Monitoring.signals,
-    a2CoachingInterruption: a2Monitoring.coachingInterruption,
-    a2CoachingCooldownSeconds: a2Monitoring.coachingCooldownSeconds,
-    a2ArtifactRegressionMinimumPreviousCharacters: a2Monitoring.artifactRegressionMinimumPreviousCharacters,
-    a2ArtifactRegressionMinimumDropCharacters: a2Monitoring.artifactRegressionMinimumDropCharacters,
-    a2ArtifactRegressionRawTextExcluded: a2Monitoring.artifactRegressionRawTextExcluded,
-    a2AiAcceptanceDecisionKeyed: a2Monitoring.aiAcceptanceDecisionKeyed,
-    a2AiAcceptanceRevisions: a2Monitoring.aiAcceptanceRevisions,
-    a2AiAcceptanceRawMessageIdsExcluded: a2Monitoring.aiAcceptanceRawMessageIdsExcluded,
-    a2AiAcceptanceRationaleTextExcluded: a2Monitoring.aiAcceptanceRationaleTextExcluded,
-    a2MonitoringRedaction: a2Monitoring.redaction,
-    a2MonitoringComplete: a2Monitoring.complete,
+    agentEvidenceEnabled: agentEvidence.enabled,
+    agentEvidenceContractVersion: agentEvidence.agentContractVersion,
+    agentEvidenceContractRequiredAgents: agentEvidence.agentContractRequiredAgents,
+    agentEvidenceContractRequiredAgentsComplete: agentEvidence.agentContractRequiredAgentsComplete,
+    agentEvidenceContractCaModules: agentEvidence.agentContractCaModules,
+    agentEvidenceContractCaModulesComplete: agentEvidence.agentContractCaModulesComplete,
+    agentEvidenceContractRoles: agentEvidence.agentContractRoles,
+    agentEvidenceContractRolesComplete: agentEvidence.agentContractRolesComplete,
+    agentEvidenceContractXapiExtensions: agentEvidence.agentContractXapiExtensions,
+    agentEvidenceContractXapiExtensionsComplete: agentEvidence.agentContractXapiExtensionsComplete,
+    agentEvidenceContractPseudonymousSessionId: agentEvidence.agentContractPseudonymousSessionId,
+    agentEvidenceContractComplete: agentEvidence.agentContractComplete,
+    agentEvidenceResponsibilities: agentEvidence.agentResponsibilities,
+    agentEvidenceResponsibilitiesComplete: agentEvidence.agentResponsibilitiesComplete,
+    agentEvidenceTriggers: agentEvidence.triggers,
+    agentEvidenceSignals: agentEvidence.signals,
+    agentEvidenceCoachingInterruption: agentEvidence.coachingInterruption,
+    agentEvidenceCoachingCooldownSeconds: agentEvidence.coachingCooldownSeconds,
+    agentEvidenceArtifactRegressionMinimumPreviousCharacters:
+      agentEvidence.artifactRegressionMinimumPreviousCharacters,
+    agentEvidenceArtifactRegressionMinimumDropCharacters:
+      agentEvidence.artifactRegressionMinimumDropCharacters,
+    agentEvidenceArtifactRegressionRawTextExcluded: agentEvidence.artifactRegressionRawTextExcluded,
+    agentEvidenceAiAcceptanceDecisionKeyed: agentEvidence.aiAcceptanceDecisionKeyed,
+    agentEvidenceAiAcceptanceRevisions: agentEvidence.aiAcceptanceRevisions,
+    agentEvidenceAiAcceptanceRawMessageIdsExcluded: agentEvidence.aiAcceptanceRawMessageIdsExcluded,
+    agentEvidenceAiAcceptanceRationaleTextExcluded: agentEvidence.aiAcceptanceRationaleTextExcluded,
+    agentEvidenceRedaction: agentEvidence.redaction,
+    agentEvidenceComplete: agentEvidence.complete,
+    a3SupervisionEnabled: agentEvidence.enabled,
+    a3SupervisionTriggers: agentEvidence.triggers,
+    a3SupervisionSignals: agentEvidence.signals,
+    a3SupervisionRedaction: agentEvidence.redaction,
+    a3SupervisionComplete: agentEvidence.complete,
+    a2MonitoringEnabled: agentEvidence.enabled,
+    a2MonitoringTriggers: agentEvidence.triggers,
+    a2MonitoringSignals: agentEvidence.signals,
+    a2CoachingInterruption: agentEvidence.coachingInterruption,
+    a2CoachingCooldownSeconds: agentEvidence.coachingCooldownSeconds,
+    a2ArtifactRegressionMinimumPreviousCharacters: agentEvidence.artifactRegressionMinimumPreviousCharacters,
+    a2ArtifactRegressionMinimumDropCharacters: agentEvidence.artifactRegressionMinimumDropCharacters,
+    a2ArtifactRegressionRawTextExcluded: agentEvidence.artifactRegressionRawTextExcluded,
+    a2AiAcceptanceDecisionKeyed: agentEvidence.aiAcceptanceDecisionKeyed,
+    a2AiAcceptanceRevisions: agentEvidence.aiAcceptanceRevisions,
+    a2AiAcceptanceRawMessageIdsExcluded: agentEvidence.aiAcceptanceRawMessageIdsExcluded,
+    a2AiAcceptanceRationaleTextExcluded: agentEvidence.aiAcceptanceRationaleTextExcluded,
+    a2MonitoringRedaction: agentEvidence.redaction,
+    a2MonitoringComplete: agentEvidence.complete,
     deploymentPlatform: vercelRequestIdPresent ? "vercel" : "unknown",
     vercelRequestIdPresent,
   };
@@ -753,6 +826,8 @@ function getLrsOutboxRecoveryEvidence(policy) {
 }
 
 function getA2MonitoringCapabilityEvidence(policy) {
+  const responsibilities = getAgentResponsibilitiesEvidence(policy?.agentResponsibilities);
+  const agentContract = getAgentContractEvidence(policy?.agentContract);
   const expectedTriggers = [
     "monitoring_pause_detected",
     "coaching_push",
@@ -789,6 +864,19 @@ function getA2MonitoringCapabilityEvidence(policy) {
   const enabled = policy?.enabled === true;
   return {
     enabled,
+    agentContractVersion: agentContract.version,
+    agentContractRequiredAgents: agentContract.requiredAgents,
+    agentContractRequiredAgentsComplete: agentContract.requiredAgentsComplete,
+    agentContractCaModules: agentContract.caModules,
+    agentContractCaModulesComplete: agentContract.caModulesComplete,
+    agentContractRoles: agentContract.roles,
+    agentContractRolesComplete: agentContract.rolesComplete,
+    agentContractXapiExtensions: agentContract.xapiExtensions,
+    agentContractXapiExtensionsComplete: agentContract.xapiExtensionsComplete,
+    agentContractPseudonymousSessionId: agentContract.pseudonymousSessionId,
+    agentContractComplete: agentContract.complete,
+    agentResponsibilities: responsibilities.value,
+    agentResponsibilitiesComplete: responsibilities.complete,
     triggers,
     signals,
     coachingInterruption,
@@ -802,6 +890,8 @@ function getA2MonitoringCapabilityEvidence(policy) {
     aiAcceptanceRationaleTextExcluded,
     redaction,
     complete: enabled
+      && agentContract.complete
+      && responsibilities.complete
       && triggers.length === expectedTriggers.length
       && signals.length === expectedSignals.length
       && coachingInterruption === "low"
@@ -815,6 +905,104 @@ function getA2MonitoringCapabilityEvidence(policy) {
       && aiAcceptanceRationaleTextExcluded
       && redaction === "raw-learner-text-excluded",
   };
+}
+
+function getAgentContractEvidence(value) {
+  const expectedAgents = ["A1", "A2", "A3", "A4"];
+  const expectedCaModules = {
+    A1: ["Scaffolding", "Fading"],
+    A2: ["Modelling", "Coaching"],
+    A3: ["Scaffolding"],
+    A4: ["Articulation", "Reflection"],
+  };
+  const expectedRoles = {
+    A1: "frontend-direct-dialogue",
+    A2: "frontend-direct-dialogue",
+    A3: "backend-a1-signal",
+    A4: "backend-a1-reflection",
+  };
+  const expectedExtensions = [
+    "agentRole",
+    "agentCaModules",
+    "agentFamily",
+    "agentPhaseScope",
+    "pseudonymousSessionId",
+  ];
+  const rawAgents = Array.isArray(value?.requiredAgents) ? value.requiredAgents : [];
+  const requiredAgents = expectedAgents.filter((agentId) => rawAgents.includes(agentId));
+  const caModules = Object.fromEntries(
+    Object.entries(expectedCaModules).map(([agentId, modules]) => {
+      const raw = Array.isArray(value?.caModules?.[agentId]) ? value.caModules[agentId] : [];
+      return [agentId, modules.filter((module) => raw.includes(module))];
+    }),
+  );
+  const roles = Object.fromEntries(
+    Object.entries(expectedRoles).map(([agentId, role]) => [
+      agentId,
+      value?.roles?.[agentId] === role ? role : "unknown",
+    ]),
+  );
+  const xapiExtensions = Object.fromEntries(
+    expectedExtensions.map((name) => [name, value?.xapiExtensions?.[name] === true]),
+  );
+  const requiredAgentsComplete = requiredAgents.length === expectedAgents.length;
+  const caModulesComplete = Object.entries(expectedCaModules)
+    .every(([agentId, modules]) => arraysEqual(caModules[agentId], modules));
+  const rolesComplete = Object.entries(expectedRoles)
+    .every(([agentId, role]) => roles[agentId] === role);
+  const xapiExtensionsComplete = expectedExtensions.every((name) => xapiExtensions[name] === true);
+  const version = value?.version === "aais-a1-a4-ca-v2" ? "aais-a1-a4-ca-v2" : "invalid";
+  return {
+    version,
+    requiredAgents,
+    requiredAgentsComplete,
+    caModules,
+    caModulesComplete,
+    roles,
+    rolesComplete,
+    xapiExtensions,
+    xapiExtensionsComplete,
+    pseudonymousSessionId: xapiExtensions.pseudonymousSessionId === true,
+    complete: version === "aais-a1-a4-ca-v2"
+      && requiredAgentsComplete
+      && caModulesComplete
+      && rolesComplete
+      && xapiExtensionsComplete
+      && value?.complete === true,
+  };
+}
+
+function getAgentResponsibilitiesEvidence(value) {
+  const expected = {
+    A1: ["scaffold_request", "scaffold_self_check_started"],
+    A2: ["expert_model_viewed", "coaching_push", "ai_acceptance_recorded"],
+    A3: [
+      "artifact_edited",
+      "artifact_saved",
+      "planning_submitted",
+      "monitoring_pause_detected",
+    ],
+    A4: ["articulation_submitted", "expert_trace_compared", "self_report_saved"],
+  };
+  const sanitized = Object.fromEntries(
+    Object.entries(expected).map(([agentId, expectedEvents]) => {
+      const rawEvents = Array.isArray(value?.[agentId]) ? value[agentId] : [];
+      return [
+        agentId,
+        expectedEvents.filter((eventName) => rawEvents.includes(eventName)),
+      ];
+    }),
+  );
+  return {
+    value: sanitized,
+    complete: Object.entries(expected).every(([agentId, expectedEvents]) =>
+      arraysEqual(sanitized[agentId], expectedEvents)
+    ),
+  };
+}
+
+function arraysEqual(left, right) {
+  return left.length === right.length && left.every((item, index) => item === right[index]);
 }
 
 function normalizeDatabaseProvider(value) {
@@ -883,7 +1071,7 @@ function parseUrl(value) {
   }
 }
 
-async function verifyOidcCallback({ baseUrl, fetchImpl, oidcCallback, onSessionCookies }) {
+async function verifyOidcCallback({ baseUrl, fetchImpl, oidcCallback, expectedSessionRole, onSessionCookies }) {
   if (!oidcCallback?.callbackUrl || !oidcCallback.stateCookie) {
     return {
       name: "oidc-callback",
@@ -952,6 +1140,10 @@ async function verifyOidcCallback({ baseUrl, fetchImpl, oidcCallback, onSessionC
     setCookieLeaksCallbackUrl: setCookie.includes(oidcCallback.callbackUrl),
     learningSessionStatus: learningSession.status,
     learningSessionReadable: learningSession.readable,
+    learningSessionRole: learningSession.role,
+    learningSessionEducatorRole: learningSession.educatorRole,
+    expectedSessionRole,
+    learningSessionRoleMatchesExpected: expectedSessionRole === "unknown" || learningSession.role === expectedSessionRole,
   };
 
   const passed = details.redirectsToLocalTarget
@@ -965,12 +1157,14 @@ async function verifyOidcCallback({ baseUrl, fetchImpl, oidcCallback, onSessionC
     && details.csrfCookieSameSiteLax
     && details.clearsStateCookie
     && !details.setCookieLeaksCallbackUrl
-    && details.learningSessionReadable;
+    && details.learningSessionReadable
+    && details.learningSessionRoleMatchesExpected;
 
   if (passed && typeof onSessionCookies === "function") {
     onSessionCookies({
       sessionCookie,
       csrfCookie,
+      sessionRole: learningSession.role,
     });
   }
 
@@ -987,6 +1181,8 @@ async function verifyLearningSessionFromCookies({ baseUrl, fetchImpl, sessionCoo
     return {
       status: null,
       readable: false,
+      role: "unknown",
+      educatorRole: false,
     };
   }
   const response = await fetchImpl(`${baseUrl}/api/learning/session`, {
@@ -999,7 +1195,18 @@ async function verifyLearningSessionFromCookies({ baseUrl, fetchImpl, sessionCoo
   return {
     status: response.status,
     readable: response.status === 200 && typeof body?.session?.studentId === "string",
+    role: readSessionRole(body?.actor?.role),
+    educatorRole: isEducatorSessionRole(readSessionRole(body?.actor?.role)),
   };
+}
+
+function readSessionRole(value) {
+  const role = String(value ?? "").trim().toLowerCase();
+  return role === "student" || role === "teacher" || role === "admin" ? role : "unknown";
+}
+
+function isEducatorSessionRole(value) {
+  return value === "teacher" || value === "admin";
 }
 
 async function verifyTrialLoginThrottle({ baseUrl, fetchImpl, trialLogin }) {
@@ -1012,33 +1219,41 @@ async function verifyTrialLoginThrottle({ baseUrl, fetchImpl, trialLogin }) {
       },
     };
   }
+  const throttleAccount = trialLogin.throttleAccount ?? trialLogin.account;
+  const throttleCorrectPassword = trialLogin.throttleCorrectPassword ?? trialLogin.correctPassword;
+  const throttleClientIp = trialLogin.throttleClientIp ?? trialLogin.clientIp;
   const firstFiveStatuses = [];
   for (let attempt = 0; attempt < 5; attempt += 1) {
     const response = await postLogin({
       baseUrl,
       fetchImpl,
-      account: trialLogin.account,
+      account: throttleAccount,
       password: trialLogin.wrongPassword,
-      clientIp: trialLogin.clientIp,
+      clientIp: throttleClientIp,
     });
     firstFiveStatuses.push(response.status);
   }
   const sixth = await postLogin({
     baseUrl,
     fetchImpl,
-    account: trialLogin.account,
+    account: throttleAccount,
     password: trialLogin.wrongPassword,
-    clientIp: trialLogin.clientIp,
+    clientIp: throttleClientIp,
   });
   const correctDuringLock = await postLogin({
     baseUrl,
     fetchImpl,
-    account: trialLogin.account,
-    password: trialLogin.correctPassword,
-    clientIp: trialLogin.clientIp,
+    account: throttleAccount,
+    password: throttleCorrectPassword,
+    clientIp: throttleClientIp,
   });
   const correctSetCookie = correctDuringLock.headers.get("set-cookie") ?? "";
-  const passed = firstFiveStatuses.every((status) => status === 401)
+  const freshLockoutProven = firstFiveStatuses.every((status) => status === 401)
+    && sixth.status === 429
+    && Boolean(sixth.headers.get("retry-after"))
+    && correctDuringLock.status === 429
+    && !correctSetCookie.includes("aais_session=");
+  const alreadyLockedProven = firstFiveStatuses.every((status) => status === 429)
     && sixth.status === 429
     && Boolean(sixth.headers.get("retry-after"))
     && correctDuringLock.status === 429
@@ -1046,8 +1261,11 @@ async function verifyTrialLoginThrottle({ baseUrl, fetchImpl, trialLogin }) {
 
   return {
     name: "trial-login-throttle",
-    status: passed ? "passed" : "failed",
+    status: freshLockoutProven || alreadyLockedProven ? "passed" : "failed",
     details: {
+      throttleAccountIsolated: throttleAccount !== trialLogin.account,
+      freshLockoutProven,
+      alreadyLockedProven,
       firstFiveStatuses,
       sixthStatus: sixth.status,
       sixthHasRetryAfter: Boolean(sixth.headers.get("retry-after")),
@@ -1289,6 +1507,7 @@ async function main() {
     releaseId: args.get("release-id"),
     outputPath: args.get("output"),
     requireSsoOnly: args.has("require-sso-only") || process.env.AAIS_VERIFY_REQUIRE_SSO_ONLY === "true",
+    expectedSessionRole: args.get("expected-session-role") ?? process.env.AAIS_VERIFY_EXPECTED_SESSION_ROLE,
     oidcCallback: process.env.AAIS_VERIFY_OIDC_CALLBACK_URL && process.env.AAIS_VERIFY_OIDC_STATE_COOKIE
       ? {
           callbackUrl: process.env.AAIS_VERIFY_OIDC_CALLBACK_URL,
@@ -1301,6 +1520,9 @@ async function main() {
           correctPassword: process.env.AAIS_VERIFY_TRIAL_CORRECT_PASSWORD,
           wrongPassword: process.env.AAIS_VERIFY_TRIAL_WRONG_PASSWORD ?? "aais-intentional-wrong-password",
           clientIp: process.env.AAIS_VERIFY_TRIAL_CLIENT_IP,
+          throttleAccount: process.env.AAIS_VERIFY_TRIAL_THROTTLE_ACCOUNT,
+          throttleCorrectPassword: process.env.AAIS_VERIFY_TRIAL_THROTTLE_CORRECT_PASSWORD,
+          throttleClientIp: process.env.AAIS_VERIFY_TRIAL_THROTTLE_CLIENT_IP,
         }
       : undefined,
     requireCohortAnalytics: args.has("require-cohort-analytics")

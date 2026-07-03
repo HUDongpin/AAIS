@@ -73,23 +73,7 @@ describe("AAIS release evidence verifier", () => {
         cookies: "attributes-only",
       },
     });
-    const aiEvalManifestPath = await writeJson("ai-eval-manifest.json", {
-      schemaVersion: 1,
-      evalVersion: "eval-2026-06-30",
-      provider: "openai-compatible",
-      model: "enterprise-model",
-      status: "passed",
-      passedAt: "2026-06-30T01:00:00.000Z",
-      release: {
-        id: "aais-2026-06-30-rc1",
-      },
-      sampleCount: 4,
-      blockedCount: 0,
-      redaction: {
-        prompts: "summarized",
-        secrets: "omitted",
-      },
-    });
+    const aiEvalManifestPath = await writeJson("ai-eval-manifest.json", passingAiEvalManifest());
     const postgresRestoreReportPath = await writeJson("restore-report.json", {
       schemaVersion: 1,
       status: "passed",
@@ -106,6 +90,7 @@ describe("AAIS release evidence verifier", () => {
       checks: {
         tablePresent: true,
         lrsOutboxTablePresent: true,
+        smokeInsertOnly: true,
         smokeInserted: true,
         smokeReadBack: true,
         smokeDeleted: true,
@@ -125,6 +110,7 @@ describe("AAIS release evidence verifier", () => {
       postgresRestoreReportPath,
       vercelEnvReportPath,
       vercelDeploymentReportPath,
+      authMode: "sso-only",
       outputPath,
       deploymentUrl: "https://aais-six.vercel.app/",
       deploymentPlatform: "vercel",
@@ -246,6 +232,8 @@ describe("AAIS release evidence verifier", () => {
             securityHeaders: true,
             legalPages: true,
             lrsHealth: true,
+            agentEvidence: true,
+            a2Monitoring: true,
             cohortAnalytics: true,
             oidcStart: true,
             oidcCallback: true,
@@ -342,6 +330,7 @@ describe("AAIS release evidence verifier", () => {
           targetPurpose: "restored-staging",
           tablePresent: true,
           lrsOutboxTablePresent: true,
+          smokeInsertOnly: true,
           smokeInserted: true,
           smokeReadBack: true,
           smokeDeleted: true,
@@ -402,6 +391,7 @@ describe("AAIS release evidence verifier", () => {
       },
       checks: {
         tablePresent: true,
+        smokeInsertOnly: true,
         smokeInserted: true,
         smokeReadBack: true,
         smokeDeleted: true,
@@ -433,6 +423,68 @@ describe("AAIS release evidence verifier", () => {
       targetPurpose: "invalid",
       tablePresent: true,
       lrsOutboxTablePresent: false,
+      smokeInsertOnly: true,
+      smokeInserted: true,
+      smokeReadBack: true,
+      smokeDeleted: true,
+    });
+  });
+
+  it("fails restore evidence when the smoke write does not prove insert-only behavior", async () => {
+    const {
+      sourceProvenanceReportPath,
+      enterpriseReportPath,
+      vercelDeploymentReportPath,
+      aiEvalManifestPath,
+    } = await writePassingReleaseArtifacts();
+    const postgresRestoreReportPath = await writeJson("restore-report.json", {
+      schemaVersion: 1,
+      status: "passed",
+      checkedAt: "2026-06-30T04:00:00.000Z",
+      release: {
+        id: "aais-2026-06-30-rc1",
+      },
+      target: {
+        databaseUrl: "redacted",
+        provider: "neon",
+        purpose: "restored-staging",
+        sameAsSource: false,
+      },
+      checks: {
+        tablePresent: true,
+        lrsOutboxTablePresent: true,
+        smokeInserted: true,
+        smokeReadBack: true,
+        smokeDeleted: true,
+      },
+      redaction: {
+        secrets: "omitted",
+      },
+    });
+    const vercelEnvReportPath = await writePassingVercelEnvReport();
+
+    const report = await verifyAaisReleaseEvidence({
+      sourceProvenanceReportPath,
+      enterpriseReportPath,
+      vercelDeploymentReportPath,
+      aiEvalManifestPath,
+      postgresRestoreReportPath,
+      vercelEnvReportPath,
+      deploymentUrl: "https://aais-six.vercel.app",
+      deploymentPlatform: "vercel",
+      databaseProvider: "neon",
+      releaseId: "aais-2026-06-30-rc1",
+      now: new Date("2026-06-30T05:00:00.000Z"),
+      maxAgeHours: 24,
+    });
+
+    expect(report.status).toBe("failed");
+    expect(report.artifacts.postgresRestore).toMatchObject({
+      status: "failed",
+      targetPurpose: "restored-staging",
+      tablePresent: true,
+      lrsOutboxTablePresent: true,
+      smokeInsertOnly: false,
       smokeInserted: true,
       smokeReadBack: true,
       smokeDeleted: true,
@@ -564,6 +616,7 @@ describe("AAIS release evidence verifier", () => {
             filtersApplied: false,
             learnerRows: 1,
             learnerKeysPseudonymous: false,
+            sessionKeysPseudonymous: false,
             aggregateCountsPresent: true,
             riskBreakdownPresent: false,
             learnerRiskLevelsPresent: false,
@@ -592,6 +645,7 @@ describe("AAIS release evidence verifier", () => {
       aiEvalManifestPath,
       postgresRestoreReportPath,
       vercelEnvReportPath,
+      authMode: "sso-only",
       deploymentUrl: "https://aais-six.vercel.app",
       deploymentPlatform: "vercel",
       databaseProvider: "neon",
@@ -608,6 +662,7 @@ describe("AAIS release evidence verifier", () => {
       cohortAnalyticsEvidence: {
         filtersApplied: false,
         learnerKeysPseudonymous: false,
+        sessionKeysPseudonymous: false,
         noRawLearnerText: false,
         aggregateProofComplete: false,
         riskBreakdownPresent: false,
@@ -700,6 +755,91 @@ describe("AAIS release evidence verifier", () => {
         releaseIdMatchesExpected: true,
         releaseIdentityComplete: true,
         complete: true,
+      },
+    });
+  });
+
+  it("fails final evidence when the OIDC callback session role does not match the expected educator role", async () => {
+    const oidcCallbackCheck = passingOidcCallbackCheck();
+    oidcCallbackCheck.details.learningSessionRole = "student";
+    oidcCallbackCheck.details.learningSessionEducatorRole = false;
+    oidcCallbackCheck.details.learningSessionRoleMatchesExpected = false;
+    const {
+      enterpriseReportPath,
+      aiEvalManifestPath,
+      postgresRestoreReportPath,
+    } = await writePassingReleaseArtifacts({
+      oidcCallbackCheck,
+    });
+    const vercelEnvReportPath = await writePassingVercelEnvReport();
+
+    const report = await verifyAaisReleaseEvidence({
+      enterpriseReportPath,
+      aiEvalManifestPath,
+      postgresRestoreReportPath,
+      vercelEnvReportPath,
+      deploymentUrl: "https://aais-six.vercel.app",
+      deploymentPlatform: "vercel",
+      databaseProvider: "neon",
+      now: new Date("2026-06-30T05:00:00.000Z"),
+      maxAgeHours: 24,
+    });
+
+    expect(report.status).toBe("failed");
+    expect(report.artifacts.enterprise).toMatchObject({
+      status: "failed",
+      requiredChecks: {
+        oidcCallback: false,
+      },
+      oidcCallbackEvidence: {
+        learningSessionRole: "student",
+        learningSessionEducatorRole: false,
+        expectedSessionRole: "teacher",
+        learningSessionRoleMatchesExpected: false,
+        learningSessionHandoffComplete: false,
+      },
+    });
+  });
+
+  it("fails final evidence when cohort analytics lacks teacher/admin OIDC role-match proof", async () => {
+    const cohortCheck = passingOidcCohortAnalyticsCheck();
+    cohortCheck.details.educatorSessionRole = "student";
+    cohortCheck.details.educatorSessionRoleEvidence = false;
+    cohortCheck.details.educatorSessionRoleMatchesExpected = false;
+    const {
+      enterpriseReportPath,
+      aiEvalManifestPath,
+      postgresRestoreReportPath,
+    } = await writePassingReleaseArtifacts({
+      cohortCheck,
+    });
+    const vercelEnvReportPath = await writePassingVercelEnvReport();
+
+    const report = await verifyAaisReleaseEvidence({
+      enterpriseReportPath,
+      aiEvalManifestPath,
+      postgresRestoreReportPath,
+      vercelEnvReportPath,
+      deploymentUrl: "https://aais-six.vercel.app",
+      deploymentPlatform: "vercel",
+      databaseProvider: "neon",
+      now: new Date("2026-06-30T05:00:00.000Z"),
+      maxAgeHours: 24,
+    });
+
+    expect(report.status).toBe("failed");
+    expect(report.artifacts.enterprise).toMatchObject({
+      status: "failed",
+      requiredChecks: {
+        cohortAnalytics: false,
+      },
+      cohortAnalyticsEvidence: {
+        authSource: "oidc-callback",
+        educatorSessionRole: "student",
+        educatorSessionRoleEvidence: false,
+        expectedSessionRole: "teacher",
+        educatorSessionRoleMatchesExpected: false,
+        ssoOnlyEducatorProofComplete: false,
       },
     });
   });
@@ -799,6 +939,7 @@ describe("AAIS release evidence verifier", () => {
           filtersApplied: true,
           learnerRows: 1,
           learnerKeysPseudonymous: true,
+          sessionKeysPseudonymous: true,
           aggregateCountsPresent: true,
           riskBreakdownPresent: true,
           learnerRiskLevelsPresent: true,
@@ -1166,23 +1307,7 @@ describe("AAIS release evidence verifier", () => {
         cookies: "attributes-only",
       },
     });
-    const aiEvalManifestPath = await writeJson("ai-eval-manifest.json", {
-      schemaVersion: 1,
-      evalVersion: "eval-2026-06-30",
-      provider: "openai-compatible",
-      model: "enterprise-model",
-      status: "passed",
-      passedAt: "2026-06-30T01:00:00.000Z",
-      release: {
-        id: "aais-2026-06-30-rc1",
-      },
-      sampleCount: 4,
-      blockedCount: 0,
-      redaction: {
-        prompts: "summarized",
-        secrets: "omitted",
-      },
-    });
+    const aiEvalManifestPath = await writeJson("ai-eval-manifest.json", passingAiEvalManifest());
     const postgresRestoreReportPath = await writeJson("restore-report.json", {
       schemaVersion: 1,
       status: "passed",
@@ -1199,6 +1324,7 @@ describe("AAIS release evidence verifier", () => {
       checks: {
         tablePresent: true,
         lrsOutboxTablePresent: true,
+        smokeInsertOnly: true,
         smokeInserted: true,
         smokeReadBack: true,
         smokeDeleted: true,
@@ -1454,6 +1580,62 @@ describe("AAIS release evidence verifier", () => {
     });
   });
 
+  it("passes the current-stage trial auth release evidence without OIDC provider artifacts", async () => {
+    const {
+      enterpriseReportPath,
+      aiEvalManifestPath,
+      postgresRestoreReportPath,
+    } = await writePassingReleaseArtifacts({
+      authMode: "trial",
+      readinessDetails: passingReadinessDetails({
+        oidcMode: "missing",
+        oidcRoleMappingStatus: "missing",
+        oidcRoleMappingConfigured: false,
+        oidcRoleMappingPresent: [],
+      }),
+    });
+    const vercelEnvReportPath = await writePassingVercelEnvReport({ authMode: "trial" });
+
+    const report = await verifyAaisReleaseEvidence({
+      authMode: "trial",
+      enterpriseReportPath,
+      aiEvalManifestPath,
+      postgresRestoreReportPath,
+      vercelEnvReportPath,
+      deploymentUrl: "https://aais-six.vercel.app",
+      deploymentPlatform: "vercel",
+      databaseProvider: "neon",
+      now: new Date("2026-06-30T05:00:00.000Z"),
+      maxAgeHours: 24,
+    });
+
+    expect(report.status).toBe("passed");
+    expect(report.artifacts.vercelEnv.target).toMatchObject({
+      authMode: "trial",
+      expectedAuthMode: "trial",
+      authModeMatchesExpected: true,
+    });
+    expect(report.artifacts.enterprise.requiredChecks).toMatchObject({
+      readiness: true,
+      cohortAnalytics: true,
+      oidcStart: true,
+      oidcCallback: true,
+      ssoOnlyMode: true,
+      trialLearningSession: true,
+      trialLoginThrottle: true,
+    });
+    expect(report.artifacts.enterprise.optionalChecks).toEqual({
+      trialLearningSession: "passed",
+      trialLoginThrottle: "passed",
+    });
+    expect(report.artifacts.enterprise.trialAuthEvidence).toEqual({
+      trialLearningSessionPassed: true,
+      trialLoginThrottlePassed: true,
+      trialChecksPassed: true,
+    });
+    expect(report.artifacts.enterprise.oidcRoleMappingEvidence.complete).toBe(false);
+  });
+
   it("fails when final sso-only release evidence includes passed trial smoke checks", async () => {
     const enterpriseReportPath = await writeJson("enterprise-report.json", {
       status: "passed",
@@ -1490,23 +1672,7 @@ describe("AAIS release evidence verifier", () => {
         cookies: "attributes-only",
       },
     });
-    const aiEvalManifestPath = await writeJson("ai-eval-manifest.json", {
-      schemaVersion: 1,
-      evalVersion: "eval-2026-06-30",
-      provider: "openai-compatible",
-      model: "enterprise-model",
-      status: "passed",
-      passedAt: "2026-06-30T01:00:00.000Z",
-      release: {
-        id: "aais-2026-06-30-rc1",
-      },
-      sampleCount: 4,
-      blockedCount: 0,
-      redaction: {
-        prompts: "summarized",
-        secrets: "omitted",
-      },
-    });
+    const aiEvalManifestPath = await writeJson("ai-eval-manifest.json", passingAiEvalManifest());
     const postgresRestoreReportPath = await writeJson("restore-report.json", {
       schemaVersion: 1,
       status: "passed",
@@ -1523,6 +1689,7 @@ describe("AAIS release evidence verifier", () => {
       checks: {
         tablePresent: true,
         lrsOutboxTablePresent: true,
+        smokeInsertOnly: true,
         smokeInserted: true,
         smokeReadBack: true,
         smokeDeleted: true,
@@ -1594,23 +1761,10 @@ describe("AAIS release evidence verifier", () => {
         cookies: "attributes-only",
       },
     });
-    const aiEvalManifestPath = await writeJson("ai-eval-manifest.json", {
-      schemaVersion: 1,
-      evalVersion: "eval-2026-06-30",
-      provider: "openai-compatible",
-      model: "evaluated-model",
-      status: "passed",
-      passedAt: "2026-06-30T01:00:00.000Z",
-      release: {
-        id: "aais-2026-06-30-rc1",
-      },
-      sampleCount: 4,
-      blockedCount: 0,
-      redaction: {
-        prompts: "summarized",
-        secrets: "omitted",
-      },
-    });
+    const aiEvalManifestPath = await writeJson(
+      "ai-eval-manifest.json",
+      passingAiEvalManifest({ model: "evaluated-model" }),
+    );
     const postgresRestoreReportPath = await writeJson("restore-report.json", {
       schemaVersion: 1,
       status: "passed",
@@ -1627,6 +1781,7 @@ describe("AAIS release evidence verifier", () => {
       checks: {
         tablePresent: true,
         lrsOutboxTablePresent: true,
+        smokeInsertOnly: true,
         smokeInserted: true,
         smokeReadBack: true,
         smokeDeleted: true,
@@ -1662,6 +1817,110 @@ describe("AAIS release evidence verifier", () => {
     const serialized = JSON.stringify(report);
     expect(serialized).not.toContain("deployed-model");
     expect(serialized).not.toContain("evaluated-model");
+  });
+
+  it("fails when A1-A4 live AI coverage has a role contract mismatch", async () => {
+    const agentEvidence = passingAiEvalManifest().agentEvidence;
+    const {
+      enterpriseReportPath,
+      aiEvalManifestPath,
+      postgresRestoreReportPath,
+    } = await writePassingReleaseArtifacts({
+      aiEvalManifest: {
+        agentEvidence: {
+          ...agentEvidence,
+          coverage: expectedAiEvalAgentCoverage({
+            A3: {
+              label: "监督智能体",
+              responsibility: "frontend-expert-modelling-coaching",
+              sampleIds: ["a3-supervision-a1-signal"],
+              caModules: ["Scaffolding"],
+              complete: true,
+            },
+          }),
+        },
+      },
+    });
+    const vercelEnvReportPath = await writePassingVercelEnvReport();
+
+    const report = await verifyAaisReleaseEvidence({
+      enterpriseReportPath,
+      aiEvalManifestPath,
+      postgresRestoreReportPath,
+      vercelEnvReportPath,
+      deploymentUrl: "https://aais-six.vercel.app",
+      deploymentPlatform: "vercel",
+      databaseProvider: "neon",
+      now: new Date("2026-06-30T05:00:00.000Z"),
+      maxAgeHours: 24,
+    });
+
+    expect(report.status).toBe("failed");
+    expect(report.artifacts.aiEval).toMatchObject({
+      status: "failed",
+      agentEvidence: {
+        complete: false,
+        coverageComplete: false,
+        coverage: {
+          A3: {
+            responsibility: "invalid",
+            caModules: ["Scaffolding"],
+            complete: false,
+          },
+        },
+      },
+    });
+  });
+
+  it("fails final release evidence when readiness lacks A1-A4 xAPI agent-contract proof", async () => {
+    const {
+      enterpriseReportPath,
+      aiEvalManifestPath,
+      postgresRestoreReportPath,
+    } = await writePassingReleaseArtifacts({
+      readinessDetails: passingReadinessDetails({
+        agentEvidenceContractXapiExtensions: {
+          ...expectedAgentContractXapiExtensions(),
+          pseudonymousSessionId: false,
+        },
+        agentEvidenceContractXapiExtensionsComplete: false,
+        agentEvidenceContractPseudonymousSessionId: false,
+        agentEvidenceContractComplete: false,
+      }),
+    });
+    const vercelEnvReportPath = await writePassingVercelEnvReport();
+
+    const report = await verifyAaisReleaseEvidence({
+      enterpriseReportPath,
+      aiEvalManifestPath,
+      postgresRestoreReportPath,
+      vercelEnvReportPath,
+      deploymentUrl: "https://aais-six.vercel.app",
+      deploymentPlatform: "vercel",
+      databaseProvider: "neon",
+      now: new Date("2026-06-30T05:00:00.000Z"),
+      maxAgeHours: 24,
+    });
+
+    expect(report.status).toBe("failed");
+    expect(report.artifacts.enterprise).toMatchObject({
+      status: "failed",
+      requiredChecks: {
+        agentEvidence: false,
+        a3Supervision: false,
+        a2Monitoring: false,
+      },
+      agentEvidence: {
+        agentContract: {
+          xapiExtensions: {
+            pseudonymousSessionId: false,
+          },
+          xapiExtensionsComplete: false,
+          complete: false,
+        },
+        complete: false,
+      },
+    });
   });
 
   it("fails when the Vercel env report is not passing Production sso-only live evidence", async () => {
@@ -1765,22 +2024,15 @@ describe("AAIS release evidence verifier", () => {
         cookies: "attributes-only",
       },
     });
-    const aiEvalManifestPath = await writeJson("ai-eval-manifest.json", {
-      schemaVersion: 1,
-      provider: "openai-compatible",
-      evalVersion: "eval-2026-06-29",
-      status: "failed",
-      passedAt: "2026-06-20T01:00:00.000Z",
-      release: {
-        id: "aais-2026-06-30-rc1",
-      },
-      sampleCount: 4,
-      blockedCount: 1,
-      redaction: {
-        prompts: "summarized",
-        secrets: "omitted",
-      },
-    });
+    const aiEvalManifestPath = await writeJson(
+      "ai-eval-manifest.json",
+      passingAiEvalManifest({
+        evalVersion: "eval-2026-06-29",
+        status: "failed",
+        passedAt: "2026-06-20T01:00:00.000Z",
+        blockedCount: 1,
+      }),
+    );
     const postgresRestoreReportPath = await writeJson("restore-report.json", {
       schemaVersion: 1,
       status: "passed",
@@ -1809,6 +2061,7 @@ describe("AAIS release evidence verifier", () => {
       enterpriseReportPath,
       aiEvalManifestPath,
       postgresRestoreReportPath,
+      authMode: "sso-only",
       now: new Date("2026-06-30T05:00:00.000Z"),
       maxAgeHours: 24,
     });
@@ -1872,22 +2125,7 @@ describe("AAIS release evidence verifier", () => {
         cookies: "attributes-only",
       },
     });
-    const aiEvalManifestPath = await writeJson("ai-eval-manifest.json", {
-      schemaVersion: 1,
-      evalVersion: "eval-2026-06-30",
-      provider: "openai-compatible",
-      status: "passed",
-      passedAt: "2026-06-30T01:00:00.000Z",
-      release: {
-        id: "aais-2026-06-30-rc1",
-      },
-      sampleCount: 4,
-      blockedCount: 0,
-      redaction: {
-        prompts: "summarized",
-        secrets: "omitted",
-      },
-    });
+    const aiEvalManifestPath = await writeJson("ai-eval-manifest.json", passingAiEvalManifest());
     const postgresRestoreReportPath = await writeJson("restore-report.json", {
       schemaVersion: 1,
       status: "passed",
@@ -1903,6 +2141,7 @@ describe("AAIS release evidence verifier", () => {
       checks: {
         tablePresent: true,
         lrsOutboxTablePresent: true,
+        smokeInsertOnly: true,
         smokeInserted: true,
         smokeReadBack: true,
         smokeDeleted: true,
@@ -1960,22 +2199,7 @@ describe("AAIS release evidence verifier", () => {
         cookies: "attributes-only",
       },
     });
-    const aiEvalManifestPath = await writeJson("ai-eval-manifest.json", {
-      schemaVersion: 1,
-      evalVersion: "eval-2026-06-30",
-      provider: "openai-compatible",
-      status: "passed",
-      passedAt: "2026-06-30T01:00:00.000Z",
-      release: {
-        id: "aais-2026-06-30-rc1",
-      },
-      sampleCount: 4,
-      blockedCount: 0,
-      redaction: {
-        prompts: "summarized",
-        secrets: "omitted",
-      },
-    });
+    const aiEvalManifestPath = await writeJson("ai-eval-manifest.json", passingAiEvalManifest());
     const postgresRestoreReportPath = await writeJson("restore-report.json", {
       schemaVersion: 1,
       status: "passed",
@@ -1991,6 +2215,7 @@ describe("AAIS release evidence verifier", () => {
       checks: {
         tablePresent: true,
         lrsOutboxTablePresent: true,
+        smokeInsertOnly: true,
         smokeInserted: true,
         smokeReadBack: true,
         smokeDeleted: true,
@@ -2084,22 +2309,7 @@ describe("AAIS release evidence verifier", () => {
         cookies: "attributes-only",
       },
     });
-    const aiEvalManifestPath = await writeJson("ai-eval-manifest.json", {
-      schemaVersion: 1,
-      evalVersion: "eval-2026-06-30",
-      provider: "openai-compatible",
-      status: "passed",
-      passedAt: "2026-06-30T01:00:00.000Z",
-      release: {
-        id: "aais-2026-06-30-rc1",
-      },
-      sampleCount: 4,
-      blockedCount: 0,
-      redaction: {
-        prompts: "summarized",
-        secrets: "omitted",
-      },
-    });
+    const aiEvalManifestPath = await writeJson("ai-eval-manifest.json", passingAiEvalManifest());
     const postgresRestoreReportPath = await writeJson("restore-report.json", {
       schemaVersion: 1,
       status: "passed",
@@ -2115,6 +2325,7 @@ describe("AAIS release evidence verifier", () => {
       checks: {
         tablePresent: true,
         lrsOutboxTablePresent: true,
+        smokeInsertOnly: true,
         smokeInserted: true,
         smokeReadBack: true,
         smokeDeleted: true,
@@ -2177,22 +2388,7 @@ describe("AAIS release evidence verifier", () => {
         cookies: "attributes-only",
       },
     });
-    const aiEvalManifestPath = await writeJson("ai-eval-manifest.json", {
-      schemaVersion: 1,
-      evalVersion: "eval-2026-06-30",
-      provider: "openai-compatible",
-      status: "passed",
-      passedAt: "2026-06-30T01:00:00.000Z",
-      release: {
-        id: "aais-2026-06-30-rc1",
-      },
-      sampleCount: 4,
-      blockedCount: 0,
-      redaction: {
-        prompts: "summarized",
-        secrets: "omitted",
-      },
-    });
+    const aiEvalManifestPath = await writeJson("ai-eval-manifest.json", passingAiEvalManifest());
     const postgresRestoreReportPath = await writeJson("restore-report.json", {
       schemaVersion: 1,
       status: "passed",
@@ -2209,6 +2405,7 @@ describe("AAIS release evidence verifier", () => {
       checks: {
         tablePresent: true,
         lrsOutboxTablePresent: true,
+        smokeInsertOnly: true,
         smokeInserted: true,
         smokeReadBack: true,
         smokeDeleted: true,
@@ -2266,6 +2463,73 @@ async function writeJson(fileName, value) {
   return filePath;
 }
 
+function passingAiEvalManifest(overrides = {}) {
+  return {
+    schemaVersion: 1,
+    evalVersion: "eval-2026-06-30",
+    provider: "openai-compatible",
+    model: "enterprise-model",
+    status: "passed",
+    passedAt: "2026-06-30T01:00:00.000Z",
+    release: {
+      id: "aais-2026-06-30-rc1",
+    },
+    sampleCount: 4,
+    blockedCount: 0,
+    agentEvidence: {
+      contractVersion: "aais-a1-a4-ca-eval-v2",
+      requiredAgents: ["A1", "A2", "A3", "A4"],
+      coveredAgents: ["A1", "A2", "A3", "A4"],
+      requiredCaModules: ["Modelling", "Coaching", "Scaffolding", "Fading", "Articulation", "Reflection"],
+      coveredCaModules: ["Modelling", "Coaching", "Scaffolding", "Fading", "Articulation", "Reflection"],
+      coverage: expectedAiEvalAgentCoverage(),
+      caBackgroundIncluded: true,
+      rawPromptsStored: false,
+      rawOutputsStored: false,
+      complete: true,
+    },
+    redaction: {
+      prompts: "summarized",
+      secrets: "omitted",
+    },
+    ...overrides,
+  };
+}
+
+function expectedAiEvalAgentCoverage(overrides = {}) {
+  return {
+    A1: {
+      label: "导学智能体",
+      responsibility: "frontend-guide-scaffolding",
+      sampleIds: ["a1-guide-training"],
+      caModules: ["Scaffolding", "Fading"],
+      complete: true,
+    },
+    A2: {
+      label: "专家智能体",
+      responsibility: "frontend-expert-modelling-coaching",
+      sampleIds: ["a2-expert-modelling-coaching"],
+      caModules: ["Modelling", "Coaching"],
+      complete: true,
+    },
+    A3: {
+      label: "监督智能体",
+      responsibility: "backend-supervision-a1-signal",
+      sampleIds: ["a3-supervision-a1-signal"],
+      caModules: ["Scaffolding"],
+      complete: true,
+    },
+    A4: {
+      label: "反思智能体",
+      responsibility: "backend-reflection-articulation",
+      sampleIds: ["a4-articulation-reflection"],
+      caModules: ["Articulation", "Reflection"],
+      complete: true,
+    },
+    ...overrides,
+  };
+}
+
 async function writePassingReleaseArtifacts(input = {}) {
   const sourceProvenanceReportPath = await writeJson("source-provenance.json", {
     schemaVersion: 1,
@@ -2293,6 +2557,9 @@ async function writePassingReleaseArtifacts(input = {}) {
       gitStatus: "counts-only",
     },
   });
+  const authMode = input.authMode ?? "sso-only";
+  vi.stubEnv("AAIS_RELEASE_AUTH_MODE", authMode);
+  const trialAuthMode = authMode === "trial";
   const enterpriseReportPath = await writeJson("enterprise-report.json", {
     status: "passed",
     checkedAt: "2026-06-30T03:00:00.000Z",
@@ -2311,35 +2578,24 @@ async function writePassingReleaseArtifacts(input = {}) {
       { name: "security-headers", status: "passed" },
       input.legalPagesCheck ?? passingLegalPagesCheck(),
       input.lrsHealthCheck ?? passingLrsHealthCheck(),
-      input.cohortCheck ?? passingOidcCohortAnalyticsCheck(),
-      { name: "oidc-start", status: "passed", details: passingOidcStartDetails() },
-      passingOidcCallbackCheck(),
-      input.ssoOnlyModeCheck ?? passingSsoOnlyModeCheck(),
-      { name: "trial-learning-session", status: "skipped" },
-      { name: "trial-login-throttle", status: "skipped" },
+      input.cohortCheck ?? (trialAuthMode ? passingCohortAnalyticsCheck() : passingOidcCohortAnalyticsCheck()),
+      trialAuthMode
+        ? { name: "oidc-start", status: "skipped" }
+        : { name: "oidc-start", status: "passed", details: passingOidcStartDetails() },
+      trialAuthMode ? { name: "oidc-callback", status: "skipped" } : input.oidcCallbackCheck ?? passingOidcCallbackCheck(),
+      trialAuthMode ? { name: "sso-only-mode", status: "skipped" } : input.ssoOnlyModeCheck ?? passingSsoOnlyModeCheck(),
+      { name: "trial-learning-session", status: trialAuthMode ? "passed" : "skipped" },
+      { name: "trial-login-throttle", status: trialAuthMode ? "passed" : "skipped" },
     ],
     redaction: {
       secrets: "omitted",
       cookies: "attributes-only",
     },
   });
-  const aiEvalManifestPath = await writeJson("ai-eval-manifest.json", {
-    schemaVersion: 1,
-    evalVersion: "eval-2026-06-30",
-    provider: "openai-compatible",
-    model: "enterprise-model",
-    status: "passed",
-    passedAt: "2026-06-30T01:00:00.000Z",
-    release: {
-      id: "aais-2026-06-30-rc1",
-    },
-    sampleCount: 4,
-    blockedCount: 0,
-    redaction: {
-      prompts: "summarized",
-      secrets: "omitted",
-    },
-  });
+  const aiEvalManifestPath = await writeJson(
+    "ai-eval-manifest.json",
+    passingAiEvalManifest(input.aiEvalManifest ?? {}),
+  );
   const postgresRestoreReportPath = await writeJson("restore-report.json", {
     schemaVersion: 1,
     status: "passed",
@@ -2356,6 +2612,7 @@ async function writePassingReleaseArtifacts(input = {}) {
     checks: {
       tablePresent: true,
       lrsOutboxTablePresent: true,
+      smokeInsertOnly: true,
       smokeInserted: true,
       smokeReadBack: true,
       smokeDeleted: true,
@@ -2405,6 +2662,52 @@ function passingReadinessDetails(input = {}) {
     lrsOutboxRecoveryAction: "POST /api/learning/lrs/outbox/flush?action=requeue-dead-letter",
     lrsOutboxRecoveryAuth: ["admin-session-csrf", "bearer-token"],
     lrsOutboxRecoveryRedaction: "payloads-excluded",
+    agentEvidenceEnabled: true,
+    agentEvidenceContractVersion: "aais-a1-a4-ca-v2",
+    agentEvidenceContractRequiredAgents: ["A1", "A2", "A3", "A4"],
+    agentEvidenceContractRequiredAgentsComplete: true,
+    agentEvidenceContractCaModules: expectedAgentContractCaModules(),
+    agentEvidenceContractCaModulesComplete: true,
+    agentEvidenceContractRoles: expectedAgentContractRoles(),
+    agentEvidenceContractRolesComplete: true,
+    agentEvidenceContractXapiExtensions: expectedAgentContractXapiExtensions(),
+    agentEvidenceContractXapiExtensionsComplete: true,
+    agentEvidenceContractPseudonymousSessionId: true,
+    agentEvidenceContractComplete: true,
+    agentEvidenceResponsibilities: expectedAgentResponsibilities(),
+    agentEvidenceResponsibilitiesComplete: true,
+    agentEvidenceTriggers: [
+      "monitoring_pause_detected",
+      "coaching_push",
+      "ai_acceptance_recorded",
+    ],
+    agentEvidenceSignals: [
+      "low_progress_artifact_autosave",
+      "artifact_regression_autosave",
+    ],
+    agentEvidenceCoachingInterruption: "low",
+    agentEvidenceCoachingCooldownSeconds: 600,
+    agentEvidenceArtifactRegressionMinimumPreviousCharacters: 80,
+    agentEvidenceArtifactRegressionMinimumDropCharacters: 40,
+    agentEvidenceArtifactRegressionRawTextExcluded: true,
+    agentEvidenceAiAcceptanceDecisionKeyed: true,
+    agentEvidenceAiAcceptanceRevisions: true,
+    agentEvidenceAiAcceptanceRawMessageIdsExcluded: true,
+    agentEvidenceAiAcceptanceRationaleTextExcluded: true,
+    agentEvidenceRedaction: "raw-learner-text-excluded",
+    agentEvidenceComplete: true,
+    a3SupervisionEnabled: true,
+    a3SupervisionTriggers: [
+      "monitoring_pause_detected",
+      "coaching_push",
+      "ai_acceptance_recorded",
+    ],
+    a3SupervisionSignals: [
+      "low_progress_artifact_autosave",
+      "artifact_regression_autosave",
+    ],
+    a3SupervisionRedaction: "raw-learner-text-excluded",
+    a3SupervisionComplete: true,
     a2MonitoringEnabled: true,
     a2MonitoringTriggers: [
       "monitoring_pause_detected",
@@ -2438,6 +2741,48 @@ function passingReadinessDetails(input = {}) {
     deploymentGitCommitShortSha: "0123456789ab",
     releaseIdentityComplete: true,
     ...input,
+  };
+}
+
+function expectedAgentResponsibilities() {
+  return {
+    A1: ["scaffold_request", "scaffold_self_check_started"],
+    A2: ["expert_model_viewed", "coaching_push", "ai_acceptance_recorded"],
+    A3: [
+      "artifact_edited",
+      "artifact_saved",
+      "planning_submitted",
+      "monitoring_pause_detected",
+    ],
+    A4: ["articulation_submitted", "expert_trace_compared", "self_report_saved"],
+  };
+}
+
+function expectedAgentContractCaModules() {
+  return {
+    A1: ["Scaffolding", "Fading"],
+    A2: ["Modelling", "Coaching"],
+    A3: ["Scaffolding"],
+    A4: ["Articulation", "Reflection"],
+  };
+}
+
+function expectedAgentContractRoles() {
+  return {
+    A1: "frontend-direct-dialogue",
+    A2: "frontend-direct-dialogue",
+    A3: "backend-a1-signal",
+    A4: "backend-a1-reflection",
+  };
+}
+
+function expectedAgentContractXapiExtensions() {
+  return {
+    agentRole: true,
+    agentCaModules: true,
+    agentFamily: true,
+    agentPhaseScope: true,
+    pseudonymousSessionId: true,
   };
 }
 
@@ -2487,6 +2832,7 @@ function passingCohortAnalyticsCheck() {
       filtersApplied: true,
       learnerRows: 1,
       learnerKeysPseudonymous: true,
+      sessionKeysPseudonymous: true,
       aggregateCountsPresent: true,
       riskBreakdownPresent: true,
       learnerRiskLevelsPresent: true,
@@ -2501,6 +2847,7 @@ function passingCohortAnalyticsCheck() {
       exportFiltersApplied: true,
       exportLearnerRowsMatch: true,
       exportLearnerKeysPseudonymous: true,
+      exportSessionKeysPseudonymous: true,
       exportPrivacyPseudonymous: true,
       exportNoRawLearnerText: true,
       exportSecrets: "redacted",
@@ -2516,11 +2863,16 @@ function passingOidcCohortAnalyticsCheck() {
     details: {
       authSource: "oidc-callback",
       authSessionEstablished: true,
+      educatorSessionRole: "teacher",
+      educatorSessionRoleEvidence: true,
+      expectedSessionRole: "teacher",
+      educatorSessionRoleMatchesExpected: true,
       educatorRoleAccepted: true,
       analyticsStatus: 200,
       filtersApplied: true,
       learnerRows: 1,
       learnerKeysPseudonymous: true,
+      sessionKeysPseudonymous: true,
       aggregateCountsPresent: true,
       riskBreakdownPresent: true,
       learnerRiskLevelsPresent: true,
@@ -2535,6 +2887,7 @@ function passingOidcCohortAnalyticsCheck() {
       exportFiltersApplied: true,
       exportLearnerRowsMatch: true,
       exportLearnerKeysPseudonymous: true,
+      exportSessionKeysPseudonymous: true,
       exportPrivacyPseudonymous: true,
       exportNoRawLearnerText: true,
       exportSecrets: "redacted",
@@ -2584,6 +2937,10 @@ function passingOidcCallbackCheck() {
       setCookieLeaksCallbackUrl: false,
       learningSessionStatus: 200,
       learningSessionReadable: true,
+      learningSessionRole: "teacher",
+      learningSessionEducatorRole: true,
+      expectedSessionRole: "teacher",
+      learningSessionRoleMatchesExpected: true,
     },
   };
 }
@@ -2604,17 +2961,26 @@ function passingSsoOnlyModeCheck() {
 }
 
 async function writePassingVercelEnvReport(input = {}) {
-  return writeJson("vercel-env-report.json", {
-    schemaVersion: 1,
-    status: "passed",
-    checkedAt: input.checkedAt ?? "2026-06-30T02:30:00.000Z",
-    target: {
-      environment: "Production",
-      authMode: "sso-only",
-      aiMode: "live",
-    },
-    required: {
-      present: [
+  const authMode = input.authMode ?? "sso-only";
+  vi.stubEnv("AAIS_RELEASE_AUTH_MODE", authMode);
+  const present = authMode === "trial"
+    ? [
+        "AAIS_SESSION_SECRET",
+        "AAIS_DATABASE_URL",
+        "AAIS_DATABASE_PROVIDER",
+        "AAIS_TRIAL_ACCOUNTS_JSON",
+        "AAIS_AI_PROVIDER",
+        "AAIS_AI_ENDPOINT",
+        "AAIS_AI_API_KEY",
+        "AAIS_AI_MODEL",
+        "AAIS_AI_EVAL_APPROVED",
+        "AAIS_AI_EVAL_VERSION",
+        "AAIS_AI_EVAL_MANIFEST_PATH",
+        "LRS_ENDPOINT",
+        "LRS_USERNAME",
+        "LRS_PASSWORD",
+      ]
+    : [
         "AAIS_SESSION_SECRET",
         "AAIS_DATABASE_URL",
         "AAIS_DATABASE_PROVIDER",
@@ -2637,7 +3003,18 @@ async function writePassingVercelEnvReport(input = {}) {
         "LRS_ENDPOINT",
         "LRS_USERNAME",
         "LRS_PASSWORD",
-      ],
+      ];
+  return writeJson("vercel-env-report.json", {
+    schemaVersion: 1,
+    status: "passed",
+    checkedAt: input.checkedAt ?? "2026-06-30T02:30:00.000Z",
+    target: {
+      environment: "Production",
+      authMode,
+      aiMode: "live",
+    },
+    required: {
+      present,
       missing: [],
     },
     categories: {

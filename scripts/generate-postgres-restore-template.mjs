@@ -6,8 +6,9 @@ import path from "node:path";
 const defaultOutputPath = "output/aais-postgres-restore-template-latest.env";
 const defaultReportPath = "output/aais-postgres-restore-template-report-latest.json";
 const defaultPostgresRestoreReportPath = "output/aais-postgres-restore-report-latest.json";
-const defaultReleaseId = "aais-2026-06-30-rc-live-ai-deepseek-v4-flash";
+const defaultReleaseId = "aais-2026-06-30-rc-live-ai-deepseek-v4-pro";
 const defaultPrivateRestoreEnvFilePath = ".env.postgres-restore.local";
+const defaultPrivateSourceEnvFilePath = ".env.production.local";
 
 export async function generateAaisPostgresRestoreTemplate(input = {}) {
   const generatedAt = (input.now ?? new Date()).toISOString();
@@ -15,6 +16,7 @@ export async function generateAaisPostgresRestoreTemplate(input = {}) {
   const reportPath = input.reportPath ?? process.env.AAIS_POSTGRES_RESTORE_TEMPLATE_REPORT_PATH ?? defaultReportPath;
   const postgresRestoreReportPath = input.postgresRestoreReportPath ?? defaultPostgresRestoreReportPath;
   const privateRestoreEnvFilePath = input.privateRestoreEnvFilePath ?? defaultPrivateRestoreEnvFilePath;
+  const privateSourceEnvFilePath = input.privateSourceEnvFilePath ?? defaultPrivateSourceEnvFilePath;
   const releaseId = readSafeReleaseId(input.releaseId ?? process.env.AAIS_RELEASE_ID ?? defaultReleaseId);
   const report = {
     schemaVersion: 1,
@@ -26,6 +28,7 @@ export async function generateAaisPostgresRestoreTemplate(input = {}) {
     template: {
       outputPath,
       privateRestoreEnvFilePath,
+      privateSourceEnvFilePath,
       placeholderValues: "fail-closed",
       variables: [
         "AAIS_RESTORE_DATABASE_URL",
@@ -42,6 +45,7 @@ export async function generateAaisPostgresRestoreTemplate(input = {}) {
       [
         "npm run verify:postgres-restore --",
         `--env-file ${privateRestoreEnvFilePath}`,
+        `--source-env-file ${privateSourceEnvFilePath}`,
         "--database-provider neon",
         "--target-purpose restored-staging",
         `--output ${postgresRestoreReportPath}`,
@@ -54,18 +58,19 @@ export async function generateAaisPostgresRestoreTemplate(input = {}) {
     },
   };
 
-  await writeTextFile(outputPath, renderTemplate({ releaseId, privateRestoreEnvFilePath }));
+  await writeTextFile(outputPath, renderTemplate({ releaseId, privateRestoreEnvFilePath, privateSourceEnvFilePath }));
   await writeTextFile(reportPath, `${JSON.stringify(report, null, 2)}\n`);
 
   return report;
 }
 
-function renderTemplate({ releaseId, privateRestoreEnvFilePath }) {
+function renderTemplate({ releaseId, privateRestoreEnvFilePath, privateSourceEnvFilePath }) {
   return [
     "# AAIS restored Neon rehearsal env template",
     "# Do not commit this file.",
     `# Copy this template to ${privateRestoreEnvFilePath}, then fill the copy with the restored staging Neon URL.`,
     "# Use a restored staging Neon database, never the production database.",
+    `# verify:postgres-restore can compare against ${privateSourceEnvFilePath} when that private source env file exists.`,
     "# Placeholder values intentionally fail closed in verify:postgres-restore.",
     "",
     "AAIS_RESTORE_DATABASE_URL=<REQUIRED:RESTORED_NEON_STAGING_DATABASE_URL>",
@@ -111,6 +116,7 @@ async function main() {
     reportPath: args.get("report"),
     postgresRestoreReportPath: args.get("postgres-restore-report"),
     releaseId: args.get("release-id"),
+    privateSourceEnvFilePath: args.get("source-env-file"),
   });
   process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
 }

@@ -74,6 +74,26 @@ describe("AAIS release evidence bundle manifest", () => {
     const handoffPath = await writeJson("handoff.json", {
       status: "action-required",
       generatedAt: "2026-06-30T10:04:00.000Z",
+      businessGapSummary: {
+        total: 7,
+        passed: 1,
+        actionRequired: 6,
+      },
+      businessGapActions: [
+        {
+          id: "production-oidc-env-config",
+          status: "action-required",
+          missing: ["AAIS_OIDC_CLIENT_SECRET"],
+          reasons: ["source-provenance-clean"],
+          actions: ["fill-private-env-template", "set-vercel-production-env"],
+          command: "npm run should-not-appear-in-bundle-metadata",
+        },
+        {
+          id: "unsafe gap id",
+          status: "action-required",
+          actions: ["not safe"],
+        },
+      ],
     });
     const auditPath = await writeJson("audit.json", {
       status: "action-required",
@@ -82,6 +102,11 @@ describe("AAIS release evidence bundle manifest", () => {
         total: 11,
         passed: 5,
         actionRequired: 6,
+      },
+      businessGapSummary: {
+        total: 7,
+        passed: 2,
+        actionRequired: 5,
       },
     });
     const oidcConfigPath = await writeJson("oidc-config.json", {
@@ -108,10 +133,27 @@ describe("AAIS release evidence bundle manifest", () => {
         values: "not-output",
       },
     });
+    const enterpriseGapTemplatePath = await writeJson("enterprise-gap-template.json", {
+      status: "template-created",
+      generatedAt: "2026-06-30T10:05:45.000Z",
+      template: {
+        variables: [
+          "AAIS_VERIFY_BASE_URL",
+          "AAIS_VERIFY_OIDC_CALLBACK_URL",
+          "AAIS_VERIFY_OIDC_STATE_COOKIE",
+        ],
+      },
+      redaction: {
+        secrets: "omitted",
+        values: "placeholders-only",
+      },
+    });
+    const enterpriseGapEvidencePath = path.join(tempDir, "missing-gap-evidence.json");
     const aiEvalPath = await writeJson("ai-eval.json", {
       status: "passed",
       passedAt: "2026-06-30T10:06:00.000Z",
       evalVersion: "deepseek-v4-flash-2026-06-30",
+      agentEvidence: passingAiEvalAgentEvidence(),
     });
     const postgresRestorePath = path.join(tempDir, "missing-restore.json");
     const outputPath = path.join(tempDir, "bundle.json");
@@ -127,6 +169,8 @@ describe("AAIS release evidence bundle manifest", () => {
       handoffReportPath: handoffPath,
       readinessAuditReportPath: auditPath,
       oidcConfigReportPath: oidcConfigPath,
+      enterpriseGapTemplateReportPath: enterpriseGapTemplatePath,
+      enterpriseGapEvidenceReportPath: enterpriseGapEvidencePath,
       aiEvalManifestPath: aiEvalPath,
       postgresRestoreReportPath: postgresRestorePath,
       outputPath,
@@ -143,11 +187,11 @@ describe("AAIS release evidence bundle manifest", () => {
         id: "aais-2026-06-30-rc-live-ai-deepseek-v4-flash",
       },
       summary: {
-        total: 11,
-        present: 10,
-        missing: 1,
-        passed: 3,
-        actionRequired: 8,
+        total: 13,
+        present: 11,
+        missing: 2,
+        passed: 4,
+        actionRequired: 9,
         secretScanFailed: 1,
       },
       artifacts: [
@@ -232,6 +276,22 @@ describe("AAIS release evidence bundle manifest", () => {
           present: true,
           reportedStatus: "action-required",
           effectiveStatus: "action-required",
+          metadata: {
+            businessGapSummary: {
+              total: 7,
+              passed: 1,
+              actionRequired: 6,
+            },
+            businessGapActions: [
+              {
+                id: "production-oidc-env-config",
+                status: "action-required",
+                missing: ["AAIS_OIDC_CLIENT_SECRET"],
+                reasons: ["source-provenance-clean"],
+                actions: ["fill-private-env-template", "set-vercel-production-env"],
+              },
+            ],
+          },
         },
         {
           id: "enterprise-readiness-audit",
@@ -245,6 +305,11 @@ describe("AAIS release evidence bundle manifest", () => {
               total: 11,
               passed: 5,
               actionRequired: 6,
+            },
+            businessGapSummary: {
+              total: 7,
+              passed: 2,
+              actionRequired: 5,
             },
           },
         },
@@ -269,6 +334,31 @@ describe("AAIS release evidence bundle manifest", () => {
           },
         },
         {
+          id: "enterprise-gap-template",
+          path: enterpriseGapTemplatePath,
+          required: true,
+          present: true,
+          reportedStatus: "template-created",
+          effectiveStatus: "passed",
+          secretScan: {
+            status: "passed",
+          },
+          metadata: {
+            checkedAt: "2026-06-30T10:05:45.000Z",
+          },
+        },
+        {
+          id: "enterprise-gap-evidence",
+          path: enterpriseGapEvidencePath,
+          required: true,
+          present: false,
+          reportedStatus: "missing",
+          effectiveStatus: "action-required",
+          secretScan: {
+            status: "not-run",
+          },
+        },
+        {
           id: "ai-eval",
           path: aiEvalPath,
           required: true,
@@ -278,6 +368,17 @@ describe("AAIS release evidence bundle manifest", () => {
           metadata: {
             checkedAt: "2026-06-30T10:06:00.000Z",
             evalVersion: "deepseek-v4-flash-2026-06-30",
+            agentEvidence: {
+              contractVersion: "aais-a1-a4-ca-eval-v2",
+              complete: true,
+              coveredAgents: ["A1", "A2", "A3", "A4"],
+              requiredCaModules: ["Modelling", "Coaching", "Scaffolding", "Fading", "Articulation", "Reflection"],
+              coveredCaModules: ["Modelling", "Coaching", "Scaffolding", "Fading", "Articulation", "Reflection"],
+              coverageComplete: true,
+              caBackgroundIncluded: true,
+              rawPromptsStored: false,
+              rawOutputsStored: false,
+            },
           },
         },
         {
@@ -301,10 +402,17 @@ describe("AAIS release evidence bundle manifest", () => {
     const markdown = await readFile(markdownOutputPath, "utf8");
     expect(markdown).toContain("AAIS Release Evidence Bundle");
     expect(markdown).toContain("oidc-config");
+    expect(markdown).toContain("enterprise-gap-template");
+    expect(markdown).toContain("enterprise-gap-evidence");
     expect(markdown).toContain("postgres-restore");
+    expect(markdown).toContain("businessGaps: 1/7 passed");
+    expect(markdown).toContain("businessGapActions: production-oidc-env-config=action-required");
+    expect(markdown).toContain("businessGaps: 2/7 passed");
     const serialized = `${JSON.stringify(report)}\n${markdown}`;
     expect(serialized).not.toContain("postgres://user:secret@host/db");
     expect(serialized).not.toContain("secret@host");
+    expect(serialized).not.toContain("should-not-appear-in-bundle-metadata");
+    expect(serialized).not.toContain("unsafe gap id");
   });
 
   it("fails without leaking when an artifact contains legal page body text", async () => {
@@ -391,6 +499,77 @@ describe("AAIS release evidence bundle manifest", () => {
     });
   });
 
+  it("only treats template-created as passing for template artifacts", async () => {
+    const templateCreatedPath = await writeJson("template-created.json", {
+      status: "template-created",
+      generatedAt: "2026-06-30T10:00:00.000Z",
+      redaction: {
+        secrets: "omitted",
+      },
+    });
+    const passedPath = await writeJson("passed.json", {
+      status: "passed",
+      checkedAt: "2026-06-30T10:00:00.000Z",
+    });
+    const preflightReadyPath = await writeJson("preflight-ready.json", {
+      status: "preflight-ready",
+      generatedAt: "2026-06-30T10:01:00.000Z",
+      preflight: {
+        status: "ready",
+        required: {
+          missing: [],
+          placeholders: [],
+          invalid: [],
+        },
+      },
+      redaction: {
+        secrets: "omitted",
+      },
+    });
+
+    const report = await createAaisReleaseEvidenceBundle({
+      sourceProvenanceReportPath: templateCreatedPath,
+      vercelEnvReportPath: passedPath,
+      vercelDeploymentReportPath: passedPath,
+      enterpriseReportPath: passedPath,
+      releaseEvidenceReportPath: passedPath,
+      releaseCheckReportPath: passedPath,
+      handoffReportPath: passedPath,
+      readinessAuditReportPath: passedPath,
+      oidcConfigReportPath: passedPath,
+      enterpriseGapTemplateReportPath: templateCreatedPath,
+      enterpriseGapEvidenceReportPath: preflightReadyPath,
+      aiEvalManifestPath: passedPath,
+      postgresRestoreReportPath: passedPath,
+      outputPath: path.join(tempDir, "status-policy-bundle.json"),
+      markdownOutputPath: path.join(tempDir, "status-policy-bundle.md"),
+      releaseId: "aais-2026-06-30-rc-live-ai-deepseek-v4-flash",
+      now: new Date("2026-06-30T10:30:00.000Z"),
+    });
+
+    expect(report.status).toBe("action-required");
+    expect(report.artifacts.find((artifact) => artifact.id === "source-provenance")).toMatchObject({
+      reportedStatus: "template-created",
+      effectiveStatus: "action-required",
+    });
+    expect(report.artifacts.find((artifact) => artifact.id === "enterprise-gap-template")).toMatchObject({
+      reportedStatus: "template-created",
+      effectiveStatus: "passed",
+    });
+    expect(report.artifacts.find((artifact) => artifact.id === "enterprise-gap-evidence")).toMatchObject({
+      reportedStatus: "preflight-ready",
+      effectiveStatus: "action-required",
+      metadata: {
+        preflight: {
+          status: "ready",
+          missing: [],
+          placeholders: [],
+          invalid: [],
+        },
+      },
+    });
+  });
+
   it("uses environment output paths when explicit output paths are omitted", async () => {
     const reportPath = await writeJson("report.json", {
       status: "passed",
@@ -409,6 +588,8 @@ describe("AAIS release evidence bundle manifest", () => {
       handoffReportPath: reportPath,
       readinessAuditReportPath: reportPath,
       oidcConfigReportPath: reportPath,
+      enterpriseGapTemplateReportPath: reportPath,
+      enterpriseGapEvidenceReportPath: reportPath,
       aiEvalManifestPath: reportPath,
       postgresRestoreReportPath: reportPath,
       now: new Date("2026-06-30T10:45:00.000Z"),
@@ -417,10 +598,10 @@ describe("AAIS release evidence bundle manifest", () => {
     expect(JSON.parse(await readFile(process.env.AAIS_RELEASE_BUNDLE_REPORT_PATH, "utf8"))).toMatchObject({
       status: "ready",
       summary: {
-        total: 11,
-        present: 11,
+        total: 13,
+        present: 13,
         missing: 0,
-        passed: 11,
+        passed: 13,
         actionRequired: 0,
       },
     });
@@ -438,4 +619,40 @@ async function writeJson(name, value) {
 
 function sha256(value) {
   return createHash("sha256").update(value).digest("hex");
+}
+
+function passingAiEvalAgentEvidence() {
+  return {
+    contractVersion: "aais-a1-a4-ca-eval-v2",
+    requiredAgents: ["A1", "A2", "A3", "A4"],
+    coveredAgents: ["A1", "A2", "A3", "A4"],
+    requiredCaModules: ["Modelling", "Coaching", "Scaffolding", "Fading", "Articulation", "Reflection"],
+    coveredCaModules: ["Modelling", "Coaching", "Scaffolding", "Fading", "Articulation", "Reflection"],
+    coverage: {
+      A1: {
+        responsibility: "frontend-guide-scaffolding",
+        caModules: ["Scaffolding", "Fading"],
+        complete: true,
+      },
+      A2: {
+        responsibility: "frontend-expert-modelling-coaching",
+        caModules: ["Modelling", "Coaching"],
+        complete: true,
+      },
+      A3: {
+        responsibility: "backend-supervision-a1-signal",
+        caModules: ["Scaffolding"],
+        complete: true,
+      },
+      A4: {
+        responsibility: "backend-reflection-articulation",
+        caModules: ["Articulation", "Reflection"],
+        complete: true,
+      },
+    },
+    caBackgroundIncluded: true,
+    rawPromptsStored: false,
+    rawOutputsStored: false,
+    complete: true,
+  };
 }

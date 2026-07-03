@@ -467,6 +467,36 @@ describe("AAIS Vercel env provisioner", () => {
     expect(JSON.stringify(report)).not.toContain("database-secret");
   });
 
+  it("uses the Vercel Postgres no-SSL URL alias when AAIS_DATABASE_URL is requested", async () => {
+    const envFilePath = await writeText("production.env", [
+      "POSTGRES_URL_NO_SSL=postgres://user:database-secret@example.neon.tech/aais",
+      "",
+    ].join("\n"));
+
+    const report = await provisionAaisVercelEnvironment({
+      envFilePath,
+      names: ["AAIS_DATABASE_URL"],
+      environment: "production",
+      apply: false,
+    });
+
+    expect(report.status).toBe("ready");
+    expect(report.required).toMatchObject({
+      requested: ["AAIS_DATABASE_URL"],
+      localValuesPresent: ["POSTGRES_URL_NO_SSL"],
+      localValuesMissing: [],
+    });
+    expect(report.actions).toMatchObject([
+      {
+        name: "POSTGRES_URL_NO_SSL",
+        requestedName: "AAIS_DATABASE_URL",
+        command: "vercel env add POSTGRES_URL_NO_SSL production",
+        status: "dry_run",
+      },
+    ]);
+    expect(JSON.stringify(report)).not.toContain("database-secret");
+  });
+
   it("expands raw PG pieces when AAIS_DATABASE_URL is requested", async () => {
     const envFilePath = await writeText("production.env", [
       "PGHOST=ep-prod.us-east-1.aws.neon.tech",

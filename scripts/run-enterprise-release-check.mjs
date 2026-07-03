@@ -20,11 +20,15 @@ const requiredEnterpriseCheckNames = [
   "securityHeaders",
   "legalPages",
   "lrsHealth",
+  "agentEvidence",
+  "a3Supervision",
   "a2Monitoring",
   "cohortAnalytics",
   "oidcStart",
   "oidcCallback",
   "ssoOnlyMode",
+  "trialLearningSession",
+  "trialLoginThrottle",
 ];
 
 export async function runAaisEnterpriseReleaseCheck(input = {}) {
@@ -54,8 +58,12 @@ export async function runAaisEnterpriseReleaseCheck(input = {}) {
   const deploymentGitCommit = input.deploymentGitCommit ?? process.env.AAIS_DEPLOYMENT_GIT_COMMIT_SHA;
   const deploymentPlatform = input.deploymentPlatform ?? process.env.AAIS_RELEASE_DEPLOYMENT_PLATFORM ?? "vercel";
   const databaseProvider = input.databaseProvider ?? process.env.AAIS_RELEASE_DATABASE_PROVIDER ?? "neon";
-  const requireSsoOnly = input.requireSsoOnly ?? true;
+  const authMode = normalizeAuthMode(
+    input.authMode ?? process.env.AAIS_RELEASE_AUTH_MODE ?? process.env.AAIS_VERCEL_ENV_AUTH_MODE,
+  );
+  const requireSsoOnly = input.requireSsoOnly ?? authMode === "sso-only";
   const requireCohortAnalytics = input.requireCohortAnalytics ?? true;
+  const expectedSessionRole = input.expectedSessionRole ?? process.env.AAIS_VERIFY_EXPECTED_SESSION_ROLE;
   const educatorLogin = input.educatorLogin ?? getEducatorLoginFromEnv();
   const sourceProvenanceVerifier = input.sourceProvenanceVerifier ?? verifyAaisSourceProvenance;
   const vercelEnvVerifier = input.vercelEnvVerifier ?? verifyAaisVercelEnvironment;
@@ -71,7 +79,7 @@ export async function runAaisEnterpriseReleaseCheck(input = {}) {
 
   const vercelEnvReport = await vercelEnvVerifier({
     environment: input.environment ?? "production",
-    authMode: input.authMode ?? "sso-only",
+    authMode,
     aiMode: input.aiMode ?? "live",
     outputPath: vercelEnvReportPath,
     now: input.now,
@@ -93,6 +101,7 @@ export async function runAaisEnterpriseReleaseCheck(input = {}) {
     requireCohortAnalytics,
     fetchImpl: input.fetchImpl,
     oidcCallback: input.oidcCallback,
+    expectedSessionRole,
     trialLogin: input.trialLogin,
     educatorLogin,
   });
@@ -112,6 +121,7 @@ export async function runAaisEnterpriseReleaseCheck(input = {}) {
     deploymentUrl,
     deploymentPlatform,
     databaseProvider,
+    authMode,
     now: input.now,
   });
 
@@ -204,11 +214,16 @@ function summarizeSourceProvenance(sourceProvenanceReport, evidenceArtifact) {
 function summarizeVercelEnv(vercelEnvReport, evidenceArtifact) {
   const missing = getSafeEnvNames(evidenceArtifact?.missing ?? vercelEnvReport?.required?.missing);
   const missingCount = readNonNegativeInteger(evidenceArtifact?.missingCount, missing.length);
-  return {
+  const target = evidenceArtifact?.target ?? vercelEnvReport?.target ?? {};
+  const summary = {
     status: normalizeStatus(evidenceArtifact?.status ?? vercelEnvReport?.status),
     missingCount,
     missing,
   };
+  if (target.authMode === "sso-only" || target.authMode === "trial") {
+    summary.authMode = target.authMode;
+  }
+  return summary;
 }
 
 function summarizeVercelDeployment(vercelDeploymentReport, evidenceArtifact) {
@@ -231,7 +246,9 @@ function summarizeEnterprise(enterpriseReport, evidenceArtifact) {
     readiness: summarizeEnterpriseReadiness(enterpriseReport),
     requiredChecks: getRequiredChecks(evidenceArtifact?.requiredChecks),
     artifactCoalescing: summarizeArtifactCoalescing(evidenceArtifact),
-    a2MonitoringEvidence: summarizeA2Monitoring(evidenceArtifact),
+    agentEvidence: summarizeAgentEvidence(evidenceArtifact),
+    a3SupervisionEvidence: summarizeAgentEvidence(evidenceArtifact),
+    a2MonitoringEvidence: summarizeAgentEvidence(evidenceArtifact),
     evidenceOrder: getEvidenceOrder(evidenceArtifact?.evidenceOrder),
   };
 }
@@ -256,6 +273,10 @@ function summarizeAiEval(artifact) {
     status: normalizeStatus(artifact?.status),
     compatibleWithEnterpriseReadiness: readOptionalBoolean(artifact?.compatibleWithEnterpriseReadiness),
     blockedCount: readOptionalInteger(artifact?.blockedCount),
+    agentEvidenceComplete: readOptionalBoolean(artifact?.agentEvidence?.complete),
+    agentEvidenceContractVersion: artifact?.agentEvidence?.contractVersion === "aais-a1-a4-ca-eval-v2"
+      ? "aais-a1-a4-ca-eval-v2"
+      : "invalid",
     modelFingerprintMatchesEnterprise: readOptionalBoolean(artifact?.modelFingerprint?.matchesEnterprise),
   };
 }
@@ -275,6 +296,7 @@ function summarizePostgresRestore(artifact) {
     targetPurpose: artifact?.targetPurpose === "restored-staging" ? "restored-staging" : "invalid",
     tablePresent: readOptionalBoolean(artifact?.tablePresent),
     lrsOutboxTablePresent: readOptionalBoolean(artifact?.lrsOutboxTablePresent),
+    smokeInsertOnly: readOptionalBoolean(artifact?.smokeInsertOnly),
     smokeInserted: readOptionalBoolean(artifact?.smokeInserted),
     smokeReadBack: readOptionalBoolean(artifact?.smokeReadBack),
     smokeDeleted: readOptionalBoolean(artifact?.smokeDeleted),
@@ -303,11 +325,17 @@ function summarizeArtifactCoalescing(artifact) {
   };
 }
 
-function summarizeA2Monitoring(artifact) {
-  const evidence = artifact?.a2MonitoringEvidence ?? {};
+function summarizeAgentEvidence(artifact) {
+  const evidence = artifact?.agentEvidence ?? artifact?.a3SupervisionEvidence ?? artifact?.a2MonitoringEvidence ?? {};
   return {
     enabled: readOptionalBoolean(evidence.enabled),
     complete: readOptionalBoolean(evidence.complete),
+    agentContractVersion: evidence.agentContract?.version === "aais-a1-a4-ca-v2"
+      ? "aais-a1-a4-ca-v2"
+      : "invalid",
+    agentContractComplete: readOptionalBoolean(evidence.agentContract?.complete),
+    xapiExtensionsComplete: readOptionalBoolean(evidence.agentContract?.xapiExtensionsComplete),
+    pseudonymousSessionId: readOptionalBoolean(evidence.agentContract?.pseudonymousSessionId),
     redaction: evidence.redaction === "raw-learner-text-excluded"
       ? "raw-learner-text-excluded"
       : "unknown",
@@ -315,9 +343,13 @@ function summarizeA2Monitoring(artifact) {
 }
 
 function getRequiredChecks(value) {
-  return Object.fromEntries(
+  const checks = Object.fromEntries(
     requiredEnterpriseCheckNames.map((name) => [name, readOptionalBoolean(value?.[name]) === true]),
   );
+  checks.agentEvidence = checks.agentEvidence || checks.a3Supervision || checks.a2Monitoring;
+  checks.a3Supervision = checks.a3Supervision || checks.agentEvidence || checks.a2Monitoring;
+  checks.a2Monitoring = checks.a2Monitoring || checks.agentEvidence || checks.a3Supervision;
+  return checks;
 }
 
 function getEvidenceOrder(value) {
@@ -384,6 +416,10 @@ function normalizeStatus(value) {
   return /^[a-z][a-z0-9_-]{1,31}$/.test(status) ? status : "unknown";
 }
 
+function normalizeAuthMode(value) {
+  return String(value ?? "").trim().toLowerCase() === "sso-only" ? "sso-only" : "trial";
+}
+
 function readOptionalBoolean(value) {
   return typeof value === "boolean" ? value : null;
 }
@@ -440,6 +476,9 @@ function getTrialLoginFromEnv() {
         correctPassword: process.env.AAIS_VERIFY_TRIAL_CORRECT_PASSWORD,
         wrongPassword: process.env.AAIS_VERIFY_TRIAL_WRONG_PASSWORD ?? "aais-intentional-wrong-password",
         clientIp: process.env.AAIS_VERIFY_TRIAL_CLIENT_IP,
+        throttleAccount: process.env.AAIS_VERIFY_TRIAL_THROTTLE_ACCOUNT,
+        throttleCorrectPassword: process.env.AAIS_VERIFY_TRIAL_THROTTLE_CORRECT_PASSWORD,
+        throttleClientIp: process.env.AAIS_VERIFY_TRIAL_THROTTLE_CLIENT_IP,
       }
     : undefined;
 }
@@ -466,8 +505,13 @@ async function main() {
     deploymentPlatform: args.get("deployment-platform"),
     databaseProvider: args.get("database-provider"),
     maxAgeHours: args.get("max-age-hours"),
-    requireSsoOnly: !args.has("allow-trial-mode"),
+    requireSsoOnly: args.has("require-sso-only")
+      ? true
+      : args.has("allow-trial-mode")
+        ? false
+        : undefined,
     oidcCallback: getOidcCallbackFromEnv(),
+    expectedSessionRole: args.get("expected-session-role") ?? process.env.AAIS_VERIFY_EXPECTED_SESSION_ROLE,
     trialLogin: getTrialLoginFromEnv(),
   });
   process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);

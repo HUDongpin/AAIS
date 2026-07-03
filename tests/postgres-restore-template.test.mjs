@@ -40,6 +40,7 @@ describe("AAIS Postgres restore rehearsal template", () => {
       template: {
         outputPath,
         privateRestoreEnvFilePath: ".env.postgres-restore.local",
+        privateSourceEnvFilePath: ".env.production.local",
         placeholderValues: "fail-closed",
         variables: [
           "AAIS_RESTORE_DATABASE_URL",
@@ -53,7 +54,7 @@ describe("AAIS Postgres restore rehearsal template", () => {
         postgresRestoreReportPath,
       },
       nextCommands: [
-        `npm run verify:postgres-restore -- --env-file .env.postgres-restore.local --database-provider neon --target-purpose restored-staging --output ${postgresRestoreReportPath} --release-id aais-2026-06-30-rc-live-ai-deepseek-v4-flash`,
+        `npm run verify:postgres-restore -- --env-file .env.postgres-restore.local --source-env-file .env.production.local --database-provider neon --target-purpose restored-staging --output ${postgresRestoreReportPath} --release-id aais-2026-06-30-rc-live-ai-deepseek-v4-flash`,
       ],
       redaction: {
         secrets: "omitted",
@@ -66,6 +67,7 @@ describe("AAIS Postgres restore rehearsal template", () => {
     expect(template).toContain("# Do not commit this file.");
     expect(template).toContain("# Copy this template to .env.postgres-restore.local, then fill the copy with the restored staging Neon URL.");
     expect(template).toContain("# Use a restored staging Neon database, never the production database.");
+    expect(template).toContain("# verify:postgres-restore can compare against .env.production.local when that private source env file exists.");
     expect(template).toContain("AAIS_RESTORE_DATABASE_URL=<REQUIRED:RESTORED_NEON_STAGING_DATABASE_URL>");
     expect(template).toContain("AAIS_RESTORE_DATABASE_PROVIDER=neon");
     expect(template).toContain("AAIS_RESTORE_TARGET_PURPOSE=restored-staging");

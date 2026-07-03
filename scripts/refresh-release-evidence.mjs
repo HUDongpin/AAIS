@@ -5,9 +5,11 @@ import path from "node:path";
 import { auditAaisEnterpriseReadiness } from "./audit-enterprise-readiness.mjs";
 import { createAaisReleaseEvidenceBundle } from "./create-release-evidence-bundle.mjs";
 import { generateAaisEnterpriseHandoff } from "./generate-enterprise-handoff.mjs";
+import { generateAaisEnterpriseGapTemplate } from "./generate-enterprise-gap-template.mjs";
 import { generateAaisPostgresRestoreTemplate } from "./generate-postgres-restore-template.mjs";
 import { generateAaisPrivateEnvTemplate } from "./generate-private-env-template.mjs";
 import { provisionAaisVercelEnvironment } from "./provision-vercel-env.mjs";
+import { runAaisEnterpriseGapEvidence } from "./run-enterprise-gap-evidence.mjs";
 import { runAaisEnterpriseReleaseCheck } from "./run-enterprise-release-check.mjs";
 import { verifyAaisOidcConfiguration } from "./verify-oidc-configuration.mjs";
 
@@ -22,6 +24,9 @@ const defaultPaths = {
   privateEnvTemplateReportPath: "output/aais-private-env-template-report-latest.json",
   postgresRestoreTemplatePath: "output/aais-postgres-restore-template-latest.env",
   postgresRestoreTemplateReportPath: "output/aais-postgres-restore-template-report-latest.json",
+  enterpriseGapTemplatePath: "output/aais-enterprise-gap-template-latest.env",
+  enterpriseGapTemplateReportPath: "output/aais-enterprise-gap-template-report-latest.json",
+  enterpriseGapEvidenceReportPath: "output/aais-enterprise-gap-evidence-latest.json",
   oidcConfigReportPath: "output/aais-oidc-config-report-latest.json",
   provisionReportPath: "output/aais-vercel-env-provision-dry-run-latest.json",
   handoffReportPath: "output/aais-enterprise-handoff-latest.json",
@@ -30,14 +35,16 @@ const defaultPaths = {
   readinessAuditMarkdownPath: "output/aais-enterprise-readiness-audit-latest.md",
   bundleReportPath: "output/aais-release-evidence-bundle-latest.json",
   bundleMarkdownPath: "output/aais-release-evidence-bundle-latest.md",
-  aiEvalManifestPath: "output/aais-ai-eval-deepseek-v4-flash.json",
+  aiEvalManifestPath: "output/aais-ai-eval-deepseek-v4-pro.json",
   postgresRestoreReportPath: "output/aais-postgres-restore-report-latest.json",
   outputPath: "output/aais-release-refresh-latest.json",
 };
 
 const defaultBaseUrl = "https://www.aais.site";
-const defaultReleaseId = "aais-2026-06-30-rc-live-ai-deepseek-v4-flash";
+const defaultReleaseId = "aais-2026-06-30-rc-live-ai-deepseek-v4-pro";
 const defaultPrivateEnvFilePath = ".env.production.local";
+const defaultEnterpriseGapEnvFilePath = ".env.enterprise-smoke.local";
+const defaultRestoreEnvFilePath = ".env.postgres-restore.local";
 
 export async function refreshAaisReleaseEvidence(input = {}) {
   const refreshedAt = (input.now ?? new Date()).toISOString();
@@ -48,11 +55,14 @@ export async function refreshAaisReleaseEvidence(input = {}) {
   const enterpriseReleaseChecker = input.enterpriseReleaseChecker ?? runAaisEnterpriseReleaseCheck;
   const envTemplateGenerator = input.envTemplateGenerator ?? generateAaisPrivateEnvTemplate;
   const restoreTemplateGenerator = input.restoreTemplateGenerator ?? generateAaisPostgresRestoreTemplate;
+  const gapTemplateGenerator = input.gapTemplateGenerator ?? generateAaisEnterpriseGapTemplate;
+  const gapEvidenceRunner = input.gapEvidenceRunner ?? runAaisEnterpriseGapEvidence;
   const oidcConfigVerifier = input.oidcConfigVerifier ?? verifyAaisOidcConfiguration;
   const provisioner = input.provisioner ?? provisionAaisVercelEnvironment;
   const handoffGenerator = input.handoffGenerator ?? generateAaisEnterpriseHandoff;
   const readinessAuditor = input.readinessAuditor ?? auditAaisEnterpriseReadiness;
   const bundleCreator = input.bundleCreator ?? createAaisReleaseEvidenceBundle;
+  const includeOidcConfig = input.includeOidcConfig === true || process.env.AAIS_RELEASE_INCLUDE_OIDC === "true";
 
   const enterpriseRelease = await runRefreshStage(() => enterpriseReleaseChecker({
     baseUrl,
@@ -73,8 +83,48 @@ export async function refreshAaisReleaseEvidence(input = {}) {
     now: input.now,
   }));
 
+  const postgresRestoreTemplate = await runRefreshStage(() => restoreTemplateGenerator({
+    outputPath: paths.postgresRestoreTemplatePath,
+    reportPath: paths.postgresRestoreTemplateReportPath,
+    postgresRestoreReportPath: paths.postgresRestoreReportPath,
+    releaseId,
+    now: input.now,
+  }));
+
+  const enterpriseGapTemplate = await runRefreshStage(() => gapTemplateGenerator({
+    outputPath: paths.enterpriseGapTemplatePath,
+    reportPath: paths.enterpriseGapTemplateReportPath,
+    baseUrl,
+    releaseId,
+    enterpriseReportPath: paths.enterpriseReportPath,
+    restoreEnvFilePath: input.restoreEnvFilePath,
+    restoreReportPath: paths.postgresRestoreReportPath,
+    aiEvalEnvFilePath: input.envFilePath ?? defaultPrivateEnvFilePath,
+    aiEvalManifestPath: paths.aiEvalManifestPath,
+    gapEvidenceReportPath: paths.enterpriseGapEvidenceReportPath,
+    now: input.now,
+  }));
+
+  const enterpriseGapPreflight = input.enterpriseGapPreflightOnly === true
+    ? await runRefreshStage(() => gapEvidenceRunner({
+      mode: "all",
+      envFilePath: input.enterpriseGapEnvFilePath ?? defaultEnterpriseGapEnvFilePath,
+      restoreEnvFilePath: input.restoreEnvFilePath ?? defaultRestoreEnvFilePath,
+      aiEvalEnvFilePath: input.envFilePath ?? defaultPrivateEnvFilePath,
+      baseUrl,
+      releaseId,
+      outputPath: paths.enterpriseGapEvidenceReportPath,
+      enterpriseOutputPath: paths.enterpriseReportPath,
+      restoreOutputPath: paths.postgresRestoreReportPath,
+      aiEvalOutputPath: paths.aiEvalManifestPath,
+      preflightOnly: true,
+      now: input.now,
+    }))
+    : null;
+
   const privateEnvTemplate = await runRefreshStage(() => envTemplateGenerator({
     vercelEnvReportPath: paths.vercelEnvReportPath,
+    enterpriseGapEvidenceReportPath: paths.enterpriseGapEvidenceReportPath,
     outputPath: paths.privateEnvTemplatePath,
     reportPath: paths.privateEnvTemplateReportPath,
     baseUrl,
@@ -84,20 +134,14 @@ export async function refreshAaisReleaseEvidence(input = {}) {
     now: input.now,
   }));
 
-  const postgresRestoreTemplate = await runRefreshStage(() => restoreTemplateGenerator({
-    outputPath: paths.postgresRestoreTemplatePath,
-    reportPath: paths.postgresRestoreTemplateReportPath,
-    postgresRestoreReportPath: paths.postgresRestoreReportPath,
-    releaseId,
-    now: input.now,
-  }));
-
-  const oidcConfig = await runRefreshStage(() => oidcConfigVerifier({
-    envFilePath: input.envFilePath ?? defaultPrivateEnvFilePath,
-    baseUrl,
-    outputPath: paths.oidcConfigReportPath,
-    now: input.now,
-  }));
+  const oidcConfig = includeOidcConfig
+    ? await runRefreshStage(() => oidcConfigVerifier({
+      envFilePath: input.envFilePath ?? defaultPrivateEnvFilePath,
+      baseUrl,
+      outputPath: paths.oidcConfigReportPath,
+      now: input.now,
+    }))
+    : null;
 
   const provision = await runRefreshStage(() => provisioner({
     envFilePath: input.envFilePath ?? defaultPrivateEnvFilePath,
@@ -119,7 +163,8 @@ export async function refreshAaisReleaseEvidence(input = {}) {
     sourceProvenanceReportPath: paths.sourceProvenanceReportPath,
     postgresRestoreReportPath: paths.postgresRestoreReportPath,
     aiEvalManifestPath: paths.aiEvalManifestPath,
-    oidcConfigReportPath: paths.oidcConfigReportPath,
+    oidcConfigReportPath: includeOidcConfig ? paths.oidcConfigReportPath : false,
+    enterpriseGapEvidenceReportPath: paths.enterpriseGapEvidenceReportPath,
     outputPath: paths.handoffReportPath,
     markdownOutputPath: paths.handoffMarkdownPath,
     privateEnvTemplatePath: paths.privateEnvTemplatePath,
@@ -135,6 +180,7 @@ export async function refreshAaisReleaseEvidence(input = {}) {
   const readinessAudit = await runRefreshStage(() => readinessAuditor({
     releaseCheckReportPath: paths.releaseCheckReportPath,
     handoffReportPath: paths.handoffReportPath,
+    gapEvidenceReportPath: paths.enterpriseGapEvidenceReportPath,
     outputPath: paths.readinessAuditReportPath,
     markdownOutputPath: paths.readinessAuditMarkdownPath,
     now: input.now,
@@ -149,9 +195,11 @@ export async function refreshAaisReleaseEvidence(input = {}) {
     releaseCheckReportPath: paths.releaseCheckReportPath,
     handoffReportPath: paths.handoffReportPath,
     readinessAuditReportPath: paths.readinessAuditReportPath,
-    oidcConfigReportPath: paths.oidcConfigReportPath,
+    oidcConfigReportPath: includeOidcConfig ? paths.oidcConfigReportPath : false,
     aiEvalManifestPath: paths.aiEvalManifestPath,
     postgresRestoreReportPath: paths.postgresRestoreReportPath,
+    enterpriseGapTemplateReportPath: paths.enterpriseGapTemplateReportPath,
+    enterpriseGapEvidenceReportPath: paths.enterpriseGapEvidenceReportPath,
     outputPath: paths.bundleReportPath,
     markdownOutputPath: paths.bundleMarkdownPath,
     releaseId,
@@ -165,9 +213,13 @@ export async function refreshAaisReleaseEvidence(input = {}) {
       findSequenceStep(enterpriseRelease, "source-provenance") ?? enterpriseRelease?.artifacts?.sourceProvenance,
       paths.sourceProvenanceReportPath,
     ),
-    step("env-template", privateEnvTemplate, paths.privateEnvTemplateReportPath),
     step("restore-template", postgresRestoreTemplate, paths.postgresRestoreTemplateReportPath),
-    step("oidc-config-dry-run", oidcConfig, paths.oidcConfigReportPath),
+    step("gap-template", enterpriseGapTemplate, paths.enterpriseGapTemplateReportPath),
+    ...(enterpriseGapPreflight
+      ? [step("gap-evidence-preflight", enterpriseGapPreflight, paths.enterpriseGapEvidenceReportPath)]
+      : []),
+    step("env-template", privateEnvTemplate, paths.privateEnvTemplateReportPath),
+    ...(includeOidcConfig ? [step("oidc-config-dry-run", oidcConfig, paths.oidcConfigReportPath)] : []),
     step("provision-dry-run", provision, paths.provisionReportPath),
     step("handoff", handoff, paths.handoffReportPath),
     step("readiness-audit", readinessAudit, paths.readinessAuditReportPath),
@@ -246,6 +298,11 @@ function summarizeReadinessAudit(report) {
     total: readInteger(report?.summary?.total),
     passed: readInteger(report?.summary?.passed),
     actionRequired: readInteger(report?.summary?.actionRequired),
+    businessGapSummary: {
+      total: readInteger(report?.businessGapSummary?.total),
+      passed: readInteger(report?.businessGapSummary?.passed),
+      actionRequired: readInteger(report?.businessGapSummary?.actionRequired),
+    },
   };
 }
 
@@ -268,6 +325,7 @@ function summarizeNextActions(handoff) {
     source: "enterprise-handoff",
     total: actions.length,
     required: actions.filter((action) => isRequiredActionStatus(action?.status)).length,
+    businessGaps: summarizeBusinessGapActions(handoff?.businessGapActions),
     actions: actions.map((action) => sanitizeNextAction(action)),
     redaction: {
       secrets: "omitted",
@@ -275,6 +333,20 @@ function summarizeNextActions(handoff) {
       secretLikeCommands: "redacted",
     },
   };
+}
+
+function summarizeBusinessGapActions(value) {
+  return Array.isArray(value)
+    ? value.map((gap) => ({
+      id: readSafeActionId(gap?.id),
+      status: normalizeStatus(gap?.status),
+      missing: readSafeEnvNames(gap?.missing),
+      reasons: readSafeReasonNames(gap?.reasons),
+      actions: Array.isArray(gap?.actions)
+        ? gap.actions.map(readSafeActionId).filter((actionId) => actionId !== "unknown-action")
+        : [],
+    })).filter((gap) => gap.id !== "unknown-action")
+    : [];
 }
 
 function sanitizeNextAction(action) {
@@ -285,6 +357,14 @@ function sanitizeNextAction(action) {
   const missing = readSafeEnvNames(action?.missing);
   if (missing.length > 0) {
     summary.missing = missing;
+  }
+  const missingInputs = readSafeEnvNames(action?.missingInputs);
+  if (missingInputs.length > 0) {
+    summary.missingInputs = missingInputs;
+  }
+  const preflightStatus = normalizeStatus(action?.preflightStatus);
+  if (preflightStatus !== "unknown") {
+    summary.preflightStatus = preflightStatus;
   }
   for (const field of [
     "templatePath",
@@ -304,6 +384,22 @@ function sanitizeNextAction(action) {
   const command = sanitizeActionCommand(action?.command);
   if (command) {
     summary.command = command;
+  }
+  const oidcOnboardingCommand = sanitizeActionCommand(action?.oidcOnboardingCommand);
+  if (oidcOnboardingCommand) {
+    summary.oidcOnboardingCommand = oidcOnboardingCommand;
+  }
+  const neonApiPreparationCommand = sanitizeActionCommand(action?.neonApiPreparationCommand);
+  if (neonApiPreparationCommand) {
+    summary.neonApiPreparationCommand = neonApiPreparationCommand;
+  }
+  const gapPreflightCommand = sanitizeActionCommand(action?.gapPreflightCommand);
+  if (gapPreflightCommand) {
+    summary.gapPreflightCommand = gapPreflightCommand;
+  }
+  const gapEvidenceCommand = sanitizeActionCommand(action?.gapEvidenceCommand);
+  if (gapEvidenceCommand) {
+    summary.gapEvidenceCommand = gapEvidenceCommand;
   }
   const commands = Array.isArray(action?.commands)
     ? action.commands.map(sanitizeActionCommand).filter(Boolean)
@@ -355,6 +451,14 @@ function readSafeEnvNames(value) {
     ? value
       .map((item) => String(item ?? "").trim())
       .filter((item) => /^[A-Z][A-Z0-9_*\\/-]{1,127}$/.test(item))
+    : [];
+}
+
+function readSafeReasonNames(value) {
+  return Array.isArray(value)
+    ? value
+      .map((item) => String(item ?? "").trim())
+      .filter((item) => /^[a-z][a-z0-9-]{1,63}$/.test(item))
     : [];
 }
 
@@ -417,7 +521,14 @@ async function main() {
     outputPath: args.get("output"),
     aiEvalManifestPath: args.get("ai-eval-manifest"),
     postgresRestoreReportPath: args.get("postgres-restore-report"),
+    restoreEnvFilePath: args.get("restore-env-file"),
+    enterpriseGapEnvFilePath: args.get("enterprise-gap-env-file"),
+    enterpriseGapPreflightOnly: args.has("enterprise-gap-preflight-only") || args.has("gap-preflight-only"),
+    enterpriseGapTemplatePath: args.get("enterprise-gap-template"),
+    enterpriseGapTemplateReportPath: args.get("enterprise-gap-template-report"),
+    enterpriseGapEvidenceReportPath: args.get("enterprise-gap-evidence-report"),
     oidcConfigReportPath: args.get("oidc-config-report"),
+    includeOidcConfig: args.has("include-oidc-config"),
   });
   process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
   if (report.status !== "ready") {

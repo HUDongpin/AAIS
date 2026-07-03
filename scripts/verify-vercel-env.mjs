@@ -14,6 +14,7 @@ const databaseUrlEnvNames = [
   "DATABASE_URL",
   "POSTGRES_URL",
   "POSTGRES_PRISMA_URL",
+  "POSTGRES_URL_NO_SSL",
   "DATABASE_URL_UNPOOLED",
   "POSTGRES_URL_NON_POOLING",
 ];
@@ -132,6 +133,7 @@ export async function verifyAaisVercelEnvironment(input = {}) {
 function getRequiredByCategory({ authMode, aiMode }) {
   return {
     ...requiredByCategory,
+    oidc: authMode === "sso-only" ? requiredByCategory.oidc : [],
     oidcRoleMapping: authMode === "sso-only" ? requiredByCategory.oidcRoleMapping : [],
     releaseMode: authMode === "sso-only"
       ? ["AAIS_TRIAL_LOGIN_ENABLED"]
@@ -221,10 +223,10 @@ function getProvisioningCommands({ category, missing, environment }) {
 
 function getProvisioningNote(category) {
   if (category === "storage") {
-    return "Use the Neon production Postgres connection string. AAIS prefers AAIS_DATABASE_URL but also accepts Vercel/Neon DATABASE_URL, POSTGRES_URL, POSTGRES_PRISMA_URL, DATABASE_URL_UNPOOLED, POSTGRES_URL_NON_POOLING, raw PGHOST/PGUSER/PGDATABASE/PGPASSWORD pieces, or legacy POSTGRES_HOST/POSTGRES_USER/POSTGRES_DATABASE/POSTGRES_PASSWORD pieces; set AAIS_DATABASE_PROVIDER to neon when the host cannot be inspected here.";
+    return "Use the Neon production Postgres connection string. AAIS prefers AAIS_DATABASE_URL but also accepts Vercel/Neon DATABASE_URL, POSTGRES_URL, POSTGRES_PRISMA_URL, POSTGRES_URL_NO_SSL, DATABASE_URL_UNPOOLED, POSTGRES_URL_NON_POOLING, raw PGHOST/PGUSER/PGDATABASE/PGPASSWORD pieces, or legacy POSTGRES_HOST/POSTGRES_USER/POSTGRES_DATABASE/POSTGRES_PASSWORD pieces; set AAIS_DATABASE_PROVIDER to neon when the host cannot be inspected here.";
   }
   if (category === "releaseMode") {
-    return "Set AAIS_TRIAL_LOGIN_ENABLED to false only after enterprise SSO access is verified.";
+    return "Current-stage AAIS uses trial auth in production; set AAIS_TRIAL_ACCOUNTS_JSON for the trial gate, and only set AAIS_TRIAL_LOGIN_ENABLED to false after enterprise SSO access is verified.";
   }
   if (category === "oidc") {
     return "Use the enterprise IdP issuer, client, secret, and production callback URL. AAIS discovers provider endpoints from the issuer unless explicit endpoint variables are supplied.";
@@ -280,7 +282,7 @@ function normalizeEnvironment(value) {
 }
 
 function normalizeAuthMode(value) {
-  return String(value ?? "").trim().toLowerCase() === "trial" ? "trial" : "sso-only";
+  return String(value ?? "").trim().toLowerCase() === "sso-only" ? "sso-only" : "trial";
 }
 
 function normalizeAiMode(value) {

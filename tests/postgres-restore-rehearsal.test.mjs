@@ -75,11 +75,13 @@ describe("AAIS Postgres restore rehearsal verifier", () => {
         provider: "neon",
         purpose: "restored-staging",
         sameAsSource: false,
+        productionSourceCount: 1,
       },
       checks: {
         tablePresent: true,
         lrsOutboxTablePresent: true,
         existingSessionCount: 12,
+        smokeInsertOnly: true,
         smokeInserted: true,
         smokeReadBack: true,
         smokeDeleted: true,
@@ -98,6 +100,8 @@ describe("AAIS Postgres restore rehearsal verifier", () => {
         "end",
       ]),
     );
+    expect(queries.find((query) => /insert into aais_learner_sessions/i.test(query.sql))?.sql)
+      .not.toMatch(/on conflict/i);
 
     const serialized = JSON.stringify(report);
     expect(serialized).not.toContain("restore-secret");
@@ -177,6 +181,70 @@ describe("AAIS Postgres restore rehearsal verifier", () => {
     })).rejects.toThrow("AAIS restore rehearsal target must differ from production database sources");
   });
 
+  it("refuses production database sources loaded from a private source env file", async () => {
+    const sourceEnvFilePath = path.join(tempDir, "production.env");
+    await writeFile(sourceEnvFilePath, [
+      "DATABASE_URL=postgres://prod-user:prod-secret@ep-prod.us-east-1.aws.neon.tech/aais?sslmode=require",
+      "",
+    ].join("\n"), "utf8");
+
+    await expect(runAaisPostgresRestoreRehearsal({
+      databaseUrl: "postgres://restore-user:restore-secret@ep-prod.us-east-1.aws.neon.tech/aais",
+      sourceEnvFilePath,
+      database: {
+        async query() {
+          throw new Error("should not query production");
+        },
+      },
+    })).rejects.toThrow("AAIS restore rehearsal target must differ from production database sources");
+  });
+
+  it("refuses the Vercel Postgres no-SSL production source as a restore target", async () => {
+    const sourceEnvFilePath = path.join(tempDir, "production.env");
+    await writeFile(sourceEnvFilePath, [
+      "POSTGRES_URL_NO_SSL=postgres://prod-user:prod-secret@ep-prod.us-east-1.aws.neon.tech/aais",
+      "",
+    ].join("\n"), "utf8");
+
+    await expect(runAaisPostgresRestoreRehearsal({
+      databaseUrl: "postgres://restore-user:restore-secret@ep-prod.us-east-1.aws.neon.tech/aais?sslmode=require",
+      sourceEnvFilePath,
+      database: {
+        async query() {
+          throw new Error("should not query production");
+        },
+      },
+    })).rejects.toThrow("AAIS restore rehearsal target must differ from production database sources");
+  });
+
+  it("records only a redacted production source count when a source env file is checked", async () => {
+    const sourceEnvFilePath = path.join(tempDir, "production.env");
+    await writeFile(sourceEnvFilePath, [
+      "DATABASE_URL=postgres://prod-user:prod-secret@ep-prod.us-east-1.aws.neon.tech/aais?sslmode=require",
+      "",
+    ].join("\n"), "utf8");
+
+    const report = await runAaisPostgresRestoreRehearsal({
+      databaseUrl: "postgres://restore-user:restore-secret@ep-restored.us-east-1.aws.neon.tech/aais_restore",
+      sourceEnvFilePath,
+      targetPurpose: "restored-staging",
+      database: passingRestoreDatabase(),
+      smokeStudentId: "restore-smoke",
+      now: new Date("2026-06-30T02:00:00.000Z"),
+    });
+
+    expect(report.target).toMatchObject({
+      databaseUrl: "redacted",
+      sameAsSource: false,
+      productionSourceCount: 1,
+    });
+    const serialized = JSON.stringify(report);
+    expect(serialized).not.toContain("prod-secret");
+    expect(serialized).not.toContain("restore-secret");
+    expect(serialized).not.toContain("ep-prod.us-east-1.aws.neon.tech");
+    expect(serialized).not.toContain("ep-restored.us-east-1.aws.neon.tech");
+  });
+
   it("treats owner-fillable restore URL placeholders as missing before opening a database connection", async () => {
     await expect(runAaisPostgresRestoreRehearsal({
       databaseUrl: "<REQUIRED:RESTORED_NEON_STAGING_DATABASE_URL>",
@@ -232,6 +300,53 @@ describe("AAIS Postgres restore rehearsal verifier", () => {
       },
     });
     expect(JSON.stringify(report)).not.toContain("restore-secret");
+  });
+
+  it("does not overwrite or delete an existing smoke row if the insert collides", async () => {
+    const queries = [];
+    const report = await runAaisPostgresRestoreRehearsal({
+      databaseUrl: "postgres://restore-user:restore-secret@ep-restored.us-east-1.aws.neon.tech/aais_restore",
+      targetPurpose: "restored-staging",
+      database: {
+        async query(sql) {
+          queries.push(sql);
+          if (/aais_lrs_outbox/i.test(sql)) {
+            return { rows: [{ table_name: "aais_lrs_outbox" }] };
+          }
+          if (/aais_learner_sessions/i.test(sql) && /to_regclass/i.test(sql)) {
+            return { rows: [{ table_name: "aais_learner_sessions" }] };
+          }
+          if (/count\(\*\)/i.test(sql)) {
+            return { rows: [{ session_count: "1" }] };
+          }
+          if (/insert into aais_learner_sessions/i.test(sql)) {
+            throw new Error("duplicate key value violates unique constraint");
+          }
+          throw new Error("should not query after a colliding insert");
+        },
+        async end() {
+          queries.push("end");
+        },
+      },
+      smokeStudentId: "restore-smoke",
+      now: new Date("2026-06-30T02:00:00.000Z"),
+    });
+
+    expect(report).toMatchObject({
+      status: "failed",
+      checks: {
+        tablePresent: true,
+        lrsOutboxTablePresent: true,
+        smokeInsertOnly: true,
+        smokeInserted: false,
+        smokeReadBack: false,
+        smokeDeleted: false,
+      },
+    });
+    expect(queries.some((sql) => /on conflict/i.test(sql))).toBe(false);
+    expect(queries.some((sql) => /delete from aais_learner_sessions/i.test(sql))).toBe(false);
+    expect(JSON.stringify(report)).not.toContain("restore-secret");
+    expect(JSON.stringify(report)).not.toContain("duplicate key");
   });
 
   it("fails when the restore target purpose is not explicitly restored staging", async () => {

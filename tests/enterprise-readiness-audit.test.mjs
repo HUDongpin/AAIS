@@ -22,7 +22,7 @@ describe("AAIS enterprise readiness audit", () => {
       status: "failed",
       checkedAt: "2026-06-30T09:00:00.000Z",
       release: {
-        id: "aais-2026-06-30-rc-live-ai-deepseek-v4-flash",
+        id: "aais-2026-06-30-rc-live-ai-deepseek-v4-pro",
         consistent: false,
       },
       artifacts: {
@@ -66,6 +66,8 @@ describe("AAIS enterprise readiness audit", () => {
           status: "passed",
           compatibleWithEnterpriseReadiness: true,
           blockedCount: 0,
+          agentEvidenceComplete: true,
+          agentEvidenceContractVersion: "aais-a1-a4-ca-eval-v2",
           modelFingerprintMatchesEnterprise: true,
         },
         postgresRestore: {
@@ -121,6 +123,80 @@ describe("AAIS enterprise readiness audit", () => {
         passed: 5,
         actionRequired: 13,
       },
+      businessGapSummary: {
+        total: 7,
+        passed: 1,
+        actionRequired: 6,
+      },
+      businessGaps: [
+        {
+          id: "production-oidc-env-config",
+          label: "Production OIDC environment and config",
+          status: "action-required",
+          controls: [
+            { id: "vercel-production-env", status: "action-required" },
+            { id: "oidc-start", status: "action-required" },
+          ],
+          missing: [
+            "AAIS_DATABASE_URL",
+            "AAIS_OIDC_ISSUER",
+            "AAIS_OIDC_CLIENT_ID",
+            "AAIS_OIDC_CLIENT_SECRET",
+            "AAIS_OIDC_REDIRECT_URI",
+          ],
+          actions: [
+            "fill-private-env-template",
+            "set-vercel-production-env",
+            "redeploy-vercel-production",
+            "inspect-vercel-production-deployment",
+            "rerun-final-gate",
+          ],
+        },
+        {
+          id: "real-oidc-callback",
+          status: "action-required",
+          controls: [{ id: "oidc-callback-handoff", status: "action-required" }],
+          actions: ["run-real-oidc-callback-smoke", "rerun-final-gate"],
+        },
+        {
+          id: "sso-only-cutover",
+          status: "passed",
+          controls: [{ id: "sso-only-mode", status: "passed" }],
+        },
+        {
+          id: "neon-restore-rehearsal",
+          status: "action-required",
+          controls: [{ id: "neon-restore-rehearsal", status: "action-required" }],
+          actions: ["fill-postgres-restore-template", "run-neon-restore-rehearsal", "rerun-final-gate"],
+        },
+        {
+          id: "teacher-cohort-analytics",
+          status: "action-required",
+          controls: [{ id: "cohort-analytics", status: "action-required" }],
+          actions: ["run-teacher-cohort-analytics-smoke", "rerun-final-gate"],
+        },
+        {
+          id: "a1-a4-agent-evidence",
+          label: "A1-A4 agent evidence",
+          status: "action-required",
+          controls: [
+            { id: "agent-evidence", status: "action-required" },
+            { id: "live-ai-eval", status: "passed" },
+          ],
+          actions: ["redeploy-vercel-production", "inspect-vercel-production-deployment", "rerun-final-gate"],
+        },
+        {
+          id: "current-release-consistency",
+          status: "action-required",
+          controls: [{ id: "release-consistency", status: "action-required" }],
+          actions: [
+            "fill-postgres-restore-template",
+            "run-neon-restore-rehearsal",
+            "run-real-oidc-callback-smoke",
+            "rerun-final-gate",
+          ],
+        },
+      ],
       requiredControls: [
         {
           id: "vercel-production-env",
@@ -195,16 +271,16 @@ describe("AAIS enterprise readiness audit", () => {
           actions: ["redeploy-vercel-production", "inspect-vercel-production-deployment", "rerun-final-gate"],
         },
         {
-          id: "a2-monitoring-evidence",
+          id: "agent-evidence",
           status: "action-required",
           actions: ["redeploy-vercel-production", "inspect-vercel-production-deployment", "rerun-final-gate"],
-          note: "Requires deployed readiness evidence for A2 low-progress monitoring, artifact-regression coaching, keyed AI acceptance revisions, and raw learner-text exclusion.",
+          note: "Requires deployed readiness evidence for the A1-A4 responsibility map, A3 supervision signals, A2 coaching, keyed AI acceptance revisions, and raw learner-text exclusion.",
         },
         {
           id: "cohort-analytics",
           status: "action-required",
           actions: ["run-teacher-cohort-analytics-smoke", "rerun-final-gate"],
-          note: "Requires teacher/admin cohort analytics and cohort export proof from the same OIDC callback session.",
+          note: "Requires teacher/admin cohort analytics and cohort export proof from the current auth-mode smoke session.",
         },
         {
           id: "oidc-start",
@@ -258,6 +334,9 @@ describe("AAIS enterprise readiness audit", () => {
     expect(JSON.parse(await readFile(outputPath, "utf8"))).toEqual(report);
     const markdown = await readFile(markdownOutputPath, "utf8");
     expect(markdown).toContain("AAIS Enterprise Readiness Audit");
+    expect(markdown).toContain("Business Gap Groups");
+    expect(markdown).toContain("a1-a4-agent-evidence");
+    expect(markdown).toContain("A1 scaffolding, A2 expert coaching, A3 supervision signals, A4 articulation/reflection");
     expect(markdown).toContain("vercel-production-env");
     expect(markdown).toContain("deployment-release-identity");
     expect(markdown).toContain("run-neon-restore-rehearsal");
@@ -316,6 +395,8 @@ describe("AAIS enterprise readiness audit", () => {
           status: "passed",
           compatibleWithEnterpriseReadiness: true,
           blockedCount: 0,
+          agentEvidenceComplete: true,
+          agentEvidenceContractVersion: "aais-a1-a4-ca-eval-v2",
           modelFingerprintMatchesEnterprise: true,
         },
         postgresRestore: {
@@ -324,6 +405,7 @@ describe("AAIS enterprise readiness audit", () => {
           sameAsSource: false,
           tablePresent: true,
           lrsOutboxTablePresent: true,
+          smokeInsertOnly: true,
           smokeInserted: true,
           smokeReadBack: true,
           smokeDeleted: true,
@@ -350,14 +432,151 @@ describe("AAIS enterprise readiness audit", () => {
     expect(JSON.parse(await readFile(process.env.AAIS_ENTERPRISE_AUDIT_REPORT_PATH, "utf8"))).toMatchObject({
       status: "ready",
       summary: {
-        total: 18,
-        passed: 18,
+        total: 15,
+        passed: 15,
+        actionRequired: 0,
+      },
+      businessGapSummary: {
+        total: 4,
+        passed: 4,
         actionRequired: 0,
       },
     });
     expect(await readFile(process.env.AAIS_ENTERPRISE_AUDIT_MARKDOWN_PATH, "utf8")).toContain(
       "AAIS Enterprise Readiness Audit",
     );
+  });
+
+  it("adds an enterprise gap input preflight control when a gap evidence report is supplied", async () => {
+    const releaseCheckReportPath = await writeJson("release-check.json", {
+      status: "failed",
+      checkedAt: "2026-06-30T09:00:00.000Z",
+      release: {
+        consistent: false,
+      },
+      artifacts: {
+        vercelEnv: {
+          status: "passed",
+          missing: [],
+        },
+        enterprise: {
+          status: "failed",
+          requiredChecks: {
+            readiness: true,
+            securityHeaders: true,
+            legalPages: true,
+            lrsHealth: true,
+            a2Monitoring: true,
+            cohortAnalytics: false,
+            oidcStart: true,
+            oidcCallback: false,
+            ssoOnlyMode: false,
+          },
+          evidenceOrder: {
+            enterpriseAfterVercelEnv: true,
+            enterpriseAfterVercelDeployment: true,
+          },
+          artifactCoalescing: {
+            complete: true,
+          },
+          readiness: {
+            releaseIdMatchesExpected: true,
+          },
+        },
+        aiEval: {
+          status: "passed",
+          compatibleWithEnterpriseReadiness: true,
+          blockedCount: 0,
+          agentEvidenceComplete: true,
+          agentEvidenceContractVersion: "aais-a1-a4-ca-eval-v2",
+          modelFingerprintMatchesEnterprise: true,
+        },
+        postgresRestore: {
+          status: "missing",
+        },
+        vercelConfig: {
+          status: "passed",
+          path: "/api/learning/lrs/outbox/flush",
+          outboxCronPresent: true,
+          outboxCronDaily: true,
+          secretScanStatus: "passed",
+        },
+      },
+    });
+    const handoffReportPath = await writeJson("handoff.json", {
+      status: "action-required",
+      externalActions: [
+        { id: "fill-postgres-restore-template", status: "required" },
+        { id: "run-neon-restore-rehearsal", status: "required" },
+        { id: "run-trial-auth-enterprise-smoke", status: "required" },
+        { id: "run-teacher-cohort-analytics-smoke", status: "required" },
+        { id: "rerun-final-gate", status: "required" },
+      ],
+    });
+    const gapEvidenceReportPath = await writeJson("gap-evidence.json", {
+      status: "action-required",
+      preflightOnly: true,
+      preflight: {
+        status: "action-required",
+        required: {
+          missing: [
+            "AAIS_VERIFY_TRIAL_ACCOUNT",
+            "AAIS_VERIFY_TRIAL_CORRECT_PASSWORD",
+            "AAIS_VERIFY_EDUCATOR_ACCOUNT",
+            "AAIS_VERIFY_EDUCATOR_CORRECT_PASSWORD",
+          ],
+          placeholders: ["AAIS_RESTORE_DATABASE_URL"],
+          invalid: [],
+        },
+      },
+      redaction: {
+        secrets: "omitted",
+      },
+      rawSecret: "postgres://restore-user:restore-secret@host/db",
+    });
+
+    const report = await auditAaisEnterpriseReadiness({
+      releaseCheckReportPath,
+      handoffReportPath,
+      gapEvidenceReportPath,
+      outputPath: path.join(tempDir, "gap-audit.json"),
+      markdownOutputPath: path.join(tempDir, "gap-audit.md"),
+      now: new Date("2026-07-01T11:30:00.000Z"),
+    });
+
+    expect(report.sourceReports).toMatchObject({
+      gapEvidence: gapEvidenceReportPath,
+    });
+    expect(report.requiredControls.find((control) => control.id === "enterprise-gap-input-preflight")).toEqual({
+      id: "enterprise-gap-input-preflight",
+      status: "action-required",
+      missing: [
+        "AAIS_VERIFY_TRIAL_ACCOUNT",
+        "AAIS_VERIFY_TRIAL_CORRECT_PASSWORD",
+        "AAIS_VERIFY_EDUCATOR_ACCOUNT",
+        "AAIS_VERIFY_EDUCATOR_CORRECT_PASSWORD",
+        "AAIS_RESTORE_DATABASE_URL",
+      ],
+      actions: [
+        "fill-postgres-restore-template",
+        "run-neon-restore-rehearsal",
+        "run-trial-auth-enterprise-smoke",
+        "run-teacher-cohort-analytics-smoke",
+        "rerun-final-gate",
+      ],
+      note: "Requires verify:enterprise-gaps --preflight-only to report ready before consuming trial smoke evidence or opening the restored Neon database.",
+    });
+    expect(report.summary.total).toBe(16);
+    expect(report.businessGapSummary.total).toBe(4);
+    expect(report.businessGaps.map((gap) => gap.id)).toEqual([
+      "neon-restore-rehearsal",
+      "teacher-cohort-analytics",
+      "a1-a4-agent-evidence",
+      "current-release-consistency",
+    ]);
+    expect(report.businessGaps.map((gap) => gap.id)).not.toContain("enterprise-gap-input-preflight");
+    const serialized = `${JSON.stringify(report)}\n${await readFile(path.join(tempDir, "gap-audit.md"), "utf8")}`;
+    expect(serialized).not.toContain("restore-secret");
   });
 
   it("points SSO-only runtime failures to the SSO-only owner action", async () => {
@@ -370,6 +589,9 @@ describe("AAIS enterprise readiness audit", () => {
       artifacts: {
         vercelEnv: {
           status: "passed",
+          target: {
+            authMode: "sso-only",
+          },
           missingCount: 0,
           missing: [],
         },
@@ -397,6 +619,8 @@ describe("AAIS enterprise readiness audit", () => {
           status: "passed",
           compatibleWithEnterpriseReadiness: true,
           blockedCount: 0,
+          agentEvidenceComplete: true,
+          agentEvidenceContractVersion: "aais-a1-a4-ca-eval-v2",
           modelFingerprintMatchesEnterprise: true,
         },
         postgresRestore: {
@@ -405,6 +629,7 @@ describe("AAIS enterprise readiness audit", () => {
           sameAsSource: false,
           tablePresent: true,
           lrsOutboxTablePresent: true,
+          smokeInsertOnly: true,
           smokeInserted: true,
           smokeReadBack: true,
           smokeDeleted: true,
@@ -488,6 +713,8 @@ describe("AAIS enterprise readiness audit", () => {
           status: "passed",
           compatibleWithEnterpriseReadiness: true,
           blockedCount: 0,
+          agentEvidenceComplete: true,
+          agentEvidenceContractVersion: "aais-a1-a4-ca-eval-v2",
           modelFingerprintMatchesEnterprise: true,
         },
         postgresRestore: {

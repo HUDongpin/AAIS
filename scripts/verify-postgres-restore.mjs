@@ -2,6 +2,7 @@
 
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { neon } from "@neondatabase/serverless";
 import { Pool } from "pg";
 
 const productionDatabaseUrlEnvNames = [
@@ -9,12 +10,14 @@ const productionDatabaseUrlEnvNames = [
   "DATABASE_URL",
   "POSTGRES_URL",
   "POSTGRES_PRISMA_URL",
+  "POSTGRES_URL_NO_SSL",
   "DATABASE_URL_UNPOOLED",
   "POSTGRES_URL_NON_POOLING",
 ];
 
 export async function runAaisPostgresRestoreRehearsal(input = {}) {
   const envValues = await readEnvFile(input.envFilePath);
+  const sourceEnvValues = await readOptionalEnvFile(input.sourceEnvFilePath);
   const databaseUrl = requireValue(
     input.databaseUrl ?? envValues.get("AAIS_RESTORE_DATABASE_URL") ?? process.env.AAIS_RESTORE_DATABASE_URL,
     "AAIS_RESTORE_DATABASE_URL",
@@ -22,7 +25,10 @@ export async function runAaisPostgresRestoreRehearsal(input = {}) {
   const targetPurpose = readRestoreTargetPurpose(
     input.targetPurpose ?? envValues.get("AAIS_RESTORE_TARGET_PURPOSE") ?? process.env.AAIS_RESTORE_TARGET_PURPOSE,
   );
-  const sourceDatabaseUrls = getProductionDatabaseUrls(input.sourceDatabaseUrl);
+  const sourceDatabaseUrls = getProductionDatabaseUrls({
+    explicitSourceDatabaseUrl: input.sourceDatabaseUrl,
+    sourceEnvValues,
+  });
   const sameAsSource = sourceDatabaseUrls.some((sourceDatabaseUrl) => (
     normalizeDatabaseUrl(databaseUrl) === normalizeDatabaseUrl(sourceDatabaseUrl)
   ));
@@ -39,11 +45,16 @@ export async function runAaisPostgresRestoreRehearsal(input = {}) {
       ?? envValues.get("AAIS_RESTORE_DATABASE_PROVIDER")
       ?? process.env.AAIS_RESTORE_DATABASE_PROVIDER,
   });
-  const database = input.database ?? createDatabaseClient(databaseUrl);
+  const databaseDriver = readDatabaseDriver(
+    input.databaseDriver ?? envValues.get("AAIS_RESTORE_DATABASE_DRIVER") ?? process.env.AAIS_RESTORE_DATABASE_DRIVER,
+    databaseProvider,
+  );
+  const database = input.database ?? createDatabaseClient(databaseUrl, { databaseDriver });
   const checks = {
     tablePresent: false,
     lrsOutboxTablePresent: false,
     existingSessionCount: 0,
+    smokeInsertOnly: true,
     smokeInserted: false,
     smokeReadBack: false,
     smokeDeleted: false,
@@ -61,9 +72,7 @@ export async function runAaisPostgresRestoreRehearsal(input = {}) {
       const payload = createSmokeSessionPayload(smokeStudentId, checkedAt);
       await database.query(
         `insert into aais_learner_sessions (student_id, payload, updated_at)
-         values ($1, $2::jsonb, now())
-         on conflict (student_id)
-         do update set payload = excluded.payload, updated_at = now()`,
+         values ($1, $2::jsonb, now())`,
         [smokeStudentId, JSON.stringify(payload)],
       );
       checks.smokeInserted = true;
@@ -110,8 +119,10 @@ export async function runAaisPostgresRestoreRehearsal(input = {}) {
     target: {
       databaseUrl: "redacted",
       provider: databaseProvider,
+      driver: databaseDriver,
       purpose: targetPurpose,
       sameAsSource,
+      productionSourceCount: sourceDatabaseUrls.length,
     },
     checks,
     redaction: {
@@ -154,6 +165,21 @@ async function readEnvFile(filePath) {
   return values;
 }
 
+async function readOptionalEnvFile(filePath) {
+  const resolvedPath = String(filePath ?? "").trim();
+  if (!resolvedPath) {
+    return new Map();
+  }
+  try {
+    return await readEnvFile(resolvedPath);
+  } catch (error) {
+    if (error && typeof error === "object" && error.code === "ENOENT") {
+      return new Map();
+    }
+    throw error;
+  }
+}
+
 function parseEnvValue(value) {
   if (value.length >= 2 && value.startsWith("\"") && value.endsWith("\"")) {
     return value
@@ -170,8 +196,32 @@ function parseEnvValue(value) {
   return value;
 }
 
-function createDatabaseClient(databaseUrl) {
+function createDatabaseClient(databaseUrl, input = {}) {
+  if (input.databaseDriver === "neon-serverless") {
+    return createNeonServerlessDatabaseClient(databaseUrl);
+  }
   return new Pool({ connectionString: databaseUrl });
+}
+
+function createNeonServerlessDatabaseClient(databaseUrl) {
+  const sql = neon(databaseUrl);
+  return {
+    async query(query, params = []) {
+      const result = await sql.query(query, params);
+      return normalizeQueryResult(result);
+    },
+    async end() {},
+  };
+}
+
+function normalizeQueryResult(result) {
+  if (Array.isArray(result)) {
+    return { rows: result };
+  }
+  if (result && typeof result === "object" && Array.isArray(result.rows)) {
+    return { rows: result.rows };
+  }
+  return { rows: [] };
 }
 
 function createSmokeSessionPayload(studentId, now) {
@@ -209,9 +259,22 @@ function normalizeDatabaseUrl(value) {
   }
 }
 
-function getProductionDatabaseUrls(explicitSourceDatabaseUrl) {
+function getProductionDatabaseUrls({ explicitSourceDatabaseUrl, sourceEnvValues = new Map() }) {
   const urls = [];
   appendDatabaseUrl(urls, explicitSourceDatabaseUrl);
+  for (const name of productionDatabaseUrlEnvNames) {
+    appendDatabaseUrl(urls, sourceEnvValues.get(name));
+  }
+  appendDatabaseUrl(urls, buildRawDatabaseUrl({
+    host: sourceEnvValues.get("PGHOST") ?? sourceEnvValues.get("PGHOST_UNPOOLED"),
+    port: sourceEnvValues.get("PGPORT"),
+    database: sourceEnvValues.get("PGDATABASE"),
+  }));
+  appendDatabaseUrl(urls, buildRawDatabaseUrl({
+    host: sourceEnvValues.get("POSTGRES_HOST") ?? sourceEnvValues.get("POSTGRES_HOST_NON_POOLING"),
+    port: sourceEnvValues.get("POSTGRES_PORT"),
+    database: sourceEnvValues.get("POSTGRES_DATABASE"),
+  }));
   for (const name of productionDatabaseUrlEnvNames) {
     appendDatabaseUrl(urls, process.env[name]);
   }
@@ -280,6 +343,14 @@ function readDatabaseProvider(value) {
   return trimmed === "neon" || trimmed === "postgres" ? trimmed : null;
 }
 
+function readDatabaseDriver(value, databaseProvider) {
+  const trimmed = String(value ?? "").trim().toLowerCase();
+  if (trimmed === "pg" || trimmed === "neon-serverless") {
+    return trimmed;
+  }
+  return databaseProvider === "neon" ? "neon-serverless" : "pg";
+}
+
 function getVerifiedDatabaseProvider({ databaseUrl, configuredProvider }) {
   const inferred = inferDatabaseProvider(databaseUrl);
   const requested = readDatabaseProvider(configuredProvider);
@@ -326,10 +397,12 @@ async function main() {
     databaseUrl: args.get("database-url"),
     envFilePath: args.get("env-file"),
     sourceDatabaseUrl: args.get("source-database-url"),
+    sourceEnvFilePath: args.get("source-env-file"),
     outputPath: args.get("output"),
     smokeStudentId: args.get("smoke-student-id"),
     releaseId: args.get("release-id"),
     databaseProvider: args.get("database-provider"),
+    databaseDriver: args.get("database-driver"),
     targetPurpose: args.get("target-purpose"),
   });
   process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);

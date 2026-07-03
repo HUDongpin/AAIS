@@ -16,14 +16,14 @@ afterEach(async () => {
 });
 
 describe("AAIS release evidence refresh workflow", () => {
-  it("runs gate, env-template, provision dry-run, handoff, audit, and bundle in order with redacted summary output", async () => {
+  it("runs gate, templates, provision dry-run, handoff, audit, and bundle in order with redacted summary output", async () => {
     const calls = [];
     const paths = getPaths();
 
     const report = await refreshAaisReleaseEvidence({
       ...paths,
       baseUrl: "https://aais-six.vercel.app",
-      releaseId: "aais-2026-06-30-rc-live-ai-deepseek-v4-flash",
+      releaseId: "aais-2026-06-30-rc-live-ai-deepseek-v4-pro",
       deploymentGitCommit: "ffec998b638c1234567890abcdef1234567890ab",
       envFilePath: ".env.local",
       now: new Date("2026-06-30T11:00:00.000Z"),
@@ -59,6 +59,13 @@ describe("AAIS release evidence refresh workflow", () => {
           rawSecret: "postgres://user:restore-template-secret@host/db",
         };
       },
+      gapTemplateGenerator: async (input) => {
+        calls.push(["gap-template", input]);
+        return {
+          status: "template-created",
+          rawSecret: "https://idp.example/callback?code=real",
+        };
+      },
       oidcConfigVerifier: async (input) => {
         calls.push(["oidc-config-dry-run", input]);
         return {
@@ -86,6 +93,10 @@ describe("AAIS release evidence refresh workflow", () => {
               status: "required",
               templatePath: paths.privateEnvTemplatePath,
               privateEnvFilePath: ".env.local",
+              oidcOnboardingCommand:
+                "npm run prepare:oidc-sso -- --env-file .env.local --base-url https://www.aais.site",
+              neonApiPreparationCommand:
+                "npm run prepare:neon-restore -- --neon-env-file .env.neon-restore.local --output-env .env.postgres-restore.local",
               commands: [
                 "npm run provision:vercel-env -- --env-file .env.local --apply",
               ],
@@ -102,8 +113,17 @@ describe("AAIS release evidence refresh workflow", () => {
             {
               id: "run-real-oidc-callback-smoke",
               status: "required",
+              preflightStatus: "action-required",
+              missingInputs: [
+                "AAIS_VERIFY_OIDC_CALLBACK_URL",
+                "AAIS_VERIFY_OIDC_STATE_COOKIE",
+              ],
               command:
                 "AAIS_VERIFY_OIDC_CALLBACK_URL=https://idp.example/callback?code=real npm run verify:enterprise",
+              gapPreflightCommand:
+                "npm run verify:enterprise-gaps -- --mode oidc-callback --preflight-only --env-file .env.enterprise-smoke.local --output output/aais-enterprise-gap-evidence-latest.json",
+              gapEvidenceCommand:
+                "npm run verify:enterprise-gaps -- --mode oidc-callback --env-file .env.enterprise-smoke.local --output output/aais-enterprise-gap-evidence-latest.json",
             },
             {
               id: "set-sso-only-runtime-mode",
@@ -113,6 +133,24 @@ describe("AAIS release evidence refresh workflow", () => {
                 "vercel env rm AAIS_TRIAL_LOGIN_ENABLED production -y",
                 "printf '%s' 'false' | vercel env add AAIS_TRIAL_LOGIN_ENABLED production",
               ],
+            },
+          ],
+          businessGapActions: [
+            {
+              id: "production-oidc-env-config",
+              status: "action-required",
+              missing: ["AAIS_OIDC_CLIENT_SECRET"],
+              actions: [
+                "fill-private-env-template",
+                "verify-oidc-config-dry-run",
+                "set-vercel-production-env",
+                "rerun-final-gate",
+              ],
+            },
+            {
+              id: "sso-only-cutover",
+              status: "action-required",
+              actions: ["set-sso-only-runtime-mode", "rerun-final-gate"],
             },
           ],
         };
@@ -125,6 +163,11 @@ describe("AAIS release evidence refresh workflow", () => {
             total: 11,
             passed: 5,
             actionRequired: 6,
+          },
+          businessGapSummary: {
+            total: 7,
+            passed: 2,
+            actionRequired: 5,
           },
         };
       },
@@ -146,9 +189,9 @@ describe("AAIS release evidence refresh workflow", () => {
 
     expect(calls.map(([name]) => name)).toEqual([
       "enterprise-release",
-      "env-template",
       "restore-template",
-      "oidc-config-dry-run",
+      "gap-template",
+      "env-template",
       "provision-dry-run",
       "handoff",
       "readiness-audit",
@@ -156,7 +199,7 @@ describe("AAIS release evidence refresh workflow", () => {
     ]);
     expect(calls[0][1]).toMatchObject({
       baseUrl: "https://aais-six.vercel.app",
-      releaseId: "aais-2026-06-30-rc-live-ai-deepseek-v4-flash",
+      releaseId: "aais-2026-06-30-rc-live-ai-deepseek-v4-pro",
       sourceProvenanceReportPath: paths.sourceProvenanceReportPath,
       vercelEnvReportPath: paths.vercelEnvReportPath,
       vercelDeploymentReportPath: paths.vercelDeploymentReportPath,
@@ -168,30 +211,35 @@ describe("AAIS release evidence refresh workflow", () => {
       deploymentGitCommit: "ffec998b638c1234567890abcdef1234567890ab",
     });
     expect(calls[1][1]).toMatchObject({
+      outputPath: paths.postgresRestoreTemplatePath,
+      reportPath: paths.postgresRestoreTemplateReportPath,
+      postgresRestoreReportPath: paths.postgresRestoreReportPath,
+      releaseId: "aais-2026-06-30-rc-live-ai-deepseek-v4-pro",
+    });
+    expect(calls[2][1]).toMatchObject({
+      outputPath: paths.enterpriseGapTemplatePath,
+      reportPath: paths.enterpriseGapTemplateReportPath,
+      baseUrl: "https://aais-six.vercel.app",
+      releaseId: "aais-2026-06-30-rc-live-ai-deepseek-v4-pro",
+      enterpriseReportPath: paths.enterpriseReportPath,
+      restoreReportPath: paths.postgresRestoreReportPath,
+      gapEvidenceReportPath: paths.enterpriseGapEvidenceReportPath,
+    });
+    expect(calls[3][1]).toMatchObject({
       vercelEnvReportPath: paths.vercelEnvReportPath,
+      enterpriseGapEvidenceReportPath: paths.enterpriseGapEvidenceReportPath,
       outputPath: paths.privateEnvTemplatePath,
       reportPath: paths.privateEnvTemplateReportPath,
       baseUrl: "https://aais-six.vercel.app",
       environment: "production",
-      releaseId: "aais-2026-06-30-rc-live-ai-deepseek-v4-flash",
+      releaseId: "aais-2026-06-30-rc-live-ai-deepseek-v4-pro",
       deploymentGitCommit: "ffec998b638c1234567890abcdef1234567890ab",
-    });
-    expect(calls[2][1]).toMatchObject({
-      outputPath: paths.postgresRestoreTemplatePath,
-      reportPath: paths.postgresRestoreTemplateReportPath,
-      postgresRestoreReportPath: paths.postgresRestoreReportPath,
-      releaseId: "aais-2026-06-30-rc-live-ai-deepseek-v4-flash",
-    });
-    expect(calls[3][1]).toMatchObject({
-      envFilePath: ".env.local",
-      baseUrl: "https://aais-six.vercel.app",
-      outputPath: paths.oidcConfigReportPath,
     });
     expect(calls[4][1]).toMatchObject({
       envFilePath: ".env.local",
       vercelEnvReportPath: paths.vercelEnvReportPath,
       outputPath: paths.provisionReportPath,
-      releaseId: "aais-2026-06-30-rc-live-ai-deepseek-v4-flash",
+      releaseId: "aais-2026-06-30-rc-live-ai-deepseek-v4-pro",
       deploymentGitCommit: "ffec998b638c1234567890abcdef1234567890ab",
       apply: false,
     });
@@ -199,7 +247,7 @@ describe("AAIS release evidence refresh workflow", () => {
       releaseCheckReportPath: paths.releaseCheckReportPath,
       vercelEnvReportPath: paths.vercelEnvReportPath,
       provisionReportPath: paths.provisionReportPath,
-      oidcConfigReportPath: paths.oidcConfigReportPath,
+      oidcConfigReportPath: false,
       sourceProvenanceReportPath: paths.sourceProvenanceReportPath,
       deploymentGitCommit: "ffec998b638c1234567890abcdef1234567890ab",
       outputPath: paths.handoffReportPath,
@@ -208,10 +256,12 @@ describe("AAIS release evidence refresh workflow", () => {
       privateEnvTemplateReportPath: paths.privateEnvTemplateReportPath,
       postgresRestoreTemplatePath: paths.postgresRestoreTemplatePath,
       postgresRestoreTemplateReportPath: paths.postgresRestoreTemplateReportPath,
+      enterpriseGapEvidenceReportPath: paths.enterpriseGapEvidenceReportPath,
     });
     expect(calls[6][1]).toMatchObject({
       releaseCheckReportPath: paths.releaseCheckReportPath,
       handoffReportPath: paths.handoffReportPath,
+      gapEvidenceReportPath: paths.enterpriseGapEvidenceReportPath,
       outputPath: paths.readinessAuditReportPath,
       markdownOutputPath: paths.readinessAuditMarkdownPath,
     });
@@ -224,9 +274,11 @@ describe("AAIS release evidence refresh workflow", () => {
       releaseCheckReportPath: paths.releaseCheckReportPath,
       handoffReportPath: paths.handoffReportPath,
       readinessAuditReportPath: paths.readinessAuditReportPath,
-      oidcConfigReportPath: paths.oidcConfigReportPath,
+      oidcConfigReportPath: false,
       aiEvalManifestPath: paths.aiEvalManifestPath,
       postgresRestoreReportPath: paths.postgresRestoreReportPath,
+      enterpriseGapTemplateReportPath: paths.enterpriseGapTemplateReportPath,
+      enterpriseGapEvidenceReportPath: paths.enterpriseGapEvidenceReportPath,
       outputPath: paths.bundleReportPath,
       markdownOutputPath: paths.bundleMarkdownPath,
     });
@@ -237,9 +289,9 @@ describe("AAIS release evidence refresh workflow", () => {
       sequence: [
         { name: "enterprise-release", status: "failed", outputPath: paths.releaseCheckReportPath },
         { name: "source-provenance", status: "passed", outputPath: paths.sourceProvenanceReportPath },
-        { name: "env-template", status: "template-created", outputPath: paths.privateEnvTemplateReportPath },
         { name: "restore-template", status: "template-created", outputPath: paths.postgresRestoreTemplateReportPath },
-        { name: "oidc-config-dry-run", status: "failed", outputPath: paths.oidcConfigReportPath },
+        { name: "gap-template", status: "template-created", outputPath: paths.enterpriseGapTemplateReportPath },
+        { name: "env-template", status: "template-created", outputPath: paths.privateEnvTemplateReportPath },
         { name: "provision-dry-run", status: "failed", outputPath: paths.provisionReportPath },
         { name: "handoff", status: "action-required", outputPath: paths.handoffReportPath },
         { name: "readiness-audit", status: "action-required", outputPath: paths.readinessAuditReportPath },
@@ -249,12 +301,37 @@ describe("AAIS release evidence refresh workflow", () => {
         source: "enterprise-handoff",
         total: 4,
         required: 4,
+        businessGaps: [
+          {
+            id: "production-oidc-env-config",
+            status: "action-required",
+            missing: ["AAIS_OIDC_CLIENT_SECRET"],
+            reasons: [],
+            actions: [
+              "fill-private-env-template",
+              "verify-oidc-config-dry-run",
+              "set-vercel-production-env",
+              "rerun-final-gate",
+            ],
+          },
+          {
+            id: "sso-only-cutover",
+            status: "action-required",
+            missing: [],
+            reasons: [],
+            actions: ["set-sso-only-runtime-mode", "rerun-final-gate"],
+          },
+        ],
         actions: [
           {
             id: "fill-private-env-template",
             status: "required",
             templatePath: paths.privateEnvTemplatePath,
             privateEnvFilePath: ".env.local",
+            oidcOnboardingCommand:
+              "npm run prepare:oidc-sso -- --env-file .env.local --base-url https://www.aais.site",
+            neonApiPreparationCommand:
+              "npm run prepare:neon-restore -- --neon-env-file .env.neon-restore.local --output-env .env.postgres-restore.local",
             commands: [
               "npm run provision:vercel-env -- --env-file .env.local --apply",
             ],
@@ -271,7 +348,16 @@ describe("AAIS release evidence refresh workflow", () => {
           {
             id: "run-real-oidc-callback-smoke",
             status: "required",
+            preflightStatus: "action-required",
+            missingInputs: [
+              "AAIS_VERIFY_OIDC_CALLBACK_URL",
+              "AAIS_VERIFY_OIDC_STATE_COOKIE",
+            ],
             command: "<redacted:secret-like-command>",
+            gapPreflightCommand:
+              "npm run verify:enterprise-gaps -- --mode oidc-callback --preflight-only --env-file .env.enterprise-smoke.local --output output/aais-enterprise-gap-evidence-latest.json",
+            gapEvidenceCommand:
+              "npm run verify:enterprise-gaps -- --mode oidc-callback --env-file .env.enterprise-smoke.local --output output/aais-enterprise-gap-evidence-latest.json",
           },
           {
             id: "set-sso-only-runtime-mode",
@@ -294,6 +380,11 @@ describe("AAIS release evidence refresh workflow", () => {
           total: 11,
           passed: 5,
           actionRequired: 6,
+          businessGapSummary: {
+            total: 7,
+            passed: 2,
+            actionRequired: 5,
+          },
         },
         evidenceBundle: {
           total: 8,
@@ -335,6 +426,7 @@ describe("AAIS release evidence refresh workflow", () => {
       }),
       envTemplateGenerator: async () => ({ status: "ready" }),
       restoreTemplateGenerator: async () => ({ status: "ready" }),
+      gapTemplateGenerator: async () => ({ status: "ready" }),
       oidcConfigVerifier: async () => ({ status: "ready" }),
       provisioner: async () => ({ status: "ready" }),
       handoffGenerator: async () => ({ status: "ready" }),
@@ -378,6 +470,7 @@ describe("AAIS release evidence refresh workflow", () => {
         return { status: "ready" };
       },
       restoreTemplateGenerator: async () => ({ status: "ready" }),
+      gapTemplateGenerator: async () => ({ status: "ready" }),
       oidcConfigVerifier: async (input) => {
         calls.push(["oidc-config-dry-run", input]);
         return { status: "ready" };
@@ -403,12 +496,86 @@ describe("AAIS release evidence refresh workflow", () => {
     expect(calls[0][1].baseUrl).toBe("https://www.aais.site");
     expect(calls[0][1].deploymentUrl).toBe("https://www.aais.site");
     expect(calls[1][1].baseUrl).toBe("https://www.aais.site");
-    expect(calls[1][1].releaseId).toBe("aais-2026-06-30-rc-live-ai-deepseek-v4-flash");
+    expect(calls[1][1].releaseId).toBe("aais-2026-06-30-rc-live-ai-deepseek-v4-pro");
     expect(calls[2][1].envFilePath).toBe(".env.production.local");
-    expect(calls[2][1].baseUrl).toBe("https://www.aais.site");
-    expect(calls[3][1].envFilePath).toBe(".env.production.local");
-    expect(calls[3][1].releaseId).toBe("aais-2026-06-30-rc-live-ai-deepseek-v4-flash");
-    expect(calls[4][1].baseUrl).toBe("https://www.aais.site");
+    expect(calls[2][1].releaseId).toBe("aais-2026-06-30-rc-live-ai-deepseek-v4-pro");
+    expect(calls[3][1].baseUrl).toBe("https://www.aais.site");
+    expect(calls[3][1].releaseId).toBe("aais-2026-06-30-rc-live-ai-deepseek-v4-pro");
+  });
+
+  it("can include a safe enterprise gap preflight without running live gap evidence", async () => {
+    const calls = [];
+    const paths = getPaths();
+
+    const report = await refreshAaisReleaseEvidence({
+      ...paths,
+      enterpriseGapPreflightOnly: true,
+      enterpriseGapEnvFilePath: ".env.enterprise-smoke.local",
+      restoreEnvFilePath: ".env.postgres-restore.local",
+      baseUrl: "https://aais.example.test",
+      releaseId: "aais-2026-07-01-rc1",
+      now: new Date("2026-07-01T12:15:00.000Z"),
+      enterpriseReleaseChecker: async () => ({ status: "passed", artifacts: { sourceProvenance: { status: "passed" } } }),
+      envTemplateGenerator: async (input) => {
+        calls.push(["env-template", input]);
+        return { status: "ready" };
+      },
+      restoreTemplateGenerator: async () => ({ status: "ready" }),
+      gapTemplateGenerator: async () => ({ status: "ready" }),
+      gapEvidenceRunner: async (input) => {
+        calls.push(["gap-evidence-preflight", input]);
+        return {
+          status: "preflight-ready",
+          preflightOnly: true,
+          preflight: {
+            status: "ready",
+          },
+        };
+      },
+      oidcConfigVerifier: async () => ({ status: "ready" }),
+      provisioner: async () => ({ status: "ready" }),
+      handoffGenerator: async () => ({ status: "ready" }),
+      readinessAuditor: async () => ({
+        status: "ready",
+        summary: { total: 18, passed: 18, actionRequired: 0 },
+      }),
+      bundleCreator: async () => ({
+        status: "ready",
+        summary: { total: 13, present: 13, missing: 0, passed: 13, actionRequired: 0, secretScanFailed: 0 },
+      }),
+    });
+
+    expect(calls).toEqual([
+      [
+        "gap-evidence-preflight",
+        expect.objectContaining({
+          mode: "all",
+          envFilePath: ".env.enterprise-smoke.local",
+          restoreEnvFilePath: ".env.postgres-restore.local",
+          baseUrl: "https://aais.example.test",
+          releaseId: "aais-2026-07-01-rc1",
+          outputPath: paths.enterpriseGapEvidenceReportPath,
+          enterpriseOutputPath: paths.enterpriseReportPath,
+          restoreOutputPath: paths.postgresRestoreReportPath,
+          preflightOnly: true,
+        }),
+      ],
+      [
+        "env-template",
+        expect.objectContaining({
+          vercelEnvReportPath: paths.vercelEnvReportPath,
+          enterpriseGapEvidenceReportPath: paths.enterpriseGapEvidenceReportPath,
+          outputPath: paths.privateEnvTemplatePath,
+          reportPath: paths.privateEnvTemplateReportPath,
+        }),
+      ],
+    ]);
+    expect(report.status).toBe("action-required");
+    expect(report.sequence).toContainEqual({
+      name: "gap-evidence-preflight",
+      status: "preflight-ready",
+      outputPath: paths.enterpriseGapEvidenceReportPath,
+    });
   });
 
   it("continues the redacted refresh chain when the online enterprise gate throws", async () => {
@@ -428,6 +595,10 @@ describe("AAIS release evidence refresh workflow", () => {
       },
       restoreTemplateGenerator: async () => {
         calls.push("restore-template");
+        return { status: "template-created" };
+      },
+      gapTemplateGenerator: async () => {
+        calls.push("gap-template");
         return { status: "template-created" };
       },
       oidcConfigVerifier: async () => {
@@ -457,9 +628,9 @@ describe("AAIS release evidence refresh workflow", () => {
 
     expect(calls).toEqual([
       "enterprise-release",
-      "env-template",
       "restore-template",
-      "oidc-config-dry-run",
+      "gap-template",
+      "env-template",
       "provision-dry-run",
       "handoff",
       "readiness-audit",
@@ -470,9 +641,9 @@ describe("AAIS release evidence refresh workflow", () => {
       sequence: [
         { name: "enterprise-release", status: "failed", outputPath: paths.releaseCheckReportPath },
         { name: "source-provenance", status: "unknown", outputPath: paths.sourceProvenanceReportPath },
-        { name: "env-template", status: "template-created", outputPath: paths.privateEnvTemplateReportPath },
         { name: "restore-template", status: "template-created", outputPath: paths.postgresRestoreTemplateReportPath },
-        { name: "oidc-config-dry-run", status: "failed", outputPath: paths.oidcConfigReportPath },
+        { name: "gap-template", status: "template-created", outputPath: paths.enterpriseGapTemplateReportPath },
+        { name: "env-template", status: "template-created", outputPath: paths.privateEnvTemplateReportPath },
         { name: "provision-dry-run", status: "failed", outputPath: paths.provisionReportPath },
         { name: "handoff", status: "action-required", outputPath: paths.handoffReportPath },
         { name: "readiness-audit", status: "action-required", outputPath: paths.readinessAuditReportPath },
@@ -495,6 +666,9 @@ function getPaths() {
     privateEnvTemplateReportPath: path.join(tempDir, "private-env-template-report.json"),
     postgresRestoreTemplatePath: path.join(tempDir, "restore-template.env"),
     postgresRestoreTemplateReportPath: path.join(tempDir, "restore-template-report.json"),
+    enterpriseGapTemplatePath: path.join(tempDir, "gap-template.env"),
+    enterpriseGapTemplateReportPath: path.join(tempDir, "gap-template-report.json"),
+    enterpriseGapEvidenceReportPath: path.join(tempDir, "gap-evidence.json"),
     oidcConfigReportPath: path.join(tempDir, "oidc-config.json"),
     provisionReportPath: path.join(tempDir, "provision.json"),
     handoffReportPath: path.join(tempDir, "handoff.json"),

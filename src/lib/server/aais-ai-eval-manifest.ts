@@ -20,6 +20,49 @@ type AaisAiEvalManifest = {
     prompts: "summarized";
     secrets: "omitted";
   };
+  agentEvidence: {
+    contractVersion: "aais-a1-a4-ca-eval-v2";
+    requiredAgents: string[];
+    coveredAgents: string[];
+    requiredCaModules: string[];
+    coveredCaModules: string[];
+    coverage: Record<string, {
+      label: string;
+      responsibility: string;
+      sampleIds: string[];
+      caModules: string[];
+      complete: boolean;
+    }>;
+    caBackgroundIncluded: boolean;
+    rawPromptsStored: boolean;
+    rawOutputsStored: boolean;
+    complete: boolean;
+  };
+};
+
+const requiredAgentIds = ["A1", "A2", "A3", "A4"];
+const requiredCaModules = ["Modelling", "Coaching", "Scaffolding", "Fading", "Articulation", "Reflection"];
+const requiredAgentContracts = {
+  A1: {
+    label: "导学智能体",
+    caModules: ["Scaffolding", "Fading"],
+    responsibility: "frontend-guide-scaffolding",
+  },
+  A2: {
+    label: "专家智能体",
+    caModules: ["Modelling", "Coaching"],
+    responsibility: "frontend-expert-modelling-coaching",
+  },
+  A3: {
+    label: "监督智能体",
+    caModules: ["Scaffolding"],
+    responsibility: "backend-supervision-a1-signal",
+  },
+  A4: {
+    label: "反思智能体",
+    caModules: ["Articulation", "Reflection"],
+    responsibility: "backend-reflection-articulation",
+  },
 };
 
 export function verifyAaisAiEvalManifest(input: {
@@ -55,6 +98,7 @@ export function verifyAaisAiEvalManifest(input: {
     || manifest.blockedCount !== 0
     || manifest.redaction.prompts !== "summarized"
     || manifest.redaction.secrets !== "omitted"
+    || !isCompleteAgentEvidence(manifest.agentEvidence)
   ) {
     return {
       status: "mismatch",
@@ -64,6 +108,53 @@ export function verifyAaisAiEvalManifest(input: {
   return {
     status: "verified",
   };
+}
+
+function isCompleteAgentEvidence(value: AaisAiEvalManifest["agentEvidence"]) {
+  return Boolean(
+    value
+      && value.contractVersion === "aais-a1-a4-ca-eval-v2"
+      && value.complete === true
+      && value.caBackgroundIncluded === true
+      && value.rawPromptsStored === false
+      && value.rawOutputsStored === false
+      && Array.isArray(value.requiredAgents)
+      && Array.isArray(value.coveredAgents)
+      && Array.isArray(value.requiredCaModules)
+      && Array.isArray(value.coveredCaModules)
+      && requiredAgentIds.every((agentId) => value.requiredAgents.includes(agentId))
+      && requiredAgentIds.every((agentId) => value.coveredAgents.includes(agentId))
+      && requiredCaModules.every((module) => value.requiredCaModules.includes(module))
+      && requiredCaModules.every((module) => value.coveredCaModules.includes(module))
+      && hasCompleteAgentCoverage(value.coverage),
+  );
+}
+
+function hasCompleteAgentCoverage(value: AaisAiEvalManifest["agentEvidence"]["coverage"]) {
+  return Object.entries(requiredAgentContracts).every(([agentId, contract]) => {
+    const coverage = value?.[agentId];
+    return Boolean(
+      coverage
+        && coverage.label === contract.label
+        && coverage.responsibility === contract.responsibility
+        && Array.isArray(coverage.sampleIds)
+        && coverage.sampleIds.some(isSafeSampleId)
+        && Array.isArray(coverage.caModules)
+        && arraysEqual(
+          contract.caModules.filter((module) => coverage.caModules.includes(module)),
+          contract.caModules,
+        )
+        && coverage.complete === true,
+    );
+  });
+}
+
+function arraysEqual(left: string[], right: string[]) {
+  return left.length === right.length && left.every((item, index) => item === right[index]);
+}
+
+function isSafeSampleId(value: unknown) {
+  return /^[A-Za-z0-9][A-Za-z0-9._:-]{1,80}$/.test(String(value ?? "").trim());
 }
 
 function readConfiguredManifest() {
@@ -103,6 +194,10 @@ function isValidManifestShape(value: Partial<AaisAiEvalManifest> | null): value 
       && typeof value.sampleCount === "number"
       && typeof value.blockedCount === "number"
       && value.redaction?.prompts === "summarized"
-      && value.redaction?.secrets === "omitted",
+      && value.redaction?.secrets === "omitted"
+      && typeof value.agentEvidence === "object"
+      && value.agentEvidence !== null
+      && typeof value.agentEvidence.coverage === "object"
+      && value.agentEvidence.coverage !== null,
   );
 }

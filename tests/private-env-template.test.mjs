@@ -45,7 +45,7 @@ describe("AAIS private env template generator", () => {
       reportPath,
       baseUrl: "https://aais-six.vercel.app",
       environment: "production",
-      releaseId: "aais-2026-06-30-rc-live-ai-deepseek-v4-flash",
+      releaseId: "aais-2026-06-30-rc-live-ai-deepseek-v4-pro",
       deploymentGitCommit: "0123456789abcdef0123456789abcdef01234567",
       now: new Date("2026-06-30T07:30:00.000Z"),
     });
@@ -95,12 +95,13 @@ describe("AAIS private env template generator", () => {
           "AAIS_OIDC_REDIRECT_URI",
           "AAIS_OIDC_TEACHER_GROUPS",
         ],
+        localEvidenceOnlyVariables: [],
         validationOnlyVariables: [],
       },
       suggestions: {
         storageProvider: "neon",
         canonicalStorageEnv: "AAIS_DATABASE_URL",
-        releaseId: "aais-2026-06-30-rc-live-ai-deepseek-v4-flash",
+        releaseId: "aais-2026-06-30-rc-live-ai-deepseek-v4-pro",
         deploymentGitCommit: "0123456789abcdef0123456789abcdef01234567",
         oidcRedirectUri: "https://aais-six.vercel.app/api/auth/oidc/callback",
         oidc: {
@@ -127,8 +128,8 @@ describe("AAIS private env template generator", () => {
         },
       },
       nextCommands: [
-        `npm run provision:vercel-env -- --env-file .env.production.local --report ${vercelEnvReportPath} --release-id aais-2026-06-30-rc-live-ai-deepseek-v4-flash --deployment-git-commit 0123456789abcdef0123456789abcdef01234567 --output output/aais-vercel-env-provision-dry-run-latest.json`,
-        `npm run provision:vercel-env -- --env-file .env.production.local --report ${vercelEnvReportPath} --release-id aais-2026-06-30-rc-live-ai-deepseek-v4-flash --deployment-git-commit 0123456789abcdef0123456789abcdef01234567 --apply --output output/aais-vercel-env-provision-apply-latest.json`,
+        `npm run provision:vercel-env -- --env-file .env.production.local --report ${vercelEnvReportPath} --release-id aais-2026-06-30-rc-live-ai-deepseek-v4-pro --deployment-git-commit 0123456789abcdef0123456789abcdef01234567 --output output/aais-vercel-env-provision-dry-run-latest.json`,
+        `npm run provision:vercel-env -- --env-file .env.production.local --report ${vercelEnvReportPath} --release-id aais-2026-06-30-rc-live-ai-deepseek-v4-pro --deployment-git-commit 0123456789abcdef0123456789abcdef01234567 --apply --output output/aais-vercel-env-provision-apply-latest.json`,
       ],
       redaction: {
         secrets: "omitted",
@@ -142,12 +143,13 @@ describe("AAIS private env template generator", () => {
     expect(template).toContain("# Copy this template to .env.production.local, then fill the copy with real values.");
     expect(template).toContain("# Provider placeholders intentionally fail closed in provision:vercel-env.");
     expect(template).toContain("# Some OIDC names may already exist in Vercel; they are included here for local verify:oidc-config only.");
+    expect(template).toContain("# Live AI eval names may be included for local evidence only; fill them only in the private env file.");
     expect(template).toContain("# provision:vercel-env applies only names requested by the Vercel env report.");
     expect(template).toContain("# Suggested AAIS_OIDC_REDIRECT_URI: https://aais-six.vercel.app/api/auth/oidc/callback");
     expect(template).toContain("# Register this exact OIDC callback URL with the IdP: https://aais-six.vercel.app/api/auth/oidc/callback");
     expect(template).toContain("# Educator role mapping can use any one of AAIS_OIDC_TEACHER_GROUPS, AAIS_OIDC_TEACHER_EMAILS, AAIS_OIDC_ADMIN_GROUPS, or AAIS_OIDC_ADMIN_EMAILS.");
     expect(template).toContain("# Optional explicit OIDC endpoints are all-or-none: set AAIS_OIDC_AUTHORIZATION_ENDPOINT, AAIS_OIDC_TOKEN_ENDPOINT, and AAIS_OIDC_JWKS_URI together, or omit all three for issuer discovery.");
-    expect(template).toContain("AAIS_RELEASE_ID=aais-2026-06-30-rc-live-ai-deepseek-v4-flash");
+    expect(template).toContain("AAIS_RELEASE_ID=aais-2026-06-30-rc-live-ai-deepseek-v4-pro");
     expect(template).toContain("AAIS_DEPLOYMENT_GIT_COMMIT_SHA=0123456789abcdef0123456789abcdef01234567");
     expect(template).toContain("AAIS_DATABASE_URL=<REQUIRED:NEON_POSTGRES_URL>");
     expect(template).toContain("AAIS_OIDC_ISSUER=<REQUIRED:OIDC_ISSUER>");
@@ -212,6 +214,106 @@ describe("AAIS private env template generator", () => {
     const template = await readFile(outputPath, "utf8");
     expect(template).toContain("AAIS_OIDC_REDIRECT_URI=https://www.aais.site/api/auth/oidc/callback");
     expect(template).toContain("# provision:vercel-env applies only names requested by the Vercel env report.");
+  });
+
+  it("adds live AI eval inputs from enterprise gap preflight as local evidence-only variables", async () => {
+    const vercelEnvReportPath = await writeJson("vercel-env.json", {
+      schemaVersion: 1,
+      status: "failed",
+      required: {
+        missing: [
+          "AAIS_OIDC_ISSUER",
+          "AAIS_OIDC_CLIENT_ID",
+          "AAIS_OIDC_CLIENT_SECRET",
+          "AAIS_OIDC_TEACHER_GROUPS",
+        ],
+      },
+    });
+    const enterpriseGapEvidenceReportPath = await writeJson("gap-evidence.json", {
+      schemaVersion: 1,
+      status: "action-required",
+      mode: "all",
+      preflight: {
+        status: "action-required",
+        required: {
+          missing: [
+            "AAIS_VERIFY_OIDC_CALLBACK_URL",
+            "AAIS_VERIFY_OIDC_STATE_COOKIE",
+            "AAIS_AI_ENDPOINT",
+            "AAIS_AI_API_KEY",
+            "AAIS_AI_MODEL",
+            "AAIS_AI_EVAL_VERSION",
+          ],
+          placeholders: ["AAIS_RESTORE_DATABASE_URL"],
+          invalid: ["AAIS_RESTORE_TARGET_PURPOSE"],
+        },
+      },
+    });
+    const outputPath = path.join(tempDir, "template.env");
+    const reportPath = path.join(tempDir, "report.json");
+
+    const report = await generateAaisPrivateEnvTemplate({
+      vercelEnvReportPath,
+      enterpriseGapEvidenceReportPath,
+      outputPath,
+      reportPath,
+      baseUrl: "https://www.aais.site",
+      releaseId: "aais-2026-07-01-rc1",
+      now: new Date("2026-07-01T07:30:00.000Z"),
+    });
+
+    expect(report.sourceReports).toEqual({
+      vercelEnv: vercelEnvReportPath,
+      enterpriseGapEvidence: enterpriseGapEvidenceReportPath,
+    });
+    expect(report.template.provisionVariables).toEqual([
+      "AAIS_OIDC_ISSUER",
+      "AAIS_OIDC_CLIENT_ID",
+      "AAIS_OIDC_CLIENT_SECRET",
+      "AAIS_OIDC_TEACHER_GROUPS",
+    ]);
+    expect(report.template.localEvidenceOnlyVariables).toEqual([
+      "AAIS_AI_ENDPOINT",
+      "AAIS_AI_API_KEY",
+      "AAIS_AI_MODEL",
+      "AAIS_AI_EVAL_VERSION",
+    ]);
+    expect(report.template.validationOnlyVariables).toEqual(["AAIS_OIDC_REDIRECT_URI"]);
+    expect(report.template.variables).toEqual([
+      "AAIS_OIDC_ISSUER",
+      "AAIS_OIDC_CLIENT_ID",
+      "AAIS_OIDC_CLIENT_SECRET",
+      "AAIS_OIDC_TEACHER_GROUPS",
+      "AAIS_AI_ENDPOINT",
+      "AAIS_AI_API_KEY",
+      "AAIS_AI_MODEL",
+      "AAIS_AI_EVAL_VERSION",
+      "AAIS_OIDC_REDIRECT_URI",
+    ]);
+    expect(report.suggestions.liveAiEval).toMatchObject({
+      envFilePath: ".env.production.local",
+      requiredNames: [
+        "AAIS_AI_ENDPOINT",
+        "AAIS_AI_API_KEY",
+        "AAIS_AI_MODEL",
+        "AAIS_AI_EVAL_VERSION",
+      ],
+      preflightCommand:
+        "npm run verify:enterprise-gaps -- --mode live-ai-eval --preflight-only --ai-eval-env-file .env.production.local --output output/aais-enterprise-gap-evidence-latest.json --release-id aais-2026-07-01-rc1",
+      evaluationCommand:
+        "npm run ai:evaluate -- --env-file .env.production.local --output output/aais-ai-eval-deepseek-v4-pro.json --env-json-output output/aais-ai-eval-inline-latest.json --eval-version <AAIS_AI_EVAL_VERSION> --release-id aais-2026-07-01-rc1",
+    });
+
+    const template = await readFile(outputPath, "utf8");
+    expect(template).toContain("AAIS_AI_ENDPOINT=<REQUIRED:AI_ENDPOINT>");
+    expect(template).toContain("AAIS_AI_API_KEY=<REQUIRED:AI_API_KEY>");
+    expect(template).toContain("AAIS_AI_MODEL=<REQUIRED:AI_MODEL>");
+    expect(template).toContain("AAIS_AI_EVAL_VERSION=<REQUIRED:AI_EVAL_VERSION>");
+    expect(template).toContain("AAIS_OIDC_REDIRECT_URI=https://www.aais.site/api/auth/oidc/callback");
+    expect(template).not.toContain("AAIS_VERIFY_OIDC_CALLBACK_URL");
+    expect(template).not.toContain("AAIS_VERIFY_OIDC_STATE_COOKIE");
+    expect(template).not.toContain("AAIS_RESTORE_DATABASE_URL");
+    expect(JSON.parse(await readFile(reportPath, "utf8"))).toEqual(report);
   });
 
   it("adds full OIDC validation shape when only one OIDC value is missing", async () => {

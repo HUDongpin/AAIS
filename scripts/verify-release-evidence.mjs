@@ -13,11 +13,38 @@ const requiredEnterpriseChecks = [
   ["oidc-start", "oidcStart"],
   ["oidc-callback", "oidcCallback"],
   ["sso-only-mode", "ssoOnlyMode"],
+  ["trial-learning-session", "trialLearningSession"],
+  ["trial-login-throttle", "trialLoginThrottle"],
 ];
 const defaultVercelConfigPath = "vercel.json";
 const defaultSourceProvenanceReportPath = "output/aais-source-provenance-latest.json";
 const defaultVercelDeploymentReportPath = "output/aais-vercel-deployment-report-latest.json";
 const lrsOutboxCronPath = "/api/learning/lrs/outbox/flush";
+const aiEvalAgentEvidenceContractVersion = "aais-a1-a4-ca-eval-v2";
+const requiredAiEvalAgentIds = ["A1", "A2", "A3", "A4"];
+const requiredAiEvalCaModules = ["Modelling", "Coaching", "Scaffolding", "Fading", "Articulation", "Reflection"];
+const requiredAiEvalAgentContracts = {
+  A1: {
+    label: "导学智能体",
+    caModules: ["Scaffolding", "Fading"],
+    responsibility: "frontend-guide-scaffolding",
+  },
+  A2: {
+    label: "专家智能体",
+    caModules: ["Modelling", "Coaching"],
+    responsibility: "frontend-expert-modelling-coaching",
+  },
+  A3: {
+    label: "监督智能体",
+    caModules: ["Scaffolding"],
+    responsibility: "backend-supervision-a1-signal",
+  },
+  A4: {
+    label: "反思智能体",
+    caModules: ["Articulation", "Reflection"],
+    responsibility: "backend-reflection-articulation",
+  },
+};
 
 export async function verifyAaisReleaseEvidence(input = {}) {
   const checkedAt = (input.now ?? new Date()).toISOString();
@@ -35,6 +62,9 @@ export async function verifyAaisReleaseEvidence(input = {}) {
   const expectedDatabaseProvider = readDatabaseProvider(
     input.databaseProvider ?? process.env.AAIS_RELEASE_DATABASE_PROVIDER,
   );
+  const expectedAuthMode = readAuthMode(
+    input.authMode ?? process.env.AAIS_RELEASE_AUTH_MODE ?? process.env.AAIS_VERCEL_ENV_AUTH_MODE,
+  );
   const sourceProvenance = await verifySourceProvenanceReport(
     input.sourceProvenanceReportPath
       ?? process.env.AAIS_RELEASE_SOURCE_PROVENANCE_REPORT_PATH
@@ -44,7 +74,7 @@ export async function verifyAaisReleaseEvidence(input = {}) {
   );
   const vercelEnv = await verifyVercelEnvReport(
     input.vercelEnvReportPath ?? process.env.AAIS_RELEASE_VERCEL_ENV_REPORT_PATH,
-    { now, maxAgeHours },
+    { now, maxAgeHours, expectedAuthMode },
   );
   const enterprise = await verifyEnterpriseReport(
     input.enterpriseReportPath ?? process.env.AAIS_RELEASE_ENTERPRISE_REPORT_PATH,
@@ -54,6 +84,7 @@ export async function verifyAaisReleaseEvidence(input = {}) {
       expectedDeploymentUrl,
       expectedDeploymentPlatform,
       expectedDatabaseProvider,
+      expectedAuthMode,
       vercelEnvCheckedAt: vercelEnv.checkedAt,
     },
   );
@@ -298,7 +329,7 @@ async function verifyVercelEnvReport(filePath, freshnessInput) {
   }
 
   const report = artifact.value;
-  const target = getVercelEnvTargetStatus(report?.target);
+  const target = getVercelEnvTargetStatus(report?.target, freshnessInput.expectedAuthMode);
   const missing = getSafeEnvNames(report?.required?.missing);
   const categories = getSafeEnvCategories(report?.categories);
   const categoriesEmpty = Object.values(categories).every((items) => items.length === 0);
@@ -363,31 +394,38 @@ async function verifyEnterpriseReport(filePath, freshnessInput) {
   const releaseIdentityEvidence = getReadinessReleaseIdentityEvidence(readinessCheck?.details);
   const lrsOutboxEvidence = getLrsOutboxEvidence(readinessCheck?.details);
   const lrsHealthEvidence = getLrsHealthEvidence(checkDetails.get("lrs-health"));
-  const a2MonitoringEvidence = getA2MonitoringEvidence(readinessCheck?.details);
+  const agentEvidence = getAgentEvidence(readinessCheck?.details);
   const legalPagesEvidence = getLegalPagesEvidence(checkDetails.get("legal-pages"));
   const ssoOnlyRuntimeEvidence = getSsoOnlyRuntimeEvidence(checkDetails.get("sso-only-mode"));
+  const expectedAuthMode = freshnessInput.expectedAuthMode === "sso-only" ? "sso-only" : "trial";
+  const ssoOnlyRequired = expectedAuthMode === "sso-only";
   const requiredChecks = Object.fromEntries(
     requiredEnterpriseChecks.map(([name, field]) => [field, checks.get(name) === "passed"]),
   );
   requiredChecks.readiness = requiredChecks.readiness
-    && oidcRoleMappingEvidence.complete
+    && (!ssoOnlyRequired || oidcRoleMappingEvidence.complete)
     && releaseIdentityEvidence.complete;
   requiredChecks.lrsHealth = requiredChecks.lrsHealth
     && lrsOutboxEvidence.complete
     && lrsHealthEvidence.complete;
-  requiredChecks.a2Monitoring = a2MonitoringEvidence.complete;
+  requiredChecks.agentEvidence = agentEvidence.complete;
+  requiredChecks.a3Supervision = agentEvidence.complete;
+  requiredChecks.a2Monitoring = agentEvidence.complete;
   requiredChecks.legalPages = requiredChecks.legalPages
     && legalPagesEvidence.complete;
   requiredChecks.cohortAnalytics = requiredChecks.cohortAnalytics
     && cohortAnalyticsEvidence.aggregateProofComplete
     && cohortAnalyticsEvidence.exportProofComplete
-    && cohortAnalyticsEvidence.ssoOnlyEducatorProofComplete;
-  requiredChecks.oidcStart = requiredChecks.oidcStart
-    && oidcStartEvidence.completeAuthorizationCodeRequest;
-  requiredChecks.oidcCallback = requiredChecks.oidcCallback
-    && oidcCallbackEvidence.learningSessionHandoffComplete;
-  requiredChecks.ssoOnlyMode = requiredChecks.ssoOnlyMode
-    && ssoOnlyRuntimeEvidence.complete;
+    && (!ssoOnlyRequired || cohortAnalyticsEvidence.ssoOnlyEducatorProofComplete);
+  requiredChecks.oidcStart = ssoOnlyRequired
+    ? requiredChecks.oidcStart && oidcStartEvidence.completeAuthorizationCodeRequest
+    : checks.get("oidc-start") === "skipped" || requiredChecks.oidcStart;
+  requiredChecks.oidcCallback = ssoOnlyRequired
+    ? requiredChecks.oidcCallback && oidcCallbackEvidence.learningSessionHandoffComplete
+    : checks.get("oidc-callback") === "skipped" || requiredChecks.oidcCallback;
+  requiredChecks.ssoOnlyMode = ssoOnlyRequired
+    ? requiredChecks.ssoOnlyMode && ssoOnlyRuntimeEvidence.complete
+    : checks.get("sso-only-mode") === "skipped" || requiredChecks.ssoOnlyMode;
   const redactionOk = report?.redaction?.secrets === "omitted"
     && report?.redaction?.cookies === "attributes-only";
   const freshness = getFreshness(report?.checkedAt, freshnessInput);
@@ -413,6 +451,18 @@ async function verifyEnterpriseReport(filePath, freshnessInput) {
   };
   ssoOnlyEvidence.trialChecksSkipped = ssoOnlyEvidence.trialLearningSessionSkipped
     && ssoOnlyEvidence.trialLoginThrottleSkipped;
+  const trialAuthEvidence = {
+    trialLearningSessionPassed: optionalChecks.trialLearningSession === "passed",
+    trialLoginThrottlePassed: optionalChecks.trialLoginThrottle === "passed",
+  };
+  trialAuthEvidence.trialChecksPassed = trialAuthEvidence.trialLearningSessionPassed
+    && trialAuthEvidence.trialLoginThrottlePassed;
+  requiredChecks.trialLearningSession = ssoOnlyRequired
+    ? ssoOnlyEvidence.trialLearningSessionSkipped
+    : trialAuthEvidence.trialLearningSessionPassed;
+  requiredChecks.trialLoginThrottle = ssoOnlyRequired
+    ? ssoOnlyEvidence.trialLoginThrottleSkipped
+    : trialAuthEvidence.trialLoginThrottlePassed;
   const status = report?.status === "passed"
     && redactionOk
     && freshness.withinMaxAge
@@ -423,7 +473,7 @@ async function verifyEnterpriseReport(filePath, freshnessInput) {
     && storageProvider.matchesExpected
     && evidenceOrder.enterpriseAfterVercelEnv
     && Object.values(requiredChecks).every(Boolean)
-    && ssoOnlyEvidence.trialChecksSkipped
+    && (ssoOnlyRequired ? ssoOnlyEvidence.trialChecksSkipped : trialAuthEvidence.trialChecksPassed)
     ? "passed"
     : "failed";
 
@@ -444,13 +494,16 @@ async function verifyEnterpriseReport(filePath, freshnessInput) {
     releaseIdentityEvidence,
     lrsOutboxEvidence,
     lrsHealthEvidence,
-    a2MonitoringEvidence,
+    agentEvidence,
+    a3SupervisionEvidence: agentEvidence,
+    a2MonitoringEvidence: agentEvidence,
     legalPagesEvidence,
     oidcStartEvidence,
     oidcCallbackEvidence,
     ssoOnlyRuntimeEvidence,
     optionalChecks,
     ssoOnlyEvidence,
+    trialAuthEvidence,
     aiReadiness: normalizeAiReadiness(readinessCheck?.details),
     redaction: {
       secrets: redactionOk ? "omitted" : "invalid",
@@ -479,6 +532,7 @@ async function verifyAiEvalManifest(filePath, aiReadiness, expectedReleaseId, fr
   const secretScan = artifact.secretScan;
   const release = getReleaseStatus(manifest?.release, expectedReleaseId);
   const modelFingerprint = getAiModelFingerprint(manifest?.model);
+  const agentEvidence = getAiEvalAgentEvidence(manifest?.agentEvidence);
   const enterpriseModelFingerprint = aiReadiness?.modelFingerprint ?? null;
   const modelFingerprintStatus = {
     value: modelFingerprint,
@@ -495,6 +549,7 @@ async function verifyAiEvalManifest(filePath, aiReadiness, expectedReleaseId, fr
     && sampleCount > 0
     && blockedCount === 0
     && compatibleWithEnterpriseReadiness
+    && agentEvidence.complete
     && modelFingerprintStatus.matchesEnterprise
     && freshness.withinMaxAge
     && secretScan.status === "passed"
@@ -511,6 +566,7 @@ async function verifyAiEvalManifest(filePath, aiReadiness, expectedReleaseId, fr
     sampleCount: Number.isFinite(sampleCount) ? sampleCount : 0,
     blockedCount: Number.isFinite(blockedCount) ? blockedCount : 0,
     compatibleWithEnterpriseReadiness,
+    agentEvidence,
     modelFingerprint: modelFingerprintStatus,
     freshness,
     secretScan,
@@ -520,6 +576,90 @@ async function verifyAiEvalManifest(filePath, aiReadiness, expectedReleaseId, fr
       secrets: manifest?.redaction?.secrets === "omitted" ? "omitted" : "invalid",
     },
   };
+}
+
+function getAiEvalAgentEvidence(value) {
+  const requiredAgents = Array.isArray(value?.requiredAgents)
+    ? requiredAiEvalAgentIds.filter((agentId) => value.requiredAgents.includes(agentId))
+    : [];
+  const coveredAgents = Array.isArray(value?.coveredAgents)
+    ? requiredAiEvalAgentIds.filter((agentId) => value.coveredAgents.includes(agentId))
+    : [];
+  const requiredCaModules = Array.isArray(value?.requiredCaModules)
+    ? requiredAiEvalCaModules.filter((module) => value.requiredCaModules.includes(module))
+    : [];
+  const coveredCaModules = Array.isArray(value?.coveredCaModules)
+    ? requiredAiEvalCaModules.filter((module) => value.coveredCaModules.includes(module))
+    : [];
+  const coverage = getAiEvalAgentCoverage(value?.coverage);
+  const complete = value?.contractVersion === aiEvalAgentEvidenceContractVersion
+    && value?.complete === true
+    && value?.caBackgroundIncluded === true
+    && value?.rawPromptsStored === false
+    && value?.rawOutputsStored === false
+    && requiredAgents.length === requiredAiEvalAgentIds.length
+    && coveredAgents.length === requiredAiEvalAgentIds.length
+    && requiredCaModules.length === requiredAiEvalCaModules.length
+    && coveredCaModules.length === requiredAiEvalCaModules.length
+    && coverage.complete;
+
+  return {
+    contractVersion: value?.contractVersion === aiEvalAgentEvidenceContractVersion
+      ? aiEvalAgentEvidenceContractVersion
+      : "invalid",
+    requiredAgents,
+    coveredAgents,
+    requiredCaModules,
+    coveredCaModules,
+    coverage: coverage.value,
+    coverageComplete: coverage.complete,
+    caBackgroundIncluded: value?.caBackgroundIncluded === true,
+    rawPromptsStored: value?.rawPromptsStored === false ? false : null,
+    rawOutputsStored: value?.rawOutputsStored === false ? false : null,
+    complete,
+  };
+}
+
+function getAiEvalAgentCoverage(value) {
+  const sanitized = Object.fromEntries(
+    Object.entries(requiredAiEvalAgentContracts).map(([agentId, contract]) => {
+      const raw = value?.[agentId] ?? {};
+      const sampleIds = getSafeAiEvalSampleIds(raw.sampleIds);
+      const caModules = Array.isArray(raw.caModules)
+        ? contract.caModules.filter((module) => raw.caModules.includes(module))
+        : [];
+      const label = raw.label === contract.label ? contract.label : "invalid";
+      const responsibility = raw.responsibility === contract.responsibility
+        ? contract.responsibility
+        : "invalid";
+      return [
+        agentId,
+        {
+          label,
+          responsibility,
+          sampleIds,
+          caModules,
+          complete: raw.complete === true
+            && label === contract.label
+            && responsibility === contract.responsibility
+            && sampleIds.length > 0
+            && arraysEqual(caModules, contract.caModules),
+        },
+      ];
+    }),
+  );
+  return {
+    value: sanitized,
+    complete: Object.values(sanitized).every((agent) => agent.complete),
+  };
+}
+
+function getSafeAiEvalSampleIds(value) {
+  return Array.isArray(value)
+    ? value
+      .map((sampleId) => String(sampleId ?? "").trim())
+      .filter((sampleId) => /^[A-Za-z0-9][A-Za-z0-9._:-]{1,80}$/.test(sampleId))
+    : [];
 }
 
 async function verifyPostgresRestoreReport(filePath, expectedReleaseId, expectedDatabaseProvider, freshnessInput) {
@@ -534,6 +674,7 @@ async function verifyPostgresRestoreReport(filePath, expectedReleaseId, expected
   const targetPurpose = restore?.target?.purpose === "restored-staging" ? "restored-staging" : "invalid";
   const tablePresent = checks.tablePresent === true;
   const lrsOutboxTablePresent = checks.lrsOutboxTablePresent === true;
+  const smokeInsertOnly = checks.smokeInsertOnly === true;
   const smokeInserted = checks.smokeInserted === true;
   const smokeReadBack = checks.smokeReadBack === true;
   const smokeDeleted = checks.smokeDeleted === true;
@@ -549,6 +690,7 @@ async function verifyPostgresRestoreReport(filePath, expectedReleaseId, expected
     && !sameAsSource
     && tablePresent
     && lrsOutboxTablePresent
+    && smokeInsertOnly
     && smokeInserted
     && smokeReadBack
     && smokeDeleted
@@ -572,6 +714,7 @@ async function verifyPostgresRestoreReport(filePath, expectedReleaseId, expected
     sameAsSource,
     tablePresent,
     lrsOutboxTablePresent,
+    smokeInsertOnly,
     smokeInserted,
     smokeReadBack,
     smokeDeleted,
@@ -670,11 +813,16 @@ function getCohortAnalyticsEvidence(details = {}) {
     authSource,
     loginStatus,
     authSessionEstablished: details?.authSessionEstablished === true,
+    educatorSessionRole: readSessionRole(details?.educatorSessionRole),
+    educatorSessionRoleEvidence: details?.educatorSessionRoleEvidence === true,
+    expectedSessionRole: readSessionRole(details?.expectedSessionRole),
+    educatorSessionRoleMatchesExpected: details?.educatorSessionRoleMatchesExpected === true,
     educatorRoleAccepted: details?.educatorRoleAccepted === true,
     analyticsStatus,
     filtersApplied: details?.filtersApplied === true,
     learnerRows,
     learnerKeysPseudonymous: details?.learnerKeysPseudonymous === true,
+    sessionKeysPseudonymous: details?.sessionKeysPseudonymous === true,
     aggregateCountsPresent: details?.aggregateCountsPresent === true,
     riskBreakdownPresent: details?.riskBreakdownPresent === true,
     learnerRiskLevelsPresent: details?.learnerRiskLevelsPresent === true,
@@ -689,6 +837,7 @@ function getCohortAnalyticsEvidence(details = {}) {
     exportFiltersApplied: details?.exportFiltersApplied === true,
     exportLearnerRowsMatch: details?.exportLearnerRowsMatch === true,
     exportLearnerKeysPseudonymous: details?.exportLearnerKeysPseudonymous === true,
+    exportSessionKeysPseudonymous: details?.exportSessionKeysPseudonymous === true,
     exportPrivacyPseudonymous: details?.exportPrivacyPseudonymous === true,
     exportNoRawLearnerText: details?.exportNoRawLearnerText === true,
     exportSecrets: details?.exportSecrets === "redacted" ? "redacted" : "unknown",
@@ -702,13 +851,16 @@ function getCohortAnalyticsEvidence(details = {}) {
     && evidence.exportFiltersApplied
     && evidence.exportLearnerRowsMatch
     && evidence.exportLearnerKeysPseudonymous
+    && evidence.exportSessionKeysPseudonymous
     && evidence.exportPrivacyPseudonymous
     && evidence.exportNoRawLearnerText
     && evidence.exportSecrets === "redacted";
   return {
     ...evidence,
     ssoOnlyEducatorProofComplete: evidence.authSource === "oidc-callback"
-      && evidence.authSessionEstablished,
+      && evidence.authSessionEstablished
+      && evidence.educatorSessionRoleEvidence
+      && evidence.educatorSessionRoleMatchesExpected,
     exportProofComplete,
     aggregateProofComplete: authProofComplete
       && evidence.educatorRoleAccepted
@@ -717,6 +869,7 @@ function getCohortAnalyticsEvidence(details = {}) {
       && Number.isInteger(evidence.learnerRows)
       && evidence.learnerRows >= 0
       && evidence.learnerKeysPseudonymous
+      && evidence.sessionKeysPseudonymous
       && evidence.aggregateCountsPresent
       && evidence.riskBreakdownPresent
       && evidence.learnerRiskLevelsPresent
@@ -815,6 +968,10 @@ function getOidcCallbackEvidence(details) {
     setCookieDoesNotLeakCallbackUrl: details?.setCookieLeaksCallbackUrl === false,
     learningSessionStatus: details?.learningSessionStatus === 200 ? 200 : null,
     learningSessionReadable: details?.learningSessionReadable === true,
+    learningSessionRole: readSessionRole(details?.learningSessionRole),
+    learningSessionEducatorRole: details?.learningSessionEducatorRole === true,
+    expectedSessionRole: readSessionRole(details?.expectedSessionRole),
+    learningSessionRoleMatchesExpected: details?.learningSessionRoleMatchesExpected === true,
   };
   return {
     ...evidence,
@@ -830,8 +987,15 @@ function getOidcCallbackEvidence(details) {
       && evidence.clearsStateCookie
       && evidence.setCookieDoesNotLeakCallbackUrl
       && evidence.learningSessionStatus === 200
-      && evidence.learningSessionReadable,
+      && evidence.learningSessionReadable
+      && evidence.learningSessionEducatorRole
+      && evidence.learningSessionRoleMatchesExpected,
   };
+}
+
+function readSessionRole(value) {
+  const role = String(value ?? "").trim().toLowerCase();
+  return role === "student" || role === "teacher" || role === "admin" ? role : "unknown";
 }
 
 function getSsoOnlyRuntimeEvidence(details = {}) {
@@ -905,7 +1069,16 @@ function getLrsHealthEvidence(details = {}) {
   };
 }
 
-function getA2MonitoringEvidence(details = {}) {
+function getAgentEvidence(details = {}) {
+  const responsibilities = getAgentResponsibilitiesEvidence(details?.agentEvidenceResponsibilities);
+  const agentContract = getAgentContractEvidence({
+    version: details?.agentEvidenceContractVersion,
+    requiredAgents: details?.agentEvidenceContractRequiredAgents,
+    caModules: details?.agentEvidenceContractCaModules,
+    roles: details?.agentEvidenceContractRoles,
+    xapiExtensions: details?.agentEvidenceContractXapiExtensions,
+    complete: details?.agentEvidenceContractComplete,
+  });
   const expectedTriggers = [
     "monitoring_pause_detected",
     "coaching_push",
@@ -915,44 +1088,74 @@ function getA2MonitoringEvidence(details = {}) {
     "low_progress_artifact_autosave",
     "artifact_regression_autosave",
   ];
-  const rawTriggers = Array.isArray(details?.a2MonitoringTriggers)
-    ? details.a2MonitoringTriggers
-    : [];
-  const rawSignals = Array.isArray(details?.a2MonitoringSignals)
-    ? details.a2MonitoringSignals
-    : [];
+  const rawTriggers = Array.isArray(details?.agentEvidenceTriggers)
+    ? details.agentEvidenceTriggers
+    : Array.isArray(details?.a3SupervisionTriggers)
+      ? details.a3SupervisionTriggers
+    : Array.isArray(details?.a2MonitoringTriggers)
+      ? details.a2MonitoringTriggers
+      : [];
+  const rawSignals = Array.isArray(details?.agentEvidenceSignals)
+    ? details.agentEvidenceSignals
+    : Array.isArray(details?.a3SupervisionSignals)
+      ? details.a3SupervisionSignals
+    : Array.isArray(details?.a2MonitoringSignals)
+      ? details.a2MonitoringSignals
+      : [];
   const triggers = expectedTriggers.filter((trigger) => rawTriggers.includes(trigger));
   const signals = expectedSignals.filter((signal) => rawSignals.includes(signal));
   const evidence = {
-    enabled: details?.a2MonitoringEnabled === true,
+    enabled: details?.agentEvidenceEnabled === true
+      || details?.a3SupervisionEnabled === true
+      || details?.a2MonitoringEnabled === true,
+    agentContract,
+    agentResponsibilities: responsibilities.value,
+    agentResponsibilitiesComplete: responsibilities.complete,
     triggers,
     signals,
-    coachingInterruption: details?.a2CoachingInterruption === "low" ? "low" : "unknown",
-    coachingCooldownSeconds: Number.isInteger(details?.a2CoachingCooldownSeconds)
-      ? details.a2CoachingCooldownSeconds
-      : null,
+    coachingInterruption: readAgentEvidenceValue(
+      details?.agentEvidenceCoachingInterruption,
+      details?.a2CoachingInterruption,
+    ) === "low" ? "low" : "unknown",
+    coachingCooldownSeconds: readIntegerValue(
+      details?.agentEvidenceCoachingCooldownSeconds,
+      details?.a2CoachingCooldownSeconds,
+    ),
     artifactRegression: {
-      minimumPreviousCharacters: Number.isInteger(details?.a2ArtifactRegressionMinimumPreviousCharacters)
-        ? details.a2ArtifactRegressionMinimumPreviousCharacters
-        : null,
-      minimumDropCharacters: Number.isInteger(details?.a2ArtifactRegressionMinimumDropCharacters)
-        ? details.a2ArtifactRegressionMinimumDropCharacters
-        : null,
-      rawTextExcluded: details?.a2ArtifactRegressionRawTextExcluded === true,
+      minimumPreviousCharacters: readIntegerValue(
+        details?.agentEvidenceArtifactRegressionMinimumPreviousCharacters,
+        details?.a2ArtifactRegressionMinimumPreviousCharacters,
+      ),
+      minimumDropCharacters: readIntegerValue(
+        details?.agentEvidenceArtifactRegressionMinimumDropCharacters,
+        details?.a2ArtifactRegressionMinimumDropCharacters,
+      ),
+      rawTextExcluded: details?.agentEvidenceArtifactRegressionRawTextExcluded === true
+        || details?.a2ArtifactRegressionRawTextExcluded === true,
     },
     aiAcceptance: {
-      decisionKeyed: details?.a2AiAcceptanceDecisionKeyed === true,
-      revisions: details?.a2AiAcceptanceRevisions === true,
-      rawMessageIdsExcluded: details?.a2AiAcceptanceRawMessageIdsExcluded === true,
-      rationaleTextExcluded: details?.a2AiAcceptanceRationaleTextExcluded === true,
+      decisionKeyed: details?.agentEvidenceAiAcceptanceDecisionKeyed === true
+        || details?.a2AiAcceptanceDecisionKeyed === true,
+      revisions: details?.agentEvidenceAiAcceptanceRevisions === true
+        || details?.a2AiAcceptanceRevisions === true,
+      rawMessageIdsExcluded: details?.agentEvidenceAiAcceptanceRawMessageIdsExcluded === true
+        || details?.a2AiAcceptanceRawMessageIdsExcluded === true,
+      rationaleTextExcluded: details?.agentEvidenceAiAcceptanceRationaleTextExcluded === true
+        || details?.a2AiAcceptanceRationaleTextExcluded === true,
     },
-    redaction: details?.a2MonitoringRedaction === "raw-learner-text-excluded"
+    redaction: readAgentEvidenceValue(
+      details?.agentEvidenceRedaction,
+      details?.a3SupervisionRedaction,
+      details?.a2MonitoringRedaction,
+    ) === "raw-learner-text-excluded"
       ? "raw-learner-text-excluded"
       : "unknown",
   };
   return {
     ...evidence,
     complete: evidence.enabled
+      && agentContract.complete
+      && responsibilities.complete
       && triggers.length === expectedTriggers.length
       && signals.length === expectedSignals.length
       && evidence.coachingInterruption === "low"
@@ -966,6 +1169,113 @@ function getA2MonitoringEvidence(details = {}) {
       && evidence.aiAcceptance.rationaleTextExcluded
       && evidence.redaction === "raw-learner-text-excluded",
   };
+}
+
+function getAgentContractEvidence(value = {}) {
+  const expectedAgents = ["A1", "A2", "A3", "A4"];
+  const expectedCaModules = {
+    A1: ["Scaffolding", "Fading"],
+    A2: ["Modelling", "Coaching"],
+    A3: ["Scaffolding"],
+    A4: ["Articulation", "Reflection"],
+  };
+  const expectedRoles = {
+    A1: "frontend-direct-dialogue",
+    A2: "frontend-direct-dialogue",
+    A3: "backend-a1-signal",
+    A4: "backend-a1-reflection",
+  };
+  const expectedExtensions = [
+    "agentRole",
+    "agentCaModules",
+    "agentFamily",
+    "agentPhaseScope",
+    "pseudonymousSessionId",
+  ];
+  const rawAgents = Array.isArray(value.requiredAgents) ? value.requiredAgents : [];
+  const requiredAgents = expectedAgents.filter((agentId) => rawAgents.includes(agentId));
+  const caModules = Object.fromEntries(
+    Object.entries(expectedCaModules).map(([agentId, modules]) => {
+      const raw = Array.isArray(value.caModules?.[agentId]) ? value.caModules[agentId] : [];
+      return [agentId, modules.filter((module) => raw.includes(module))];
+    }),
+  );
+  const roles = Object.fromEntries(
+    Object.entries(expectedRoles).map(([agentId, role]) => [
+      agentId,
+      value.roles?.[agentId] === role ? role : "unknown",
+    ]),
+  );
+  const xapiExtensions = Object.fromEntries(
+    expectedExtensions.map((name) => [name, value.xapiExtensions?.[name] === true]),
+  );
+  const requiredAgentsComplete = requiredAgents.length === expectedAgents.length;
+  const caModulesComplete = Object.entries(expectedCaModules)
+    .every(([agentId, modules]) => arraysEqual(caModules[agentId], modules));
+  const rolesComplete = Object.entries(expectedRoles)
+    .every(([agentId, role]) => roles[agentId] === role);
+  const xapiExtensionsComplete = expectedExtensions.every((name) => xapiExtensions[name] === true);
+  const version = value.version === "aais-a1-a4-ca-v2" ? "aais-a1-a4-ca-v2" : "invalid";
+  return {
+    version,
+    requiredAgents,
+    requiredAgentsComplete,
+    caModules,
+    caModulesComplete,
+    roles,
+    rolesComplete,
+    xapiExtensions,
+    xapiExtensionsComplete,
+    pseudonymousSessionId: xapiExtensions.pseudonymousSessionId === true,
+    complete: version === "aais-a1-a4-ca-v2"
+      && requiredAgentsComplete
+      && caModulesComplete
+      && rolesComplete
+      && xapiExtensionsComplete
+      && value.complete === true,
+  };
+}
+
+function getAgentResponsibilitiesEvidence(value) {
+  const expected = {
+    A1: ["scaffold_request", "scaffold_self_check_started"],
+    A2: ["expert_model_viewed", "coaching_push", "ai_acceptance_recorded"],
+    A3: [
+      "artifact_edited",
+      "artifact_saved",
+      "planning_submitted",
+      "monitoring_pause_detected",
+    ],
+    A4: ["articulation_submitted", "expert_trace_compared", "self_report_saved"],
+  };
+  const sanitized = Object.fromEntries(
+    Object.entries(expected).map(([agentId, expectedEvents]) => {
+      const rawEvents = Array.isArray(value?.[agentId]) ? value[agentId] : [];
+      return [
+        agentId,
+        expectedEvents.filter((eventName) => rawEvents.includes(eventName)),
+      ];
+    }),
+  );
+  return {
+    value: sanitized,
+    complete: Object.entries(expected).every(([agentId, expectedEvents]) =>
+      arraysEqual(sanitized[agentId], expectedEvents)
+    ),
+  };
+}
+
+function arraysEqual(left, right) {
+  return left.length === right.length && left.every((item, index) => item === right[index]);
+}
+
+function readAgentEvidenceValue(...values) {
+  return values.find((value) => value !== undefined && value !== null);
+}
+
+function readIntegerValue(...values) {
+  const value = readAgentEvidenceValue(...values);
+  return Number.isInteger(value) ? value : null;
 }
 
 function getLegalPagesEvidence(details = {}) {
@@ -1123,7 +1433,7 @@ function readOidcRoleMappingNames(value) {
     : [];
 }
 
-function getVercelEnvTargetStatus(target) {
+function getVercelEnvTargetStatus(target, expectedAuthMode = "trial") {
   const environment = target?.environment === "Production" ? "Production" : normalizeReportString(target?.environment);
   const authMode = target?.authMode === "sso-only" || target?.authMode === "trial"
     ? target.authMode
@@ -1131,13 +1441,14 @@ function getVercelEnvTargetStatus(target) {
   const aiMode = target?.aiMode === "live" || target?.aiMode === "deterministic"
     ? target.aiMode
     : normalizeReportString(target?.aiMode);
+  const normalizedExpectedAuthMode = expectedAuthMode === "sso-only" ? "sso-only" : "trial";
   return {
     environment,
     expectedEnvironment: "Production",
     environmentMatchesExpected: environment === "Production",
     authMode,
-    expectedAuthMode: "sso-only",
-    authModeMatchesExpected: authMode === "sso-only",
+    expectedAuthMode: normalizedExpectedAuthMode,
+    authModeMatchesExpected: authMode === normalizedExpectedAuthMode,
     aiMode,
     expectedAiMode: "live",
     aiModeMatchesExpected: aiMode === "live",
@@ -1212,6 +1523,10 @@ function getDeploymentPlatformStatus(details, expected = null) {
 function readDeploymentPlatform(value) {
   const trimmed = String(value ?? "").trim().toLowerCase();
   return trimmed === "vercel" ? "vercel" : "unknown";
+}
+
+function readAuthMode(value) {
+  return String(value ?? "").trim().toLowerCase() === "sso-only" ? "sso-only" : "trial";
 }
 
 function normalizeBaseUrl(value) {
@@ -1390,6 +1705,7 @@ async function main() {
     deploymentUrl: args.get("deployment-url"),
     deploymentPlatform: args.get("deployment-platform"),
     databaseProvider: args.get("database-provider"),
+    authMode: args.get("auth-mode"),
     releaseId: args.get("release-id"),
   });
   process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);

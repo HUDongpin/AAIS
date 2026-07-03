@@ -26,11 +26,32 @@ const requiredProductionEnv = [
   "CRON_SECRET",
 ];
 
+const requiredTrialProductionEnv = [
+  "AAIS_SESSION_SECRET",
+  "AAIS_RELEASE_ID",
+  "AAIS_DEPLOYMENT_GIT_COMMIT_SHA",
+  "AAIS_DATABASE_URL",
+  "AAIS_DATABASE_PROVIDER",
+  "AAIS_TRIAL_ACCOUNTS_JSON",
+  "AAIS_AI_PROVIDER",
+  "AAIS_AI_ENDPOINT",
+  "AAIS_AI_API_KEY",
+  "AAIS_AI_MODEL",
+  "AAIS_AI_EVAL_APPROVED",
+  "AAIS_AI_EVAL_VERSION",
+  "AAIS_AI_EVAL_MANIFEST_PATH",
+  "LRS_ENDPOINT",
+  "LRS_USERNAME",
+  "LRS_PASSWORD",
+  "CRON_SECRET",
+];
+
 const acceptedStorageEnvNames = [
   "AAIS_DATABASE_URL",
   "DATABASE_URL",
   "POSTGRES_URL",
   "POSTGRES_PRISMA_URL",
+  "POSTGRES_URL_NO_SSL",
   "DATABASE_URL_UNPOOLED",
   "POSTGRES_URL_NON_POOLING",
   "PGHOST/PGUSER/PGDATABASE/PGPASSWORD",
@@ -45,8 +66,32 @@ const acceptedOidcRoleMappingEnvNames = [
 ];
 
 describe("AAIS Vercel environment verifier", () => {
+  it("defaults the current-stage production gate to trial auth without OIDC provider variables", async () => {
+    const report = await verifyAaisVercelEnvironment({
+      now: new Date("2026-07-01T08:00:00.000Z"),
+      rows: requiredTrialProductionEnv.map((name) => ({
+        name,
+        environments: ["Production"],
+      })),
+    });
+
+    expect(report.status).toBe("passed");
+    expect(report.target).toEqual({
+      environment: "Production",
+      authMode: "trial",
+      aiMode: "live",
+    });
+    expect(report.required.missing).toEqual([]);
+    expect(report.required.present).toContain("AAIS_TRIAL_ACCOUNTS_JSON");
+    expect(report.required.present).not.toContain("AAIS_TRIAL_LOGIN_ENABLED");
+    expect(report.required.present).not.toContain("AAIS_OIDC_ISSUER");
+    expect(report.categories.oidc).toEqual([]);
+    expect(report.categories.oidcRoleMapping).toEqual([]);
+  });
+
   it("passes when all enterprise production variable names are present without reading values", async () => {
     const report = await verifyAaisVercelEnvironment({
+      authMode: "sso-only",
       now: new Date("2026-06-30T06:00:00.000Z"),
       rows: requiredProductionEnv.map((name) => ({
         name,
@@ -116,6 +161,7 @@ describe("AAIS Vercel environment verifier", () => {
       }));
 
     const report = await verifyAaisVercelEnvironment({
+      authMode: "sso-only",
       now: new Date("2026-06-30T06:00:00.000Z"),
       rows,
     });
@@ -142,6 +188,7 @@ describe("AAIS Vercel environment verifier", () => {
       }));
 
     const report = await verifyAaisVercelEnvironment({
+      authMode: "sso-only",
       now: new Date("2026-06-30T06:00:00.000Z"),
       rows,
     });
@@ -168,6 +215,7 @@ describe("AAIS Vercel environment verifier", () => {
       }));
 
     const report = await verifyAaisVercelEnvironment({
+      authMode: "sso-only",
       now: new Date("2026-06-30T06:00:00.000Z"),
       rows,
     });
@@ -184,6 +232,33 @@ describe("AAIS Vercel environment verifier", () => {
     });
   });
 
+  it("accepts the Vercel Postgres POSTGRES_URL_NO_SSL alias in place of AAIS_DATABASE_URL", async () => {
+    const rows = requiredProductionEnv
+      .filter((name) => name !== "AAIS_DATABASE_URL")
+      .concat("POSTGRES_URL_NO_SSL")
+      .map((name) => ({
+        name,
+        environments: ["Production"],
+      }));
+
+    const report = await verifyAaisVercelEnvironment({
+      authMode: "sso-only",
+      now: new Date("2026-06-30T06:00:00.000Z"),
+      rows,
+    });
+
+    expect(report.status).toBe("passed");
+    expect(report.required.missing).toEqual([]);
+    expect(report.required.present).toContain("POSTGRES_URL_NO_SSL");
+    expect(report.required.present).not.toContain("AAIS_DATABASE_URL");
+    expect(report.categories.storage).toEqual([]);
+    expect(report.storageUrl).toEqual({
+      present: true,
+      sourceEnv: "POSTGRES_URL_NO_SSL",
+      acceptedNames: acceptedStorageEnvNames,
+    });
+  });
+
   it("accepts Vercel Neon raw PG environment pieces in place of AAIS_DATABASE_URL", async () => {
     const rows = requiredProductionEnv
       .filter((name) => name !== "AAIS_DATABASE_URL")
@@ -194,6 +269,7 @@ describe("AAIS Vercel environment verifier", () => {
       }));
 
     const report = await verifyAaisVercelEnvironment({
+      authMode: "sso-only",
       now: new Date("2026-06-30T06:00:00.000Z"),
       rows,
     });
@@ -220,6 +296,7 @@ describe("AAIS Vercel environment verifier", () => {
       }));
 
     const report = await verifyAaisVercelEnvironment({
+      authMode: "sso-only",
       now: new Date("2026-06-30T06:00:00.000Z"),
       rows,
     });
@@ -246,6 +323,7 @@ describe("AAIS Vercel environment verifier", () => {
       }));
 
     const report = await verifyAaisVercelEnvironment({
+      authMode: "sso-only",
       now: new Date("2026-06-30T06:00:00.000Z"),
       rows,
     });
@@ -272,6 +350,7 @@ describe("AAIS Vercel environment verifier", () => {
       }));
 
     const report = await verifyAaisVercelEnvironment({
+      authMode: "sso-only",
       now: new Date("2026-06-30T06:00:00.000Z"),
       rows,
     });
@@ -290,6 +369,7 @@ describe("AAIS Vercel environment verifier", () => {
 
   it("fails with a redacted missing-variable inventory when production only has LRS variables", async () => {
     const report = await verifyAaisVercelEnvironment({
+      authMode: "sso-only",
       now: new Date("2026-06-30T06:00:00.000Z"),
       envListText: `
  name               value               environments        created
@@ -362,13 +442,13 @@ describe("AAIS Vercel environment verifier", () => {
             "vercel env add AAIS_DATABASE_URL production",
             "vercel env add AAIS_DATABASE_PROVIDER production",
           ],
-          note: "Use the Neon production Postgres connection string. AAIS prefers AAIS_DATABASE_URL but also accepts Vercel/Neon DATABASE_URL, POSTGRES_URL, POSTGRES_PRISMA_URL, DATABASE_URL_UNPOOLED, POSTGRES_URL_NON_POOLING, raw PGHOST/PGUSER/PGDATABASE/PGPASSWORD pieces, or legacy POSTGRES_HOST/POSTGRES_USER/POSTGRES_DATABASE/POSTGRES_PASSWORD pieces; set AAIS_DATABASE_PROVIDER to neon when the host cannot be inspected here.",
+          note: "Use the Neon production Postgres connection string. AAIS prefers AAIS_DATABASE_URL but also accepts Vercel/Neon DATABASE_URL, POSTGRES_URL, POSTGRES_PRISMA_URL, POSTGRES_URL_NO_SSL, DATABASE_URL_UNPOOLED, POSTGRES_URL_NON_POOLING, raw PGHOST/PGUSER/PGDATABASE/PGPASSWORD pieces, or legacy POSTGRES_HOST/POSTGRES_USER/POSTGRES_DATABASE/POSTGRES_PASSWORD pieces; set AAIS_DATABASE_PROVIDER to neon when the host cannot be inspected here.",
         },
         {
           category: "releaseMode",
           missing: ["AAIS_TRIAL_LOGIN_ENABLED"],
           commands: ["vercel env add AAIS_TRIAL_LOGIN_ENABLED production"],
-          note: "Set AAIS_TRIAL_LOGIN_ENABLED to false only after enterprise SSO access is verified.",
+          note: "Current-stage AAIS uses trial auth in production; set AAIS_TRIAL_ACCOUNTS_JSON for the trial gate, and only set AAIS_TRIAL_LOGIN_ENABLED to false after enterprise SSO access is verified.",
         },
         {
           category: "oidc",
@@ -442,6 +522,7 @@ describe("AAIS Vercel environment verifier", () => {
       }));
 
     const report = await verifyAaisVercelEnvironment({
+      authMode: "sso-only",
       now: new Date("2026-06-30T06:00:00.000Z"),
       rows,
     });
@@ -465,6 +546,7 @@ describe("AAIS Vercel environment verifier", () => {
       }));
 
     const report = await verifyAaisVercelEnvironment({
+      authMode: "sso-only",
       aiMode: "deterministic",
       now: new Date("2026-06-30T06:00:00.000Z"),
       rows: nonAiEnv,
@@ -477,6 +559,7 @@ describe("AAIS Vercel environment verifier", () => {
   it("requires trial accounts instead of SSO-only mode when trial auth mode is requested explicitly", async () => {
     const trialEnv = requiredProductionEnv
       .filter((name) => name !== "AAIS_TRIAL_LOGIN_ENABLED")
+      .filter((name) => !name.startsWith("AAIS_OIDC_"))
       .concat("AAIS_TRIAL_ACCOUNTS_JSON")
       .map((name) => ({
         name,
@@ -492,5 +575,8 @@ describe("AAIS Vercel environment verifier", () => {
     expect(report.status).toBe("passed");
     expect(report.required.present).toContain("AAIS_TRIAL_ACCOUNTS_JSON");
     expect(report.required.present).not.toContain("AAIS_TRIAL_LOGIN_ENABLED");
+    expect(report.required.present).not.toContain("AAIS_OIDC_ISSUER");
+    expect(report.categories.oidc).toEqual([]);
+    expect(report.categories.oidcRoleMapping).toEqual([]);
   });
 });

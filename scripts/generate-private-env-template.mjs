@@ -23,6 +23,10 @@ const placeholderLabels = new Map([
   ["AAIS_OIDC_AUTHORIZATION_ENDPOINT", "OIDC_AUTHORIZATION_ENDPOINT"],
   ["AAIS_OIDC_TOKEN_ENDPOINT", "OIDC_TOKEN_ENDPOINT"],
   ["AAIS_OIDC_JWKS_URI", "OIDC_JWKS_URI"],
+  ["AAIS_AI_ENDPOINT", "AI_ENDPOINT"],
+  ["AAIS_AI_API_KEY", "AI_API_KEY"],
+  ["AAIS_AI_MODEL", "AI_MODEL"],
+  ["AAIS_AI_EVAL_VERSION", "AI_EVAL_VERSION"],
 ]);
 
 const oidcRequiredNames = [
@@ -51,9 +55,18 @@ const oidcNames = new Set([
   ...oidcExplicitEndpointNames,
 ]);
 
+const liveAiEvalLocalNames = [
+  "AAIS_AI_ENDPOINT",
+  "AAIS_AI_API_KEY",
+  "AAIS_AI_MODEL",
+  "AAIS_AI_EVAL_VERSION",
+];
+
 export async function generateAaisPrivateEnvTemplate(input = {}) {
   const generatedAt = (input.now ?? new Date()).toISOString();
   const vercelEnvReportPath = input.vercelEnvReportPath ?? defaultVercelEnvReportPath;
+  const enterpriseGapEvidenceReportPath = input.enterpriseGapEvidenceReportPath
+    ?? process.env.AAIS_ENTERPRISE_GAP_REPORT_PATH;
   const outputPath = input.outputPath ?? process.env.AAIS_PRIVATE_ENV_TEMPLATE_PATH ?? defaultOutputPath;
   const reportPath = input.reportPath ?? process.env.AAIS_PRIVATE_ENV_TEMPLATE_REPORT_PATH ?? defaultReportPath;
   const privateEnvFilePath = input.privateEnvFilePath ?? defaultPrivateEnvFilePath;
@@ -69,16 +82,26 @@ export async function generateAaisPrivateEnvTemplate(input = {}) {
   const missing = explicitNames.length > 0
     ? explicitNames
     : getSafeEnvNames((await readJsonIfExists(vercelEnvReportPath))?.required?.missing);
+  const gapEvidenceReport = enterpriseGapEvidenceReportPath
+    ? await readJsonIfExists(enterpriseGapEvidenceReportPath)
+    : null;
+  const localEvidenceOnlyVariables = getLocalEvidenceOnlyVariables({
+    gapEvidenceReport,
+    provisionVariables: missing,
+  });
   const oidcRedirectUri = `${baseUrl}/api/auth/oidc/callback`;
-  const templateVariables = getTemplateVariables(missing);
-  const validationOnlyVariables = templateVariables.filter((name) => !missing.includes(name));
+  const templateVariables = getTemplateVariables([...missing, ...localEvidenceOnlyVariables]);
+  const validationOnlyVariables = templateVariables.filter((name) => (
+    !missing.includes(name) && !localEvidenceOnlyVariables.includes(name)
+  ));
 
   const report = {
     schemaVersion: 1,
-    status: missing.length > 0 ? "template-created" : "ready",
+    status: templateVariables.length > 0 ? "template-created" : "ready",
     generatedAt,
     sourceReports: {
       vercelEnv: vercelEnvReportPath,
+      ...(enterpriseGapEvidenceReportPath ? { enterpriseGapEvidence: enterpriseGapEvidenceReportPath } : {}),
     },
     target: {
       environment,
@@ -91,6 +114,7 @@ export async function generateAaisPrivateEnvTemplate(input = {}) {
       placeholderValues: "fail-closed",
       variables: templateVariables,
       provisionVariables: missing,
+      localEvidenceOnlyVariables,
       validationOnlyVariables,
     },
     suggestions: {
@@ -112,6 +136,30 @@ export async function generateAaisPrivateEnvTemplate(input = {}) {
           "--output output/aais-oidc-config-report-latest.json",
         ].join(" "),
       },
+      ...(localEvidenceOnlyVariables.length > 0
+        ? {
+          liveAiEval: {
+            envFilePath: privateEnvFilePath,
+            requiredNames: liveAiEvalLocalNames,
+            preflightCommand: [
+              "npm run verify:enterprise-gaps --",
+              "--mode live-ai-eval",
+              "--preflight-only",
+              `--ai-eval-env-file ${privateEnvFilePath}`,
+              "--output output/aais-enterprise-gap-evidence-latest.json",
+              `--release-id ${releaseId ?? "<release-id>"}`,
+            ].join(" "),
+            evaluationCommand: [
+              "npm run ai:evaluate --",
+              `--env-file ${privateEnvFilePath}`,
+              "--output output/aais-ai-eval-deepseek-v4-pro.json",
+              "--env-json-output output/aais-ai-eval-inline-latest.json",
+              "--eval-version <AAIS_AI_EVAL_VERSION>",
+              `--release-id ${releaseId ?? "<release-id>"}`,
+            ].join(" "),
+          },
+        }
+        : {}),
     },
     nextCommands: buildProvisionCommands({
       privateEnvFilePath,
@@ -161,6 +209,7 @@ function renderTemplate({
     "# Rerun the dry-run, and apply only after status is ready.",
     "# Provider placeholders intentionally fail closed in provision:vercel-env.",
     "# Some OIDC names may already exist in Vercel; they are included here for local verify:oidc-config only.",
+    "# Live AI eval names may be included for local evidence only; fill them only in the private env file.",
     "# provision:vercel-env applies only names requested by the Vercel env report.",
     "# For Neon, prefer AAIS_DATABASE_URL; Vercel Neon aliases are also accepted by the provisioner.",
     `# Suggested AAIS_OIDC_REDIRECT_URI: ${oidcRedirectUri}`,
@@ -176,6 +225,17 @@ function renderTemplate({
     "",
   ];
   return lines.join("\n");
+}
+
+function getLocalEvidenceOnlyVariables({ gapEvidenceReport, provisionVariables }) {
+  const required = gapEvidenceReport?.preflight?.required ?? {};
+  const gapNames = new Set([
+    ...getSafeEnvNames(required.missing),
+    ...getSafeEnvNames(required.placeholders),
+    ...getSafeEnvNames(required.invalid),
+  ]);
+  const provisionNames = new Set(provisionVariables);
+  return liveAiEvalLocalNames.filter((name) => gapNames.has(name) && !provisionNames.has(name));
 }
 
 function getTemplateVariables(missing) {
@@ -306,6 +366,7 @@ async function main() {
     environment: args.get("environment"),
     releaseId: args.get("release-id"),
     deploymentGitCommit: args.get("deployment-git-commit"),
+    enterpriseGapEvidenceReportPath: args.get("gap-evidence-report"),
     names,
   });
   process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);

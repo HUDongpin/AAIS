@@ -17,9 +17,14 @@ const defaultArtifactPaths = {
   handoffReportPath: "output/aais-enterprise-handoff-latest.json",
   readinessAuditReportPath: "output/aais-enterprise-readiness-audit-latest.json",
   oidcConfigReportPath: "output/aais-oidc-config-report-latest.json",
-  aiEvalManifestPath: "output/aais-ai-eval-deepseek-v4-flash.json",
+  enterpriseGapTemplateReportPath: "output/aais-enterprise-gap-template-report-latest.json",
+  enterpriseGapEvidenceReportPath: "output/aais-enterprise-gap-evidence-latest.json",
+  aiEvalManifestPath: "output/aais-ai-eval-deepseek-v4-pro.json",
   postgresRestoreReportPath: "output/aais-postgres-restore-report-latest.json",
 };
+
+const templateArtifactIds = new Set(["enterprise-gap-template"]);
+const readyArtifactIds = new Set([]);
 
 export async function createAaisReleaseEvidenceBundle(input = {}) {
   const generatedAt = (input.now ?? new Date()).toISOString();
@@ -80,7 +85,17 @@ function getArtifactInputs(input) {
       "enterprise-readiness-audit",
       input.readinessAuditReportPath ?? defaultArtifactPaths.readinessAuditReportPath,
     ),
-    artifactInput("oidc-config", input.oidcConfigReportPath ?? defaultArtifactPaths.oidcConfigReportPath),
+    ...(input.oidcConfigReportPath === false
+      ? []
+      : [artifactInput("oidc-config", input.oidcConfigReportPath ?? defaultArtifactPaths.oidcConfigReportPath)]),
+    artifactInput(
+      "enterprise-gap-template",
+      input.enterpriseGapTemplateReportPath ?? defaultArtifactPaths.enterpriseGapTemplateReportPath,
+    ),
+    artifactInput(
+      "enterprise-gap-evidence",
+      input.enterpriseGapEvidenceReportPath ?? defaultArtifactPaths.enterpriseGapEvidenceReportPath,
+    ),
     artifactInput("ai-eval", input.aiEvalManifestPath ?? defaultArtifactPaths.aiEvalManifestPath),
     artifactInput("postgres-restore", input.postgresRestoreReportPath ?? defaultArtifactPaths.postgresRestoreReportPath),
   ];
@@ -100,7 +115,7 @@ async function readArtifact(input) {
     const parsed = JSON.parse(raw);
     const secretScan = scanSecretLikeContent(raw);
     const reportedStatus = normalizeStatus(parsed?.status);
-    const effectiveStatus = reportedStatus === "passed" && secretScan.status === "passed"
+    const effectiveStatus = isPassingArtifactStatus(input.id, reportedStatus) && secretScan.status === "passed"
       ? "passed"
       : "action-required";
     return {
@@ -125,6 +140,16 @@ async function readArtifact(input) {
   }
 }
 
+function isPassingArtifactStatus(id, status) {
+  if (status === "passed") {
+    return true;
+  }
+  if (status === "template-created") {
+    return templateArtifactIds.has(id);
+  }
+  return status === "ready" && readyArtifactIds.has(id);
+}
+
 function getArtifactMetadata(id, artifact) {
   const metadata = {};
   const checkedAt = readIsoTimestamp(artifact?.checkedAt ?? artifact?.generatedAt ?? artifact?.passedAt);
@@ -135,15 +160,38 @@ function getArtifactMetadata(id, artifact) {
   if (missing.length > 0) {
     metadata.missing = missing;
   }
+  const businessGapSummary = readBusinessGapSummary(artifact?.businessGapSummary);
+  if (id === "enterprise-handoff" && businessGapSummary) {
+    metadata.businessGapSummary = businessGapSummary;
+    const businessGapActions = readBusinessGapActions(artifact?.businessGapActions);
+    if (businessGapActions.length > 0) {
+      metadata.businessGapActions = businessGapActions;
+    }
+  }
   if (id === "enterprise-readiness-audit" && artifact?.summary) {
     metadata.summary = {
       total: readInteger(artifact.summary.total),
       passed: readInteger(artifact.summary.passed),
       actionRequired: readInteger(artifact.summary.actionRequired),
     };
+    if (businessGapSummary) {
+      metadata.businessGapSummary = businessGapSummary;
+    }
   }
   if (id === "ai-eval" && typeof artifact?.evalVersion === "string") {
     metadata.evalVersion = artifact.evalVersion;
+    const agentEvidence = readAiEvalAgentEvidence(artifact.agentEvidence);
+    if (agentEvidence) {
+      metadata.agentEvidence = agentEvidence;
+    }
+  }
+  if (id === "enterprise-gap-evidence" && artifact?.preflight) {
+    metadata.preflight = {
+      status: normalizeStatus(artifact.preflight.status),
+      missing: getSafeEnvNames(artifact.preflight.required?.missing),
+      placeholders: getSafeEnvNames(artifact.preflight.required?.placeholders),
+      invalid: getSafeEnvNames(artifact.preflight.required?.invalid),
+    };
   }
   return metadata;
 }
@@ -163,6 +211,18 @@ function renderMarkdown(report) {
       `  - path: ${artifact.path}`,
       `  - present: ${artifact.present}`,
       ...(artifact.sha256 ? [`  - sha256: ${artifact.sha256}`] : []),
+      ...(artifact.metadata?.summary ? [
+        `  - summary: ${artifact.metadata.summary.passed}/${artifact.metadata.summary.total} controls passed`,
+      ] : []),
+      ...(artifact.metadata?.businessGapSummary ? [
+        `  - businessGaps: ${artifact.metadata.businessGapSummary.passed}/${artifact.metadata.businessGapSummary.total} passed`,
+      ] : []),
+      ...(artifact.metadata?.businessGapActions ? [
+        `  - businessGapActions: ${artifact.metadata.businessGapActions.map((gap) => `${gap.id}=${gap.status}`).join(", ")}`,
+      ] : []),
+      ...(artifact.metadata?.agentEvidence ? [
+        `  - agentEvidence: ${artifact.metadata.agentEvidence.contractVersion}/${artifact.metadata.agentEvidence.complete ? "complete" : "incomplete"}`,
+      ] : []),
       `  - secretScan: ${artifact.secretScan.status}`,
       ...(artifact.secretScan.issue ? [`  - issue: ${artifact.secretScan.issue}`] : []),
     ]),
@@ -219,6 +279,123 @@ function getSafeEnvNames(value) {
     : [];
 }
 
+function getSafeReasonNames(value) {
+  return Array.isArray(value)
+    ? value
+      .map((item) => String(item ?? "").trim())
+      .filter((item) => /^[a-z][a-z0-9-]{1,63}$/.test(item))
+    : [];
+}
+
+function readBusinessGapActions(value) {
+  return Array.isArray(value)
+    ? value
+      .map((gap) => {
+        const id = readSafeActionId(gap?.id);
+        if (!id) {
+          return null;
+        }
+        return {
+          id,
+          status: normalizeStatus(gap?.status),
+          missing: getSafeEnvNames(gap?.missing),
+          reasons: getSafeReasonNames(gap?.reasons),
+          actions: Array.isArray(gap?.actions)
+            ? gap.actions.map(readSafeActionId).filter(Boolean)
+            : [],
+        };
+      })
+      .filter(Boolean)
+    : [];
+}
+
+function readAiEvalAgentEvidence(value) {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+  const contractVersion = value.contractVersion === "aais-a1-a4-ca-eval-v2"
+    ? "aais-a1-a4-ca-eval-v2"
+    : "invalid";
+  const coverage = readAiEvalAgentCoverage(value.coverage);
+  return {
+    contractVersion,
+    complete: value.complete === true,
+    coveredAgents: getSafeAgentIds(value.coveredAgents),
+    requiredCaModules: getSafeCaModules(value.requiredCaModules),
+    coveredCaModules: getSafeCaModules(value.coveredCaModules),
+    coverage: coverage.value,
+    coverageComplete: coverage.complete,
+    caBackgroundIncluded: value.caBackgroundIncluded === true,
+    rawPromptsStored: value.rawPromptsStored === false ? false : null,
+    rawOutputsStored: value.rawOutputsStored === false ? false : null,
+  };
+}
+
+function getSafeAgentIds(value) {
+  const allowed = ["A1", "A2", "A3", "A4"];
+  return Array.isArray(value)
+    ? allowed.filter((agentId) => value.includes(agentId))
+    : [];
+}
+
+function getSafeCaModules(value) {
+  const allowed = ["Modelling", "Coaching", "Scaffolding", "Fading", "Articulation", "Reflection"];
+  return Array.isArray(value)
+    ? allowed.filter((module) => value.includes(module))
+    : [];
+}
+
+function readAiEvalAgentCoverage(value) {
+  const expected = {
+    A1: {
+      responsibility: "frontend-guide-scaffolding",
+      caModules: ["Scaffolding", "Fading"],
+    },
+    A2: {
+      responsibility: "frontend-expert-modelling-coaching",
+      caModules: ["Modelling", "Coaching"],
+    },
+    A3: {
+      responsibility: "backend-supervision-a1-signal",
+      caModules: ["Scaffolding"],
+    },
+    A4: {
+      responsibility: "backend-reflection-articulation",
+      caModules: ["Articulation", "Reflection"],
+    },
+  };
+  const sanitized = Object.fromEntries(
+    Object.entries(expected).map(([agentId, contract]) => {
+      const raw = value?.[agentId] ?? {};
+      const caModules = Array.isArray(raw.caModules)
+        ? contract.caModules.filter((module) => raw.caModules.includes(module))
+        : [];
+      const responsibility = raw.responsibility === contract.responsibility
+        ? contract.responsibility
+        : "invalid";
+      return [
+        agentId,
+        {
+          responsibility,
+          caModules,
+          complete: raw.complete === true
+            && responsibility === contract.responsibility
+            && caModules.length === contract.caModules.length,
+        },
+      ];
+    }),
+  );
+  return {
+    value: sanitized,
+    complete: Object.values(sanitized).every((agent) => agent.complete),
+  };
+}
+
+function readSafeActionId(value) {
+  const token = String(value ?? "").trim();
+  return /^[a-z][a-z0-9-]{1,79}$/.test(token) ? token : null;
+}
+
 function normalizeStatus(value) {
   const status = String(value ?? "").trim().toLowerCase();
   return /^[a-z][a-z0-9_-]{1,31}$/.test(status) ? status : "unknown";
@@ -239,6 +416,15 @@ function readIsoTimestamp(value) {
 
 function readInteger(value) {
   return Number.isInteger(value) ? value : null;
+}
+
+function readBusinessGapSummary(value) {
+  const summary = {
+    total: readInteger(value?.total),
+    passed: readInteger(value?.passed),
+    actionRequired: readInteger(value?.actionRequired),
+  };
+  return Object.values(summary).every((item) => item !== null) ? summary : null;
 }
 
 function parseCliArgs(argv) {
@@ -271,6 +457,8 @@ async function main() {
     handoffReportPath: args.get("handoff-report"),
     readinessAuditReportPath: args.get("readiness-audit-report"),
     oidcConfigReportPath: args.get("oidc-config-report"),
+    enterpriseGapTemplateReportPath: args.get("enterprise-gap-template-report"),
+    enterpriseGapEvidenceReportPath: args.get("enterprise-gap-evidence-report"),
     aiEvalManifestPath: args.get("ai-eval-manifest"),
     postgresRestoreReportPath: args.get("postgres-restore-report"),
     outputPath: args.get("output"),

@@ -7,6 +7,53 @@ const defaultReleaseCheckReportPath = "output/aais-enterprise-release-check-late
 const defaultHandoffReportPath = "output/aais-enterprise-handoff-latest.json";
 const defaultOutputPath = "output/aais-enterprise-readiness-audit-latest.json";
 const defaultMarkdownOutputPath = "output/aais-enterprise-readiness-audit-latest.md";
+const businessGapDefinitions = [
+  {
+    id: "production-oidc-env-config",
+    label: "Production OIDC environment and config",
+    description: "Vercel production must have the required OIDC names and the deployed app must expose a working OIDC start route.",
+    controlIds: ["vercel-production-env", "oidc-start"],
+    appliesTo: (context) => context.ssoOnlyGate,
+  },
+  {
+    id: "real-oidc-callback",
+    label: "Real OIDC callback smoke",
+    description: "A real IdP callback handoff must be verified with redacted callback evidence before SSO cutover.",
+    controlIds: ["oidc-callback-handoff"],
+    appliesTo: (context) => context.ssoOnlyGate,
+  },
+  {
+    id: "sso-only-cutover",
+    label: "SSO-only runtime cutover",
+    description: "Trial login stays available until real OIDC callback and teacher/admin access are proven, then SSO-only runtime can be enabled.",
+    controlIds: ["sso-only-mode"],
+    appliesTo: (context) => context.ssoOnlyGate,
+  },
+  {
+    id: "neon-restore-rehearsal",
+    label: "Restored Neon rehearsal",
+    description: "A restored staging Neon database must pass table presence and write/read/delete smoke checks without matching production sources.",
+    controlIds: ["neon-restore-rehearsal"],
+  },
+  {
+    id: "teacher-cohort-analytics",
+    label: "Teacher cohort analytics",
+    description: "Teacher/admin cohort analytics and export evidence must be proven from the same current auth-mode session.",
+    controlIds: ["cohort-analytics"],
+  },
+  {
+    id: "a1-a4-agent-evidence",
+    label: "A1-A4 agent evidence",
+    description: "Deployed readiness must prove A1 scaffolding, A2 expert coaching, A3 supervision signals, A4 articulation/reflection, AI acceptance, and raw-text exclusion.",
+    controlIds: ["agent-evidence", "live-ai-eval"],
+  },
+  {
+    id: "current-release-consistency",
+    label: "Current release consistency",
+    description: "The refreshed release evidence must come from the current source provenance, deployment identity, and final enterprise gate.",
+    controlIds: ["release-consistency"],
+  },
+];
 
 export async function auditAaisEnterpriseReadiness(input = {}) {
   const generatedAt = (input.now ?? new Date()).toISOString();
@@ -16,11 +63,15 @@ export async function auditAaisEnterpriseReadiness(input = {}) {
   const markdownOutputPath = input.markdownOutputPath
     ?? process.env.AAIS_ENTERPRISE_AUDIT_MARKDOWN_PATH
     ?? defaultMarkdownOutputPath;
+  const gapEvidenceReportPath = input.gapEvidenceReportPath ?? process.env.AAIS_ENTERPRISE_GAP_REPORT_PATH;
   const releaseCheck = await readJsonIfExists(releaseCheckReportPath);
   const handoff = await readJsonIfExists(handoffReportPath);
-  const requiredControls = buildRequiredControls(releaseCheck.value, handoff.value);
+  const gapEvidence = gapEvidenceReportPath ? await readJsonIfExists(gapEvidenceReportPath) : { value: null };
+  const requiredControls = buildRequiredControls(releaseCheck.value, handoff.value, gapEvidence.value);
   const passed = requiredControls.filter((control) => control.status === "passed").length;
   const actionRequired = requiredControls.length - passed;
+  const businessGaps = buildBusinessGapGroups(requiredControls);
+  const businessGapsPassed = businessGaps.filter((gap) => gap.status === "passed").length;
   const report = {
     schemaVersion: 1,
     status: actionRequired === 0 ? "ready" : "action-required",
@@ -28,6 +79,7 @@ export async function auditAaisEnterpriseReadiness(input = {}) {
     sourceReports: {
       releaseCheck: releaseCheckReportPath,
       handoff: handoffReportPath,
+      ...(gapEvidenceReportPath ? { gapEvidence: gapEvidenceReportPath } : {}),
     },
     gate: {
       status: normalizeStatus(releaseCheck.value?.status),
@@ -38,6 +90,12 @@ export async function auditAaisEnterpriseReadiness(input = {}) {
       passed,
       actionRequired,
     },
+    businessGapSummary: {
+      total: businessGaps.length,
+      passed: businessGapsPassed,
+      actionRequired: businessGaps.length - businessGapsPassed,
+    },
+    businessGaps,
     requiredControls,
     redaction: {
       secrets: "omitted",
@@ -55,7 +113,7 @@ export async function auditAaisEnterpriseReadiness(input = {}) {
   return report;
 }
 
-function buildRequiredControls(releaseCheck, handoff) {
+function buildRequiredControls(releaseCheck, handoff, gapEvidence) {
   const artifacts = releaseCheck?.artifacts ?? {};
   const vercelEnv = artifacts.vercelEnv ?? {};
   const enterprise = artifacts.enterprise ?? {};
@@ -73,8 +131,11 @@ function buildRequiredControls(releaseCheck, handoff) {
       : [],
   );
   const missingEnv = getSafeEnvNames(vercelEnv.missing);
+  const authMode = readAuthMode(vercelEnv.authMode ?? vercelEnv.target?.authMode, missingEnv);
+  const ssoOnlyGate = authMode === "sso-only";
+  const gapPreflight = getGapPreflightStatus(gapEvidence);
 
-  return [
+  const controls = [
     control({
       id: "vercel-production-env",
       passed: vercelEnv.status === "passed" && missingEnv.length === 0,
@@ -170,18 +231,22 @@ function buildRequiredControls(releaseCheck, handoff) {
       handoffActionIds,
     }),
     control({
-      id: "a2-monitoring-evidence",
-      passed: requiredChecks.a2Monitoring === true
+      id: "agent-evidence",
+      passed: requiredChecks.agentEvidence === true
+        || requiredChecks.a3Supervision === true
+        || requiredChecks.a2Monitoring === true
+        || enterprise.agentEvidence?.complete === true
+        || enterprise.a3SupervisionEvidence?.complete === true
         || enterprise.a2MonitoringEvidence?.complete === true,
       actions: ["redeploy-vercel-production", "inspect-vercel-production-deployment", "rerun-final-gate"],
-      note: "Requires deployed readiness evidence for A2 low-progress monitoring, artifact-regression coaching, keyed AI acceptance revisions, and raw learner-text exclusion.",
+      note: "Requires deployed readiness evidence for the A1-A4 responsibility map, A3 supervision signals, A2 coaching, keyed AI acceptance revisions, and raw learner-text exclusion.",
       handoffActionIds,
     }),
     control({
       id: "cohort-analytics",
       passed: requiredChecks.cohortAnalytics === true,
-      actions: ["run-teacher-cohort-analytics-smoke", "rerun-final-gate"],
-      note: "Requires teacher/admin cohort analytics and cohort export proof from the same OIDC callback session.",
+      actions: ["run-trial-auth-enterprise-smoke", "run-teacher-cohort-analytics-smoke", "rerun-final-gate"],
+      note: "Requires teacher/admin cohort analytics and cohort export proof from the current auth-mode smoke session.",
       handoffActionIds,
     }),
     control({
@@ -219,6 +284,8 @@ function buildRequiredControls(releaseCheck, handoff) {
       passed: aiEval.status === "passed"
         && aiEval.compatibleWithEnterpriseReadiness === true
         && aiEval.blockedCount === 0
+        && aiEval.agentEvidenceComplete === true
+        && aiEval.agentEvidenceContractVersion === "aais-a1-a4-ca-eval-v2"
         && aiEval.modelFingerprintMatchesEnterprise === true,
       actions: ["rerun-final-gate"],
       handoffActionIds,
@@ -230,6 +297,7 @@ function buildRequiredControls(releaseCheck, handoff) {
         && postgresRestore.sameAsSource === false
         && postgresRestore.tablePresent === true
         && postgresRestore.lrsOutboxTablePresent === true
+        && postgresRestore.smokeInsertOnly === true
         && postgresRestore.smokeInserted === true
         && postgresRestore.smokeReadBack === true
         && postgresRestore.smokeDeleted === true,
@@ -255,6 +323,70 @@ function buildRequiredControls(releaseCheck, handoff) {
       handoffActionIds,
     }),
   ];
+
+  const filteredControls = ssoOnlyGate
+    ? controls
+    : controls.filter((controlRow) => !["oidc-start", "oidc-callback-handoff", "sso-only-mode"].includes(controlRow.id));
+
+  if (gapEvidence) {
+    filteredControls.splice(Math.min(16, filteredControls.length), 0, control({
+      id: "enterprise-gap-input-preflight",
+      passed: gapPreflight.ready,
+      missing: gapPreflight.requiredNames,
+      actions: [
+        "fill-postgres-restore-template",
+        "run-neon-restore-rehearsal",
+        "run-trial-auth-enterprise-smoke",
+        "run-real-oidc-callback-smoke",
+        "run-teacher-cohort-analytics-smoke",
+        "rerun-final-gate",
+      ],
+      note: "Requires verify:enterprise-gaps --preflight-only to report ready before consuming trial smoke evidence or opening the restored Neon database.",
+      handoffActionIds,
+    }));
+  }
+
+  return filteredControls;
+}
+
+function buildBusinessGapGroups(requiredControls) {
+  const controlById = new Map(requiredControls.map((controlRow) => [controlRow.id, controlRow]));
+  const ssoOnlyGate = ["oidc-start", "oidc-callback-handoff", "sso-only-mode"].some((id) => controlById.has(id));
+  return businessGapDefinitions.filter((definition) => (
+    typeof definition.appliesTo === "function" ? definition.appliesTo({ ssoOnlyGate }) : true
+  )).map((definition) => {
+    const controls = definition.controlIds.map((controlId) => {
+      const controlRow = controlById.get(controlId);
+      return {
+        id: controlId,
+        status: controlRow?.status ?? "missing",
+      };
+    });
+    const status = controls.every((controlRow) => controlRow.status === "passed")
+      ? "passed"
+      : "action-required";
+    const sourceControls = definition.controlIds
+      .map((controlId) => controlById.get(controlId))
+      .filter(Boolean);
+    const actions = uniqueSafeStrings(sourceControls.flatMap((controlRow) => controlRow.actions ?? []));
+    const missing = uniqueSafeStrings(sourceControls.flatMap((controlRow) => controlRow.missing ?? []));
+    const gap = {
+      id: definition.id,
+      label: definition.label,
+      status,
+      description: definition.description,
+      controls,
+    };
+    if (status !== "passed") {
+      if (missing.length > 0) {
+        gap.missing = missing;
+      }
+      if (actions.length > 0) {
+        gap.actions = actions;
+      }
+    }
+    return gap;
+  });
 }
 
 function control({ id, passed, missing = undefined, actions, note = undefined, handoffActionIds }) {
@@ -298,6 +430,17 @@ function renderMarkdown(report) {
     `Generated: ${report.generatedAt}`,
     `Gate: ${report.gate.status}`,
     `Summary: ${report.summary.passed}/${report.summary.total} passed`,
+    `Business gaps: ${report.businessGapSummary.passed}/${report.businessGapSummary.total} passed`,
+    "",
+    "## Business Gap Groups",
+    "",
+    ...report.businessGaps.flatMap((gap) => [
+      `- ${gap.id}: ${gap.status} (${gap.label})`,
+      `  - controls: ${gap.controls.map((controlRow) => `${controlRow.id}=${controlRow.status}`).join(", ")}`,
+      `  - description: ${gap.description}`,
+      ...(gap.missing ? [`  - missing: ${gap.missing.join(", ")}`] : []),
+      ...(gap.actions ? [`  - actions: ${gap.actions.join(", ")}`] : []),
+    ]),
     "",
     "## Required Controls",
     "",
@@ -330,17 +473,40 @@ function getSafeEnvNames(value) {
     : [];
 }
 
+function uniqueSafeStrings(values) {
+  return [...new Set(
+    values
+      .map((value) => String(value ?? "").trim())
+      .filter((value) => /^[A-Za-z0-9_*\\/.-]{1,160}$/.test(value)),
+  )];
+}
+
 function hasMissingStorageEnv(missingEnv) {
   return missingEnv.some((name) => (
     name === "AAIS_DATABASE_URL"
     || name === "DATABASE_URL"
     || name === "POSTGRES_URL"
     || name === "POSTGRES_PRISMA_URL"
+    || name === "POSTGRES_URL_NO_SSL"
     || name === "DATABASE_URL_UNPOOLED"
     || name === "POSTGRES_URL_NON_POOLING"
     || name === "PGHOST/PGUSER/PGDATABASE/PGPASSWORD"
     || name === "POSTGRES_HOST/POSTGRES_USER/POSTGRES_DATABASE/POSTGRES_PASSWORD"
   ));
+}
+
+function getGapPreflightStatus(report) {
+  const required = report?.preflight?.required ?? {};
+  const missing = getSafeEnvNames(required.missing);
+  const placeholders = getSafeEnvNames(required.placeholders);
+  const invalid = getSafeEnvNames(required.invalid);
+  const requiredNames = [...new Set([...missing, ...placeholders, ...invalid])];
+  return {
+    ready: report?.preflight?.status === "ready"
+      && (report?.status === "preflight-ready" || report?.status === "passed")
+      && requiredNames.length === 0,
+    requiredNames,
+  };
 }
 
 function readSafeActionId(value) {
@@ -351,6 +517,14 @@ function readSafeActionId(value) {
 function normalizeStatus(value) {
   const status = String(value ?? "").trim().toLowerCase();
   return /^[a-z][a-z0-9_-]{1,31}$/.test(status) ? status : "unknown";
+}
+
+function readAuthMode(value, missingEnv = []) {
+  const normalized = String(value ?? "").trim().toLowerCase();
+  if (normalized === "sso-only" || normalized === "trial") {
+    return normalized;
+  }
+  return missingEnv.some((name) => name.startsWith("AAIS_OIDC_")) ? "sso-only" : "trial";
 }
 
 function readIsoTimestamp(value) {
@@ -384,6 +558,7 @@ async function main() {
   const report = await auditAaisEnterpriseReadiness({
     releaseCheckReportPath: args.get("release-check-report"),
     handoffReportPath: args.get("handoff-report"),
+    gapEvidenceReportPath: args.get("gap-evidence-report"),
     outputPath: args.get("output"),
     markdownOutputPath: args.get("markdown-output"),
   });

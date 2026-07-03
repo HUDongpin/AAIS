@@ -56,12 +56,7 @@ describe("AAIS enterprise handoff generator", () => {
             enterpriseAfterVercelEnv: true,
           },
         },
-        aiEval: {
-          status: "passed",
-          compatibleWithEnterpriseReadiness: true,
-          blockedCount: 0,
-          modelFingerprintMatchesEnterprise: true,
-        },
+        aiEval: passingAiEvalSummary(),
         postgresRestore: {
           status: "missing",
         },
@@ -100,7 +95,10 @@ describe("AAIS enterprise handoff generator", () => {
           "AAIS_DATABASE_URL",
           "DATABASE_URL",
           "POSTGRES_URL",
+          "POSTGRES_PRISMA_URL",
+          "POSTGRES_URL_NO_SSL",
           "DATABASE_URL_UNPOOLED",
+          "POSTGRES_URL_NON_POOLING",
           "PGHOST/PGUSER/PGDATABASE/PGPASSWORD",
         ],
       },
@@ -153,8 +151,8 @@ describe("AAIS enterprise handoff generator", () => {
       postgresRestoreTemplateReportPath,
       localCredentialFiles: [envPath, docxPath],
       baseUrl: "https://aais-six.vercel.app",
-      releaseId: "aais-2026-06-30-rc-live-ai-deepseek-v4-flash",
-      aiEvalManifestPath: "output/aais-ai-eval-deepseek-v4-flash.json",
+      releaseId: "aais-2026-06-30-rc-live-ai-deepseek-v4-pro",
+      aiEvalManifestPath: "output/aais-ai-eval-deepseek-v4-pro.json",
       postgresRestoreReportPath: "output/aais-postgres-restore-report-latest.json",
       now: new Date("2026-06-30T08:30:00.000Z"),
     });
@@ -229,6 +227,7 @@ describe("AAIS enterprise handoff generator", () => {
         transientEvidence: [
           "AAIS_VERIFY_OIDC_CALLBACK_URL",
           "AAIS_VERIFY_OIDC_STATE_COOKIE",
+          "AAIS_VERIFY_EXPECTED_SESSION_ROLE",
         ],
         redaction: {
           values: "not-read",
@@ -325,9 +324,58 @@ describe("AAIS enterprise handoff generator", () => {
         values: "not-read",
       },
     });
+    expect(report.businessGapSummary).toEqual({
+      total: 7,
+      passed: 2,
+      actionRequired: 5,
+    });
+    expect(report.businessGapActions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "production-oidc-env-config",
+          status: "action-required",
+          missing: [
+            "AAIS_OIDC_ISSUER",
+            "AAIS_OIDC_CLIENT_ID",
+            "AAIS_OIDC_CLIENT_SECRET",
+            "AAIS_OIDC_REDIRECT_URI",
+          ],
+          actions: [
+            "fill-private-env-template",
+            "verify-oidc-config-dry-run",
+            "set-vercel-production-env",
+            "redeploy-vercel-production",
+            "inspect-vercel-production-deployment",
+            "rerun-final-gate",
+          ],
+        }),
+        expect.objectContaining({
+          id: "neon-restore-rehearsal",
+          status: "action-required",
+          actions: ["fill-postgres-restore-template", "run-neon-restore-rehearsal", "rerun-final-gate"],
+        }),
+        expect.objectContaining({
+          id: "sso-only-cutover",
+          status: "passed",
+        }),
+        expect.objectContaining({
+          id: "current-release-consistency",
+          status: "action-required",
+          reasons: [
+            "release-identity",
+            "vercel-deployment-git-commit",
+            "scheduled-outbox-drain",
+          ],
+        }),
+      ]),
+    );
+    expect(report.externalActions[0].oidcOnboardingCommand).toBe(
+      "npm run prepare:oidc-sso -- --env-file .env.production.local --base-url https://aais-six.vercel.app --output output/aais-oidc-onboarding-report-latest.json --markdown-output output/aais-oidc-onboarding-report-latest.md --release-id aais-2026-06-30-rc-live-ai-deepseek-v4-pro",
+    );
+    expect(report.externalActions[0].note).toContain("IdP registration contract");
     expect(report.externalActions[0].commands).toEqual([
-      `npm run provision:vercel-env -- --env-file .env.production.local --report ${vercelEnvReportPath} --release-id aais-2026-06-30-rc-live-ai-deepseek-v4-flash --deployment-git-commit <git-sha> --output output/aais-vercel-env-provision-dry-run-latest.json`,
-      `npm run provision:vercel-env -- --env-file .env.production.local --report ${vercelEnvReportPath} --release-id aais-2026-06-30-rc-live-ai-deepseek-v4-flash --deployment-git-commit <git-sha> --apply --output output/aais-vercel-env-provision-apply-latest.json`,
+      `npm run provision:vercel-env -- --env-file .env.production.local --report ${vercelEnvReportPath} --release-id aais-2026-06-30-rc-live-ai-deepseek-v4-pro --deployment-git-commit <git-sha> --output output/aais-vercel-env-provision-dry-run-latest.json`,
+      `npm run provision:vercel-env -- --env-file .env.production.local --report ${vercelEnvReportPath} --release-id aais-2026-06-30-rc-live-ai-deepseek-v4-pro --deployment-git-commit <git-sha> --apply --output output/aais-vercel-env-provision-apply-latest.json`,
     ]);
     const oidcConfigDryRun = report.externalActions.find((action) => action.id === "verify-oidc-config-dry-run");
     expect(oidcConfigDryRun).toMatchObject({
@@ -343,19 +391,41 @@ describe("AAIS enterprise handoff generator", () => {
       "vercel env add AAIS_OIDC_REDIRECT_URI production",
     ]);
     const fillRestoreTemplate = report.externalActions.find((action) => action.id === "fill-postgres-restore-template");
+    expect(fillRestoreTemplate.neonApiPreparationCommand).toBe(
+      "npm run prepare:neon-restore -- --neon-env-file .env.neon-restore.local --output-env .env.postgres-restore.local --report output/aais-neon-restore-env-report-latest.json --release-id aais-2026-06-30-rc-live-ai-deepseek-v4-pro",
+    );
+    expect(fillRestoreTemplate.note).toContain("without printing the connection URI");
     expect(fillRestoreTemplate.commands).toEqual([
-      "npm run verify:postgres-restore -- --env-file .env.postgres-restore.local --database-provider neon --target-purpose restored-staging --output output/aais-postgres-restore-report-latest.json --release-id aais-2026-06-30-rc-live-ai-deepseek-v4-flash",
+      "npm run verify:postgres-restore -- --env-file .env.postgres-restore.local --source-env-file .env.production.local --database-provider neon --target-purpose restored-staging --output output/aais-postgres-restore-report-latest.json --release-id aais-2026-06-30-rc-live-ai-deepseek-v4-pro",
     ]);
     expect(report.externalActions.find((action) => action.id === "run-neon-restore-rehearsal").command)
       .toContain("npm run verify:postgres-restore");
     expect(report.externalActions.find((action) => action.id === "run-neon-restore-rehearsal").command)
+      .toContain("--env-file .env.postgres-restore.local");
+    expect(report.externalActions.find((action) => action.id === "run-neon-restore-rehearsal").command)
+      .toContain("--source-env-file .env.production.local");
+    expect(report.externalActions.find((action) => action.id === "run-neon-restore-rehearsal").command)
       .toContain("--target-purpose restored-staging");
+    expect(report.externalActions.find((action) => action.id === "run-neon-restore-rehearsal").command)
+      .not.toContain("--database-url");
+    expect(report.externalActions.find((action) => action.id === "run-neon-restore-rehearsal").note)
+      .toContain("Do not pass database URLs on the command line");
+    expect(report.externalActions.find((action) => action.id === "run-neon-restore-rehearsal").note)
+      .toContain("differs from production sources");
+    expect(report.externalActions.find((action) => action.id === "run-neon-restore-rehearsal").gapEvidenceCommand)
+      .toBe(
+        "npm run verify:enterprise-gaps -- --mode restore --restore-env-file .env.postgres-restore.local --source-env-file .env.production.local --restore-output output/aais-postgres-restore-report-latest.json --output output/aais-enterprise-gap-evidence-latest.json --release-id aais-2026-06-30-rc-live-ai-deepseek-v4-pro",
+      );
+    expect(report.externalActions.find((action) => action.id === "run-neon-restore-rehearsal").gapPreflightCommand)
+      .toBe(
+        "npm run verify:enterprise-gaps -- --mode restore --preflight-only --restore-env-file .env.postgres-restore.local --source-env-file .env.production.local --restore-output output/aais-postgres-restore-report-latest.json --output output/aais-enterprise-gap-evidence-latest.json --release-id aais-2026-06-30-rc-live-ai-deepseek-v4-pro",
+      );
     const inspectProductionDeploy = report.externalActions.find(
       (action) => action.id === "inspect-vercel-production-deployment",
     );
     expect(inspectProductionDeploy).toMatchObject({
       status: "required-after-production-deploy",
-      command: "npm run verify:vercel-deployment -- --deployment-url <deployment-url> --release-id aais-2026-06-30-rc-live-ai-deepseek-v4-flash --deployment-git-commit <git-sha> --output output/aais-vercel-deployment-report-latest.json",
+      command: "npm run verify:vercel-deployment -- --deployment-url <deployment-url> --release-id aais-2026-06-30-rc-live-ai-deepseek-v4-pro --deployment-git-commit <git-sha> --output output/aais-vercel-deployment-report-latest.json",
     });
     expect(inspectProductionDeploy.note).toContain("vercel deploy --prod -y --no-wait");
     expect(inspectProductionDeploy.note).toContain("AAIS_DEPLOYMENT_GIT_COMMIT_SHA");
@@ -369,9 +439,21 @@ describe("AAIS enterprise handoff generator", () => {
     );
     expect(callbackSmoke.command).not.toContain("--require-sso-only");
     expect(callbackSmoke.note).toContain("before disabling trial login");
+    expect(callbackSmoke.gapEvidenceCommand).toBe(
+      "npm run verify:enterprise-gaps -- --mode oidc-callback --env-file .env.enterprise-smoke.local --base-url https://aais-six.vercel.app --enterprise-output output/aais-enterprise-report-latest.json --output output/aais-enterprise-gap-evidence-latest.json --release-id aais-2026-06-30-rc-live-ai-deepseek-v4-pro",
+    );
+    expect(callbackSmoke.gapPreflightCommand).toBe(
+      "npm run verify:enterprise-gaps -- --mode oidc-callback --preflight-only --env-file .env.enterprise-smoke.local --base-url https://aais-six.vercel.app --enterprise-output output/aais-enterprise-report-latest.json --output output/aais-enterprise-gap-evidence-latest.json --release-id aais-2026-06-30-rc-live-ai-deepseek-v4-pro",
+    );
     const cohortSmoke = report.externalActions.find((action) => action.id === "run-teacher-cohort-analytics-smoke");
     expect(cohortSmoke.command).toContain(
       "AAIS_VERIFY_OIDC_CALLBACK_URL=<REQUIRED:TRANSIENT_TEACHER_OR_ADMIN_OIDC_CALLBACK_URL>",
+    );
+    expect(cohortSmoke.gapEvidenceCommand).toBe(
+      "npm run verify:enterprise-gaps -- --mode cohort-sso --env-file .env.enterprise-smoke.local --base-url https://aais-six.vercel.app --enterprise-output output/aais-enterprise-report-latest.json --output output/aais-enterprise-gap-evidence-latest.json --release-id aais-2026-06-30-rc-live-ai-deepseek-v4-pro",
+    );
+    expect(cohortSmoke.gapPreflightCommand).toBe(
+      "npm run verify:enterprise-gaps -- --mode cohort-sso --preflight-only --env-file .env.enterprise-smoke.local --base-url https://aais-six.vercel.app --enterprise-output output/aais-enterprise-report-latest.json --output output/aais-enterprise-gap-evidence-latest.json --release-id aais-2026-06-30-rc-live-ai-deepseek-v4-pro",
     );
     expect(cohortSmoke.command).toContain(
       "AAIS_VERIFY_OIDC_STATE_COOKIE=<REQUIRED:TRANSIENT_TEACHER_OR_ADMIN_OIDC_STATE_COOKIE>",
@@ -389,11 +471,15 @@ describe("AAIS enterprise handoff generator", () => {
     expect(JSON.parse(await readFile(outputPath, "utf8"))).toEqual(report);
     const markdown = await readFile(markdownOutputPath, "utf8");
     expect(markdown).toContain("AAIS Enterprise Handoff");
+    expect(markdown).toContain("Business Gap Action Plan");
+    expect(markdown).toContain("production-oidc-env-config");
+    expect(markdown).toContain("current-release-consistency");
     expect(markdown).toContain("Storage / Neon");
     expect(markdown).toContain("OIDC / SSO");
     expect(markdown).toContain("callback URL to register: https://aais-six.vercel.app/api/auth/oidc/callback");
     expect(markdown).toContain("accepted role mapping names: AAIS_OIDC_TEACHER_GROUPS, AAIS_OIDC_TEACHER_EMAILS, AAIS_OIDC_ADMIN_GROUPS, AAIS_OIDC_ADMIN_EMAILS");
     expect(markdown).toContain("cohort export JSON");
+    expect(markdown).toContain("--preflight-only");
     expect(markdown).toContain(privateEnvTemplatePath);
     expect(markdown).toContain(".env.production.local");
     expect(markdown).toContain(postgresRestoreTemplatePath);
@@ -414,6 +500,9 @@ describe("AAIS enterprise handoff generator", () => {
       checkedAt: "2026-06-30T08:00:00.000Z",
       artifacts: {
         vercelEnv: {
+          target: {
+            authMode: "sso-only",
+          },
           missing: [],
         },
         postgresRestore: {
@@ -456,6 +545,9 @@ describe("AAIS enterprise handoff generator", () => {
       checkedAt: "2026-06-30T08:00:00.000Z",
       artifacts: {
         vercelEnv: {
+          target: {
+            authMode: "sso-only",
+          },
           missing: [],
         },
         postgresRestore: {
@@ -533,6 +625,9 @@ describe("AAIS enterprise handoff generator", () => {
       checkedAt: "2026-06-30T08:00:00.000Z",
       artifacts: {
         vercelEnv: {
+          target: {
+            authMode: "sso-only",
+          },
           missing: [],
         },
         enterprise: {
@@ -542,6 +637,7 @@ describe("AAIS enterprise handoff generator", () => {
             ssoOnlyMode: false,
           },
         },
+        aiEval: passingAiEvalSummary(),
         postgresRestore: {
           status: "passed",
         },
@@ -603,6 +699,7 @@ describe("AAIS enterprise handoff generator", () => {
             ssoOnlyMode: false,
           },
         },
+        aiEval: passingAiEvalSummary(),
         postgresRestore: {
           status: "passed",
         },
@@ -655,6 +752,7 @@ describe("AAIS enterprise handoff generator", () => {
             ssoOnlyMode: true,
           },
         },
+        aiEval: passingAiEvalSummary(),
         postgresRestore: {
           status: "passed",
         },
@@ -688,6 +786,9 @@ describe("AAIS enterprise handoff generator", () => {
       checkedAt: "2026-06-30T08:00:00.000Z",
       artifacts: {
         vercelEnv: {
+          target: {
+            authMode: "sso-only",
+          },
           missing: [],
         },
         enterprise: {
@@ -741,6 +842,9 @@ describe("AAIS enterprise handoff generator", () => {
       checkedAt: "2026-06-30T08:00:00.000Z",
       artifacts: {
         vercelEnv: {
+          target: {
+            authMode: "sso-only",
+          },
           missing: [],
         },
         enterprise: {
@@ -781,6 +885,9 @@ describe("AAIS enterprise handoff generator", () => {
       checkedAt: "2026-06-30T08:00:00.000Z",
       artifacts: {
         vercelEnv: {
+          target: {
+            authMode: "sso-only",
+          },
           missing: [],
         },
         enterprise: {
@@ -791,6 +898,7 @@ describe("AAIS enterprise handoff generator", () => {
             ssoOnlyMode: true,
           },
         },
+        aiEval: passingAiEvalSummary(),
         postgresRestore: {
           status: "passed",
         },
@@ -955,7 +1063,68 @@ describe("AAIS enterprise handoff generator", () => {
     expect(markdown).toContain("source env: DATABASE_URL");
     expect(markdown).toContain("action: none");
     expect(markdown).toContain("OIDC / SSO");
-    expect(markdown).toContain("missing required names: AAIS_OIDC_ISSUER, AAIS_OIDC_CLIENT_ID, AAIS_OIDC_CLIENT_SECRET, AAIS_OIDC_REDIRECT_URI");
+    expect(markdown).toContain("missing Vercel OIDC names: AAIS_OIDC_ISSUER, AAIS_OIDC_CLIENT_ID, AAIS_OIDC_CLIENT_SECRET, AAIS_OIDC_REDIRECT_URI");
+    expect(markdown).toContain("local verify:oidc-config required names: AAIS_OIDC_ISSUER, AAIS_OIDC_CLIENT_ID, AAIS_OIDC_CLIENT_SECRET, AAIS_OIDC_REDIRECT_URI");
+    expect(markdown).toContain("local validation-only names: none");
+  });
+
+  it("calls out OIDC redirect URI as local validation-only when Vercel already has it", async () => {
+    const releaseCheckReportPath = await writeJson("release-check.json", {
+      schemaVersion: 1,
+      status: "failed",
+      checkedAt: "2026-07-01T08:00:00.000Z",
+      artifacts: {
+        vercelEnv: {
+          status: "failed",
+          missing: [
+            "AAIS_OIDC_ISSUER",
+            "AAIS_OIDC_CLIENT_ID",
+            "AAIS_OIDC_CLIENT_SECRET",
+            "AAIS_OIDC_TEACHER_GROUPS",
+          ],
+        },
+        enterprise: {
+          requiredChecks: {
+            legalPages: true,
+            ssoOnlyMode: false,
+            oidcCallback: false,
+            cohortAnalytics: false,
+          },
+        },
+        postgresRestore: {
+          status: "missing",
+        },
+      },
+    });
+
+    const report = await generateAaisEnterpriseHandoff({
+      releaseCheckReportPath,
+      vercelEnvReportPath: releaseCheckReportPath,
+      provisionReportPath: releaseCheckReportPath,
+      localCredentialFiles: [],
+      baseUrl: "https://www.aais.site",
+      outputPath: path.join(tempDir, "handoff.json"),
+      markdownOutputPath: path.join(tempDir, "handoff.md"),
+      now: new Date("2026-07-01T08:30:00.000Z"),
+    });
+
+    expect(report.oidc).toMatchObject({
+      missingRequiredNames: [
+        "AAIS_OIDC_ISSUER",
+        "AAIS_OIDC_CLIENT_ID",
+        "AAIS_OIDC_CLIENT_SECRET",
+      ],
+      localValidationOnlyNames: ["AAIS_OIDC_REDIRECT_URI"],
+      localValidationRequiredNames: [
+        "AAIS_OIDC_ISSUER",
+        "AAIS_OIDC_CLIENT_ID",
+        "AAIS_OIDC_CLIENT_SECRET",
+        "AAIS_OIDC_REDIRECT_URI",
+      ],
+    });
+    const markdown = await readFile(path.join(tempDir, "handoff.md"), "utf8");
+    expect(markdown).toContain("missing Vercel OIDC names: AAIS_OIDC_ISSUER, AAIS_OIDC_CLIENT_ID, AAIS_OIDC_CLIENT_SECRET");
+    expect(markdown).toContain("local validation-only names: AAIS_OIDC_REDIRECT_URI");
   });
 
   it("accepts alternate local OIDC role mapping names when Vercel requests the canonical teacher-group slot", async () => {
@@ -974,6 +1143,7 @@ describe("AAIS enterprise handoff generator", () => {
             ssoOnlyMode: true,
           },
         },
+        aiEval: passingAiEvalSummary(),
         postgresRestore: {
           status: "passed",
         },
@@ -1049,6 +1219,7 @@ describe("AAIS enterprise handoff generator", () => {
             releaseIdMatchesExpected: true,
           },
         },
+        aiEval: passingAiEvalSummary(),
         postgresRestore: {
           status: "passed",
         },
@@ -1113,6 +1284,7 @@ describe("AAIS enterprise handoff generator", () => {
             releaseIdMatchesExpected: true,
           },
         },
+        aiEval: passingAiEvalSummary(),
         postgresRestore: {
           status: "passed",
         },
@@ -1176,6 +1348,7 @@ describe("AAIS enterprise handoff generator", () => {
             releaseIdMatchesExpected: true,
           },
         },
+        aiEval: passingAiEvalSummary(),
         postgresRestore: {
           status: "passed",
         },
@@ -1239,6 +1412,7 @@ describe("AAIS enterprise handoff generator", () => {
             releaseIdMatchesExpected: false,
           },
         },
+        aiEval: passingAiEvalSummary(),
         postgresRestore: {
           status: "passed",
         },
@@ -1303,6 +1477,7 @@ describe("AAIS enterprise handoff generator", () => {
             releaseIdMatchesExpected: true,
           },
         },
+        aiEval: passingAiEvalSummary(),
         postgresRestore: {
           status: "passed",
         },
@@ -1389,7 +1564,135 @@ describe("AAIS enterprise handoff generator", () => {
       process.chdir(originalCwd);
     }
   });
+
+  it("adds enterprise gap evidence commands when live A1-A4 AI eval is incomplete", async () => {
+    const releaseCheckReportPath = await writeJson("release-check.json", {
+      status: "failed",
+      checkedAt: "2026-07-01T09:00:00.000Z",
+      artifacts: {
+        vercelEnv: {
+          status: "passed",
+          missing: [],
+        },
+        enterprise: {
+          status: "passed",
+          readiness: {
+            releaseIdMatchesExpected: true,
+          },
+          requiredChecks: {
+            legalPages: true,
+            agentEvidence: true,
+            oidcCallback: true,
+            cohortAnalytics: true,
+            ssoOnlyMode: true,
+          },
+          artifactCoalescing: {
+            complete: true,
+          },
+        },
+        aiEval: {
+          status: "missing",
+        },
+        postgresRestore: {
+          status: "passed",
+        },
+        vercelDeployment: {
+          status: "passed",
+        },
+        vercelConfig: {
+          status: "passed",
+        },
+      },
+    });
+    const enterpriseGapEvidenceReportPath = await writeJson("gap-evidence.json", {
+      status: "action-required",
+      mode: "all",
+      preflight: {
+        status: "action-required",
+        required: {
+          missing: [
+            "AAIS_VERIFY_OIDC_CALLBACK_URL",
+            "AAIS_VERIFY_OIDC_STATE_COOKIE",
+            "AAIS_AI_ENDPOINT",
+            "AAIS_AI_API_KEY",
+            "AAIS_AI_MODEL",
+            "AAIS_AI_EVAL_VERSION",
+          ],
+          placeholders: ["AAIS_RESTORE_DATABASE_URL"],
+          invalid: [],
+        },
+        liveAiEvalEvidence: {
+          endpointPresent: false,
+          endpointHttps: false,
+          apiKeyPresent: false,
+          modelPresent: false,
+          evalVersionPresent: false,
+        },
+      },
+    });
+
+    const report = await generateAaisEnterpriseHandoff({
+      releaseCheckReportPath,
+      vercelEnvReportPath: releaseCheckReportPath,
+      provisionReportPath: releaseCheckReportPath,
+      enterpriseGapEvidenceReportPath,
+      outputPath: path.join(tempDir, "handoff.json"),
+      markdownOutputPath: path.join(tempDir, "handoff.md"),
+      baseUrl: "https://aais-six.vercel.app",
+      releaseId: "aais-2026-06-30-rc-live-ai-deepseek-v4-pro",
+      aiEvalManifestPath: "output/aais-ai-eval-deepseek-v4-pro.json",
+      now: new Date("2026-07-01T09:05:00.000Z"),
+    });
+
+    expect(report.missing.liveAiEval).toBe(true);
+    expect(report.sourceReports.enterpriseGapEvidence).toBe(enterpriseGapEvidenceReportPath);
+    expect(report.gapEvidencePreflight).toMatchObject({
+      status: "action-required",
+      missing: [
+        "AAIS_VERIFY_OIDC_CALLBACK_URL",
+        "AAIS_VERIFY_OIDC_STATE_COOKIE",
+        "AAIS_AI_ENDPOINT",
+        "AAIS_AI_API_KEY",
+        "AAIS_AI_MODEL",
+        "AAIS_AI_EVAL_VERSION",
+      ],
+      placeholders: ["AAIS_RESTORE_DATABASE_URL"],
+    });
+    expect(report.externalActions.map((action) => action.id)).toEqual([
+      "run-live-ai-eval",
+      "rerun-final-gate",
+    ]);
+    const liveAiEval = report.externalActions.find((action) => action.id === "run-live-ai-eval");
+    expect(liveAiEval.preflightStatus).toBe("action-required");
+    expect(liveAiEval.missingInputs).toEqual([
+      "AAIS_AI_ENDPOINT",
+      "AAIS_AI_API_KEY",
+      "AAIS_AI_MODEL",
+      "AAIS_AI_EVAL_VERSION",
+    ]);
+    expect(liveAiEval.command).toBe(
+      "npm run ai:evaluate -- --env-file .env.production.local --output output/aais-ai-eval-deepseek-v4-pro.json --env-json-output output/aais-ai-eval-inline-latest.json --eval-version <AAIS_AI_EVAL_VERSION> --release-id aais-2026-06-30-rc-live-ai-deepseek-v4-pro",
+    );
+    expect(liveAiEval.gapEvidenceCommand).toBe(
+      "npm run verify:enterprise-gaps -- --mode live-ai-eval --ai-eval-env-file .env.production.local --ai-eval-output output/aais-ai-eval-deepseek-v4-pro.json --ai-eval-inline-output output/aais-ai-eval-inline-latest.json --output output/aais-enterprise-gap-evidence-latest.json --release-id aais-2026-06-30-rc-live-ai-deepseek-v4-pro",
+    );
+    expect(liveAiEval.gapPreflightCommand).toBe(
+      "npm run verify:enterprise-gaps -- --mode live-ai-eval --preflight-only --ai-eval-env-file .env.production.local --ai-eval-output output/aais-ai-eval-deepseek-v4-pro.json --ai-eval-inline-output output/aais-ai-eval-inline-latest.json --output output/aais-enterprise-gap-evidence-latest.json --release-id aais-2026-06-30-rc-live-ai-deepseek-v4-pro",
+    );
+    expect(liveAiEval.note).toContain("aais-a1-a4-ca-eval-v2");
+  });
 });
+
+function passingAiEvalSummary() {
+  return {
+    status: "passed",
+    compatibleWithEnterpriseReadiness: true,
+    blockedCount: 0,
+    agentEvidenceComplete: true,
+    agentEvidenceContractVersion: "aais-a1-a4-ca-eval-v2",
+    modelFingerprintMatchesEnterprise: true,
+  };
+}
 
 async function writeJson(name, value) {
   const filePath = path.join(tempDir, name);
