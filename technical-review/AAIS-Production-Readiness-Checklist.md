@@ -24,7 +24,7 @@ Codex implementation progress is tracked separately in `20260709-AAIS-Advisory-I
 
 ## Deployment
 
-- [ ] Deploys only from Git (`main`) via CI; laptop deploys disabled — local source guard exists in `vercel.json`, `scripts/guard-vercel-production-deploy.mjs`, and `tests/vercel-production-deploy-guard.test.mjs`; GitHub remote/protected `main`, Vercel Git integration, and provider-side direct-deploy lockout still require owner/provider proof
+- [ ] Deploys only from Git (`main`) via CI; laptop deploys disabled — private GitHub repo `https://github.com/HUDongpin/AAIS` exists and commit `c3f5261` is on remote `main`; local source guard exists in `vercel.json`, `scripts/guard-vercel-production-deploy.mjs`, and `tests/vercel-production-deploy-guard.test.mjs`; protected `main` is blocked by GitHub's private-repo plan limit until GitHub Pro or public visibility is available; Vercel Git integration and provider-side direct-deploy lockout still require owner/provider proof
 - [ ] Staging environment with seeded data; every change staged first
 - [ ] One-step rollback documented and rehearsed (Vercel redeploy + snapshot)
 - [x] Environment variables documented in `.env.example` for local/staging/prod — source proof: `.env.example`
