@@ -1,91 +1,368 @@
 import { NextResponse } from "next/server";
-import { runAaisLearningGuideGraph } from "@/lib/ai/orchestration/aais-learning-guide-graph";
+import {
+  runAaisLearningGuideGraph,
+  type AaisGuideInput,
+} from "@/lib/ai/orchestration/aais-learning-guide-graph";
 import {
   getAaisLearningStore,
   isAaisLearningStorageConfigurationError,
+  isAaisSessionWriteConflictError,
 } from "@/lib/server/aais-learning-store";
 import { isAaisCsrfError, requireAaisCsrf } from "@/lib/server/aais-csrf";
 import { isAaisAuthError, resolveAaisStudentId } from "@/lib/server/aais-request-auth";
+import {
+  normalizeAaisGuideTargetAgentIds,
+  resolveAaisGuideTargetAgentIds,
+} from "@/lib/ai/aais-guide-targets";
+import { normalizeAaisGuideAttachments } from "@/lib/ai/aais-guide-attachments";
+import {
+  AaisApiRouteError,
+  createAaisApiErrorBody,
+  createAaisApiErrorResponse,
+  isAaisApiRouteError,
+} from "@/lib/server/aais-api-error";
+import { recordAaisAuditEvent } from "@/lib/server/aais-audit-log";
 import type { AaisPhase, Locale } from "@/data/aais";
 
+type AaisGuideRequestBody = {
+  locale?: Locale;
+  studentId?: string;
+  phase?: AaisPhase;
+  taskId?: string;
+  learnerInput?: string;
+  targetAgentIds?: string[];
+  workspaceState?: {
+    currentStep?: string;
+    artifactText?: string;
+    helpRequestsUsed?: number;
+    attachments?: unknown;
+  };
+} | null;
+
+const defaultDailyGuideLimit = 40;
+const maxDailyGuideLimit = 200;
+
 export async function POST(request: Request) {
-  const body = (await request.json().catch(() => null)) as {
-    locale?: Locale;
-    studentId?: string;
-    phase?: AaisPhase;
-    taskId?: string;
-    learnerInput?: string;
-    workspaceState?: {
-      currentStep?: string;
-      artifactText?: string;
-      helpRequestsUsed?: number;
-    };
-  } | null;
+  const body = (await request.json().catch(() => null)) as AaisGuideRequestBody;
 
   if (!body?.learnerInput?.trim()) {
-    return NextResponse.json({ error: "learnerInput is required" }, { status: 400 });
+    return createAaisApiErrorResponse({
+      code: "AAIS_GUIDE_INPUT_REQUIRED",
+      message: "learnerInput is required",
+      status: 400,
+    });
   }
 
   try {
-    const studentId = resolveAaisStudentId(request);
+    const studentId = await resolveAaisStudentId(request);
     requireAaisCsrf(request, studentId);
     const store = getAaisLearningStore();
-    const result = await runAaisLearningGuideGraph({
+    const budget = await requireDailyGuideBudget(studentId, store);
+    const targetAgentIds = normalizeAaisGuideTargetAgentIds(
+      body.targetAgentIds,
+      body.learnerInput,
+    );
+    const attachments = normalizeGuideAttachments(body.workspaceState?.attachments);
+    const input: AaisGuideInput = {
       locale: body.locale === "en-US" ? "en-US" : "zh-CN",
       studentId,
       phase: body.phase === "practice" ? "practice" : "training",
       taskId: body.taskId ?? "training_task_1",
       learnerInput: body.learnerInput,
+      ...(targetAgentIds ? { targetAgentIds } : {}),
       workspaceState: {
         currentStep: body.workspaceState?.currentStep ?? "smart-guide",
         artifactText: body.workspaceState?.artifactText,
         helpRequestsUsed: body.workspaceState?.helpRequestsUsed,
+        ...(attachments.length ? { attachments } : {}),
       },
-    });
+    };
+
+    if (isGuideStreamRequest(request)) {
+      return createGuideStreamResponse({
+        input,
+        store,
+        question: body.learnerInput,
+        budget,
+      });
+    }
+
+    const result = await runAaisLearningGuideGraph(input);
     await store.appendGuideExchange({
       studentId,
       phase: body.phase === "practice" ? "practice" : "training",
       taskId: body.taskId ?? "training_task_1",
       question: body.learnerInput,
       answer: result.messageText,
-      turns: result.turns,
+      turns: result.visibleTurns,
       orchestration: {
         graphId: result.graph.graphId,
         topologicalOrder: result.graph.topologicalOrder,
         threadId: result.runtime.threadId,
       },
     });
+    const finalizedBudget = finalizeDailyGuideBudget(budget);
+    recordGuideBudgetAudit({
+      studentId,
+      event: "ai.guide.budget.used",
+      outcome: "success",
+      budget: finalizedBudget,
+    });
 
     return NextResponse.json({
-      message: {
-        text: result.messageText,
-      },
-      turns: result.turns,
-      orchestration: {
-        graph: result.graph,
-        runtime: result.runtime,
-        trace: result.trace,
-      },
+      ...createGuideJsonBody(result),
+      budget: finalizedBudget,
     });
   } catch (error) {
-    return NextResponse.json(
-      {
-        error: error instanceof Error ? error.message : "AAIS guide request failed.",
-      },
-      { status: getErrorStatus(error) },
-    );
+    return createAaisApiErrorResponse(getErrorResponseInput(error));
   }
 }
 
-function getErrorStatus(error: unknown) {
+function normalizeGuideAttachments(value: unknown) {
+  try {
+    return normalizeAaisGuideAttachments(value);
+  } catch {
+    throw new AaisApiRouteError({
+      code: "AAIS_GUIDE_ATTACHMENT_INVALID",
+      message: "AAIS guide attachment is invalid.",
+      status: 400,
+    });
+  }
+}
+
+function getErrorResponseInput(error: unknown) {
+  if (isAaisApiRouteError(error)) {
+    return {
+      code: error.code,
+      message: error.message,
+      status: error.status,
+    };
+  }
   if (isAaisAuthError(error)) {
-    return 401;
+    return {
+      code: "AAIS_AUTH_REQUIRED",
+      message: "AAIS authentication is required.",
+      status: 401,
+    };
   }
   if (isAaisCsrfError(error)) {
-    return 403;
+    return {
+      code: "AAIS_CSRF_REQUIRED",
+      message: "AAIS CSRF token is required.",
+      status: 403,
+    };
   }
   if (isAaisLearningStorageConfigurationError(error)) {
-    return 503;
+    return {
+      code: "AAIS_STORAGE_NOT_CONFIGURED",
+      message: "AAIS production learner storage requires Postgres configuration.",
+      status: 503,
+    };
   }
-  return 400;
+  if (isAaisSessionWriteConflictError(error)) {
+    return {
+      code: "AAIS_SESSION_WRITE_CONFLICT",
+      message: "AAIS learner session write conflict.",
+      status: 409,
+    };
+  }
+  if (error instanceof AaisGuideDailyBudgetError) {
+    return {
+      code: "AAIS_GUIDE_DAILY_BUDGET_EXCEEDED",
+      message: "AAIS daily guide request budget has been reached.",
+      status: 429,
+      extra: {
+        budget: error.budget,
+        secrets: "redacted",
+      },
+    };
+  }
+  return {
+    code: "AAIS_GUIDE_REQUEST_FAILED",
+    message: "AAIS guide request failed.",
+    status: 400,
+    cause: error,
+    route: "/api/learning/ai-guide",
+  };
+}
+
+function createGuideJsonBody(result: Awaited<ReturnType<typeof runAaisLearningGuideGraph>>) {
+  return {
+    message: {
+      text: result.messageText,
+    },
+    turns: result.visibleTurns,
+    backgroundTurns: result.backgroundTurns,
+    orchestration: {
+      graph: result.graph,
+      runtime: result.runtime,
+      trace: result.trace,
+    },
+  };
+}
+
+function isGuideStreamRequest(request: Request) {
+  const acceptsStream = request.headers.get("accept")?.includes("text/event-stream") ?? false;
+  const streamParam = new URL(request.url).searchParams.get("stream") === "1";
+  return acceptsStream || streamParam;
+}
+
+function createGuideStreamResponse(input: {
+  input: Parameters<typeof runAaisLearningGuideGraph>[0];
+  store: ReturnType<typeof getAaisLearningStore>;
+  question: string;
+  budget: AaisGuideDailyBudget;
+}) {
+  const encoder = new TextEncoder();
+  const stream = new ReadableStream({
+    async start(controller) {
+      const send = (event: string, data: Record<string, unknown>) => {
+        controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
+      };
+      try {
+        const targetAgentIds = resolveAaisGuideTargetAgentIds(input.input.targetAgentIds);
+        send("ack", {
+          status: "accepted",
+          graphId: "learning-ai-guide",
+          budget: finalizeDailyGuideBudget(input.budget),
+        });
+        for (const agentId of targetAgentIds) {
+          send("agent_start", { agentId });
+        }
+
+        const result = await runAaisLearningGuideGraph(input.input);
+        await input.store.appendGuideExchange({
+          studentId: input.input.studentId,
+          phase: input.input.phase,
+          taskId: input.input.taskId,
+          question: input.question,
+          answer: result.messageText,
+          turns: result.visibleTurns,
+          orchestration: {
+            graphId: result.graph.graphId,
+            topologicalOrder: result.graph.topologicalOrder,
+            threadId: result.runtime.threadId,
+          },
+        });
+        const finalizedBudget = finalizeDailyGuideBudget(input.budget);
+        recordGuideBudgetAudit({
+          studentId: input.input.studentId,
+          event: "ai.guide.budget.used",
+          outcome: "success",
+          budget: finalizedBudget,
+        });
+
+        for (const turn of result.visibleTurns) {
+          send("agent_delta", {
+            agentId: turn.agentId,
+            content: turn.content,
+          });
+          send("agent_done", {
+            agentId: turn.agentId,
+            status: result.runtime.timings.agents.find((agent) => agent.agentId === turn.agentId)?.status,
+          });
+        }
+        if (result.runtime.timings.fallback) {
+          send("fallback", {
+            timeoutReason: result.runtime.timings.timeoutReason,
+          });
+        }
+        send("background_done", {
+          agents: result.backgroundTurns.map((turn) => turn.agentId),
+        });
+      } catch {
+        send("error", {
+          ...createAaisApiErrorBody(
+            "AAIS_GUIDE_STREAM_FAILED",
+            "AAIS guide stream failed.",
+          ),
+        });
+      } finally {
+        controller.close();
+      }
+    },
+  });
+
+  return new Response(stream, {
+    status: 200,
+    headers: {
+      "content-type": "text/event-stream;charset=utf-8",
+      "cache-control": "no-store",
+      connection: "keep-alive",
+    },
+  });
+}
+
+type AaisGuideDailyBudget = {
+  limit: number;
+  used: number;
+  remaining: number;
+  resetsAt: string;
+};
+
+class AaisGuideDailyBudgetError extends Error {
+  constructor(readonly budget: AaisGuideDailyBudget) {
+    super("AAIS daily guide request budget has been reached.");
+    this.name = "AaisGuideDailyBudgetError";
+  }
+}
+
+async function requireDailyGuideBudget(
+  studentId: string,
+  store: ReturnType<typeof getAaisLearningStore>,
+): Promise<AaisGuideDailyBudget> {
+  const limit = readDailyGuideLimit();
+  const usage = await store.getDailyGuideUsage(studentId);
+  const budget = {
+    limit,
+    used: usage.used,
+    remaining: Math.max(0, limit - usage.used),
+    resetsAt: usage.end,
+  };
+  if (budget.remaining <= 0) {
+    recordGuideBudgetAudit({
+      studentId,
+      event: "ai.guide.budget.exceeded",
+      outcome: "failure",
+      budget,
+    });
+    throw new AaisGuideDailyBudgetError(budget);
+  }
+  return budget;
+}
+
+function finalizeDailyGuideBudget(budget: AaisGuideDailyBudget): AaisGuideDailyBudget {
+  const used = budget.used + 1;
+  return {
+    ...budget,
+    used,
+    remaining: Math.max(0, budget.limit - used),
+  };
+}
+
+function readDailyGuideLimit() {
+  const configured = Number(process.env.AAIS_AI_DAILY_GUIDE_LIMIT);
+  if (!Number.isFinite(configured) || configured <= 0) {
+    return defaultDailyGuideLimit;
+  }
+  return Math.min(maxDailyGuideLimit, Math.floor(configured));
+}
+
+function recordGuideBudgetAudit(input: {
+  studentId: string;
+  event: "ai.guide.budget.used" | "ai.guide.budget.exceeded";
+  outcome: "success" | "failure";
+  budget: AaisGuideDailyBudget;
+}) {
+  recordAaisAuditEvent({
+    event: input.event,
+    actorId: input.studentId,
+    outcome: input.outcome,
+    metadata: {
+      limit: input.budget.limit,
+      used: input.budget.used,
+      remaining: input.budget.remaining,
+      resetsAt: input.budget.resetsAt,
+    },
+  });
 }

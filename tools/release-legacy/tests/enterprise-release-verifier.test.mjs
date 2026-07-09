@@ -90,6 +90,49 @@ describe("AAIS enterprise release verifier", () => {
     expect(serialized).not.toContain("UND_ERR_CONNECT_TIMEOUT");
   });
 
+  it("uses a readiness bearer token for detailed readiness evidence without storing it", async () => {
+    const readinessAuthorizations = [];
+    const fetchMock = vi.fn(async (input, init = {}) => {
+      const url = String(input);
+      if (url === "https://aais.example.test/api/system/readiness") {
+        readinessAuthorizations.push(readAuthorizationHeader(init));
+        return Response.json(readinessBody({
+          trialAccounts: {
+            status: "ok",
+            configured: true,
+            accountCount: 1,
+          },
+          oidc: oidcMissingCheck(),
+        }), {
+          headers: createSecurityHeaders(),
+        });
+      }
+      if (isLegalPageUrl(url)) {
+        return legalPageResponse(url);
+      }
+      if (url === "https://aais.example.test/api/learning/lrs/health") {
+        return Response.json(lrsHealthBody(), { headers: createSecurityHeaders() });
+      }
+      return Response.json({ status: "not-used" }, { status: 404 });
+    });
+
+    const report = await runEnterpriseReleaseVerification({
+      baseUrl: "https://aais.example.test",
+      fetchImpl: fetchMock,
+      releaseId: "aais-2026-06-30-rc1",
+      readinessBearerToken: "readiness-token-with-at-least-32-characters",
+    });
+
+    expect(readinessAuthorizations).toEqual([
+      "Bearer readiness-token-with-at-least-32-characters",
+      undefined,
+    ]);
+    expect(report.checks.find((check) => check.name === "readiness")).toMatchObject({
+      status: "passed",
+    });
+    expect(JSON.stringify(report)).not.toContain("readiness-token-with-at-least-32-characters");
+  });
+
   it("verifies trial-auth readiness, optional learning session, and login throttling without leaking secrets", async () => {
     const fetchMock = vi.fn(async (input, init = {}) => {
       const url = String(input);
@@ -185,7 +228,13 @@ describe("AAIS enterprise release verifier", () => {
           }).length;
           if (wrongAttemptCount >= 6) {
             return Response.json(
-              { error: "Too many login attempts. Please retry later.", retryAfterSeconds: 900 },
+              {
+                error: {
+                  code: "AAIS_LOGIN_RATE_LIMITED",
+                  message: "Too many login attempts. Please retry later.",
+                },
+                retryAfterSeconds: 900,
+              },
               { status: 429 },
             );
           }
@@ -208,15 +257,29 @@ describe("AAIS enterprise release verifier", () => {
           }).length;
           return Response.json(
             attempt <= 5
-              ? { error: "Invalid AAIS trial account or password." }
-              : { error: "Too many login attempts. Please retry later.", retryAfterSeconds: 900 },
+              ? {
+                  error: {
+                    code: "AAIS_INVALID_CREDENTIALS",
+                    message: "Invalid AAIS trial account or password.",
+                  },
+                }
+              : {
+                  error: {
+                    code: "AAIS_LOGIN_RATE_LIMITED",
+                    message: "Too many login attempts. Please retry later.",
+                  },
+                  retryAfterSeconds: 900,
+                },
             {
               status: attempt <= 5 ? 401 : 429,
               headers: attempt <= 5 ? {} : { "retry-after": "900" },
             },
           );
         }
-        return Response.json({ error: "unexpected password" }, { status: 500 });
+        return Response.json(
+          { error: { code: "AAIS_TEST_UNEXPECTED", message: "unexpected password" } },
+          { status: 500 },
+        );
       }
       if (url === "https://aais.example.test/api/learning/session") {
         expect(init.headers.cookie).toContain("aais_session=");
@@ -1806,7 +1869,12 @@ describe("AAIS enterprise release verifier", () => {
       }
       if (url === "/api/auth/app-session" && request.method === "POST") {
         response.writeHead(404, { "content-type": "application/json" });
-        response.end(JSON.stringify({ error: "AAIS trial login is disabled." }));
+        response.end(JSON.stringify({
+          error: {
+            code: "AAIS_TRIAL_LOGIN_DISABLED",
+            message: "AAIS trial login is disabled.",
+          },
+        }));
         return;
       }
       response.writeHead(500);
@@ -2083,7 +2151,12 @@ describe("AAIS enterprise release verifier", () => {
       if (url === "https://aais.example.test/api/auth/app-session") {
         expect(String(init.body)).toContain("aais-sso-only-smoke");
         return Response.json(
-          { error: "AAIS trial login is disabled." },
+          {
+            error: {
+              code: "AAIS_TRIAL_LOGIN_DISABLED",
+              message: "AAIS trial login is disabled.",
+            },
+          },
           { status: 404 },
         );
       }
@@ -2192,7 +2265,15 @@ describe("AAIS enterprise release verifier", () => {
       }
       if (url === "https://aais.example.test/api/auth/app-session") {
         expect(init.method).toBe("POST");
-        return Response.json({ error: "Trial login disabled." }, { status: 404 });
+        return Response.json(
+          {
+            error: {
+              code: "AAIS_TRIAL_LOGIN_DISABLED",
+              message: "AAIS trial login is disabled.",
+            },
+          },
+          { status: 404 },
+        );
       }
       if (url.includes("/api/auth/oidc/callback")) {
         throw new Error("placeholder OIDC callback URL should not be fetched");
@@ -2445,7 +2526,12 @@ describe("AAIS enterprise release verifier", () => {
       if (url === "https://aais.example.test/api/auth/app-session") {
         expect(init.method).toBe("POST");
         return Response.json(
-          { error: "AAIS trial login is disabled." },
+          {
+            error: {
+              code: "AAIS_TRIAL_LOGIN_DISABLED",
+              message: "AAIS trial login is disabled.",
+            },
+          },
           { status: 404 },
         );
       }
@@ -2493,6 +2579,13 @@ function createSecurityHeaders() {
     "cross-origin-opener-policy": "same-origin",
     "x-vercel-id": "hkg1::iad1::redacted-request-id",
   };
+}
+
+function readAuthorizationHeader(init = {}) {
+  if (init.headers instanceof Headers) {
+    return init.headers.get("authorization") ?? undefined;
+  }
+  return init.headers?.authorization ?? init.headers?.Authorization;
 }
 
 function isLegalPageUrl(url) {

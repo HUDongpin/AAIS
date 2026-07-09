@@ -9,6 +9,7 @@ export async function runEnterpriseReleaseVerification(input) {
   const requireSsoOnly = input.requireSsoOnly === true;
   const releaseId = readReleaseId(input.releaseId ?? process.env.AAIS_RELEASE_ID);
   const expectedSessionRole = readSessionRole(input.expectedSessionRole ?? process.env.AAIS_VERIFY_EXPECTED_SESSION_ROLE);
+  const readinessBearerToken = readOptionalSecret(input.readinessBearerToken ?? process.env.AAIS_READINESS_BEARER_TOKEN);
   const checks = [];
   const requireOidcEvidence = requireSsoOnly || Boolean(input.oidcCallback);
 
@@ -17,6 +18,7 @@ export async function runEnterpriseReleaseVerification(input) {
     fetchImpl,
     expectedReleaseId: releaseId,
     requireOidcEvidence,
+    readinessBearerToken,
   })));
   checks.push(await runOnlineCheck("security-headers", () => verifySecurityHeaders({ baseUrl, fetchImpl })));
   checks.push(await runOnlineCheck("legal-pages", () => verifyLegalPages({ baseUrl, fetchImpl })));
@@ -53,7 +55,10 @@ export async function runEnterpriseReleaseVerification(input) {
   checks.push(oidcStartCheck);
   checks.push(oidcCallbackCheck);
   if (requireSsoOnly) {
-    checks.push(await runOnlineCheck("sso-only-mode", () => verifySsoOnlyMode({ baseUrl, fetchImpl })));
+    checks.push(await runOnlineCheck(
+      "sso-only-mode",
+      () => verifySsoOnlyMode({ baseUrl, fetchImpl, readinessBearerToken }),
+    ));
     checks.push(skippedCheck("trial-learning-session", "SSO-only release mode required"));
     checks.push(skippedCheck("trial-login-throttle", "SSO-only release mode required"));
   } else {
@@ -143,9 +148,25 @@ function readSafeErrorToken(value) {
     .replace(/[^a-z0-9_]/g, "");
 }
 
-async function verifySsoOnlyMode({ baseUrl, fetchImpl }) {
+function readOptionalSecret(value) {
+  const trimmed = String(value ?? "").trim();
+  return trimmed || null;
+}
+
+function readinessFetchInit(readinessBearerToken) {
+  return readinessBearerToken
+    ? {
+        headers: {
+          authorization: `Bearer ${readinessBearerToken}`,
+        },
+      }
+    : {};
+}
+
+async function verifySsoOnlyMode({ baseUrl, fetchImpl, readinessBearerToken }) {
   const readinessResponse = await fetchImpl(`${baseUrl}/api/system/readiness`, {
     method: "GET",
+    ...readinessFetchInit(readinessBearerToken),
   });
   const readinessBody = await readJson(readinessResponse);
   const loginPageResponse = await fetchImpl(`${baseUrl}/login`, {
@@ -537,9 +558,16 @@ async function readLegalPage({ baseUrl, fetchImpl, path: pagePath, marker }) {
   };
 }
 
-async function verifyReadiness({ baseUrl, fetchImpl, expectedReleaseId = null, requireOidcEvidence = false }) {
+async function verifyReadiness({
+  baseUrl,
+  fetchImpl,
+  expectedReleaseId = null,
+  requireOidcEvidence = false,
+  readinessBearerToken,
+}) {
   const response = await fetchImpl(`${baseUrl}/api/system/readiness`, {
     method: "GET",
+    ...readinessFetchInit(readinessBearerToken),
   });
   const jsonEvidence = await readJsonEvidence(response);
   const body = jsonEvidence.body;
@@ -1506,6 +1534,7 @@ async function main() {
     baseUrl: args.get("base-url") ?? process.env.AAIS_VERIFY_BASE_URL,
     releaseId: args.get("release-id"),
     outputPath: args.get("output"),
+    readinessBearerToken: args.get("readiness-bearer-token") ?? process.env.AAIS_READINESS_BEARER_TOKEN,
     requireSsoOnly: args.has("require-sso-only") || process.env.AAIS_VERIFY_REQUIRE_SSO_ONLY === "true",
     expectedSessionRole: args.get("expected-session-role") ?? process.env.AAIS_VERIFY_EXPECTED_SESSION_ROLE,
     oidcCallback: process.env.AAIS_VERIFY_OIDC_CALLBACK_URL && process.env.AAIS_VERIFY_OIDC_STATE_COOKIE

@@ -1,11 +1,18 @@
 .DS_Store
 .aais-data/
+.aais-e2e-data/
 .next/
 .playwright-cli/
 .vercel/
 All API Keys.docx
 .env
 .env.*
+!.env.example
 node_modules/
 output/
+test-results/
+technical-review/
+tests/
+aais-load-sanity*.json
+.aais-load-users*.json
 tsconfig.tsbuildinfo

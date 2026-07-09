@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import { getLrsConfigurationStatus } from "@/lib/server/aais-lrs-client";
 import {
   getAaisOidcConfigurationStatus,
@@ -18,6 +17,10 @@ import {
   verifyAaisAiEvalManifest,
   type AaisAiEvalManifestStatus,
 } from "@/lib/server/aais-ai-eval-manifest";
+import {
+  readAaisAiRuntimeConfig,
+  type AaisAiRuntimeProfile,
+} from "@/lib/ai/aais-ai-runtime-config";
 
 type AaisReadinessCheckStatus = "ok" | "missing" | "blocked" | "invalid" | "disabled";
 
@@ -78,6 +81,22 @@ export type AaisReadinessReport = {
         };
       };
     };
+    monitoring: AaisReadinessCheck & {
+      sentry: AaisReadinessCheck & {
+        dsnConfigured: boolean;
+        source: "SENTRY_DSN" | "NEXT_PUBLIC_SENTRY_DSN" | "missing";
+        alertsConfigured: boolean;
+      };
+      uptime: AaisReadinessCheck & {
+        loginCheckConfigured: boolean;
+        source: "AAIS_UPTIME_LOGIN_CHECK_URL" | "missing";
+      };
+      cron: AaisReadinessCheck & {
+        scheduleConfigured: boolean;
+        secretConfigured: boolean;
+        alertsConfigured: boolean;
+      };
+    };
     agentEvidence: AaisReadinessCheck & AaisAgentEvidenceCapability;
     a3Supervision: AaisReadinessCheck & AaisAgentEvidenceCapability;
     a2Monitoring: AaisReadinessCheck & AaisAgentEvidenceCapability;
@@ -90,6 +109,7 @@ export type AaisReadinessReport = {
       evalVersion: string | null;
       evalManifest: AaisAiEvalManifestStatus;
       modelFingerprint: string | null;
+      runtimeProfile: AaisAiRuntimeProfile;
     };
   };
   issues: string[];
@@ -108,16 +128,16 @@ export async function getAaisReadinessReport(now = new Date()): Promise<AaisRead
     : "file";
   const storageProbe = await probeAaisLearningStorage();
   const persistentOutbox = await readPersistentOutboxStatus();
+  const monitoring = getAaisMonitoringConfigurationStatus();
   const agentEvidence = getAaisAgentEvidenceCapability();
   const lrsConfigured = getLrsConfigurationStatus().configured;
   const oidcConfig = getAaisOidcConfigurationStatus();
   const oidcRoleMapping = getAaisOidcRoleMappingStatus();
   const ssoOnlyRequired = production && trialAccounts.status === "disabled";
-  const aiProvider = getConfiguredAiProvider();
-  const aiModel = process.env.AAIS_AI_MODEL?.trim() || null;
-  const aiModelFingerprint = aiProvider === "openai-compatible" && aiModel
-    ? getAiModelFingerprint(aiModel)
-    : null;
+  const aiRuntimeConfig = readAaisAiRuntimeConfig();
+  const aiModel = aiRuntimeConfig.primary?.model ?? null;
+  const aiProvider = aiRuntimeConfig.profile.mode === "live" ? "openai-compatible" : "deterministic";
+  const aiModelFingerprint = aiRuntimeConfig.profile.primary?.modelFingerprint ?? null;
   const aiEvalVersion = process.env.AAIS_AI_EVAL_VERSION?.trim() || null;
   const aiApproved = process.env.AAIS_AI_EVAL_APPROVED === "true" && Boolean(aiEvalVersion);
   const aiEvalManifest = verifyAaisAiEvalManifest({
@@ -142,6 +162,21 @@ export async function getAaisReadinessReport(now = new Date()): Promise<AaisRead
   }
   if (production && !lrsConfigured) {
     issues.push("LRS_ENDPOINT/LRS_USERNAME/LRS_PASSWORD");
+  }
+  if (production && !monitoring.sentry.dsnConfigured) {
+    issues.push("SENTRY_DSN/NEXT_PUBLIC_SENTRY_DSN");
+  }
+  if (production && !monitoring.sentry.alertsConfigured) {
+    issues.push("AAIS_SENTRY_ALERTS_CONFIGURED");
+  }
+  if (production && !monitoring.uptime.loginCheckConfigured) {
+    issues.push("AAIS_UPTIME_LOGIN_CHECK_URL");
+  }
+  if (production && !monitoring.cron.secretConfigured) {
+    issues.push("CRON_SECRET");
+  }
+  if (production && !monitoring.cron.alertsConfigured) {
+    issues.push("AAIS_CRON_FAILURE_ALERTS_CONFIGURED");
   }
   if (ssoOnlyRequired && !oidcConfig.configured) {
     issues.push("AAIS_OIDC_*");
@@ -195,6 +230,27 @@ export async function getAaisReadinessReport(now = new Date()): Promise<AaisRead
           recovery: persistentOutbox.recovery,
         },
       },
+      monitoring: {
+        status: getMonitoringStatus(monitoring),
+        sentry: {
+          status: monitoring.sentry.dsnConfigured && monitoring.sentry.alertsConfigured
+            ? "ok"
+            : "missing",
+          ...monitoring.sentry,
+        },
+        uptime: {
+          status: monitoring.uptime.loginCheckConfigured ? "ok" : "missing",
+          ...monitoring.uptime,
+        },
+        cron: {
+          status: monitoring.cron.scheduleConfigured
+            && monitoring.cron.secretConfigured
+            && monitoring.cron.alertsConfigured
+            ? "ok"
+            : "missing",
+          ...monitoring.cron,
+        },
+      },
       agentEvidence: {
         status: agentEvidence.enabled ? "ok" : "blocked",
         ...agentEvidence,
@@ -233,6 +289,7 @@ export async function getAaisReadinessReport(now = new Date()): Promise<AaisRead
         evalVersion: aiProvider === "openai-compatible" ? aiEvalVersion : null,
         evalManifest: aiEvalManifest.status,
         modelFingerprint: aiModelFingerprint,
+        runtimeProfile: aiRuntimeConfig.profile,
       },
     },
     issues,
@@ -247,14 +304,58 @@ function getTrialAccountStatus(status: "configured" | "missing" | "invalid" | "d
   return status;
 }
 
-function getConfiguredAiProvider(): AaisReadinessReport["checks"]["ai"]["provider"] {
-  const provider = process.env.AAIS_AI_PROVIDER;
-  const endpoint = process.env.AAIS_AI_ENDPOINT?.trim();
-  const apiKey = process.env.AAIS_AI_API_KEY?.trim();
-  const model = process.env.AAIS_AI_MODEL?.trim();
-  return provider === "openai-compatible" && endpoint && apiKey && model
-    ? "openai-compatible"
-    : "deterministic";
+function getAaisMonitoringConfigurationStatus() {
+  const serverDsnConfigured = Boolean(process.env.SENTRY_DSN?.trim());
+  const publicDsnConfigured = Boolean(process.env.NEXT_PUBLIC_SENTRY_DSN?.trim());
+  const sentrySource = serverDsnConfigured
+    ? "SENTRY_DSN"
+    : publicDsnConfigured
+      ? "NEXT_PUBLIC_SENTRY_DSN"
+      : "missing";
+  return {
+    sentry: {
+      dsnConfigured: serverDsnConfigured || publicDsnConfigured,
+      source: sentrySource,
+      alertsConfigured: process.env.AAIS_SENTRY_ALERTS_CONFIGURED === "true",
+    },
+    uptime: {
+      loginCheckConfigured: isSafeHttpsUrl(process.env.AAIS_UPTIME_LOGIN_CHECK_URL),
+      source: isSafeHttpsUrl(process.env.AAIS_UPTIME_LOGIN_CHECK_URL)
+        ? "AAIS_UPTIME_LOGIN_CHECK_URL"
+        : "missing",
+    },
+    cron: {
+      scheduleConfigured: true,
+      secretConfigured: Boolean(process.env.CRON_SECRET?.trim()),
+      alertsConfigured: process.env.AAIS_CRON_FAILURE_ALERTS_CONFIGURED === "true",
+    },
+  } as const;
+}
+
+function getMonitoringStatus(
+  monitoring: ReturnType<typeof getAaisMonitoringConfigurationStatus>,
+): AaisReadinessCheckStatus {
+  return monitoring.sentry.dsnConfigured
+    && monitoring.sentry.alertsConfigured
+    && monitoring.uptime.loginCheckConfigured
+    && monitoring.cron.scheduleConfigured
+    && monitoring.cron.secretConfigured
+    && monitoring.cron.alertsConfigured
+    ? "ok"
+    : "missing";
+}
+
+function isSafeHttpsUrl(value: string | undefined) {
+  const trimmed = value?.trim();
+  if (!trimmed) {
+    return false;
+  }
+  try {
+    const url = new URL(trimmed);
+    return url.protocol === "https:";
+  } catch {
+    return false;
+  }
 }
 
 function getDatabaseProvider(databaseUrl: string | undefined): "neon" | "postgres" {
@@ -305,13 +406,6 @@ function getOidcStatus(input: {
     return "blocked";
   }
   return "ok";
-}
-
-function getAiModelFingerprint(model: string) {
-  return createHash("sha256")
-    .update(`aais-ai-model:${model}`)
-    .digest("hex")
-    .slice(0, 16);
 }
 
 function getAaisReleaseMetadata(): AaisReadinessReport["release"] {

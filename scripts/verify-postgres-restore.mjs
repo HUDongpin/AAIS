@@ -1,419 +1,358 @@
 #!/usr/bin/env node
 
+import { randomUUID } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { neon } from "@neondatabase/serverless";
+import { pathToFileURL } from "node:url";
 import { Pool } from "pg";
 
-const productionDatabaseUrlEnvNames = [
-  "AAIS_DATABASE_URL",
-  "DATABASE_URL",
-  "POSTGRES_URL",
-  "POSTGRES_PRISMA_URL",
-  "POSTGRES_URL_NO_SSL",
-  "DATABASE_URL_UNPOOLED",
-  "POSTGRES_URL_NON_POOLING",
+const requiredRestorePurpose = "restored-staging";
+const requiredTables = [
+  "aais_learner_sessions",
+  "aais_lrs_outbox",
+  "aais_login_rate_limits",
+  "aais_events",
+  "aais_learner_task_state",
+  "aais_users",
+  "aais_user_auth_tokens",
+  "aais_session_revocations",
+  "aais_courses",
+  "aais_course_tasks",
+  "aais_enrollments",
 ];
 
-export async function runAaisPostgresRestoreRehearsal(input = {}) {
-  const envValues = await readEnvFile(input.envFilePath);
-  const sourceEnvValues = await readOptionalEnvFile(input.sourceEnvFilePath);
-  const databaseUrl = requireValue(
-    input.databaseUrl ?? envValues.get("AAIS_RESTORE_DATABASE_URL") ?? process.env.AAIS_RESTORE_DATABASE_URL,
-    "AAIS_RESTORE_DATABASE_URL",
-  );
-  const targetPurpose = readRestoreTargetPurpose(
-    input.targetPurpose ?? envValues.get("AAIS_RESTORE_TARGET_PURPOSE") ?? process.env.AAIS_RESTORE_TARGET_PURPOSE,
-  );
-  const sourceDatabaseUrls = getProductionDatabaseUrls({
-    explicitSourceDatabaseUrl: input.sourceDatabaseUrl,
-    sourceEnvValues,
-  });
-  const sameAsSource = sourceDatabaseUrls.some((sourceDatabaseUrl) => (
-    normalizeDatabaseUrl(databaseUrl) === normalizeDatabaseUrl(sourceDatabaseUrl)
-  ));
-  if (sameAsSource && !input.allowSameDatabase) {
-    throw new Error("AAIS restore rehearsal target must differ from production database sources.");
+export async function runAaisPostgresRestoreVerification(input = {}) {
+  const checkedAt = new Date().toISOString();
+  const targetPurpose = String(input.targetPurpose ?? "").trim();
+  const issues = [];
+  if (targetPurpose !== requiredRestorePurpose) {
+    issues.push("AAIS_RESTORE_TARGET_PURPOSE");
   }
 
-  const smokeStudentId = requireSafeStudentId(input.smokeStudentId ?? `restore-smoke-${Date.now()}`);
-  const checkedAt = (input.now ?? new Date()).toISOString();
-  const releaseId = readReleaseId(input.releaseId ?? process.env.AAIS_RELEASE_ID);
-  const databaseProvider = getVerifiedDatabaseProvider({
-    databaseUrl,
-    configuredProvider: input.databaseProvider
-      ?? envValues.get("AAIS_RESTORE_DATABASE_PROVIDER")
-      ?? process.env.AAIS_RESTORE_DATABASE_PROVIDER,
-  });
-  const databaseDriver = readDatabaseDriver(
-    input.databaseDriver ?? envValues.get("AAIS_RESTORE_DATABASE_DRIVER") ?? process.env.AAIS_RESTORE_DATABASE_DRIVER,
-    databaseProvider,
-  );
-  const database = input.database ?? createDatabaseClient(databaseUrl, { databaseDriver });
-  const checks = {
-    tablePresent: false,
-    lrsOutboxTablePresent: false,
-    existingSessionCount: 0,
-    smokeInsertOnly: true,
-    smokeInserted: false,
-    smokeReadBack: false,
-    smokeDeleted: false,
-  };
-
-  try {
-    const table = await database.query("select to_regclass('public.aais_learner_sessions') as table_name");
-    checks.tablePresent = table.rows[0]?.table_name === "aais_learner_sessions";
-    const lrsOutboxTable = await database.query("select to_regclass('public.aais_lrs_outbox') as table_name");
-    checks.lrsOutboxTablePresent = lrsOutboxTable.rows[0]?.table_name === "aais_lrs_outbox";
-    if (checks.tablePresent) {
-      const count = await database.query("select count(*)::int as session_count from aais_learner_sessions");
-      checks.existingSessionCount = Number(count.rows[0]?.session_count ?? 0);
-
-      const payload = createSmokeSessionPayload(smokeStudentId, checkedAt);
-      await database.query(
-        `insert into aais_learner_sessions (student_id, payload, updated_at)
-         values ($1, $2::jsonb, now())`,
-        [smokeStudentId, JSON.stringify(payload)],
-      );
-      checks.smokeInserted = true;
-
-      const readBack = await database.query(
-        "select payload from aais_learner_sessions where student_id = $1 limit 1",
-        [smokeStudentId],
-      );
-      const readBackPayload = parsePayload(readBack.rows[0]?.payload);
-      checks.smokeReadBack = readBackPayload?.studentId === smokeStudentId
-        && readBackPayload?.schemaVersion === 1;
-    }
-  } catch {
-    // Keep the report redacted; the individual checks carry enough release evidence.
-  } finally {
-    try {
-      if (checks.smokeInserted) {
-        await database.query(
-          "delete from aais_learner_sessions where student_id = $1",
-          [smokeStudentId],
-        );
-        checks.smokeDeleted = true;
-      }
-    } catch {
-      checks.smokeDeleted = false;
-    }
-    if (typeof database.end === "function") {
-      await database.end();
-    }
+  const tableReport = await checkRequiredTables(input.database);
+  if (!tableReport.present) {
+    issues.push("AAIS_RESTORE_SCHEMA");
   }
 
-  const report = {
+  const rowCounts = tableReport.present
+    ? await readRestoreRowCounts(input.database)
+    : {
+        learnerSessions: null,
+        lrsOutbox: null,
+        events: null,
+        learnerTaskState: null,
+        users: null,
+        courses: null,
+        courseTasks: null,
+        enrollments: null,
+      };
+  const smoke = tableReport.present && targetPurpose === requiredRestorePurpose
+    ? await runRolledBackSyntheticInsert(input.database, checkedAt)
+    : {
+        status: "skipped",
+        insertAccepted: false,
+        rolledBack: false,
+      };
+  if (smoke.status !== "passed") {
+    issues.push("AAIS_RESTORE_SMOKE_INSERT");
+  }
+
+  return {
     schemaVersion: 1,
-    status: targetPurpose === "restored-staging"
-      && checks.tablePresent
-      && checks.lrsOutboxTablePresent
-      && checks.smokeInserted
-      && checks.smokeReadBack
-      && checks.smokeDeleted
-      ? "passed"
-      : "failed",
+    status: issues.length ? "failed" : "passed",
     checkedAt,
-    ...(releaseId ? { release: { id: releaseId } } : {}),
-    target: {
-      databaseUrl: "redacted",
-      provider: databaseProvider,
-      driver: databaseDriver,
-      purpose: targetPurpose,
-      sameAsSource,
-      productionSourceCount: sourceDatabaseUrls.length,
+    targetPurpose: targetPurpose || null,
+    sourceEnv: input.sourceEnv ?? null,
+    releaseId: normalizeOptionalString(input.releaseId),
+    checks: {
+      targetPurpose: {
+        status: targetPurpose === requiredRestorePurpose ? "passed" : "failed",
+        required: requiredRestorePurpose,
+      },
+      requiredTables: tableReport,
+      rowCounts,
+      smokeInsert: smoke,
     },
-    checks,
+    issues,
     redaction: {
-      secrets: "omitted",
+      databaseUrl: "omitted",
+      learnerPayload: "synthetic-only",
+      learnerIdentifiers: "omitted",
+      secrets: "redacted",
     },
   };
-
-  const outputPath = input.outputPath ?? process.env.AAIS_RESTORE_REHEARSAL_REPORT_PATH;
-  if (outputPath) {
-    await mkdir(path.dirname(outputPath), { recursive: true });
-    await writeFile(outputPath, `${JSON.stringify(report, null, 2)}\n`, "utf8");
-  }
-
-  return report;
 }
 
-async function readEnvFile(filePath) {
-  const resolvedPath = String(filePath ?? "").trim();
-  if (!resolvedPath) {
-    return new Map();
+export function getAaisRestoreDatabaseConfiguration(env = process.env) {
+  const candidates = [
+    "AAIS_RESTORE_DATABASE_URL",
+    "RESTORE_DATABASE_URL",
+  ];
+  for (const sourceEnv of candidates) {
+    const url = env[sourceEnv]?.trim();
+    if (url) {
+      return { url, sourceEnv };
+    }
   }
-  const raw = await readFile(resolvedPath, "utf8");
-  const values = new Map();
-  for (const rawLine of raw.split(/\r?\n/)) {
-    const line = rawLine.trim();
-    if (!line || line.startsWith("#")) {
+  return null;
+}
+
+export async function loadAaisRestoreEnvFile(envFilePath) {
+  if (!envFilePath) {
+    return {};
+  }
+  const raw = await readFile(envFilePath, "utf8");
+  return parseAaisEnvFile(raw);
+}
+
+export function parseAaisEnvFile(raw) {
+  const values = {};
+  for (const line of String(raw).split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) {
       continue;
     }
-    const normalized = line.startsWith("export ") ? line.slice("export ".length).trim() : line;
+    const normalized = trimmed.startsWith("export ") ? trimmed.slice("export ".length).trim() : trimmed;
     const separator = normalized.indexOf("=");
     if (separator <= 0) {
       continue;
     }
-    const name = normalized.slice(0, separator).trim();
-    if (!/^[A-Z][A-Z0-9_]{1,127}$/.test(name)) {
+    const key = normalized.slice(0, separator).trim();
+    const value = normalized.slice(separator + 1).trim();
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) {
       continue;
     }
-    values.set(name, parseEnvValue(normalized.slice(separator + 1).trim()));
+    values[key] = stripEnvQuotes(value);
   }
   return values;
 }
 
-async function readOptionalEnvFile(filePath) {
-  const resolvedPath = String(filePath ?? "").trim();
-  if (!resolvedPath) {
-    return new Map();
-  }
+async function checkRequiredTables(database) {
+  const result = await database.query(
+    `select
+       to_regclass('public.aais_learner_sessions') as aais_learner_sessions,
+       to_regclass('public.aais_lrs_outbox') as aais_lrs_outbox,
+       to_regclass('public.aais_login_rate_limits') as aais_login_rate_limits,
+       to_regclass('public.aais_events') as aais_events,
+       to_regclass('public.aais_learner_task_state') as aais_learner_task_state,
+       to_regclass('public.aais_users') as aais_users,
+       to_regclass('public.aais_user_auth_tokens') as aais_user_auth_tokens,
+       to_regclass('public.aais_session_revocations') as aais_session_revocations,
+       to_regclass('public.aais_courses') as aais_courses,
+       to_regclass('public.aais_course_tasks') as aais_course_tasks,
+       to_regclass('public.aais_enrollments') as aais_enrollments`,
+  );
+  const row = result.rows[0] ?? {};
+  const tables = Object.fromEntries(
+    requiredTables.map((table) => [table, row[table] === table]),
+  );
+  const missing = requiredTables.filter((table) => !tables[table]);
+  return {
+    status: missing.length ? "failed" : "passed",
+    present: missing.length === 0,
+    tables,
+    missing,
+  };
+}
+
+async function readRestoreRowCounts(database) {
+  const result = await database.query(
+    `select
+       (select count(*)::int from aais_learner_sessions) as learner_sessions,
+       (select count(*)::int from aais_lrs_outbox) as lrs_outbox,
+       (select count(*)::int from aais_events) as events,
+       (select count(*)::int from aais_learner_task_state) as learner_task_state,
+       (select count(*)::int from aais_users) as users,
+       (select count(*)::int from aais_courses) as courses,
+       (select count(*)::int from aais_course_tasks) as course_tasks,
+       (select count(*)::int from aais_enrollments) as enrollments`,
+  );
+  const row = result.rows[0] ?? {};
+  return {
+    learnerSessions: normalizeCount(row.learner_sessions),
+    lrsOutbox: normalizeCount(row.lrs_outbox),
+    events: normalizeCount(row.events),
+    learnerTaskState: normalizeCount(row.learner_task_state),
+    users: normalizeCount(row.users),
+    courses: normalizeCount(row.courses),
+    courseTasks: normalizeCount(row.course_tasks),
+    enrollments: normalizeCount(row.enrollments),
+  };
+}
+
+async function runRolledBackSyntheticInsert(database, checkedAt) {
+  const syntheticStudentId = `restore-smoke-${randomUUID()}`;
+  const payload = {
+    schemaVersion: 1,
+    studentId: syntheticStudentId,
+    sessionId: `restore-session-${randomUUID()}`,
+    createdAt: checkedAt,
+    updatedAt: checkedAt,
+    activeTaskId: "training_task_1",
+    activeStage: "training",
+    tasks: [],
+    guideMessages: [],
+    events: [],
+  };
+
+  await database.query("begin");
   try {
-    return await readEnvFile(resolvedPath);
+    const result = await database.query(
+      `insert into aais_learner_sessions (student_id, payload, version, updated_at)
+       values ($1, $2::jsonb, 0, $3::timestamptz)
+       on conflict (student_id) do nothing
+       returning student_id`,
+      [syntheticStudentId, JSON.stringify(payload), checkedAt],
+    );
+    await database.query("rollback");
+    return {
+      status: result.rows.length === 1 ? "passed" : "failed",
+      insertAccepted: result.rows.length === 1,
+      rolledBack: true,
+      writeMode: "insert-only-rolled-back",
+    };
   } catch (error) {
-    if (error && typeof error === "object" && error.code === "ENOENT") {
-      return new Map();
-    }
-    throw error;
+    await database.query("rollback").catch(() => undefined);
+    return {
+      status: "failed",
+      insertAccepted: false,
+      rolledBack: true,
+      writeMode: "insert-only-rolled-back",
+      errorCategory: classifyDatabaseError(error),
+    };
   }
 }
 
-function parseEnvValue(value) {
-  if (value.length >= 2 && value.startsWith("\"") && value.endsWith("\"")) {
-    return value
-      .slice(1, -1)
-      .replace(/\\n/g, "\n")
-      .replace(/\\r/g, "\r")
-      .replace(/\\t/g, "\t")
-      .replace(/\\"/g, "\"")
-      .replace(/\\\\/g, "\\");
-  }
-  if (value.length >= 2 && value.startsWith("'") && value.endsWith("'")) {
+function normalizeCount(value) {
+  const count = Number(value);
+  return Number.isInteger(count) && count >= 0 ? count : 0;
+}
+
+function stripEnvQuotes(value) {
+  if (
+    (value.startsWith("\"") && value.endsWith("\""))
+    || (value.startsWith("'") && value.endsWith("'"))
+  ) {
     return value.slice(1, -1);
   }
   return value;
 }
 
-function createDatabaseClient(databaseUrl, input = {}) {
-  if (input.databaseDriver === "neon-serverless") {
-    return createNeonServerlessDatabaseClient(databaseUrl);
+function normalizeOptionalString(value) {
+  const text = String(value ?? "").trim();
+  return text || null;
+}
+
+function classifyDatabaseError(error) {
+  const code = String(error?.code ?? error?.cause?.code ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_]/g, "");
+  if (code === "enotfound" || code === "eai_again") {
+    return "dns";
   }
-  return new Pool({ connectionString: databaseUrl });
-}
-
-function createNeonServerlessDatabaseClient(databaseUrl) {
-  const sql = neon(databaseUrl);
-  return {
-    async query(query, params = []) {
-      const result = await sql.query(query, params);
-      return normalizeQueryResult(result);
-    },
-    async end() {},
-  };
-}
-
-function normalizeQueryResult(result) {
-  if (Array.isArray(result)) {
-    return { rows: result };
+  if (code === "econnrefused" || code === "econnreset") {
+    return "network";
   }
-  if (result && typeof result === "object" && Array.isArray(result.rows)) {
-    return { rows: result.rows };
+  if (code) {
+    return "database";
   }
-  return { rows: [] };
+  return "unknown";
 }
 
-function createSmokeSessionPayload(studentId, now) {
-  return {
-    schemaVersion: 1,
-    studentId,
-    createdAt: now,
-    updatedAt: now,
-    activeTaskId: "training_task_1",
-    activeStage: "restore-rehearsal",
-    tasks: [],
-    guideMessages: [],
-    events: [],
-  };
-}
-
-function parsePayload(payload) {
-  if (!payload) {
-    return null;
+async function writeReportIfRequested(report, outputPath) {
+  if (outputPath) {
+    await mkdir(path.dirname(outputPath), { recursive: true });
+    await writeFile(outputPath, `${JSON.stringify(report, null, 2)}\n`, "utf8");
   }
-  if (typeof payload === "string") {
-    return JSON.parse(payload);
-  }
-  return payload;
+  return report;
 }
 
-function normalizeDatabaseUrl(value) {
-  const trimmed = String(value ?? "").trim();
-  try {
-    const url = new URL(trimmed);
-    const port = url.port ? `:${url.port}` : "";
-    return `${url.protocol.toLowerCase()}//${url.hostname.toLowerCase()}${port}${url.pathname}`;
-  } catch {
-    return trimmed;
-  }
-}
-
-function getProductionDatabaseUrls({ explicitSourceDatabaseUrl, sourceEnvValues = new Map() }) {
-  const urls = [];
-  appendDatabaseUrl(urls, explicitSourceDatabaseUrl);
-  for (const name of productionDatabaseUrlEnvNames) {
-    appendDatabaseUrl(urls, sourceEnvValues.get(name));
-  }
-  appendDatabaseUrl(urls, buildRawDatabaseUrl({
-    host: sourceEnvValues.get("PGHOST") ?? sourceEnvValues.get("PGHOST_UNPOOLED"),
-    port: sourceEnvValues.get("PGPORT"),
-    database: sourceEnvValues.get("PGDATABASE"),
-  }));
-  appendDatabaseUrl(urls, buildRawDatabaseUrl({
-    host: sourceEnvValues.get("POSTGRES_HOST") ?? sourceEnvValues.get("POSTGRES_HOST_NON_POOLING"),
-    port: sourceEnvValues.get("POSTGRES_PORT"),
-    database: sourceEnvValues.get("POSTGRES_DATABASE"),
-  }));
-  for (const name of productionDatabaseUrlEnvNames) {
-    appendDatabaseUrl(urls, process.env[name]);
-  }
-  appendDatabaseUrl(urls, buildRawDatabaseUrl({
-    host: process.env.PGHOST ?? process.env.PGHOST_UNPOOLED,
-    port: process.env.PGPORT,
-    database: process.env.PGDATABASE,
-  }));
-  appendDatabaseUrl(urls, buildRawDatabaseUrl({
-    host: process.env.POSTGRES_HOST ?? process.env.POSTGRES_HOST_NON_POOLING,
-    port: process.env.POSTGRES_PORT,
-    database: process.env.POSTGRES_DATABASE,
-  }));
-  return urls;
-}
-
-function appendDatabaseUrl(urls, value) {
-  const trimmed = String(value ?? "").trim();
-  if (!trimmed || isPlaceholderValue(trimmed)) {
-    return;
-  }
-  urls.push(trimmed);
-}
-
-function buildRawDatabaseUrl(input) {
-  const host = String(input.host ?? "").trim();
-  const database = String(input.database ?? "").trim();
-  if (!host || !database) {
-    return "";
-  }
-  const url = new URL("postgres://production-source");
-  url.hostname = host;
-  if (input.port) {
-    url.port = String(input.port).trim();
-  }
-  url.pathname = `/${database}`;
-  return url.toString();
-}
-
-function requireValue(value, label) {
-  const trimmed = String(value ?? "").trim();
-  if (!trimmed || isPlaceholderValue(trimmed)) {
-    throw new Error(`${label} is required for AAIS restore rehearsal.`);
-  }
-  return trimmed;
-}
-
-function isPlaceholderValue(value) {
-  return /^<REQUIRED:[A-Z0-9_:-]+>$/i.test(String(value ?? "").trim());
-}
-
-function requireSafeStudentId(value) {
-  if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(value)) {
-    throw new Error("Invalid AAIS restore smoke student id.");
-  }
-  return value;
-}
-
-function readReleaseId(value) {
-  const trimmed = String(value ?? "").trim();
-  return /^[A-Za-z0-9][A-Za-z0-9._:-]{2,127}$/.test(trimmed) ? trimmed : null;
-}
-
-function readDatabaseProvider(value) {
-  const trimmed = String(value ?? "").trim().toLowerCase();
-  return trimmed === "neon" || trimmed === "postgres" ? trimmed : null;
-}
-
-function readDatabaseDriver(value, databaseProvider) {
-  const trimmed = String(value ?? "").trim().toLowerCase();
-  if (trimmed === "pg" || trimmed === "neon-serverless") {
-    return trimmed;
-  }
-  return databaseProvider === "neon" ? "neon-serverless" : "pg";
-}
-
-function getVerifiedDatabaseProvider({ databaseUrl, configuredProvider }) {
-  const inferred = inferDatabaseProvider(databaseUrl);
-  const requested = readDatabaseProvider(configuredProvider);
-  if (requested && requested !== inferred) {
-    throw new Error("AAIS restore database provider must match the database URL host.");
-  }
-  return requested ?? inferred;
-}
-
-function readRestoreTargetPurpose(value) {
-  const trimmed = String(value ?? "").trim().toLowerCase();
-  return trimmed === "restored-staging" ? "restored-staging" : "invalid";
-}
-
-function inferDatabaseProvider(databaseUrl) {
-  try {
-    const hostname = new URL(databaseUrl).hostname.toLowerCase();
-    return hostname.endsWith(".neon.tech") ? "neon" : "postgres";
-  } catch {
-    return "postgres";
-  }
-}
-
-function parseCliArgs(argv) {
-  const args = new Map();
+function parseArgs(argv) {
+  const input = {};
   for (let index = 0; index < argv.length; index += 1) {
-    const current = argv[index];
-    if (!current.startsWith("--")) {
-      continue;
-    }
-    const [rawKey, inlineValue] = current.slice(2).split("=");
-    const value = inlineValue ?? argv[index + 1];
-    if (inlineValue === undefined) {
+    const arg = argv[index];
+    if (arg === "--env-file") {
+      input.envFile = argv[index + 1];
       index += 1;
+    } else if (arg === "--target-purpose") {
+      input.targetPurpose = argv[index + 1];
+      index += 1;
+    } else if (arg === "--release-id") {
+      input.releaseId = argv[index + 1];
+      index += 1;
+    } else if (arg === "--output") {
+      input.outputPath = argv[index + 1];
+      index += 1;
+    } else if (arg === "--help") {
+      input.help = true;
+    } else {
+      throw new Error(`Unknown AAIS restore verification argument: ${arg}`);
     }
-    args.set(rawKey, value);
   }
-  return args;
+  return input;
+}
+
+function printHelp() {
+  console.log([
+    "Usage: npm run verify:postgres-restore -- --env-file ./.env.postgres-restore.local --output ./aais-postgres-restore-report.json",
+    "",
+    "Required restore environment:",
+    "  AAIS_RESTORE_DATABASE_URL",
+    "  AAIS_RESTORE_TARGET_PURPOSE=restored-staging",
+    "",
+    "The report is redacted: database URLs, learner ids, payloads, and secrets are omitted.",
+  ].join("\n"));
 }
 
 async function main() {
-  const args = parseCliArgs(process.argv.slice(2));
-  const report = await runAaisPostgresRestoreRehearsal({
-    databaseUrl: args.get("database-url"),
-    envFilePath: args.get("env-file"),
-    sourceDatabaseUrl: args.get("source-database-url"),
-    sourceEnvFilePath: args.get("source-env-file"),
-    outputPath: args.get("output"),
-    smokeStudentId: args.get("smoke-student-id"),
-    releaseId: args.get("release-id"),
-    databaseProvider: args.get("database-provider"),
-    databaseDriver: args.get("database-driver"),
-    targetPurpose: args.get("target-purpose"),
-  });
-  process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
-  if (report.status !== "passed") {
-    process.exitCode = 1;
+  const args = parseArgs(process.argv.slice(2));
+  if (args.help) {
+    printHelp();
+    return;
+  }
+  const envFileValues = await loadAaisRestoreEnvFile(args.envFile);
+  const env = {
+    ...process.env,
+    ...envFileValues,
+  };
+  const config = getAaisRestoreDatabaseConfiguration(env);
+  if (!config) {
+    throw new Error("AAIS restore verification requires AAIS_RESTORE_DATABASE_URL.");
+  }
+  const targetPurpose = args.targetPurpose ?? env.AAIS_RESTORE_TARGET_PURPOSE;
+  const pool = new Pool({ connectionString: config.url });
+  try {
+    const report = await runAaisPostgresRestoreVerification({
+      database: pool,
+      targetPurpose,
+      sourceEnv: config.sourceEnv,
+      releaseId: args.releaseId ?? env.AAIS_RELEASE_ID,
+    });
+    const output = await writeReportIfRequested(
+      report,
+      args.outputPath ?? env.AAIS_RESTORE_REHEARSAL_REPORT_PATH,
+    );
+    console.log(JSON.stringify({
+      status: output.status,
+      targetPurpose: output.targetPurpose,
+      sourceEnv: output.sourceEnv,
+      issues: output.issues,
+      tablesPresent: output.checks.requiredTables.present,
+      smokeInsert: output.checks.smokeInsert.status,
+      secrets: "redacted",
+    }));
+    if (output.status !== "passed") {
+      process.exitCode = 1;
+    }
+  } finally {
+    await pool.end();
   }
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (import.meta.url === pathToFileURL(process.argv[1]).href) {
   main().catch((error) => {
-    process.stderr.write(`${error instanceof Error ? error.message : "AAIS restore rehearsal failed."}\n`);
+    console.error(`AAIS restore verification failed: ${error.message}`);
     process.exitCode = 1;
   });
 }

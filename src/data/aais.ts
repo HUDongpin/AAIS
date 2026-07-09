@@ -55,6 +55,7 @@ export type AaisEvidenceKind =
   | "expert_modeling"
   | "monitoring"
   | "planning"
+  | "recommendation_override"
   | "scaffold"
   | "self_check"
   | "self_report"
@@ -76,6 +77,7 @@ export type AaisEventName =
   | "expert_trace_compared"
   | "monitoring_pause_detected"
   | "planning_submitted"
+  | "recommendation_override_recorded"
   | "scaffold_request"
   | "scaffold_self_check_started"
   | "self_report_saved"
@@ -321,6 +323,12 @@ export const aaisEventDefinitions: Record<AaisEventName, AaisEventDefinition> = 
     family: "A3_SUPERVISION",
     evidenceKind: "planning",
     description: "A3 captured a planning artifact for a task.",
+  },
+  recommendation_override_recorded: {
+    agent: "platform",
+    family: "PLATFORM",
+    evidenceKind: "recommendation_override",
+    description: "Teacher or admin recorded an override decision for a rule-based recommendation.",
   },
   scaffold_request: {
     agent: "A1",

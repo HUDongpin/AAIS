@@ -75,7 +75,10 @@ describe("AAIS OIDC auth routes", () => {
 
     expect(response.status).toBe(503);
     expect(body).toEqual({
-      error: "AAIS OIDC is not configured.",
+      error: {
+        code: "AAIS_OIDC_NOT_CONFIGURED",
+        message: "AAIS OIDC is not configured.",
+      },
       secrets: "redacted",
     });
     expect(response.headers.get("location")).toBeNull();
@@ -102,7 +105,10 @@ describe("AAIS OIDC auth routes", () => {
 
     expect(response.status).toBe(503);
     expect(body).toEqual({
-      error: "AAIS OIDC is not configured.",
+      error: {
+        code: "AAIS_OIDC_NOT_CONFIGURED",
+        message: "AAIS OIDC is not configured.",
+      },
       secrets: "redacted",
     });
     expect(fetchMock).not.toHaveBeenCalled();

@@ -63,6 +63,245 @@ describe("AAIS governed AI provider", () => {
     expect(JSON.stringify(result.runtime)).not.toContain("secret-api-key");
   });
 
+  it("uses the fallback provider when the configured primary provider cannot connect", async () => {
+    vi.stubEnv("AAIS_AI_PROVIDER", "openai-compatible");
+    vi.stubEnv("AAIS_AI_ENDPOINT", "https://qwen.example.test/compatible-mode/v1/chat/completions");
+    vi.stubEnv("AAIS_AI_API_KEY", "qwen-secret-key");
+    vi.stubEnv("AAIS_AI_MODEL", "qwen-plus");
+    vi.stubEnv("AAIS_AI_FALLBACK_ENDPOINT", "https://deepseek.example.test/v1/chat/completions");
+    vi.stubEnv("AAIS_AI_FALLBACK_API_KEY", "deepseek-secret-key");
+    vi.stubEnv("AAIS_AI_FALLBACK_MODEL", "deepseek-v4-pro");
+    const fetchMock = vi.fn<typeof fetch>(async (url) => {
+      if (String(url).includes("qwen.example.test")) {
+        throw Object.assign(new TypeError("fetch failed"), {
+          cause: {
+            code: "UND_ERR_CONNECT_TIMEOUT",
+          },
+        });
+      }
+      return Response.json({
+        choices: [
+          {
+            message: {
+              content: "DeepSeek fallback response",
+            },
+          },
+        ],
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const provider = createConfiguredAaisModelProvider();
+    const result = await provider.generate({
+      agentId: "A1",
+      label: "导学智能体",
+      locale: "zh-CN",
+      phase: "training",
+      taskId: "training_task_1",
+      learnerInput: "我应该如何开始？",
+      workspaceState: {
+        currentStep: "guide",
+      },
+      fallbackText: "本地 fallback",
+    });
+
+    expect(result.text).toBe("DeepSeek fallback response");
+    expect(fetchMock.mock.calls.map(([url]) => String(url))).toEqual([
+      "https://qwen.example.test/compatible-mode/v1/chat/completions",
+      "https://qwen.example.test/compatible-mode/v1/chat/completions",
+      "https://deepseek.example.test/v1/chat/completions",
+    ]);
+    expect(result.runtime).toMatchObject({
+      provider: "openai-compatible",
+      model: "deepseek-v4-pro",
+      providerChain: {
+        selected: "fallback",
+        fallbackUsed: true,
+        failures: [
+          {
+            provider: "primary",
+            reason: "connect-timeout",
+          },
+        ],
+      },
+      redaction: {
+        secrets: "omitted",
+        prompt: "summarized",
+      },
+    });
+    expect(JSON.stringify(result)).not.toContain("qwen-secret-key");
+    expect(JSON.stringify(result)).not.toContain("deepseek-secret-key");
+  });
+
+  it("honors zero runtime retries from environment configuration", async () => {
+    vi.stubEnv("AAIS_AI_PROVIDER", "openai-compatible");
+    vi.stubEnv("AAIS_AI_ENDPOINT", "https://ai.example.test/v1/chat/completions");
+    vi.stubEnv("AAIS_AI_API_KEY", "secret-api-key");
+    vi.stubEnv("AAIS_AI_MODEL", "enterprise-model");
+    vi.stubEnv("AAIS_AI_MAX_RETRIES", "0");
+    const fetchMock = vi.fn<typeof fetch>(async () =>
+      new Response("temporary failure", { status: 503 }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const provider = createConfiguredAaisModelProvider();
+    const result = await provider.generate({
+      agentId: "A1",
+      label: "导学智能体",
+      locale: "zh-CN",
+      phase: "training",
+      taskId: "training_task_1",
+      learnerInput: "我应该如何开始？",
+      workspaceState: {
+        currentStep: "guide",
+      },
+      fallbackText: "本地 fallback",
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({
+      text: "本地 fallback",
+      runtime: {
+        attempts: 1,
+        status: "fallback",
+        guardrail: {
+          reasons: ["http-status"],
+        },
+      },
+    });
+  });
+
+  it("honors configured student runtime timeout up to the enterprise ceiling and trims output budget", async () => {
+    vi.useFakeTimers();
+    vi.stubEnv("AAIS_AI_PROVIDER", "openai-compatible");
+    vi.stubEnv("AAIS_AI_ENDPOINT", "https://ai.example.test/v1/chat/completions");
+    vi.stubEnv("AAIS_AI_API_KEY", "secret-api-key");
+    vi.stubEnv("AAIS_AI_MODEL", "enterprise-model");
+    vi.stubEnv("AAIS_AI_TIMEOUT_MS", "30000");
+    vi.stubEnv("AAIS_AI_MAX_RETRIES", "0");
+    const fetchMock = vi.fn<typeof fetch>((_url, init) => {
+      const signal = init?.signal as AbortSignal | undefined;
+      return new Promise<Response>((_resolve, reject) => {
+        signal?.addEventListener("abort", () => {
+          reject(Object.assign(new Error("provider aborted"), { name: "AbortError" }));
+        });
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const provider = createConfiguredAaisModelProvider();
+    const resultPromise = provider.generate({
+      agentId: "A2",
+      label: "专家智能体",
+      locale: "zh-CN",
+      phase: "training",
+      taskId: "training_task_1",
+      learnerInput: "请给我一个专家示范。",
+      workspaceState: {
+        currentStep: "guide",
+      },
+      fallbackText: "本地 fallback",
+    });
+
+    try {
+      await vi.advanceTimersByTimeAsync(12_001);
+      const request = fetchMock.mock.calls[0]?.[1];
+      const payload = JSON.parse(String(request?.body));
+      expect((request?.signal as AbortSignal).aborted).toBe(false);
+      expect(payload.max_tokens).toBe(600);
+      await vi.advanceTimersByTimeAsync(18_000);
+      expect((request?.signal as AbortSignal).aborted).toBe(true);
+    } finally {
+      await vi.advanceTimersByTimeAsync(30_000);
+      vi.useRealTimers();
+    }
+
+    const result = await resultPromise;
+    expect(result).toMatchObject({
+      text: "本地 fallback",
+      runtime: {
+        attempts: 1,
+        status: "fallback",
+        runtimeProfile: {
+          mode: "live",
+          primary: {
+            timeoutMs: {
+              configured: 30000,
+              effective: 30000,
+              clamped: false,
+            },
+            thinkingMode: "provider-default",
+          },
+        },
+        guardrail: {
+          reasons: ["abort-timeout"],
+        },
+      },
+    });
+  });
+
+  it("uses DashScope Qwen defaults when a Qwen API key is available", async () => {
+    vi.stubEnv("DASHSCOPE_API_KEY", "dashscope-secret-key");
+    const fetchMock = vi.fn<typeof fetch>(async () =>
+      Response.json({
+        choices: [
+          {
+            message: {
+              content: "Qwen live guide response",
+            },
+          },
+        ],
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const provider = createConfiguredAaisModelProvider();
+    const result = await provider.generate({
+      agentId: "A1",
+      label: "导学智能体",
+      locale: "zh-CN",
+      phase: "training",
+      taskId: "training_task_1",
+      learnerInput: "请帮我明确目标。",
+      workspaceState: {
+        currentStep: "guide",
+      },
+      fallbackText: "本地 fallback",
+    });
+
+    expect(result.text).toBe("Qwen live guide response");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(String(fetchMock.mock.calls[0]?.[0])).toBe(
+      "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
+    );
+    const payload = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
+    expect(payload.model).toBe("qwen3.6-plus");
+    expect(payload.thinking).toEqual({ type: "disabled" });
+    expect(fetchMock.mock.calls[0]?.[1]?.headers).toMatchObject({
+      authorization: "Bearer dashscope-secret-key",
+    });
+    expect(result.runtime).toMatchObject({
+      provider: "openai-compatible",
+      model: "qwen3.6-plus",
+      status: "ok",
+      runtimeProfile: {
+        mode: "live",
+        primary: {
+          provider: "qwen",
+          thinkingMode: "disabled",
+          timeoutMs: {
+            effective: 12000,
+          },
+        },
+      },
+      redaction: {
+        secrets: "omitted",
+        prompt: "summarized",
+      },
+    });
+    expect(JSON.stringify(result)).not.toContain("dashscope-secret-key");
+  });
+
   it("keeps production on deterministic fallback until model evaluation is approved", async () => {
     vi.stubEnv("NODE_ENV", "production");
     vi.stubEnv("AAIS_AI_PROVIDER", "openai-compatible");

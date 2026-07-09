@@ -1,12 +1,14 @@
 import { timingSafeEqual } from "node:crypto";
 import { NextResponse } from "next/server";
 import { recordAaisAuditEvent } from "@/lib/server/aais-audit-log";
+import { recordAaisMonitoringIssue } from "@/lib/server/aais-monitoring";
 import { isAaisCsrfError, requireAaisCsrf } from "@/lib/server/aais-csrf";
 import {
   flushAaisPersistentLrsOutbox,
   requeueAaisPersistentLrsDeadLetters,
 } from "@/lib/server/aais-learning-store";
 import { isAaisAuthError, requireAaisSessionActor } from "@/lib/server/aais-request-auth";
+import { createAaisApiErrorResponse } from "@/lib/server/aais-api-error";
 
 type FlushAuthorization = {
   mode: "admin-session" | "bearer-token";
@@ -46,7 +48,7 @@ async function handleFlushRequest(
   let action = readRequestedOutboxActionName(searchParams.get("action"));
   let authorization: FlushAuthorization | null = null;
   try {
-    authorization = authorizeFlushRequest(request, input);
+    authorization = await authorizeFlushRequest(request, input);
     action = readOutboxAction(searchParams.get("action"), input);
     if (action === "requeue-dead-letter") {
       const result = await requeueAaisPersistentLrsDeadLetters({
@@ -57,6 +59,12 @@ async function handleFlushRequest(
         authorization,
         limit,
         outcome: result.status === "not_configured" ? "failure" : "success",
+        result: sanitizeRequeueResult(result),
+      });
+      recordOutboxMonitoringIfNeeded({
+        action,
+        authorization,
+        status: result.status,
         result: sanitizeRequeueResult(result),
       });
       return NextResponse.json(
@@ -80,6 +88,12 @@ async function handleFlushRequest(
       outcome: result.status === "not_configured" ? "failure" : "success",
       result: sanitizeFlushResult(result),
     });
+    recordOutboxMonitoringIfNeeded({
+      action,
+      authorization,
+      status: result.status,
+      result: sanitizeFlushResult(result),
+    });
     return NextResponse.json(
       {
         action,
@@ -98,22 +112,28 @@ async function handleFlushRequest(
       errorStatus: getErrorStatus(error),
       errorKind: getAuditErrorKind(error),
     });
-    return NextResponse.json(
-      {
-        error: error instanceof Error ? error.message : "AAIS LRS outbox flush failed.",
-        secrets: "redacted",
-      },
-      { status: getErrorStatus(error) },
-    );
+    if (getAuditErrorKind(error) === "operation_failed") {
+      recordOutboxMonitoringIfNeeded({
+        action,
+        authorization,
+        status: "operation_failed",
+        result: {
+          errorStatus: getErrorStatus(error),
+          errorKind: getAuditErrorKind(error),
+          secrets: "redacted",
+        },
+      });
+    }
+    return createAaisApiErrorResponse(getErrorResponseInput(error));
   }
 }
 
-function authorizeFlushRequest(
+async function authorizeFlushRequest(
   request: Request,
   input: {
     allowAdminSession: boolean;
   },
-): FlushAuthorization {
+): Promise<FlushAuthorization> {
   const bearer = readBearerToken(request.headers.get("authorization"));
   const configuredTokens = [
     process.env.AAIS_LRS_OUTBOX_FLUSH_TOKEN?.trim(),
@@ -129,7 +149,7 @@ function authorizeFlushRequest(
     throw new AaisOutboxFlushAuthorizationError("AAIS LRS outbox flush bearer token is required.");
   }
 
-  const actor = requireAaisSessionActor(request);
+  const actor = await requireAaisSessionActor(request);
   if (actor.role !== "admin") {
     throw new AaisOutboxFlushAuthorizationError();
   }
@@ -221,6 +241,41 @@ function getErrorStatus(error: unknown) {
   return 500;
 }
 
+function getErrorResponseInput(error: unknown) {
+  if (isAaisAuthError(error)) {
+    return {
+      code: "AAIS_AUTH_REQUIRED",
+      message: "AAIS authentication is required.",
+      status: 401,
+      extra: { secrets: "redacted" },
+    };
+  }
+  if (error instanceof AaisOutboxFlushActionError) {
+    return {
+      code: "AAIS_LRS_OUTBOX_ACTION_UNSUPPORTED",
+      message: "AAIS LRS outbox action is not supported.",
+      status: 400,
+      extra: { secrets: "redacted" },
+    };
+  }
+  if (error instanceof AaisOutboxFlushAuthorizationError || isAaisCsrfError(error)) {
+    return {
+      code: "AAIS_LRS_OUTBOX_FORBIDDEN",
+      message: "AAIS LRS outbox flush requires administrator authorization.",
+      status: 403,
+      extra: { secrets: "redacted" },
+    };
+  }
+  return {
+    code: "AAIS_LRS_OUTBOX_FLUSH_FAILED",
+    message: "AAIS LRS outbox flush failed.",
+    status: 500,
+    extra: { secrets: "redacted" },
+    cause: error,
+    route: "/api/learning/lrs/outbox/flush",
+  };
+}
+
 function recordOutboxAudit(input: {
   action: OutboxAction | "unsupported";
   authorization: FlushAuthorization | null;
@@ -243,6 +298,34 @@ function recordOutboxAudit(input: {
       ...(input.result ?? {}),
       ...(typeof input.errorStatus === "number" ? { errorStatus: input.errorStatus } : {}),
       ...(input.errorKind ? { errorKind: input.errorKind } : {}),
+      secrets: "redacted",
+    },
+  });
+}
+
+function recordOutboxMonitoringIfNeeded(input: {
+  action: OutboxAction | "unsupported";
+  authorization: FlushAuthorization | null;
+  status: string;
+  result: Record<string, unknown>;
+}) {
+  if (input.status !== "not_configured" && input.status !== "partial" && input.status !== "operation_failed") {
+    return;
+  }
+  recordAaisMonitoringIssue({
+    event: "aais.lrs_outbox.degraded",
+    message: `AAIS LRS outbox ${input.action} ${input.status}`,
+    status: input.status === "partial" ? 502 : 503,
+    route: "/api/learning/lrs/outbox/flush",
+    tags: {
+      "aais.outbox_action": input.action,
+      "aais.outbox_status": input.status,
+      "aais.auth_mode": input.authorization?.mode ?? "none",
+    },
+    extra: {
+      action: input.action,
+      authMode: input.authorization?.mode ?? "none",
+      ...input.result,
       secrets: "redacted",
     },
   });

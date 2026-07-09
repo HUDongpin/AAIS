@@ -6,6 +6,7 @@ import {
   normalizeCohortAnalyticsFilters,
 } from "@/lib/server/aais-learning-store";
 import { isAaisAuthError, requireAaisSessionActor, resolveAaisStudentId } from "@/lib/server/aais-request-auth";
+import { createAaisApiErrorResponse } from "@/lib/server/aais-api-error";
 
 export async function GET(request: Request) {
   const url = new URL(request.url);
@@ -15,7 +16,7 @@ export async function GET(request: Request) {
   try {
     const exported = scope === "cohort"
       ? await getAuthorizedCohortExport(request, format, url.searchParams)
-      : await getAaisLearningStore().exportEvents(resolveAaisStudentId(request), format);
+      : await getAaisLearningStore().exportEvents(await resolveAaisStudentId(request), format);
     return new NextResponse(exported.body, {
       headers: {
         "content-type": exported.contentType,
@@ -23,13 +24,7 @@ export async function GET(request: Request) {
       },
     });
   } catch (error) {
-    return NextResponse.json(
-      {
-        error: error instanceof Error ? error.message : "AAIS export request failed.",
-        secrets: "redacted",
-      },
-      { status: getErrorStatus(error) },
-    );
+    return createAaisApiErrorResponse(getErrorResponseInput(error));
   }
 }
 
@@ -38,7 +33,7 @@ async function getAuthorizedCohortExport(
   format: "json" | "csv",
   params: URLSearchParams,
 ) {
-  const actor = requireAaisSessionActor(request);
+  const actor = await requireAaisSessionActor(request);
   if (actor.role !== "teacher" && actor.role !== "admin") {
     throw new AaisExportAuthorizationError();
   }
@@ -69,15 +64,45 @@ class AaisExportAuthorizationError extends Error {
   }
 }
 
-function getErrorStatus(error: unknown) {
+function getErrorResponseInput(error: unknown) {
   if (isAaisAuthError(error)) {
-    return 401;
+    return {
+      code: "AAIS_AUTH_REQUIRED",
+      message: "AAIS authentication is required.",
+      status: 401,
+      extra: { secrets: "redacted" },
+    };
   }
   if (error instanceof AaisExportAuthorizationError) {
-    return 403;
+    return {
+      code: "AAIS_COHORT_EXPORT_FORBIDDEN",
+      message: "AAIS cohort export requires educator authorization.",
+      status: 403,
+      extra: { secrets: "redacted" },
+    };
   }
   if (isAaisLearningStorageConfigurationError(error)) {
-    return 503;
+    return {
+      code: "AAIS_STORAGE_NOT_CONFIGURED",
+      message: "AAIS production learner storage requires Postgres configuration.",
+      status: 503,
+      extra: { secrets: "redacted" },
+    };
   }
-  return 400;
+  if (error instanceof Error && error.message.startsWith("Invalid AAIS cohort analytics ")) {
+    return {
+      code: "AAIS_COHORT_ANALYTICS_FILTER_INVALID",
+      message: "AAIS cohort analytics filter is invalid.",
+      status: 400,
+      extra: { secrets: "redacted" },
+    };
+  }
+  return {
+    code: "AAIS_EXPORT_REQUEST_FAILED",
+    message: "AAIS export request failed.",
+    status: 400,
+    extra: { secrets: "redacted" },
+    cause: error,
+    route: "/api/learning/export",
+  };
 }

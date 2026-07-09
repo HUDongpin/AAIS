@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 
 describe("AAIS git secret guardrails", () => {
-  it("ignores owner-provided env files and generated release evidence artifacts", async () => {
+  it("ignores owner-provided env files and generated private artifacts", async () => {
     const gitignore = await readFile(".gitignore", "utf8");
     const patterns = gitignore
       .split(/\r?\n/)
@@ -13,12 +13,13 @@ describe("AAIS git secret guardrails", () => {
       ".aais-data/",
       ".env",
       ".env.*",
+      "!.env.example",
       "output/",
       "All API Keys.docx",
     ]));
   });
 
-  it("excludes local credentials and release evidence from Vercel deployments", async () => {
+  it("excludes local credentials and generated private artifacts from Vercel deployments", async () => {
     const vercelignore = await readFile(".vercelignore", "utf8");
     const patterns = vercelignore
       .split(/\r?\n/)
@@ -29,6 +30,7 @@ describe("AAIS git secret guardrails", () => {
       ".aais-data/",
       ".env",
       ".env.*",
+      "!.env.example",
       ".vercel/",
       "output/",
       "All API Keys.docx",

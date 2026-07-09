@@ -8,6 +8,7 @@ import {
 import { isAaisCsrfError, requireAaisCsrf } from "@/lib/server/aais-csrf";
 import { isAaisAuthError, resolveAaisStudentId } from "@/lib/server/aais-request-auth";
 import { getAaisPersistentLrsOutboxStatus } from "@/lib/server/aais-learning-store";
+import { createAaisApiErrorResponse } from "@/lib/server/aais-api-error";
 
 export async function GET() {
   const result = await probeAaisLrsConnection();
@@ -28,7 +29,7 @@ export async function GET() {
 
 export async function POST(request: Request) {
   try {
-    const studentId = resolveAaisStudentId(request);
+    const studentId = await resolveAaisStudentId(request);
     requireAaisCsrf(request, studentId);
     const result = await sendAaisLrsHealthStatement(studentId);
     return NextResponse.json({
@@ -39,24 +40,35 @@ export async function POST(request: Request) {
       status: result.status === "error" ? 502 : 200,
     });
   } catch (error) {
-    return NextResponse.json(
-      {
-        error: error instanceof Error ? error.message : "AAIS LRS health write failed.",
-        secrets: "redacted",
-      },
-      { status: getErrorStatus(error) },
-    );
+    return createAaisApiErrorResponse(getErrorResponseInput(error));
   }
 }
 
-function getErrorStatus(error: unknown) {
+function getErrorResponseInput(error: unknown) {
   if (isAaisAuthError(error)) {
-    return 401;
+    return {
+      code: "AAIS_AUTH_REQUIRED",
+      message: "AAIS authentication is required.",
+      status: 401,
+      extra: { secrets: "redacted" },
+    };
   }
   if (isAaisCsrfError(error)) {
-    return 403;
+    return {
+      code: "AAIS_CSRF_REQUIRED",
+      message: "AAIS CSRF token is required.",
+      status: 403,
+      extra: { secrets: "redacted" },
+    };
   }
-  return 400;
+  return {
+    code: "AAIS_LRS_HEALTH_WRITE_FAILED",
+    message: "AAIS LRS health write failed.",
+    status: 400,
+    extra: { secrets: "redacted" },
+    cause: error,
+    route: "/api/learning/lrs/health",
+  };
 }
 
 function sanitizePersistentOutboxStatus(

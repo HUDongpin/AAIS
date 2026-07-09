@@ -1,4 +1,4 @@
-import { createHmac, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 
 export type AaisSessionActor = {
   id: string;
@@ -11,6 +11,12 @@ type AaisSessionPayload = {
   actor: AaisSessionActor;
   iat: number;
   exp: number;
+};
+
+export type AaisVerifiedSessionToken = {
+  actor: AaisSessionActor;
+  expiresAt: Date;
+  tokenHash: string;
 };
 
 const sessionCookieName = "aais_session";
@@ -43,6 +49,13 @@ export function createAaisSessionToken(
 }
 
 export function verifyAaisSessionToken(token: string | null | undefined, now = new Date()) {
+  return verifyAaisSessionTokenWithMetadata(token, now)?.actor ?? null;
+}
+
+export function verifyAaisSessionTokenWithMetadata(
+  token: string | null | undefined,
+  now = new Date(),
+): AaisVerifiedSessionToken | null {
   if (!token) {
     return null;
   }
@@ -61,7 +74,17 @@ export function verifyAaisSessionToken(token: string | null | undefined, now = n
   if (payload.exp <= nowSeconds) {
     return null;
   }
-  return payload.actor;
+  return {
+    actor: payload.actor,
+    expiresAt: new Date(payload.exp * 1000),
+    tokenHash: createAaisSessionTokenHash(token),
+  };
+}
+
+export function createAaisSessionTokenHash(token: string) {
+  return createHash("sha256")
+    .update(`aais-session-token:${token}`)
+    .digest("hex");
 }
 
 export function getAaisSessionCookieOptions() {

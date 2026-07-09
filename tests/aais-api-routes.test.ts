@@ -18,6 +18,8 @@ afterEach(async () => {
   delete process.env.AAIS_DATA_DIR;
   delete process.env.AAIS_SESSION_SECRET;
   vi.unstubAllEnvs();
+  vi.unstubAllGlobals();
+  vi.doUnmock("@/lib/ai/orchestration/aais-learning-guide-graph");
   await rm(tempDir, { force: true, recursive: true });
 });
 
@@ -88,6 +90,57 @@ describe("AAIS learning API routes", () => {
     expect(response.status).toBe(401);
   });
 
+  it("does not echo raw task ids in learner session or scaffold errors", async () => {
+    const sessionRoute = await import("@/app/api/learning/session/route");
+    const scaffoldRoute = await import("@/app/api/learning/scaffold/route");
+    const cookie = createAuthedCookie("S001");
+    const csrf = createAaisCsrfToken("S001");
+
+    const lockedTaskResponse = await sessionRoute.PATCH(
+      new Request("http://localhost/api/learning/session", {
+        method: "PATCH",
+        headers: {
+          cookie,
+          "x-aais-csrf": csrf,
+        },
+        body: JSON.stringify({
+          action: "select-task",
+          taskId: "practice_task_2",
+        }),
+      }),
+    );
+    const lockedTaskBody = await lockedTaskResponse.json();
+
+    expect(lockedTaskResponse.status).toBe(400);
+    expect(lockedTaskBody.error).toEqual({
+      code: "AAIS_TASK_LOCKED",
+      message: "AAIS task is locked.",
+    });
+    expect(JSON.stringify(lockedTaskBody)).not.toContain("practice_task_2");
+
+    const unknownScaffoldResponse = await scaffoldRoute.POST(
+      new Request("http://localhost/api/learning/scaffold", {
+        method: "POST",
+        headers: {
+          cookie,
+          "x-aais-csrf": csrf,
+        },
+        body: JSON.stringify({
+          taskId: "private-task-id",
+          toolId: "stage-checklist",
+        }),
+      }),
+    );
+    const unknownScaffoldBody = await unknownScaffoldResponse.json();
+
+    expect(unknownScaffoldResponse.status).toBe(400);
+    expect(unknownScaffoldBody.error).toEqual({
+      code: "AAIS_TASK_UNKNOWN",
+      message: "AAIS task was not found.",
+    });
+    expect(JSON.stringify(unknownScaffoldBody)).not.toContain("private-task-id");
+  });
+
   it("returns role-only actor evidence for authenticated session reads", async () => {
     const sessionRoute = await import("@/app/api/learning/session/route");
 
@@ -139,7 +192,10 @@ describe("AAIS learning API routes", () => {
 
     expect(response.status).toBe(503);
     expect(body).toEqual({
-      error: "AAIS production learner storage requires Postgres configuration.",
+      error: {
+        code: "AAIS_STORAGE_NOT_CONFIGURED",
+        message: "AAIS production learner storage requires Postgres configuration.",
+      },
     });
   });
 
@@ -204,7 +260,10 @@ describe("AAIS learning API routes", () => {
     expect(JSON.stringify(body)).not.toContain("Provider answer");
     expect(JSON.stringify(body)).not.toContain("secret-api-key-that-must-not-leak");
     expect(body).toEqual({
-      error: "AAIS production learner storage requires Postgres configuration.",
+      error: {
+        code: "AAIS_STORAGE_NOT_CONFIGURED",
+        message: "AAIS production learner storage requires Postgres configuration.",
+      },
     });
   });
 
@@ -265,6 +324,14 @@ describe("AAIS learning API routes", () => {
   });
 
   it("records guide messages in the persistent learner session", async () => {
+    vi.stubEnv("AAIS_AI_PROVIDER", "");
+    vi.stubEnv("AAIS_AI_ENDPOINT", "");
+    vi.stubEnv("AAIS_AI_API_KEY", "");
+    vi.stubEnv("AAIS_AI_MODEL", "");
+    vi.stubEnv("AAIS_AI_FALLBACK_ENDPOINT", "");
+    vi.stubEnv("AAIS_AI_FALLBACK_API_KEY", "");
+    vi.stubEnv("AAIS_AI_FALLBACK_MODEL", "");
+    vi.resetModules();
     const guideRoute = await import("@/app/api/learning/ai-guide/route");
     const sessionRoute = await import("@/app/api/learning/session/route");
     const s001Cookie = createAuthedCookie("S001");
@@ -287,7 +354,30 @@ describe("AAIS learning API routes", () => {
       }),
     );
     const guideBody = await guideResponse.json();
+    expect(guideResponse.status).toBe(200);
     expect(guideBody.orchestration.graph.topologicalOrder).toEqual(["A1", "A2", "A3", "A4"]);
+    expect(guideBody.turns.map((turn: { agentId: string }) => turn.agentId)).toEqual([
+      "A1",
+      "A2",
+    ]);
+    expect(guideBody.turns.map((turn: { actions: string[] }) => turn.actions)).toEqual([
+      ["guide-flow", "scaffold"],
+      ["model", "coach", "mention-expert"],
+    ]);
+    expect(guideBody.backgroundTurns.map((turn: { agentId: string }) => turn.agentId)).toEqual([
+      "A3",
+      "A4",
+    ]);
+    expect(guideBody.orchestration.runtime).toMatchObject({
+      engine: "aais-langgraph-runtime",
+      status: "completed",
+      eventCount: 4,
+      modelProvider: {
+        provider: "deterministic",
+        generatedTurns: 4,
+        fallbackTurns: 4,
+      },
+    });
 
     const sessionResponse = await sessionRoute.GET(
       new Request("http://localhost/api/learning/session", {
@@ -302,9 +392,432 @@ describe("AAIS learning API routes", () => {
       "user",
       "assistant",
     ]);
+    expect(sessionBody.session.guideMessages[1].turns.map((turn: { agentId: string }) => turn.agentId)).toEqual([
+      "A1",
+      "A2",
+    ]);
+    expect(sessionBody.session.guideMessages[1].text).not.toContain("监督智能体");
+    expect(sessionBody.session.guideMessages[1].text).not.toContain("反思智能体");
     expect(sessionBody.session.events.map((event: { event: string }) => event.event)).toEqual(
       expect.arrayContaining(["ai_prompt_submitted", "ai_response_completed"]),
     );
+  });
+
+  it("enforces a per-student daily guide request budget", async () => {
+    vi.stubEnv("AAIS_AI_DAILY_GUIDE_LIMIT", "1");
+    const info = vi.spyOn(console, "info").mockImplementation(() => undefined);
+    vi.resetModules();
+    const guideRoute = await import("@/app/api/learning/ai-guide/route");
+    const s001Cookie = createAuthedCookie("S001");
+    const requestBody = {
+      locale: "zh-CN",
+      phase: "training",
+      taskId: "training_task_1",
+      learnerInput: "我今天第一次请求导学。",
+      workspaceState: {
+        currentStep: "guide",
+      },
+    };
+
+    const firstResponse = await guideRoute.POST(
+      new Request("http://localhost/api/learning/ai-guide", {
+        method: "POST",
+        headers: {
+          cookie: s001Cookie,
+          "x-aais-csrf": createAaisCsrfToken("S001"),
+        },
+        body: JSON.stringify(requestBody),
+      }),
+    );
+    const firstBody = await firstResponse.json();
+
+    expect(firstResponse.status).toBe(200);
+    expect(firstBody.budget).toMatchObject({
+      limit: 1,
+      used: 1,
+      remaining: 0,
+    });
+
+    const secondResponse = await guideRoute.POST(
+      new Request("http://localhost/api/learning/ai-guide", {
+        method: "POST",
+        headers: {
+          cookie: s001Cookie,
+          "x-aais-csrf": createAaisCsrfToken("S001"),
+        },
+        body: JSON.stringify({
+          ...requestBody,
+          learnerInput: "我今天第二次请求导学。",
+        }),
+      }),
+    );
+    const secondBody = await secondResponse.json();
+
+    expect(secondResponse.status).toBe(429);
+    expect(secondBody.error).toEqual({
+      code: "AAIS_GUIDE_DAILY_BUDGET_EXCEEDED",
+      message: "AAIS daily guide request budget has been reached.",
+    });
+    expect(secondBody.budget).toMatchObject({
+      limit: 1,
+      used: 1,
+      remaining: 0,
+    });
+    const auditEvents = info.mock.calls.map((call) => JSON.parse(String(call[0])));
+    expect(auditEvents.map((event) => event.event)).toEqual([
+      "ai.guide.budget.used",
+      "ai.guide.budget.exceeded",
+    ]);
+    expect(auditEvents.every((event) => event.actorIdRedaction === "sha256-16")).toBe(true);
+    expect(auditEvents.map((event) => event.metadata)).toEqual([
+      expect.objectContaining({
+        limit: 1,
+        used: 1,
+        remaining: 0,
+      }),
+      expect.objectContaining({
+        limit: 1,
+        used: 1,
+        remaining: 0,
+      }),
+    ]);
+    expect(JSON.stringify(auditEvents)).not.toContain("S001");
+    expect(JSON.stringify(auditEvents)).not.toContain("我今天第一次请求导学");
+    expect(JSON.stringify(auditEvents)).not.toContain("我今天第二次请求导学");
+    expect(JSON.stringify(secondBody)).not.toContain("我今天第二次请求导学");
+    expect(JSON.stringify(secondBody)).not.toContain("test-session-secret");
+  });
+
+  it("accepts sanitized guide attachments without persisting uploaded raw text", async () => {
+    vi.stubEnv("AAIS_AI_PROVIDER", "");
+    vi.stubEnv("AAIS_AI_ENDPOINT", "");
+    vi.stubEnv("AAIS_AI_API_KEY", "");
+    vi.stubEnv("AAIS_AI_MODEL", "");
+    vi.stubEnv("AAIS_AI_FALLBACK_ENDPOINT", "");
+    vi.stubEnv("AAIS_AI_FALLBACK_API_KEY", "");
+    vi.stubEnv("AAIS_AI_FALLBACK_MODEL", "");
+    vi.resetModules();
+    const guideRoute = await import("@/app/api/learning/ai-guide/route");
+    const sessionRoute = await import("@/app/api/learning/session/route");
+    const s001Cookie = createAuthedCookie("S001");
+
+    const guideResponse = await guideRoute.POST(
+      new Request("http://localhost/api/learning/ai-guide", {
+        method: "POST",
+        headers: {
+          cookie: s001Cookie,
+          "x-aais-csrf": createAaisCsrfToken("S001"),
+        },
+        body: JSON.stringify({
+          phase: "training",
+          taskId: "training_task_1",
+          learnerInput: "请阅读上传文件并给我下一步建议。",
+          workspaceState: {
+            currentStep: "guide",
+            attachments: [
+              {
+                name: "planning-notes.txt",
+                mediaType: "text/plain",
+                sizeBytes: 52,
+                extractedText: "private uploaded snippet must not persist in session JSON",
+              },
+            ],
+          },
+        }),
+      }),
+    );
+    const guideBody = await guideResponse.json();
+
+    expect(guideResponse.status).toBe(200);
+    expect(guideBody.message.text).toContain("planning-notes.txt");
+
+    const sessionResponse = await sessionRoute.GET(
+      new Request("http://localhost/api/learning/session", {
+        headers: {
+          cookie: s001Cookie,
+        },
+      }),
+    );
+    const sessionBody = await sessionResponse.json();
+    const serializedSession = JSON.stringify(sessionBody.session);
+
+    expect(serializedSession).toContain("请阅读上传文件并给我下一步建议。");
+    expect(serializedSession).not.toContain("private uploaded snippet must not persist");
+    expect(serializedSession).not.toContain("attachments");
+  });
+
+  it("rejects invalid guide attachment payloads", async () => {
+    vi.resetModules();
+    const guideRoute = await import("@/app/api/learning/ai-guide/route");
+
+    const response = await guideRoute.POST(
+      new Request("http://localhost/api/learning/ai-guide", {
+        method: "POST",
+        headers: {
+          cookie: createAuthedCookie("S001"),
+          "x-aais-csrf": createAaisCsrfToken("S001"),
+        },
+        body: JSON.stringify({
+          phase: "training",
+          taskId: "training_task_1",
+          learnerInput: "请看文件。",
+          workspaceState: {
+            currentStep: "guide",
+            attachments: [
+              {
+                name: "image.png",
+                mediaType: "image/png",
+                sizeBytes: 1200,
+                extractedText: "not allowed",
+              },
+            ],
+          },
+        }),
+      }),
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(400);
+    expect(body.error).toEqual({
+      code: "AAIS_GUIDE_ATTACHMENT_INVALID",
+      message: "AAIS guide attachment is invalid.",
+    });
+    expect(JSON.stringify(body)).not.toContain("image/png");
+  });
+
+  it("parses @A2 guide mentions and persists only the targeted visible answer", async () => {
+    vi.stubEnv("AAIS_AI_PROVIDER", "");
+    vi.stubEnv("AAIS_AI_ENDPOINT", "");
+    vi.stubEnv("AAIS_AI_API_KEY", "");
+    vi.stubEnv("AAIS_AI_MODEL", "");
+    vi.stubEnv("AAIS_AI_FALLBACK_ENDPOINT", "");
+    vi.stubEnv("AAIS_AI_FALLBACK_API_KEY", "");
+    vi.stubEnv("AAIS_AI_FALLBACK_MODEL", "");
+    vi.resetModules();
+    const guideRoute = await import("@/app/api/learning/ai-guide/route");
+    const sessionRoute = await import("@/app/api/learning/session/route");
+    const s001Cookie = createAuthedCookie("S001");
+
+    const guideResponse = await guideRoute.POST(
+      new Request("http://localhost/api/learning/ai-guide", {
+        method: "POST",
+        headers: {
+          cookie: s001Cookie,
+          "x-aais-csrf": createAaisCsrfToken("S001"),
+        },
+        body: JSON.stringify({
+          phase: "training",
+          taskId: "training_task_1",
+          learnerInput: "@A2 请示范专家会怎样监控理解。",
+          workspaceState: {
+            currentStep: "guide",
+          },
+        }),
+      }),
+    );
+    const guideBody = await guideResponse.json();
+
+    expect(guideResponse.status).toBe(200);
+    expect(guideBody.turns.map((turn: { agentId: string }) => turn.agentId)).toEqual(["A2"]);
+    expect(guideBody.message.text).toContain("专家智能体");
+    expect(guideBody.message.text).not.toContain("导学智能体");
+    expect(guideBody.backgroundTurns.map((turn: { agentId: string }) => turn.agentId)).toEqual([
+      "A3",
+      "A4",
+    ]);
+
+    const sessionResponse = await sessionRoute.GET(
+      new Request("http://localhost/api/learning/session", {
+        headers: {
+          cookie: s001Cookie,
+        },
+      }),
+    );
+    const sessionBody = await sessionResponse.json();
+
+    expect(sessionBody.session.guideMessages[1].turns.map((turn: { agentId: string }) => turn.agentId)).toEqual([
+      "A2",
+    ]);
+    expect(sessionBody.session.guideMessages[1].text).toContain("专家智能体");
+    expect(sessionBody.session.guideMessages[1].text).not.toContain("导学智能体");
+  });
+
+  it("returns a timed provider fallback for targeted guide aborts without calling hidden agents live", async () => {
+    vi.stubEnv("AAIS_AI_PROVIDER", "openai-compatible");
+    vi.stubEnv("AAIS_AI_ENDPOINT", "https://ai.example.test/v1/chat/completions");
+    vi.stubEnv("AAIS_AI_API_KEY", "secret-api-key");
+    vi.stubEnv("AAIS_AI_MODEL", "enterprise-model");
+    vi.stubEnv("AAIS_AI_MAX_RETRIES", "0");
+    vi.resetModules();
+    const fetchMock = vi.fn<typeof fetch>(async () => {
+      throw Object.assign(new Error("provider aborted"), { name: "AbortError" });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const guideRoute = await import("@/app/api/learning/ai-guide/route");
+
+    const response = await guideRoute.POST(
+      new Request("http://localhost/api/learning/ai-guide", {
+        method: "POST",
+        headers: {
+          cookie: createAuthedCookie("S001"),
+          "x-aais-csrf": createAaisCsrfToken("S001"),
+        },
+        body: JSON.stringify({
+          phase: "training",
+          taskId: "training_task_1",
+          learnerInput: "@A1 请帮我明确目标。",
+          workspaceState: {
+            currentStep: "guide",
+          },
+        }),
+      }),
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(body.turns.map((turn: { agentId: string }) => turn.agentId)).toEqual(["A1"]);
+    expect(body.backgroundTurns.map((turn: { agentId: string }) => turn.agentId)).toEqual([
+      "A3",
+      "A4",
+    ]);
+    expect(body.message.text).toContain("导学智能体");
+    expect(body.orchestration.runtime.timings).toMatchObject({
+      fallback: true,
+      timeoutReason: "abort-timeout",
+      attempts: 1,
+    });
+    expect(body.orchestration.runtime.ai).toMatchObject({
+      mode: "live",
+      primary: {
+        provider: "openai-compatible",
+        thinkingMode: "provider-default",
+        timeoutMs: {
+          effective: 12000,
+          max: 30000,
+        },
+      },
+      redaction: {
+        secrets: "omitted",
+        endpoints: "omitted",
+      },
+    });
+    expect(JSON.stringify(body)).not.toContain("secret-api-key");
+    expect(JSON.stringify(body)).not.toContain("https://ai.example.test");
+  });
+
+  it("streams guide acknowledgement and agent events only when event-stream is requested", async () => {
+    vi.stubEnv("AAIS_AI_PROVIDER", "");
+    vi.stubEnv("AAIS_AI_ENDPOINT", "");
+    vi.stubEnv("AAIS_AI_API_KEY", "");
+    vi.stubEnv("AAIS_AI_MODEL", "");
+    vi.stubEnv("AAIS_AI_FALLBACK_ENDPOINT", "");
+    vi.stubEnv("AAIS_AI_FALLBACK_API_KEY", "");
+    vi.stubEnv("AAIS_AI_FALLBACK_MODEL", "");
+    vi.resetModules();
+    const guideRoute = await import("@/app/api/learning/ai-guide/route");
+
+    const response = await guideRoute.POST(
+      new Request("http://localhost/api/learning/ai-guide?stream=1", {
+        method: "POST",
+        headers: {
+          accept: "text/event-stream",
+          cookie: createAuthedCookie("S001"),
+          "x-aais-csrf": createAaisCsrfToken("S001"),
+        },
+        body: JSON.stringify({
+          phase: "training",
+          taskId: "training_task_1",
+          learnerInput: "@A1 请帮我明确目标。",
+          workspaceState: {
+            currentStep: "guide",
+          },
+        }),
+      }),
+    );
+    const streamText = await response.text();
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toContain("text/event-stream");
+    expect(streamText).toContain("event: ack");
+    expect(streamText).toContain("event: agent_start");
+    expect(streamText).toContain("event: agent_delta");
+    expect(streamText).toContain("event: agent_done");
+    expect(streamText).toContain("event: fallback");
+    expect(streamText).toContain("event: background_done");
+    expect(streamText).not.toContain("secret");
+  });
+
+  it("emits stream acknowledgement before the guide graph finishes", async () => {
+    vi.stubEnv("AAIS_AI_PROVIDER", "");
+    vi.stubEnv("AAIS_AI_ENDPOINT", "");
+    vi.stubEnv("AAIS_AI_API_KEY", "");
+    vi.stubEnv("AAIS_AI_MODEL", "");
+    vi.stubEnv("AAIS_AI_FALLBACK_ENDPOINT", "");
+    vi.stubEnv("AAIS_AI_FALLBACK_API_KEY", "");
+    vi.stubEnv("AAIS_AI_FALLBACK_MODEL", "");
+    vi.resetModules();
+    const graphResult = createDeferredGuideResult();
+    const graphMock = vi.fn(() => graphResult.promise);
+    vi.doMock("@/lib/ai/orchestration/aais-learning-guide-graph", () => ({
+      runAaisLearningGuideGraph: graphMock,
+    }));
+    const guideRoute = await import("@/app/api/learning/ai-guide/route");
+
+    const response = await guideRoute.POST(
+      new Request("http://localhost/api/learning/ai-guide?stream=1", {
+        method: "POST",
+        headers: {
+          accept: "text/event-stream",
+          cookie: createAuthedCookie("S001"),
+          "x-aais-csrf": createAaisCsrfToken("S001"),
+        },
+        body: JSON.stringify({
+          phase: "training",
+          taskId: "training_task_1",
+          learnerInput: "@A1 请先告诉我你已经开始处理。",
+          workspaceState: {
+            currentStep: "guide",
+          },
+        }),
+      }),
+    );
+    const reader = response.body?.getReader();
+    if (!reader) {
+      throw new Error("Expected guide stream body.");
+    }
+
+    const decoder = new TextDecoder();
+    const firstChunk = await reader.read();
+    let progressText = decoder.decode(firstChunk.value);
+    for (let index = 0; index < 5 && !progressText.includes("event: agent_start"); index += 1) {
+      const next = await reader.read();
+      if (next.done) {
+        break;
+      }
+      progressText += decoder.decode(next.value);
+    }
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toContain("text/event-stream");
+    expect(graphMock).toHaveBeenCalledTimes(1);
+    expect(progressText).toContain("event: ack");
+    expect(progressText).toContain("event: agent_start");
+    expect(progressText).not.toContain("Mocked final answer");
+
+    graphResult.resolve(createMockGuideGraphResult());
+    let remainingText = "";
+    while (true) {
+      const next = await reader.read();
+      if (next.done) {
+        break;
+      }
+      remainingText += decoder.decode(next.value);
+    }
+
+    expect(remainingText).toContain("Mocked final answer");
+    expect(remainingText).toContain("event: background_done");
+    vi.doUnmock("@/lib/ai/orchestration/aais-learning-guide-graph");
   });
 
   it("exports the persisted event log as CSV through the export route", async () => {
@@ -692,9 +1205,216 @@ describe("AAIS learning API routes", () => {
       coachingSignals: 1,
       aiInteractions: 0,
     });
+    expect(body.analytics.pagination).toMatchObject({
+      limit: 25,
+      offset: 0,
+      returnedLearners: 1,
+      totalLearners: 1,
+      hasPreviousPage: false,
+      hasNextPage: false,
+    });
     expect(body.analytics.learners).toHaveLength(1);
     expect(JSON.stringify(body)).not.toContain("第一位学习者的低进展 API 记录");
     expect(JSON.stringify(body)).not.toContain("第二位学习者的训练 API 记录");
+  });
+
+  it("serves rule-based recommendations and records educator overrides as redacted events", async () => {
+    const sessionRoute = await import("@/app/api/learning/session/route");
+    const recommendationsRoute = await import("@/app/api/learning/recommendations/route");
+    const { createAaisLearningStore } = await import("@/lib/server/aais-learning-store");
+    const s001Cookie = createAuthedCookie("S001");
+    const teacherCookie = createAuthedCookie("teacher-a", "teacher");
+
+    await sessionRoute.PATCH(
+      new Request("http://localhost/api/learning/session", {
+        method: "PATCH",
+        headers: {
+          cookie: s001Cookie,
+          "x-aais-csrf": createAaisCsrfToken("S001"),
+        },
+        body: JSON.stringify({
+          action: "complete-task",
+          taskId: "training_task_1",
+        }),
+      }),
+    );
+    await sessionRoute.PATCH(
+      new Request("http://localhost/api/learning/session", {
+        method: "PATCH",
+        headers: {
+          cookie: s001Cookie,
+          "x-aais-csrf": createAaisCsrfToken("S001"),
+        },
+        body: JSON.stringify({
+          action: "select-task",
+          taskId: "practice_task_1",
+        }),
+      }),
+    );
+    await sessionRoute.PATCH(
+      new Request("http://localhost/api/learning/session", {
+        method: "PATCH",
+        headers: {
+          cookie: s001Cookie,
+          "x-aais-csrf": createAaisCsrfToken("S001"),
+        },
+        body: JSON.stringify({
+          action: "save-artifact",
+          taskId: "practice_task_1",
+          artifactText: "推荐规则不应泄漏的低进展记录",
+        }),
+      }),
+    );
+    await sessionRoute.PATCH(
+      new Request("http://localhost/api/learning/session", {
+        method: "PATCH",
+        headers: {
+          cookie: s001Cookie,
+          "x-aais-csrf": createAaisCsrfToken("S001"),
+        },
+        body: JSON.stringify({
+          action: "save-artifact",
+          taskId: "practice_task_1",
+          artifactText: "推荐规则不应泄漏的低进展记录",
+        }),
+      }),
+    );
+
+    const studentResponse = await recommendationsRoute.GET(
+      new Request("http://localhost/api/learning/recommendations", {
+        headers: {
+          cookie: s001Cookie,
+        },
+      }),
+    );
+    expect(studentResponse.status).toBe(403);
+
+    const teacherResponse = await recommendationsRoute.GET(
+      new Request("http://localhost/api/learning/recommendations", {
+        headers: {
+          cookie: teacherCookie,
+        },
+      }),
+    );
+    const body = await teacherResponse.json();
+    const serialized = JSON.stringify(body);
+
+    expect(teacherResponse.status).toBe(200);
+    expect(body.policy).toMatchObject({
+      version: "aais-rule-recommendations-v1",
+      teacherOverride: true,
+    });
+    expect(body.recommendations.length).toBeGreaterThan(0);
+    expect(body.recommendations[0]).toMatchObject({
+      id: expect.stringMatching(/^recommendation-[a-f0-9]{12}$/),
+      learnerKey: expect.stringMatching(/^learner-[a-f0-9]{12}$/),
+      sessionKey: expect.stringMatching(/^session-[a-f0-9]{12}$/),
+      reasons: expect.any(Array),
+    });
+    expect(serialized).not.toContain("S001");
+    expect(serialized).not.toContain("推荐规则不应泄漏的低进展记录");
+
+    const recommendation = body.recommendations[0];
+    const overrideResponse = await recommendationsRoute.POST(
+      new Request("http://localhost/api/learning/recommendations", {
+        method: "POST",
+        headers: {
+          cookie: teacherCookie,
+          "x-aais-csrf": extractCookieFromHeader(teacherCookie, getAaisCsrfCookieName()),
+        },
+        body: JSON.stringify({
+          recommendationId: recommendation.id,
+          learnerKey: recommendation.learnerKey,
+          sessionKey: recommendation.sessionKey,
+          ruleId: recommendation.ruleId,
+          targetTaskId: recommendation.targetTaskId,
+          decision: "accepted",
+          note: "教师已线下处理，原文不能进入事件。",
+        }),
+      }),
+    );
+    const overrideBody = await overrideResponse.json();
+
+    expect(overrideResponse.status).toBe(200);
+    expect(overrideBody.override).toMatchObject({
+      recommendationId: recommendation.id,
+      learnerKey: recommendation.learnerKey,
+      sessionKey: recommendation.sessionKey,
+      decision: "accepted",
+      event: "recommendation_override_recorded",
+    });
+
+    const session = await createAaisLearningStore({ rootDir: tempDir }).getOrCreateSession("S001");
+    const overrideEvent = session.events.find((event) => event.event === "recommendation_override_recorded");
+    expect(overrideEvent).toMatchObject({
+      agent: "platform",
+      detail: {
+        recommendation_id: recommendation.id,
+        decision: "accepted",
+        educator_role: "teacher",
+        educator_key: expect.stringMatching(/^educator-[a-f0-9]{12}$/),
+        note_length: expect.any(Number),
+        raw_note: "excluded",
+      },
+    });
+    expect(JSON.stringify(overrideEvent)).not.toContain("教师已线下处理");
+    expect(JSON.stringify(overrideEvent)).not.toContain("teacher-a");
+  });
+
+  it("feature-flags teacher recommendations without exposing analytics or accepting overrides", async () => {
+    vi.stubEnv("AAIS_RECOMMENDATIONS_ENABLED", "false");
+    const recommendationsRoute = await import("@/app/api/learning/recommendations/route");
+    const teacherCookie = createAuthedCookie("teacher-a", "teacher");
+    const csrf = extractCookieFromHeader(teacherCookie, getAaisCsrfCookieName());
+
+    const response = await recommendationsRoute.GET(
+      new Request("http://localhost/api/learning/recommendations", {
+        headers: {
+          cookie: teacherCookie,
+        },
+      }),
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body).toMatchObject({
+      recommendations: [],
+      policy: {
+        version: "aais-rule-recommendations-v1",
+        enabled: false,
+        factLayer: "disabled",
+      },
+      actor: {
+        role: "teacher",
+      },
+      secrets: "redacted",
+    });
+    expect(JSON.stringify(body)).not.toContain("teacher-a");
+
+    const overrideResponse = await recommendationsRoute.POST(
+      new Request("http://localhost/api/learning/recommendations", {
+        method: "POST",
+        headers: {
+          cookie: teacherCookie,
+          "x-aais-csrf": csrf,
+        },
+        body: JSON.stringify({
+          recommendationId: "recommendation-abcdef123456",
+          learnerKey: "learner-abcdef123456",
+          sessionKey: "session-abcdef123456",
+          ruleId: "complete_reflection",
+          targetTaskId: "practice_task_1",
+          decision: "accepted",
+        }),
+      }),
+    );
+    const overrideBody = await overrideResponse.json();
+
+    expect(overrideResponse.status).toBe(503);
+    expect(overrideBody.error).toEqual({
+      code: "AAIS_RECOMMENDATIONS_DISABLED",
+      message: "AAIS recommendations are disabled for this environment.",
+    });
   });
 
   it("authorizes cohort analytics before filter validation and validates filters before storage access", async () => {
@@ -709,7 +1429,10 @@ describe("AAIS learning API routes", () => {
     const anonymousBody = await anonymousResponse.json();
 
     expect(anonymousResponse.status).toBe(401);
-    expect(anonymousBody.error).toBe("AAIS authentication is required.");
+    expect(anonymousBody.error).toEqual({
+      code: "AAIS_AUTH_REQUIRED",
+      message: "AAIS authentication is required.",
+    });
     expect(anonymousBody.secrets).toBe("redacted");
 
     const studentResponse = await analyticsRoute.GET(
@@ -722,7 +1445,10 @@ describe("AAIS learning API routes", () => {
     const studentBody = await studentResponse.json();
 
     expect(studentResponse.status).toBe(403);
-    expect(studentBody.error).toBe("AAIS teacher analytics requires educator authorization.");
+    expect(studentBody.error).toEqual({
+      code: "AAIS_COHORT_ANALYTICS_FORBIDDEN",
+      message: "AAIS teacher analytics requires educator authorization.",
+    });
     expect(studentBody.secrets).toBe("redacted");
 
     const teacherAnalyticsResponse = await analyticsRoute.GET(
@@ -735,8 +1461,12 @@ describe("AAIS learning API routes", () => {
     const teacherAnalyticsBody = await teacherAnalyticsResponse.json();
 
     expect(teacherAnalyticsResponse.status).toBe(400);
-    expect(teacherAnalyticsBody.error).toBe("Invalid AAIS cohort analytics phase filter.");
+    expect(teacherAnalyticsBody.error).toEqual({
+      code: "AAIS_COHORT_ANALYTICS_FILTER_INVALID",
+      message: "AAIS cohort analytics filter is invalid.",
+    });
     expect(teacherAnalyticsBody.secrets).toBe("redacted");
+    expect(JSON.stringify(teacherAnalyticsBody)).not.toContain("lecture");
 
     const teacherExportResponse = await exportRoute.GET(
       new Request("http://localhost/api/learning/export?scope=cohort&format=json&event=raw_dump", {
@@ -748,8 +1478,12 @@ describe("AAIS learning API routes", () => {
     const teacherExportBody = await teacherExportResponse.json();
 
     expect(teacherExportResponse.status).toBe(400);
-    expect(teacherExportBody.error).toBe("Invalid AAIS cohort analytics event filter.");
+    expect(teacherExportBody.error).toEqual({
+      code: "AAIS_COHORT_ANALYTICS_FILTER_INVALID",
+      message: "AAIS cohort analytics filter is invalid.",
+    });
     expect(teacherExportBody.secrets).toBe("redacted");
+    expect(JSON.stringify(teacherExportBody)).not.toContain("raw_dump");
   });
 });
 
@@ -784,4 +1518,62 @@ function createAuthedCookie(id: string, role: "student" | "teacher" | "admin" = 
     displayName: id,
   });
   return `aais_session=${sessionToken}; ${getAaisCsrfCookieName()}=${csrfToken}`;
+}
+
+function extractCookieFromHeader(cookieHeader: string, name: string) {
+  const cookie = cookieHeader
+    .split(";")
+    .map((part) => part.trim())
+    .find((part) => part.startsWith(`${name}=`));
+  return cookie?.slice(name.length + 1) ?? "";
+}
+
+function createDeferredGuideResult() {
+  let resolve!: (value: ReturnType<typeof createMockGuideGraphResult>) => void;
+  const promise = new Promise<ReturnType<typeof createMockGuideGraphResult>>((nextResolve) => {
+    resolve = nextResolve;
+  });
+  return {
+    promise,
+    resolve,
+  };
+}
+
+function createMockGuideGraphResult() {
+  return {
+    messageText: "Mocked final answer",
+    visibleTurns: [
+      {
+        agentId: "A1",
+        label: "导学智能体",
+        content: "Mocked final answer",
+        actions: ["respond"],
+      },
+    ],
+    backgroundTurns: [
+      {
+        agentId: "A3",
+        label: "监督智能体",
+        content: "后台监督信号已记录。",
+        actions: ["monitor"],
+      },
+    ],
+    graph: {
+      graphId: "learning-ai-guide",
+      topologicalOrder: ["A1", "A3"],
+    },
+    runtime: {
+      threadId: "mock-thread",
+      timings: {
+        fallback: false,
+        agents: [
+          {
+            agentId: "A1",
+            status: "completed",
+          },
+        ],
+      },
+    },
+    trace: [],
+  };
 }

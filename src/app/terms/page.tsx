@@ -6,6 +6,8 @@ export const metadata: Metadata = {
   description: "AAIS use terms and responsible-use notice.",
 };
 
+export const dynamic = "force-dynamic";
+
 export default function Page() {
   return (
     <LegalNoticePage
@@ -32,8 +34,8 @@ export default function Page() {
         {
           title: "运维与证据",
           items: [
-            "正式发布前应通过 Vercel env preflight、Neon storage readiness、LRS health、OIDC smoke、teacher cohort smoke 和 release evidence bundle。",
-            "Release evidence 只应保存状态、变量名、哈希、布尔证明和 redacted 指标，不保存真实 secret 或 transient login material。",
+            "正式发布前应通过产品 CI、Playwright E2E、数据库迁移检查、部署 smoke check 和人工 release checklist。",
+            "运维记录只应保存状态、变量名、哈希、布尔证明和 redacted 指标，不保存真实 secret 或 transient login material。",
             "外部 LMS、HRIS、BI 集成应使用受控导出和安全 join keys；AAIS 不应成为机构身份或人事数据的源系统。",
           ],
         },

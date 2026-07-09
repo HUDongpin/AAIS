@@ -1,20 +1,69 @@
+import { readFileSync } from "node:fs";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { LearningPage } from "@/components/pages/learning-page";
+
+const routerMocks = vi.hoisted(() => ({
+  replace: vi.fn(),
+}));
+
+vi.mock("next/navigation", () => ({
+  useRouter: () => ({
+    replace: routerMocks.replace,
+  }),
+}));
 
 afterEach(() => {
   vi.useRealTimers();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
+  routerMocks.replace.mockReset();
+  window.localStorage.clear();
   document.cookie = "aais_csrf=; Max-Age=0; path=/";
 });
 
 describe("AAIS LearningPage", () => {
-  it("keeps My Learning focused on intelligent guidance without subtitles, outline, audio, or study-action buttons", () => {
+  it("removes browser default spacing above the learning shell", () => {
+    const globalCss = readFileSync("src/app/globals.css", "utf8");
+
+    expect(globalCss).toMatch(/html,\s*body\s*\{[\s\S]*?margin:\s*0;[\s\S]*?padding:\s*0;/);
+  });
+
+  it("renders the simplified CAAS learning shell with the content display menu", () => {
     render(<LearningPage />);
 
-    expect(screen.getByRole("heading", { name: "我的学习" })).toBeTruthy();
-    expect(screen.getByText("智能导学")).toBeTruthy();
+    const main = screen.getByRole("main", { name: "CAAIS 学习工作台" });
+    expect(main.getAttribute("aria-describedby")).toBe("aais-learning-description");
+    expect(screen.getByText("使用智能导学、内容展示和文档编辑完成认知学徒学习任务。")).toBeTruthy();
+    const brandText = screen.getByText("Cognitive Apprenticeship AI System (CAAS)");
+    const brandLogo = brandText.previousElementSibling;
+    const loginLogo = screen.getByRole("img", { name: "AAIS 登录界面 logo" });
+
+    expect(brandText).toBeTruthy();
+    expect(brandText.className).toContain("text-xs");
+    expect(brandText.className).toContain("sm:text-sm");
+    expect(brandText.className).toContain("leading-tight");
+    expect(brandText.className).not.toContain("leading-none");
+    expect(brandText.className).not.toContain("text-[11px]");
+    expect(brandText.className).not.toContain("sm:text-xs");
+    expect(loginLogo).toBe(brandLogo);
+    expect(brandLogo?.className).toContain("size-6");
+    expect(brandLogo?.className).toContain("rounded-2xl");
+    expect(brandLogo?.className).toContain("bg-[#1f6feb]");
+    expect(brandLogo?.className).not.toContain("size-5");
+    expect(loginLogo.querySelector("svg")).toBeTruthy();
+    expect(screen.getByText("A1 导学智能体")).toBeTruthy();
+    expect(screen.getByText(/邀请 A2 专家智能体示范思考/)).toBeTruthy();
+    expect(screen.getByText(/@专家智能体/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "明确学习目标" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "看 A2 专家如何思考" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "我卡住了，给我支架" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "整理反思记录" })).toBeTruthy();
+    expect(screen.getByText("内容展示")).toBeTruthy();
+    expect(screen.getByText("文档编辑")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "平台介绍" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "理论知识" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "历史文档" })).toBeTruthy();
     expect(screen.queryByText("全部字幕")).toBeNull();
     expect(screen.queryByText("课程目录")).toBeNull();
     expect(screen.queryByText("问这页")).toBeNull();
@@ -25,20 +74,842 @@ describe("AAIS LearningPage", () => {
     expect(screen.queryByText("播放设置")).toBeNull();
   });
 
-  it("shows the four AAIS agents and the PPT-inspired learning stages", () => {
+  it("renders content display entries as refined row buttons instead of diamond bullets", () => {
+    vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>(() => undefined)));
+
     render(<LearningPage />);
 
-    expect(screen.getByText("导学智能体")).toBeTruthy();
-    expect(screen.getByText("专家智能体")).toBeTruthy();
-    expect(screen.getByText("监督智能体")).toBeTruthy();
-    expect(screen.getByText("反思智能体")).toBeTruthy();
-    expect(screen.getAllByText("前端，与学生直接对话")).toHaveLength(2);
-    expect(screen.getAllByText("后端，与 A1 交互")).toHaveLength(2);
-    expect(screen.getByText("Modelling + Coaching")).toBeTruthy();
-    expect(screen.getByText("Articulation + Reflection")).toBeTruthy();
-    expect(screen.getByText("训练阶段")).toBeTruthy();
-    expect(screen.getByText("练习阶段")).toBeTruthy();
-    expect(screen.getByText("专家思维轨迹")).toBeTruthy();
+    [
+      ["平台介绍", "platform"],
+      ["理论知识", "theory"],
+      ["历史文档", "history"],
+    ].forEach(([name, iconId]) => {
+      const menuButton = screen.getByRole("button", { name });
+      const label = Array.from(menuButton.querySelectorAll("span")).find(
+        (span) => span.textContent === name,
+      );
+      const icon = menuButton.querySelector(`[data-content-entry-icon="${iconId}"]`);
+
+      expect(menuButton.className).toContain("min-h-[104px]");
+      expect(menuButton.className).toContain("rounded-lg");
+      expect(menuButton.className).toContain("border-[#d7dce5]");
+      expect(label?.className).toContain("text-[26px]");
+      expect(label?.className).toContain("font-semibold");
+      expect(icon).toBeTruthy();
+      expect(icon?.className).toContain("bg-[#eef2ff]");
+      expect(icon?.className).toContain("text-[#536de8]");
+      expect(menuButton.className).not.toContain("rotate-45");
+      expect(menuButton.className).not.toContain("bg-black");
+      expect(menuButton.className).not.toContain("text-[34px]");
+    });
+  });
+
+  it("matches the Claude Code desktop screenshot with a white canvas and serif page font", () => {
+    render(<LearningPage />);
+
+    const shell = screen.getByTestId("learning-shell");
+    const pageRoot = shell.parentElement as HTMLElement;
+    const guideInput = screen.getByLabelText("向智能导学输入你的想法");
+    const composer = guideInput.closest("form");
+
+    expect(pageRoot.className).toContain("bg-[#fcfcfc]");
+    expect(pageRoot.className).toContain("text-[#0e0e0e]");
+    expect(pageRoot.style.fontFamily).toContain("Anthropic Serif");
+    expect(pageRoot.style.fontFamily).toContain("Georgia");
+    expect(shell.className).toContain("bg-[#fcfcfc]");
+    expect(composer?.className).toContain("from-[#fcfcfc]");
+    expect(composer?.className).toContain("via-[#fcfcfc]");
+  });
+
+  it("matches the Claude Code desktop screenshot for the top learning header", () => {
+    render(<LearningPage />);
+
+    const brandText = screen.getByText("Cognitive Apprenticeship AI System (CAAS)");
+    const header = brandText.closest("header") as HTMLElement;
+    const accountButton = screen.getByRole("button", { name: "Bobie 账户菜单" });
+
+    expect(header.className).toContain("bg-[#fcfcfb]");
+    expect(header.className).toContain("text-[#0e0e0e]");
+    expect(header.className).not.toContain("bg-[#eeebe2]");
+    expect(header.className).not.toContain("bg-[#11142a]");
+    expect(header.style.fontFamily).toContain("Anthropic Sans");
+    expect(accountButton.className).toContain("text-[#0e0e0e]");
+    expect(accountButton.className).not.toContain("text-white");
+  });
+
+  it("exports learner-owned privacy data from the account menu", async () => {
+    let exportedJson = "";
+    const write = vi.fn(async (blob: Blob) => {
+      exportedJson = await blob.text();
+    });
+    const close = vi.fn();
+    const createWritable = vi.fn(async () => ({
+      write,
+      close,
+    }));
+    const showSaveFilePicker = vi.fn(async () => ({
+      createWritable,
+    }));
+    Object.defineProperty(window, "showSaveFilePicker", {
+      configurable: true,
+      value: showSaveFilePicker,
+    });
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.startsWith("/api/learning/session")) {
+        return Response.json({
+          session: createClientSessionFixture("可导出的过程记录"),
+        });
+      }
+      if (url === "/api/learning/privacy") {
+        return Response.json({
+          schemaVersion: 1,
+          exportScope: "learner-data",
+          studentId: "S001",
+          data: {
+            session: {
+              tasks: [{ artifactText: "可导出的过程记录" }],
+            },
+            events: [],
+          },
+          privacy: {
+            ownerScoped: true,
+            includesRawLearnerText: true,
+            secrets: "redacted",
+          },
+          secrets: "redacted",
+        });
+      }
+      return Response.json({ ok: true });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<LearningPage />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Bobie 账户菜单" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "导出学习数据" }));
+
+    await waitFor(() => expect(write).toHaveBeenCalledTimes(1));
+    expect(showSaveFilePicker).toHaveBeenCalledWith(expect.objectContaining({
+      suggestedName: "aais-S001-learner-data.json",
+    }));
+    expect(JSON.parse(exportedJson)).toMatchObject({
+      exportScope: "learner-data",
+      studentId: "S001",
+      privacy: {
+        secrets: "redacted",
+      },
+    });
+    expect(screen.getByRole("status").textContent).toBe("学习数据已导出。");
+  });
+
+  it("announces account export progress and blocks overlapping account actions", async () => {
+    const privacyResponse = createDeferred<Response>();
+    const write = vi.fn(async () => undefined);
+    const close = vi.fn(async () => undefined);
+    const createWritable = vi.fn(async () => ({
+      write,
+      close,
+    }));
+    const showSaveFilePicker = vi.fn(async () => ({
+      createWritable,
+    }));
+    Object.defineProperty(window, "showSaveFilePicker", {
+      configurable: true,
+      value: showSaveFilePicker,
+    });
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.startsWith("/api/learning/session")) {
+        return Response.json({
+          session: createClientSessionFixture("可导出的过程记录"),
+        });
+      }
+      if (url === "/api/learning/privacy" && !init?.method) {
+        return privacyResponse.promise;
+      }
+      return Response.json({ ok: true });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<LearningPage />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Bobie 账户菜单" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "导出学习数据" }));
+
+    const status = screen.getByRole("status");
+    expect(status.textContent).toBe("正在导出学习数据...");
+    expect(status.getAttribute("aria-live")).toBe("polite");
+    expect(status.getAttribute("aria-atomic")).toBe("true");
+    expect(screen.getByRole("menu", { name: "Bobie 账户信息" }).getAttribute("aria-busy")).toBe("true");
+    expect((screen.getByRole("menuitem", { name: "导出学习数据" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("menuitem", { name: "删除学习数据" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("menuitem", { name: "退出" }) as HTMLButtonElement).disabled).toBe(true);
+
+    fireEvent.click(screen.getByRole("menuitem", { name: "导出学习数据" }));
+    expect(fetchMock.mock.calls.filter(([input, init]) =>
+      String(input) === "/api/learning/privacy" && !init?.method
+    )).toHaveLength(1);
+
+    privacyResponse.resolve(Response.json({
+      schemaVersion: 1,
+      exportScope: "learner-data",
+      studentId: "S001",
+      data: {
+        session: {
+          tasks: [{ artifactText: "可导出的过程记录" }],
+        },
+        events: [],
+      },
+      privacy: {
+        secrets: "redacted",
+      },
+      secrets: "redacted",
+    }));
+
+    await screen.findByText("学习数据已导出。");
+    expect(write).toHaveBeenCalledTimes(1);
+    expect(close).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole("menu", { name: "Bobie 账户信息" })).toBeNull();
+  });
+
+  it("deletes learner-owned privacy data with confirmation and CSRF", async () => {
+    setCsrfCookie();
+    const confirm = vi.fn(() => true);
+    Object.defineProperty(window, "confirm", {
+      configurable: true,
+      value: confirm,
+    });
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.startsWith("/api/learning/session")) {
+        return Response.json({
+          session: createClientSessionFixture("准备删除的过程记录"),
+        });
+      }
+      if (url === "/api/learning/privacy" && init?.method === "DELETE") {
+        expect(init.headers).toMatchObject({
+          "x-aais-csrf": "test-csrf-token",
+        });
+        return Response.json({
+          deletion: {
+            studentId: "S001",
+            storageMode: "postgres",
+            learnerRecordDeleted: true,
+            accountRetained: true,
+            secrets: "redacted",
+          },
+        });
+      }
+      return Response.json({ ok: true });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<LearningPage />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Bobie 账户菜单" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "删除学习数据" }));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/learning/privacy",
+        expect.objectContaining({ method: "DELETE" }),
+      );
+    });
+    expect(confirm).toHaveBeenCalledWith("确定要删除当前学习数据吗？此操作会清除你的学习记录，但不会删除账号。");
+    expect(screen.getByRole("status").textContent).toBe("学习数据已删除。");
+    fireEvent.click(screen.getByRole("button", { name: "文档编辑" }));
+    expect(screen.getByLabelText("在这里写下任务理解、计划、执行过程或最终产出。").textContent).toBe("");
+  });
+
+  it("announces account deletion progress and clears progress when deletion fails", async () => {
+    setCsrfCookie();
+    const deleteResponse = createDeferred<Response>();
+    const confirm = vi.fn(() => true);
+    Object.defineProperty(window, "confirm", {
+      configurable: true,
+      value: confirm,
+    });
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.startsWith("/api/learning/session")) {
+        return Response.json({
+          session: createClientSessionFixture("准备删除的过程记录"),
+        });
+      }
+      if (url === "/api/learning/privacy" && init?.method === "DELETE") {
+        return deleteResponse.promise;
+      }
+      return Response.json({ ok: true });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<LearningPage />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Bobie 账户菜单" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "删除学习数据" }));
+
+    expect(screen.getByRole("status").textContent).toBe("正在删除学习数据...");
+    expect(screen.getByRole("menu", { name: "Bobie 账户信息" }).getAttribute("aria-busy")).toBe("true");
+
+    deleteResponse.resolve(Response.json(
+      {
+        error: {
+          code: "AAIS_TEST_DELETE_FAILED",
+          message: "delete failed",
+        },
+        secrets: "redacted",
+      },
+      { status: 500 },
+    ));
+
+    await waitFor(() => {
+      expect(screen.getByRole("alert").textContent).toBe("学习数据删除未能完成，请稍后重试。");
+    });
+    expect(screen.queryByText("正在删除学习数据...")).toBeNull();
+    expect(screen.getByRole("menu", { name: "Bobie 账户信息" }).getAttribute("aria-busy")).toBe("false");
+  });
+
+  it("uses a white background for inactive content tabs", () => {
+    vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>(() => undefined)));
+
+    render(<LearningPage />);
+
+    const displayTab = screen.getByRole("button", { name: "内容展示" });
+    const editorTab = screen.getByRole("button", { name: "文档编辑" });
+
+    expect(editorTab.className).toContain("bg-white");
+    expect(displayTab.className).toContain("shadow-[inset_0_-3px_0_#536de8]");
+    expect(editorTab.className).not.toContain("bg-[#f2f2f2]");
+
+    fireEvent.click(editorTab);
+
+    expect(displayTab.className).toContain("bg-white");
+    expect(editorTab.className).toContain("shadow-[inset_0_-3px_0_#536de8]");
+    expect(displayTab.className).not.toContain("bg-[#f2f2f2]");
+  });
+
+  it("uses a continuous content resize divider with an explicit grab handle", () => {
+    render(<LearningPage />);
+
+    const divider = screen.getByRole("separator", { name: "调整内容展示区域宽度" });
+    const line = divider.querySelector('[data-content-resize-line="true"]');
+    const handle = divider.querySelector('[data-content-resize-handle="true"]');
+
+    expect(divider.className).toContain("w-6");
+    expect(line?.className).toContain("inset-y-0");
+    expect(line?.className).toContain("bg-[#d1d5dd]");
+    expect(handle?.className).toContain("h-20");
+    expect(handle?.className).toContain("rounded-full");
+    expect(handle?.className).toContain("border-[#cfd4de]");
+  });
+
+  it("shows save and close only when the document editor tab is active", () => {
+    vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>(() => undefined)));
+
+    render(<LearningPage />);
+
+    expect(screen.queryByRole("button", { name: "保存并关闭" })).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "文档编辑" }));
+
+    expect(screen.getByRole("button", { name: "保存并关闭" })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "内容展示" }));
+
+    expect(screen.queryByRole("button", { name: "保存并关闭" })).toBeNull();
+  });
+
+  it("places save and close before the local markdown download action", async () => {
+    const write = vi.fn();
+    const close = vi.fn();
+    const createWritable = vi.fn(async () => ({
+      write,
+      close,
+    }));
+    const showSaveFilePicker = vi.fn(async () => ({
+      createWritable,
+    }));
+    Object.defineProperty(window, "showSaveFilePicker", {
+      configurable: true,
+      value: showSaveFilePicker,
+    });
+    vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>(() => undefined)));
+
+    render(<LearningPage />);
+
+    expect(screen.queryByRole("button", { name: "下载到本地" })).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "文档编辑" }));
+    fireEvent.change(screen.getByLabelText("文档标题"), {
+      target: {
+        value: "学习计划",
+      },
+    });
+    setRichEditorContent(
+      screen.getByRole("textbox", {
+        name: "在这里写下任务理解、计划、执行过程或最终产出。",
+      }),
+      "<h1>学习计划</h1><p><strong>重点记录</strong></p>",
+    );
+
+    const saveAndCloseButton = screen.getByRole("button", { name: "保存并关闭" });
+    const downloadButton = screen.getByRole("button", { name: "下载到本地" });
+
+    expect(saveAndCloseButton.className).not.toContain("ml-auto");
+    expect(downloadButton.className).toContain("ml-auto");
+
+    fireEvent.click(downloadButton);
+
+    await waitFor(() => {
+      expect(showSaveFilePicker).toHaveBeenCalledWith({
+        suggestedName: "aais-training_task_1-document.md",
+        types: [
+          {
+            description: "Markdown document",
+            accept: {
+              "text/markdown": [".md"],
+            },
+          },
+        ],
+      });
+    });
+    expect(createWritable).toHaveBeenCalledTimes(1);
+    expect(write).toHaveBeenCalledTimes(1);
+    const blob = write.mock.calls[0][0] as Blob;
+    expect(blob.type).toBe("text/markdown;charset=utf-8");
+    await expect(blob.text()).resolves.toContain("# 学习计划");
+    await expect(blob.text()).resolves.toContain("**重点记录**");
+    expect(close).toHaveBeenCalledTimes(1);
+  });
+
+  it("announces autosave progress and download progress while preventing duplicate local downloads", async () => {
+    setCsrfCookie();
+    const patchResponse = createDeferred<Response>();
+    const fileHandleResponse = createDeferred<{
+      createWritable: () => Promise<{
+        write: (blob: Blob) => Promise<void>;
+        close: () => Promise<void>;
+      }>;
+    }>();
+    const write = vi.fn(async () => undefined);
+    const close = vi.fn(async () => undefined);
+    const createWritable = vi.fn(async () => ({
+      write,
+      close,
+    }));
+    const showSaveFilePicker = vi.fn(async () => fileHandleResponse.promise);
+    Object.defineProperty(window, "showSaveFilePicker", {
+      configurable: true,
+      value: showSaveFilePicker,
+    });
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.startsWith("/api/learning/session") && (!init || init.method === "GET")) {
+        return Response.json({
+          session: createClientSessionFixture(""),
+        });
+      }
+      if (url === "/api/learning/session" && init?.method === "PATCH") {
+        return patchResponse.promise;
+      }
+      return Response.json({ ok: true });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<LearningPage />);
+
+    fireEvent.click(screen.getByRole("button", { name: "文档编辑" }));
+    const artifactInput = await screen.findByLabelText("在这里写下任务理解、计划、执行过程或最终产出。");
+    setRichEditorContent(artifactInput, "<p>需要保存和下载的记录</p>");
+
+    let status = screen.getByRole("status");
+    expect(status.textContent).toBe("文档更改待保存。");
+    expect(status.getAttribute("aria-live")).toBe("polite");
+    expect(status.getAttribute("aria-atomic")).toBe("true");
+
+    fireEvent.blur(artifactInput);
+
+    expect(screen.getByRole("status").textContent).toBe("正在保存文档...");
+    expect(screen.getByLabelText("学习内容与文档").getAttribute("aria-busy")).toBe("true");
+    expect(getPatchCalls(fetchMock)).toHaveLength(1);
+
+    patchResponse.resolve(Response.json({
+      session: createClientSessionFixture("<p>需要保存和下载的记录</p>"),
+    }));
+
+    await screen.findByText("文档已保存。");
+    expect(screen.getByLabelText("学习内容与文档").getAttribute("aria-busy")).toBe("false");
+
+    fireEvent.click(screen.getByRole("button", { name: "下载到本地" }));
+
+    const busyDownloadButton = screen.getByRole("button", { name: "下载中..." }) as HTMLButtonElement;
+    expect(busyDownloadButton.disabled).toBe(true);
+    status = screen.getByRole("status");
+    expect(status.textContent).toBe("正在准备下载...");
+    expect(screen.getByLabelText("学习内容与文档").getAttribute("aria-busy")).toBe("true");
+
+    fireEvent.click(busyDownloadButton);
+    expect(showSaveFilePicker).toHaveBeenCalledTimes(1);
+
+    fileHandleResponse.resolve({
+      createWritable,
+    });
+
+    await screen.findByText("文档下载已准备。");
+    expect(write).toHaveBeenCalledTimes(1);
+    expect(close).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("button", { name: "下载到本地" })).toBeTruthy();
+    expect(screen.getByLabelText("学习内容与文档").getAttribute("aria-busy")).toBe("false");
+  });
+
+  it("announces autosave and local download failures in the document panel", async () => {
+    setCsrfCookie();
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.startsWith("/api/learning/session") && (!init || init.method === "GET")) {
+        return Response.json({
+          session: createClientSessionFixture(""),
+        });
+      }
+      if (url === "/api/learning/session" && init?.method === "PATCH") {
+        return Response.json(
+          {
+            error: {
+              code: "AAIS_TEST_SAVE_FAILED",
+              message: "backend save failed",
+            },
+            secrets: "redacted",
+          },
+          { status: 500 },
+        );
+      }
+      return Response.json({ ok: true });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    Object.defineProperty(window, "showSaveFilePicker", {
+      configurable: true,
+      value: vi.fn(async () => {
+        throw new Error("picker closed");
+      }),
+    });
+
+    render(<LearningPage />);
+
+    fireEvent.click(screen.getByRole("button", { name: "文档编辑" }));
+    const artifactInput = await screen.findByLabelText("在这里写下任务理解、计划、执行过程或最终产出。");
+    setRichEditorContent(artifactInput, "<p>无法保存的记录</p>");
+    fireEvent.blur(artifactInput);
+
+    const saveAlerts = await screen.findAllByRole("alert");
+    expect(saveAlerts.map((alert) => alert.textContent)).toContain("任务过程记录未能保存到后端。");
+    expect(saveAlerts.every((alert) => alert.getAttribute("aria-live") === "assertive")).toBe(true);
+    expect(saveAlerts.every((alert) => alert.getAttribute("aria-atomic") === "true")).toBe(true);
+
+    fireEvent.click(screen.getByRole("button", { name: "下载到本地" }));
+
+    await waitFor(() => {
+      expect(screen.getAllByRole("alert").map((alert) => alert.textContent)).toContain(
+        "文档下载未能完成，请稍后重试。",
+      );
+    });
+  });
+
+  it("shows Bobie with an original superhero face avatar in the top bar", () => {
+    render(<LearningPage />);
+
+    const avatar = screen.getByRole("img", { name: "Bobie 原创英雄人脸头像" });
+
+    expect(avatar.className).toContain("size-8");
+    expect(avatar.className).toContain("bg-[#26378f]");
+    expect(avatar.className).toContain("shadow-[0_2px_10px_rgba(0,0,0,0.35)]");
+    expect(avatar.querySelector('[data-avatar-part="face"]')).toBeTruthy();
+    expect(avatar.querySelector('[data-avatar-part="mask"]')).toBeTruthy();
+    expect(avatar.querySelector('[data-avatar-part="hair"]')).toBeTruthy();
+    expect(avatar.querySelectorAll('[data-avatar-part="eye"]')).toHaveLength(2);
+  });
+
+  it("opens the Bobie account menu and logs out to the login page", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.startsWith("/api/learning/session") && (!init || init.method === "GET")) {
+        return Response.json({
+          session: {
+            studentId: "S001",
+            activeStage: "training",
+            activeTaskId: "training_task_1",
+            tasks: [],
+            guideMessages: [],
+            events: [],
+          },
+        });
+      }
+      if (url === "/api/auth/app-session" && init?.method === "DELETE") {
+        return Response.json({ ok: true });
+      }
+      return Response.json({ ok: true });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    window.localStorage.setItem("aais_student_id", "Bobie");
+    window.localStorage.setItem("aais_display_name", "Bobie");
+
+    render(<LearningPage />);
+
+    expect(screen.queryByRole("menu", { name: "Bobie 账户信息" })).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Bobie 账户菜单" }));
+
+    expect(screen.getByRole("menu", { name: "Bobie 账户信息" })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("menuitem", { name: "退出" }));
+
+    await waitFor(() => {
+      expect(fetchMock.mock.calls.some(([input, init]) => (
+        String(input) === "/api/auth/app-session"
+        && (init as RequestInit | undefined)?.method === "DELETE"
+        && (init as RequestInit | undefined)?.credentials === "same-origin"
+      ))).toBe(true);
+    });
+    await waitFor(() => expect(routerMocks.replace).toHaveBeenCalledWith("/login"));
+    expect(window.localStorage.getItem("aais_student_id")).toBeNull();
+    expect(window.localStorage.getItem("aais_display_name")).toBeNull();
+  });
+
+  it("announces logout progress while the app-session revoke request is pending", async () => {
+    const logoutResponse = createDeferred<Response>();
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.startsWith("/api/learning/session") && (!init || init.method === "GET")) {
+        return Response.json({
+          session: createClientSessionFixture(""),
+        });
+      }
+      if (url === "/api/auth/app-session" && init?.method === "DELETE") {
+        return logoutResponse.promise;
+      }
+      return Response.json({ ok: true });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<LearningPage />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Bobie 账户菜单" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "退出" }));
+
+    expect(screen.getByRole("status").textContent).toBe("正在退出...");
+    expect(screen.getByRole("menu", { name: "Bobie 账户信息" }).getAttribute("aria-busy")).toBe("true");
+    expect((screen.getByRole("menuitem", { name: "退出" }) as HTMLButtonElement).disabled).toBe(true);
+
+    fireEvent.click(screen.getByRole("menuitem", { name: "退出" }));
+    expect(fetchMock.mock.calls.filter(([input, init]) =>
+      String(input) === "/api/auth/app-session" && init?.method === "DELETE"
+    )).toHaveLength(1);
+
+    logoutResponse.resolve(Response.json({ ok: true }));
+
+    await waitFor(() => expect(routerMocks.replace).toHaveBeenCalledWith("/login"));
+  });
+
+  it("shows A1 and A2 with university education avatars instead of childlike cartoon badges", async () => {
+    setCsrfCookie();
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.startsWith("/api/learning/session") && (!init || init.method === "GET")) {
+        return Response.json({
+          session: {
+            studentId: "S001",
+            activeStage: "training",
+            activeTaskId: "training_task_1",
+            tasks: [],
+            guideMessages: [],
+            events: [],
+          },
+        });
+      }
+      if (url === "/api/learning/ai-guide" && init?.method === "POST") {
+        return Response.json({
+          message: {
+            text: "AAIS 智能体已回复。",
+          },
+          turns: [
+            {
+              agentId: "A1",
+              label: "导学智能体",
+              content: "A1 用路径图帮你拆下一步。",
+              actions: ["guide-flow", "scaffold"],
+            },
+            {
+              agentId: "A2",
+              label: "专家智能体",
+              content: "A2 用专家示范帮你检查理解。",
+              actions: ["model", "coach"],
+            },
+          ],
+        });
+      }
+      return Response.json({ ok: true });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<LearningPage />);
+
+    fireEvent.click(screen.getByRole("button", { name: "看 A2 专家如何思考" }));
+
+    const a2Avatar = await screen.findByRole("img", {
+      name: "A2 专家智能体大学教育风格头像",
+    });
+    const a1Avatar = screen.getAllByRole("img", {
+      name: "A1 导学智能体大学教育风格头像",
+    })[0];
+
+    expect(a1Avatar.className).toContain("size-10");
+    expect(a1Avatar.textContent).not.toContain("导");
+    expect(a1Avatar.querySelector('[data-avatar-part="watercolor-wash"]')).toBeTruthy();
+    expect(a1Avatar.querySelector('[data-avatar-part="advisor-book"]')).toBeTruthy();
+    expect(a1Avatar.querySelector('[data-avatar-part="advisor-blazer"]')).toBeTruthy();
+    expect(a1Avatar.querySelector('[data-avatar-part="guide-map"]')).toBeNull();
+    expect(a2Avatar.className).toContain("size-10");
+    expect(a2Avatar.textContent).not.toContain("专");
+    expect(a2Avatar.querySelector('[data-avatar-part="watercolor-wash"]')).toBeTruthy();
+    expect(a2Avatar.querySelector('[data-avatar-part="expert-glasses"]')).toBeTruthy();
+    expect(a2Avatar.querySelector('[data-avatar-part="lecture-pointer"]')).toBeTruthy();
+    expect(a2Avatar.querySelector('[data-avatar-part="research-chart"]')).toBeTruthy();
+    expect(a2Avatar.querySelector('[data-avatar-part="expert-spark"]')).toBeNull();
+  });
+
+  it("shows streamed guide progress before the final agent answer", async () => {
+    setCsrfCookie();
+    const encoder = new TextEncoder();
+    let streamController: ReadableStreamDefaultController<Uint8Array> | null = null;
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        streamController = controller;
+        controller.enqueue(encoder.encode(
+          'event: ack\ndata: {"status":"accepted","graphId":"learning-ai-guide"}\n\n',
+        ));
+        controller.enqueue(encoder.encode(
+          'event: agent_start\ndata: {"agentId":"A1"}\n\n',
+        ));
+      },
+    });
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.startsWith("/api/learning/session") && (!init || init.method === "GET")) {
+        return Response.json({
+          session: {
+            studentId: "S001",
+            activeStage: "training",
+            activeTaskId: "training_task_1",
+            tasks: [],
+            guideMessages: [],
+            events: [],
+          },
+        });
+      }
+      if (url === "/api/learning/ai-guide" && init?.method === "POST") {
+        expect(new Headers(init.headers).get("accept")).toBe("text/event-stream");
+        return new Response(stream, {
+          status: 200,
+          headers: {
+            "content-type": "text/event-stream;charset=utf-8",
+          },
+        });
+      }
+      return Response.json({ ok: true });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<LearningPage />);
+
+    fireEvent.click(screen.getByRole("button", { name: "明确学习目标" }));
+
+    expect(await screen.findByText("导学智能体正在处理你的问题...")).toBeTruthy();
+
+    await act(async () => {
+      streamController?.enqueue(encoder.encode(
+        'event: agent_delta\ndata: {"agentId":"A1","content":"A1 已给出分步支架。"}\n\n',
+      ));
+      streamController?.enqueue(encoder.encode(
+        'event: fallback\ndata: {"timeoutReason":"abort-timeout"}\n\n',
+      ));
+      streamController?.enqueue(encoder.encode(
+        'event: background_done\ndata: {"agents":["A3","A4"]}\n\n',
+      ));
+      streamController?.close();
+    });
+
+    expect(await screen.findByText("A1 已给出分步支架。")).toBeTruthy();
+    expect(screen.getByText("离线支架模式")).toBeTruthy();
+  });
+
+  it("opens each content display item with a refined back control and reading layout", () => {
+    render(<LearningPage />);
+
+    fireEvent.click(screen.getByRole("button", { name: "平台介绍" }));
+    const backButton = screen.getByRole("button", { name: "返回内容展示" });
+    const backIcon = backButton.querySelector("svg");
+    const platformIntro = screen.getByText(
+      "CAAS平台是一个基于认知学徒理论搭建的，AI赋能的学习平台……",
+    );
+
+    expect(backButton).toBeTruthy();
+    expect(backButton.textContent).toContain("返回");
+    expect(backButton.className).toContain("h-10");
+    expect(backButton.className).toContain("min-w-[88px]");
+    expect(backButton.className).toContain("rounded-[10px]");
+    expect(backButton.className).toContain("border-[#d9dde4]");
+    expect(backButton.className).not.toContain("size-16");
+    expect(backButton.className).not.toContain("text-[#cfcfcf]");
+    expect(backIcon?.getAttribute("width")).toBe("20");
+    expect(backIcon?.getAttribute("height")).toBe("20");
+    expect(screen.getByRole("heading", { name: "平台介绍", level: 2 }).className).toContain(
+      "text-[22px]",
+    );
+    expect(platformIntro.parentElement?.className).toContain("max-w-[920px]");
+    expect(platformIntro.className).toContain("text-[28px]");
+    expect(platformIntro.textContent).not.toContain("。。。。");
+    expect(screen.queryByRole("button", { name: "理论知识" })).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "返回内容展示" }));
+    fireEvent.click(screen.getByRole("button", { name: "理论知识" }));
+    expect(screen.getByRole("button", { name: "返回内容展示" })).toBeTruthy();
+    expect(screen.getByText(/认知学徒理论强调专家示范/)).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "返回内容展示" }));
+    fireEvent.click(screen.getByRole("button", { name: "历史文档" }));
+    expect(screen.getByRole("button", { name: "返回内容展示" })).toBeTruthy();
+    expect(screen.getByText(/历史文档用于保存学习过程/)).toBeTruthy();
+  });
+
+  it("keeps stale backend guide messages out of the simplified MVP shell", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.startsWith("/api/learning/session") && (!init || init.method === "GET")) {
+        return Response.json({
+          session: {
+            studentId: "S001",
+            activeStage: "training",
+            activeTaskId: "training_task_1",
+            tasks: [],
+            guideMessages: [
+              {
+                id: "old-guide-message",
+                kind: "user",
+                text: "旧导学消息不应该出现在简化首页",
+              },
+            ],
+            events: [],
+          },
+        });
+      }
+      return Response.json({ ok: true });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<LearningPage />);
+
+    expect(await screen.findByText(/你好，Bobie/)).toBeTruthy();
+    expect(screen.queryByText("旧导学消息不应该出现在简化首页")).toBeNull();
   });
 
   it("runs the right-side intelligent guide through the AAIS API as structured agent turns", async () => {
@@ -70,9 +941,21 @@ describe("AAIS LearningPage", () => {
               actions: ["respond"],
             },
             {
+              agentId: "A2",
+              label: "专家智能体",
+              content: "我会示范专家如何监控自己的理解。",
+              actions: ["model", "coach"],
+            },
+            {
+              agentId: "A3",
+              label: "监督智能体",
+              content: "后台已记录行为信号，不应显示给学生。",
+              actions: ["monitor", "signal-a1"],
+            },
+            {
               agentId: "A4",
               label: "反思智能体",
-              content: "请把卡点写成元认知过程记录。",
+              content: "后台已形成反思记录，不应显示给学生。",
               actions: ["articulate", "reflect"],
             },
           ],
@@ -91,12 +974,7 @@ describe("AAIS LearningPage", () => {
 
     render(<LearningPage />);
 
-    fireEvent.change(screen.getByLabelText("向智能导学输入你的想法"), {
-      target: {
-        value: "我卡住了",
-      },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "发送" }));
+    fireEvent.click(screen.getByRole("button", { name: "我卡住了，给我支架" }));
 
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith(
@@ -109,10 +987,216 @@ describe("AAIS LearningPage", () => {
         }),
       );
     });
+    const guideCall = fetchMock.mock.calls.find(([input, init]) =>
+      String(input) === "/api/learning/ai-guide" && init?.method === "POST"
+    );
+    expect(JSON.parse(String(guideCall?.[1]?.body))).toMatchObject({
+      learnerInput: "我卡住了，想要一个支架提示。",
+    });
     expect(await screen.findByText("先确认目标并拆成下一步。")).toBeTruthy();
-    expect(screen.getByText("请把卡点写成元认知过程记录。")).toBeTruthy();
-    expect(screen.getByText("LangGraph trace")).toBeTruthy();
+    expect(screen.getByText("我会示范专家如何监控自己的理解。")).toBeTruthy();
+    expect(screen.getAllByText("A1 导学智能体").length).toBeGreaterThanOrEqual(1);
+    expect(screen.getByText("A2 专家智能体")).toBeTruthy();
+    expect(screen.queryByText("后台已记录行为信号，不应显示给学生。")).toBeNull();
+    expect(screen.queryByText("后台已形成反思记录，不应显示给学生。")).toBeNull();
+    expect(screen.queryByText("LangGraph trace")).toBeNull();
+    expect(screen.queryByText("graphId: learning-ai-guide")).toBeNull();
+    expect(screen.queryByText("nodes: A1 -> A2 -> A3 -> A4")).toBeNull();
     expect(screen.queryByText("LangGraph 多智能体导学已完成：A1 A2 A3 A4")).toBeNull();
+  });
+
+  it("renders chat Markdown emphasis without inserting raw HTML", async () => {
+    setCsrfCookie();
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.startsWith("/api/learning/session") && (!init || init.method === "GET")) {
+        return Response.json({
+          session: {
+            studentId: "S001",
+            activeStage: "training",
+            activeTaskId: "training_task_1",
+            tasks: [],
+            guideMessages: [],
+            events: [],
+          },
+        });
+      }
+      if (url === "/api/learning/ai-guide" && init?.method === "POST") {
+        return Response.json({
+          message: {
+            text: "AAIS 智能体已回复。",
+          },
+          turns: [
+            {
+              agentId: "A1",
+              label: "导学智能体",
+              content:
+                "我们先通过**观察专家思维**开始。\n\n1. **专家示范 (Modelling)**: 看专家如何拆解任务。\n<img src=x onerror=alert(1)>",
+              actions: ["guide-flow", "scaffold"],
+            },
+          ],
+        });
+      }
+      return Response.json({ ok: true });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<LearningPage />);
+
+    fireEvent.change(screen.getByLabelText("向智能导学输入你的想法"), {
+      target: {
+        value: "请围绕 **我的目标** 给我支架",
+      },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "发送" }));
+
+    expect(await screen.findByText("我的目标", { selector: "strong" })).toBeTruthy();
+    expect(await screen.findByText("观察专家思维", { selector: "strong" })).toBeTruthy();
+    expect(screen.getByText("专家示范 (Modelling)", { selector: "strong" })).toBeTruthy();
+    expect(screen.queryByText(/\*\*观察专家思维\*\*/)).toBeNull();
+    expect(document.querySelector("img")).toBeNull();
+    expect(screen.getByText("<img src=x onerror=alert(1)>")).toBeTruthy();
+  });
+
+  it("sends @A1 mentions as a targeted guide request", async () => {
+    setCsrfCookie();
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.startsWith("/api/learning/session") && (!init || init.method === "GET")) {
+        return Response.json({
+          session: {
+            studentId: "S001",
+            activeStage: "training",
+            activeTaskId: "training_task_1",
+            tasks: [],
+            guideMessages: [],
+            events: [],
+          },
+        });
+      }
+      if (url === "/api/learning/ai-guide" && init?.method === "POST") {
+        return Response.json({
+          message: {
+            text: "AAIS 智能体已回复。",
+          },
+          turns: [
+            {
+              agentId: "A1",
+              label: "导学智能体",
+              content: "A1 收到你的专门提问。",
+              actions: ["guide-flow", "scaffold"],
+            },
+          ],
+        });
+      }
+      return Response.json({ ok: true });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<LearningPage />);
+
+    fireEvent.change(screen.getByLabelText("向智能导学输入你的想法"), {
+      target: {
+        value: "@A1 请帮我拆下一步",
+      },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "发送" }));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/learning/ai-guide",
+        expect.objectContaining({
+          method: "POST",
+        }),
+      );
+    });
+    const guideCall = fetchMock.mock.calls.find(([input, init]) =>
+      String(input) === "/api/learning/ai-guide" && init?.method === "POST"
+    );
+    expect(JSON.parse(String(guideCall?.[1]?.body))).toMatchObject({
+      learnerInput: "@A1 请帮我拆下一步",
+      targetAgentIds: ["A1"],
+    });
+    expect(await screen.findByText("A1 收到你的专门提问。")).toBeTruthy();
+    expect(screen.queryByText("A2 专家智能体")).toBeNull();
+  });
+
+  it("shows the CAAIS pending acknowledgement while the guide request is running", async () => {
+    setCsrfCookie();
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.startsWith("/api/learning/session") && (!init || init.method === "GET")) {
+        return Promise.resolve(Response.json({
+          session: {
+            studentId: "S001",
+            activeStage: "training",
+            activeTaskId: "training_task_1",
+            tasks: [],
+            guideMessages: [],
+            events: [],
+          },
+        }));
+      }
+      if (url === "/api/learning/ai-guide" && init?.method === "POST") {
+        return new Promise<Response>(() => undefined);
+      }
+      return Promise.resolve(Response.json({ ok: true }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<LearningPage />);
+
+    fireEvent.click(screen.getByRole("button", { name: "我卡住了，给我支架" }));
+
+    expect(screen.getByText("CAAIS 已收到，多智能体链路正在处理。")).toBeTruthy();
+    expect(screen.queryByText("AAIS 已收到，多智能体链路正在处理。")).toBeNull();
+  });
+
+  it("replaces a stalled guide request with an unavailable message and unlocks input", async () => {
+    vi.useFakeTimers();
+    setCsrfCookie();
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.startsWith("/api/learning/session") && (!init || init.method === "GET")) {
+        return Promise.resolve(Response.json({
+          session: {
+            studentId: "S001",
+            activeStage: "training",
+            activeTaskId: "training_task_1",
+            tasks: [],
+            guideMessages: [],
+            events: [],
+          },
+        }));
+      }
+      if (url === "/api/learning/ai-guide" && init?.method === "POST") {
+        return new Promise<Response>((_, reject) => {
+          const signal = init.signal as AbortSignal | undefined;
+          signal?.addEventListener("abort", () => {
+            reject(Object.assign(new Error("guide request aborted"), { name: "AbortError" }));
+          });
+        });
+      }
+      return Promise.resolve(Response.json({ ok: true }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<LearningPage />);
+
+    fireEvent.click(screen.getByRole("button", { name: "我卡住了，给我支架" }));
+    expect(screen.getByText("CAAIS 已收到，多智能体链路正在处理。")).toBeTruthy();
+
+    await act(async () => {
+      vi.advanceTimersByTime(30_001);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(screen.queryByText("CAAIS 已收到，多智能体链路正在处理。")).toBeNull();
+    expect(screen.getByText("智能服务暂时不可用，已保留你的问题。请稍后重试。")).toBeTruthy();
+    expect((screen.getByRole("button", { name: "我卡住了，给我支架" }) as HTMLButtonElement).disabled).toBe(
+      false,
+    );
   });
 
   it("allows the learning shell to use the full horizontal viewport", () => {
@@ -121,6 +1205,419 @@ describe("AAIS LearningPage", () => {
     const shell = screen.getByTestId("learning-shell");
     expect(shell.className).toContain("max-w-none");
     expect(shell.className).not.toContain("max-w-[1608px]");
+    expect(shell.className).not.toContain("mx-auto");
+    expect(shell.className).not.toContain("lg:max-w");
+    expect(shell.className).toContain("min-h-[100dvh]");
+  });
+
+  it("uses a full-width ChatGPT-style guide input and switches the send arrow dark while typing", () => {
+    render(<LearningPage />);
+
+    const guideInput = screen.getByLabelText("向智能导学输入你的想法");
+    const inputShell = guideInput.closest("div");
+    const sendButton = screen.getByRole("button", { name: "发送" });
+
+    expect(inputShell?.className).toContain("w-full");
+    expect(inputShell?.className).toContain("min-h-[72px]");
+    expect(inputShell?.className).not.toContain("max-w-[880px]");
+    expect(inputShell?.className).toContain("rounded-[28px]");
+    expect(guideInput.className).toContain("h-[72px]");
+    expect(guideInput.className).toContain("text-base");
+    expect(sendButton.className).toContain("bg-[#d7dbe3]");
+
+    fireEvent.change(guideInput, {
+      target: {
+        value: "我想继续学习平台介绍",
+      },
+    });
+
+    expect(sendButton.className).toContain("bg-[#202329]");
+  });
+
+  it("keeps the guide composer anchored while A1 and A2 replies scroll", () => {
+    render(<LearningPage />);
+
+    const shell = screen.getByTestId("learning-shell");
+    const splitLayout = screen.getByTestId("learning-split-layout");
+    const guideInput = screen.getByLabelText("向智能导学输入你的想法");
+    const composer = guideInput.closest("form");
+    const guidePanel = composer?.parentElement;
+    const transcript = composer?.previousElementSibling;
+
+    expect(shell.className).toContain("lg:h-[100dvh]");
+    expect(splitLayout.className).toContain("lg:overflow-hidden");
+    expect(guidePanel?.className).toContain("lg:min-h-0");
+    expect(transcript?.className).toContain("overflow-y-auto");
+    expect(composer?.className).toContain("sticky");
+    expect(composer?.className).toContain("bottom-0");
+    expect(composer?.className).toContain("shrink-0");
+  });
+
+  it("shows an Upload file control and turns a selected text file into a removable chip", async () => {
+    render(<LearningPage />);
+
+    expect(screen.getByRole("button", { name: "Upload file" })).toBeTruthy();
+    const fileInput = screen.getByLabelText("选择上传文件");
+    const file = new File(["目标：先阅读材料，再列出下一步。"], "strategy.md", {
+      type: "text/markdown",
+    });
+
+    fireEvent.change(fileInput, {
+      target: {
+        files: [file],
+      },
+    });
+
+    expect(await screen.findByText("strategy.md")).toBeTruthy();
+    expect(screen.getByText(`${file.size} B`)).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "移除 strategy.md" }));
+
+    expect(screen.queryByText("strategy.md")).toBeNull();
+  });
+
+  it("announces guide file-reading progress and disables composer actions until the chip is ready", async () => {
+    const fileRead = createDeferred<string>();
+    const file = new File(["稍后读取"], "delayed.md", {
+      type: "text/markdown",
+    });
+    vi.spyOn(file, "text").mockImplementation(async () => fileRead.promise);
+
+    render(<LearningPage />);
+
+    fireEvent.change(screen.getByLabelText("选择上传文件"), {
+      target: {
+        files: [file],
+      },
+    });
+
+    const status = screen.getByRole("status");
+    expect(status.textContent).toBe("文件正在读取...");
+    expect(status.getAttribute("aria-live")).toBe("polite");
+    expect(status.getAttribute("aria-atomic")).toBe("true");
+    expect(status.closest("section")?.getAttribute("aria-busy")).toBe("true");
+    expect((screen.getByRole("button", { name: "Upload file" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "发送" }) as HTMLButtonElement).disabled).toBe(true);
+
+    fileRead.resolve("延迟读取的上传材料。");
+
+    expect(await screen.findByText("delayed.md")).toBeTruthy();
+    expect(screen.queryByText("文件正在读取...")).toBeNull();
+    expect((screen.getByRole("button", { name: "Upload file" }) as HTMLButtonElement).disabled).toBe(false);
+    expect((screen.getByRole("button", { name: "发送" }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("sends selected file snippets with the next guide request and clears attachments after success", async () => {
+    setCsrfCookie();
+    const fetchMock = installGuideFetchMock();
+    const file = new File(["私有上传片段：请提炼三个关键点。"], "notes.txt", {
+      type: "text/plain",
+    });
+
+    render(<LearningPage />);
+
+    fireEvent.change(screen.getByLabelText("选择上传文件"), {
+      target: {
+        files: [file],
+      },
+    });
+    expect(await screen.findByText("notes.txt")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "发送" }));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/learning/ai-guide",
+        expect.objectContaining({
+          method: "POST",
+        }),
+      );
+    });
+    const guideCall = fetchMock.mock.calls.find(([input, init]) =>
+      String(input) === "/api/learning/ai-guide" && init?.method === "POST"
+    );
+    expect(JSON.parse(String(guideCall?.[1]?.body))).toMatchObject({
+      learnerInput: "请阅读我上传的文件，并帮我提炼关键内容和下一步学习建议。",
+      workspaceState: {
+        attachments: [
+          {
+            name: "notes.txt",
+            mediaType: "text/plain",
+            sizeBytes: file.size,
+            extractedText: "私有上传片段：请提炼三个关键点。",
+          },
+        ],
+      },
+    });
+    expect(await screen.findByText("A1 已阅读上传文件。")).toBeTruthy();
+    expect(screen.queryByText("notes.txt")).toBeNull();
+  });
+
+  it("rejects oversized guide attachments inline before sending them", async () => {
+    const fetchMock = installGuideFetchMock();
+    const oversized = new File(["x".repeat(2 * 1024 * 1024 + 1)], "too-large.txt", {
+      type: "text/plain",
+    });
+
+    render(<LearningPage />);
+
+    fireEvent.change(screen.getByLabelText("选择上传文件"), {
+      target: {
+        files: [oversized],
+      },
+    });
+
+    expect(await screen.findByText("文件 too-large.txt 超过 2 MB。")).toBeTruthy();
+    expect(screen.queryByText("too-large.txt")).toBeNull();
+    expect(fetchMock).not.toHaveBeenCalledWith(
+      "/api/learning/ai-guide",
+      expect.objectContaining({
+        method: "POST",
+      }),
+    );
+  });
+
+  it("uses larger readable typography for learner, A1, and A2 chat messages", async () => {
+    setCsrfCookie();
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.startsWith("/api/learning/session") && (!init || init.method === "GET")) {
+        return Response.json({
+          session: {
+            studentId: "S001",
+            activeStage: "training",
+            activeTaskId: "training_task_1",
+            tasks: [],
+            guideMessages: [],
+            events: [],
+          },
+        });
+      }
+      if (url === "/api/learning/ai-guide" && init?.method === "POST") {
+        return Response.json({
+          message: {
+            text: "AAIS 智能体已回复。",
+          },
+          turns: [
+            {
+              agentId: "A1",
+              label: "导学智能体",
+              content: "A1 放大后的回复。",
+              actions: ["respond"],
+            },
+            {
+              agentId: "A2",
+              label: "专家智能体",
+              content: "A2 放大后的回复。",
+              actions: ["coach"],
+            },
+          ],
+        });
+      }
+      return Response.json({ ok: true });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<LearningPage />);
+
+    fireEvent.click(screen.getByRole("button", { name: "我卡住了，给我支架" }));
+
+    const pendingAssistantLabel = screen.getByText("AI 助教");
+    expect(pendingAssistantLabel.className).toContain("text-sm");
+    expect(pendingAssistantLabel.className).not.toContain("text-[11px]");
+
+    const learnerBubble = screen.getByText("我卡住了，想要一个支架提示。").closest("div");
+    expect(learnerBubble?.className).toContain("text-[17px]");
+    expect(learnerBubble?.className).toContain("leading-8");
+
+    const a1Bubble = (await screen.findByText("A1 放大后的回复。")).closest("article");
+    const a2Bubble = screen.getByText("A2 放大后的回复。").closest("article");
+    const a1Label = a1Bubble?.querySelector("p");
+    const a2Label = a2Bubble?.querySelector("p");
+    expect(a1Label?.className).toContain("text-sm");
+    expect(a1Label?.className).not.toContain("text-[11px]");
+    expect(a2Label?.className).toContain("text-sm");
+    expect(a2Label?.className).not.toContain("text-[11px]");
+    expect(a1Bubble?.className).toContain("text-[17px]");
+    expect(a1Bubble?.className).toContain("leading-8");
+    expect(a2Bubble?.className).toContain("text-[17px]");
+    expect(a2Bubble?.className).toContain("leading-8");
+  });
+
+  it("lets the learner drag the vertical divider to resize the content panel", () => {
+    render(<LearningPage />);
+
+    const splitLayout = screen.getByTestId("learning-split-layout");
+    const divider = screen.getByRole("separator", { name: "调整内容展示区域宽度" });
+
+    vi.spyOn(splitLayout, "getBoundingClientRect").mockReturnValue({
+      x: 0,
+      y: 0,
+      left: 0,
+      top: 0,
+      right: 1200,
+      bottom: 700,
+      width: 1200,
+      height: 700,
+      toJSON: () => ({}),
+    });
+
+    expect(splitLayout.style.getPropertyValue("--content-panel-width")).toBe("600px");
+
+    fireEvent.pointerDown(divider, {
+      clientX: 900,
+      pointerId: 1,
+    });
+    fireEvent.pointerMove(document, {
+      clientX: 760,
+      pointerId: 1,
+    });
+    fireEvent.pointerUp(document, {
+      pointerId: 1,
+    });
+
+    expect(splitLayout.style.getPropertyValue("--content-panel-width")).toBe("440px");
+    expect(divider.getAttribute("aria-valuenow")).toBe("440");
+
+    fireEvent.keyDown(divider, {
+      key: "ArrowRight",
+    });
+
+    expect(splitLayout.style.getPropertyValue("--content-panel-width")).toBe("416px");
+  });
+
+  it("uses readable typography in the document editor area", () => {
+    render(<LearningPage />);
+
+    fireEvent.click(screen.getByRole("button", { name: "文档编辑" }));
+
+    const titleInput = screen.getByLabelText("文档标题");
+    const fontSelect = screen.getByLabelText("字体");
+    const boldButton = screen.getByRole("button", { name: "加粗" });
+    const artifactInput = screen.getByLabelText("在这里写下任务理解、计划、执行过程或最终产出。");
+
+    expect(titleInput.className).toContain("h-12");
+    expect(titleInput.className).toContain("text-[17px]");
+    expect(fontSelect.className).toContain("h-10");
+    expect(fontSelect.className).toContain("text-base");
+    expect(boldButton.className).toContain("h-10");
+    expect(boldButton.className).toContain("text-base");
+    expect(artifactInput.getAttribute("contenteditable")).toBe("true");
+    expect((artifactInput as HTMLElement).style.fontSize).toBe("17px");
+    expect(artifactInput.className).toContain("leading-7");
+  });
+
+  it("runs every document editor toolbar control", () => {
+    const execCommand = installExecCommandMock();
+
+    render(<LearningPage />);
+
+    fireEvent.click(screen.getByRole("button", { name: "文档编辑" }));
+    const artifactInput = screen.getByRole("textbox", {
+      name: "在这里写下任务理解、计划、执行过程或最终产出。",
+    });
+    setRichEditorContent(artifactInput, "需要格式化的内容");
+
+    fireEvent.change(screen.getByLabelText("字体"), {
+      target: {
+        value: "serif",
+      },
+    });
+    expect((artifactInput as HTMLElement).style.fontFamily).toContain("Georgia");
+    expect(execCommand).toHaveBeenCalledWith(
+      "fontName",
+      false,
+      expect.stringContaining("Georgia"),
+    );
+
+    fireEvent.change(screen.getByLabelText("字号"), {
+      target: {
+        value: "24",
+      },
+    });
+    expect((artifactInput as HTMLElement).style.fontSize).toBe("24px");
+
+    fireEvent.click(screen.getByRole("button", { name: "加粗" }));
+    fireEvent.click(screen.getByRole("button", { name: "斜体" }));
+    fireEvent.click(screen.getByRole("button", { name: "下划线" }));
+    fireEvent.click(screen.getByRole("button", { name: "左对齐" }));
+    fireEvent.click(screen.getByRole("button", { name: "居中" }));
+    fireEvent.click(screen.getByRole("button", { name: "右对齐" }));
+    fireEvent.click(screen.getByRole("button", { name: "项目符号" }));
+    fireEvent.click(screen.getByRole("button", { name: "编号列表" }));
+    fireEvent.click(screen.getByRole("button", { name: "一级标题" }));
+    fireEvent.click(screen.getByRole("button", { name: "二级标题" }));
+    fireEvent.click(screen.getByRole("button", { name: "三级标题" }));
+
+    expect(execCommand).toHaveBeenCalledWith("bold", false, undefined);
+    expect(execCommand).toHaveBeenCalledWith("italic", false, undefined);
+    expect(execCommand).toHaveBeenCalledWith("underline", false, undefined);
+    expect(execCommand).toHaveBeenCalledWith("justifyLeft", false, undefined);
+    expect(execCommand).toHaveBeenCalledWith("justifyCenter", false, undefined);
+    expect(execCommand).toHaveBeenCalledWith("justifyRight", false, undefined);
+    expect(execCommand).toHaveBeenCalledWith("insertUnorderedList", false);
+    expect(execCommand).toHaveBeenCalledWith("insertOrderedList", false);
+    expect(execCommand).toHaveBeenCalledWith("formatBlock", false, "<h1>");
+    expect(execCommand).toHaveBeenCalledWith("formatBlock", false, "<h2>");
+    expect(execCommand).toHaveBeenCalledWith("formatBlock", false, "<h3>");
+  });
+
+  it("formats H1, H2, and H3 even when the browser command does not mutate the editor", () => {
+    const execCommand = vi.fn(() => false);
+    Object.defineProperty(document, "execCommand", {
+      configurable: true,
+      value: execCommand,
+    });
+
+    render(<LearningPage />);
+
+    fireEvent.click(screen.getByRole("button", { name: "文档编辑" }));
+    const artifactInput = screen.getByRole("textbox", {
+      name: "在这里写下任务理解、计划、执行过程或最终产出。",
+    });
+
+    [
+      ["一级标题", "h1"],
+      ["二级标题", "h2"],
+      ["三级标题", "h3"],
+    ].forEach(([buttonName, tagName]) => {
+      setRichEditorContent(artifactInput, "标题内容");
+      window.getSelection()?.removeAllRanges();
+
+      fireEvent.click(screen.getByRole("button", { name: buttonName }));
+
+      expect(artifactInput.innerHTML.toLowerCase()).toBe(
+        `<${tagName}>标题内容</${tagName}>`,
+      );
+    });
+  });
+
+  it("formats unordered and ordered lists even when the browser command does not mutate the editor", () => {
+    const execCommand = vi.fn(() => false);
+    Object.defineProperty(document, "execCommand", {
+      configurable: true,
+      value: execCommand,
+    });
+
+    render(<LearningPage />);
+
+    fireEvent.click(screen.getByRole("button", { name: "文档编辑" }));
+    const artifactInput = screen.getByRole("textbox", {
+      name: "在这里写下任务理解、计划、执行过程或最终产出。",
+    });
+
+    [
+      ["项目符号", "ul"],
+      ["编号列表", "ol"],
+    ].forEach(([buttonName, tagName]) => {
+      setRichEditorContent(artifactInput, "列表内容");
+      window.getSelection()?.removeAllRanges();
+
+      fireEvent.click(screen.getByRole("button", { name: buttonName }));
+
+      expect(artifactInput.innerHTML.toLowerCase()).toBe(
+        `<${tagName}><li>列表内容</li></${tagName}>`,
+      );
+    });
   });
 
   it("hydrates persisted learner session and saves artifacts through the backend", async () => {
@@ -182,12 +1679,12 @@ describe("AAIS LearningPage", () => {
 
     render(<LearningPage />);
 
-    expect(await screen.findByDisplayValue("后端保存的训练记录")).toBeTruthy();
-    fireEvent.change(screen.getByLabelText("在这里写下任务理解、计划、执行过程或最终产出。"), {
-      target: {
-        value: "新的过程记录",
-      },
+    fireEvent.click(screen.getByRole("button", { name: "文档编辑" }));
+    const artifactInput = await screen.findByLabelText("在这里写下任务理解、计划、执行过程或最终产出。");
+    await waitFor(() => {
+      expect(artifactInput.textContent).toBe("后端保存的训练记录");
     });
+    setRichEditorContent(artifactInput, "新的过程记录");
 
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith(
@@ -259,13 +1756,14 @@ describe("AAIS LearningPage", () => {
 
     render(<LearningPage />);
 
+    fireEvent.click(screen.getByRole("button", { name: "文档编辑" }));
     const artifactInput = await screen.findByLabelText("在这里写下任务理解、计划、执行过程或最终产出。");
     vi.useFakeTimers();
-    fireEvent.change(artifactInput, { target: { value: "a" } });
-    fireEvent.change(artifactInput, { target: { value: "ab" } });
-    fireEvent.change(artifactInput, { target: { value: "abc" } });
+    setRichEditorContent(artifactInput, "a");
+    setRichEditorContent(artifactInput, "ab");
+    setRichEditorContent(artifactInput, "abc");
 
-    expect((artifactInput as HTMLTextAreaElement).value).toBe("abc");
+    expect(artifactInput.textContent).toBe("abc");
     expect(getPatchCalls(fetchMock)).toHaveLength(0);
 
     await act(async () => {
@@ -339,9 +1837,10 @@ describe("AAIS LearningPage", () => {
 
     render(<LearningPage />);
 
+    fireEvent.click(screen.getByRole("button", { name: "文档编辑" }));
     const artifactInput = await screen.findByLabelText("在这里写下任务理解、计划、执行过程或最终产出。");
     vi.useFakeTimers();
-    fireEvent.change(artifactInput, { target: { value: "离开前的最后过程记录" } });
+    setRichEditorContent(artifactInput, "离开前的最后过程记录");
     expect(getPatchCalls(fetchMock)).toHaveLength(0);
 
     await act(async () => {
@@ -364,103 +1863,16 @@ describe("AAIS LearningPage", () => {
     expect(getPatchCalls(fetchMock)).toHaveLength(1);
   });
 
-  it("requests scaffolding through the backend instead of only changing local state", async () => {
+  it("flushes a pending artifact save and archives the editor document as a blue history folder", async () => {
     setCsrfCookie();
-    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input);
-      if (url.startsWith("/api/learning/session") && (!init || init.method === "GET")) {
-        return Response.json({
-          session: {
-            studentId: "S001",
-            activeStage: "practice",
-            activeTaskId: "practice_task_1",
-            tasks: [
-              {
-                taskId: "training_task_1",
-                phase: "training",
-                status: "completed",
-                artifactText: "",
-                selfReport: "",
-                scaffoldRequests: 0,
-                scaffoldHistory: [],
-              },
-              {
-                taskId: "practice_task_1",
-                phase: "practice",
-                status: "active",
-                artifactText: "",
-                selfReport: "",
-                scaffoldRequests: 4,
-                scaffoldHistory: [],
-              },
-            ],
-            guideMessages: [],
-            events: [],
-          },
-        });
-      }
-      if (url === "/api/learning/scaffold" && init?.method === "POST") {
-        expect(JSON.parse(String(init.body))).toMatchObject({
-          taskId: "practice_task_1",
-          toolId: "stage-checklist",
-        });
-        return Response.json({
-          mode: "self-check",
-          requestCount: 5,
-          tool: {
-            id: "stage-checklist",
-            label: "阶段检查表",
-            body: "工具内容",
-          },
-          session: {
-            studentId: "S001",
-            activeStage: "practice",
-            activeTaskId: "practice_task_1",
-            tasks: [
-              {
-                taskId: "practice_task_1",
-                phase: "practice",
-                status: "active",
-                artifactText: "",
-                selfReport: "",
-                scaffoldRequests: 5,
-                scaffoldHistory: [],
-              },
-            ],
-            guideMessages: [],
-            events: [],
-          },
-        });
-      }
-      return Response.json({ ok: true });
+    const showSaveFilePicker = vi.fn(async () => ({
+      createWritable: vi.fn(),
+    }));
+    Object.defineProperty(window, "showSaveFilePicker", {
+      configurable: true,
+      value: showSaveFilePicker,
     });
-    vi.stubGlobal("fetch", fetchMock);
 
-    render(<LearningPage />);
-
-    expect(await screen.findByText("A1 支架工具包")).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "获取帮助" }));
-
-    await waitFor(() => {
-      expect(fetchMock).toHaveBeenCalledWith(
-        "/api/learning/scaffold",
-        expect.objectContaining({
-          method: "POST",
-          headers: expect.objectContaining({
-            "x-aais-csrf": "test-csrf-token",
-          }),
-        }),
-      );
-    });
-    expect(await screen.findByText("A1 本次支架")).toBeTruthy();
-    expect(screen.getByText("阶段检查表")).toBeTruthy();
-    expect(screen.getByText("工具内容")).toBeTruthy();
-    expect(screen.getByText(/已记录第 5 次求助/)).toBeTruthy();
-    expect(await screen.findByText(/第 5 次及以后求助/)).toBeTruthy();
-  });
-
-  it("completes the active task through the backend so the next task unlocks", async () => {
-    setCsrfCookie();
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url.startsWith("/api/learning/session") && (!init || init.method === "GET")) {
@@ -474,15 +1886,6 @@ describe("AAIS LearningPage", () => {
                 taskId: "training_task_1",
                 phase: "training",
                 status: "active",
-                artifactText: "",
-                selfReport: "",
-                scaffoldRequests: 0,
-                scaffoldHistory: [],
-              },
-              {
-                taskId: "practice_task_1",
-                phase: "practice",
-                status: "locked",
                 artifactText: "",
                 selfReport: "",
                 scaffoldRequests: 0,
@@ -495,10 +1898,9 @@ describe("AAIS LearningPage", () => {
         });
       }
       if (url === "/api/learning/session" && init?.method === "PATCH") {
-        expect(JSON.parse(String(init.body))).toMatchObject({
-          action: "complete-task",
-          taskId: "training_task_1",
-        });
+        const body = JSON.parse(String(init.body)) as {
+          artifactText: string;
+        };
         return Response.json({
           session: {
             studentId: "S001",
@@ -508,17 +1910,8 @@ describe("AAIS LearningPage", () => {
               {
                 taskId: "training_task_1",
                 phase: "training",
-                status: "completed",
-                artifactText: "",
-                selfReport: "",
-                scaffoldRequests: 0,
-                scaffoldHistory: [],
-              },
-              {
-                taskId: "practice_task_1",
-                phase: "practice",
-                status: "available",
-                artifactText: "",
+                status: "active",
+                artifactText: body.artifactText,
                 selfReport: "",
                 scaffoldRequests: 0,
                 scaffoldHistory: [],
@@ -535,87 +1928,47 @@ describe("AAIS LearningPage", () => {
 
     render(<LearningPage />);
 
-    fireEvent.click(await screen.findByRole("button", { name: "完成当前任务" }));
+    fireEvent.click(screen.getByRole("button", { name: "文档编辑" }));
+    fireEvent.change(screen.getByLabelText("文档标题"), {
+      target: {
+        value: "学习计划",
+      },
+    });
+    const artifactInput = await screen.findByLabelText("在这里写下任务理解、计划、执行过程或最终产出。");
+    const richDocumentHtml = "<h1>学习计划</h1><ul><li>先复述任务</li></ul><p><strong>重点记录</strong></p>";
+    setRichEditorContent(artifactInput, richDocumentHtml);
+    expect(getPatchCalls(fetchMock)).toHaveLength(0);
+    fireEvent.click(screen.getByRole("button", { name: "保存并关闭" }));
 
     await waitFor(() => {
-      expect(fetchMock).toHaveBeenCalledWith(
-        "/api/learning/session",
-        expect.objectContaining({
-          method: "PATCH",
-          headers: expect.objectContaining({
-            "x-aais-csrf": "test-csrf-token",
-          }),
+      expect(getPatchCalls(fetchMock)).toHaveLength(1);
+    });
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/learning/session",
+      expect.objectContaining({
+        method: "PATCH",
+        headers: expect.objectContaining({
+          "x-aais-csrf": "test-csrf-token",
         }),
-      );
+      }),
+    );
+    expect(JSON.parse(String(getPatchCalls(fetchMock)[0][1]?.body))).toMatchObject({
+      action: "save-artifact",
+      taskId: "training_task_1",
+      artifactText: richDocumentHtml,
     });
-    expect((screen.getByRole("button", { name: "L1 挑战：复述与计划" }) as HTMLButtonElement).disabled).toBe(false);
-  });
-
-  it("uses backend export endpoints for JSON and CSV downloads", async () => {
-    const createObjectUrl = vi.fn(() => "blob:aais");
-    const revokeObjectUrl = vi.fn();
-    vi.stubGlobal("URL", {
-      ...URL,
-      createObjectURL: createObjectUrl,
-      revokeObjectURL: revokeObjectUrl,
-    });
-    const click = vi.fn();
-    const originalCreateElement = document.createElement.bind(document);
-    vi.spyOn(document, "createElement").mockImplementation((tagName: string) => {
-      const element = originalCreateElement(tagName);
-      if (tagName === "a") {
-        Object.defineProperty(element, "click", {
-          configurable: true,
-          value: click,
-        });
-      }
-      return element;
-    });
-
-    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
-      const url = String(input);
-      if (url.startsWith("/api/learning/session")) {
-        return Response.json({
-          session: {
-            studentId: "S001",
-            activeStage: "training",
-            activeTaskId: "training_task_1",
-            tasks: [],
-            guideMessages: [],
-            events: [],
-          },
-        });
-      }
-      if (url === "/api/learning/export?format=json") {
-        return new Response("[{\"event\":\"artifact_saved\"}]", {
-          headers: {
-            "content-type": "application/json;charset=utf-8",
-            "content-disposition": "attachment; filename=\"aais-S001-events.json\"",
-          },
-        });
-      }
-      if (url === "/api/learning/export?format=csv") {
-        return new Response("student_id,event\nS001,artifact_saved", {
-          headers: {
-            "content-type": "text/csv;charset=utf-8",
-            "content-disposition": "attachment; filename=\"aais-S001-events.csv\"",
-          },
-        });
-      }
-      return Response.json({ ok: true });
-    });
-    vi.stubGlobal("fetch", fetchMock);
-
-    render(<LearningPage />);
-
-    fireEvent.click(await screen.findByRole("button", { name: "导出 JSON" }));
-    fireEvent.click(screen.getByRole("button", { name: "导出 CSV" }));
-
-    await waitFor(() => {
-      expect(fetchMock).toHaveBeenCalledWith("/api/learning/export?format=json");
-      expect(fetchMock).toHaveBeenCalledWith("/api/learning/export?format=csv");
-    });
-    expect(click).toHaveBeenCalledTimes(2);
+    expect(showSaveFilePicker).not.toHaveBeenCalled();
+    expect(screen.queryByLabelText("在这里写下任务理解、计划、执行过程或最终产出。")).toBeNull();
+    expect(screen.getByRole("button", { name: "返回内容展示" })).toBeTruthy();
+    const historyFolder = screen.getByRole("button", { name: "历史文档文件夹：学习计划" });
+    expect(historyFolder).toBeTruthy();
+    expect(historyFolder.querySelector('[data-history-folder="icon"]')?.className).toContain(
+      "from-[#68d4ff]",
+    );
+    expect(screen.getByText("刚刚保存")).toBeTruthy();
+    fireEvent.click(historyFolder);
+    const reopenedDocument = screen.getByLabelText("在这里写下任务理解、计划、执行过程或最终产出。");
+    expect(reopenedDocument.innerHTML).toContain("<strong>重点记录</strong>");
   });
 });
 
@@ -627,4 +1980,89 @@ function getPatchCalls(fetchMock: ReturnType<typeof vi.fn>) {
   return fetchMock.mock.calls.filter(([input, init]) =>
     String(input) === "/api/learning/session" && init?.method === "PATCH"
   );
+}
+
+function setRichEditorContent(editor: HTMLElement, value: string) {
+  editor.innerHTML = value;
+  fireEvent.input(editor);
+}
+
+function createDeferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((nextResolve, nextReject) => {
+    resolve = nextResolve;
+    reject = nextReject;
+  });
+  return {
+    promise,
+    reject,
+    resolve,
+  };
+}
+
+function createClientSessionFixture(artifactText: string) {
+  return {
+    studentId: "S001",
+    activeStage: "training",
+    activeTaskId: "training_task_1",
+    tasks: [
+      {
+        taskId: "training_task_1",
+        phase: "training",
+        status: "active",
+        artifactText,
+        selfReport: "",
+        scaffoldRequests: 0,
+        scaffoldHistory: [],
+      },
+    ],
+    guideMessages: [],
+    events: [],
+  };
+}
+
+function installExecCommandMock() {
+  const execCommand = vi.fn(() => true);
+  Object.defineProperty(document, "execCommand", {
+    configurable: true,
+    value: execCommand,
+  });
+  return execCommand;
+}
+
+function installGuideFetchMock() {
+  const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (url.startsWith("/api/learning/session") && (!init || init.method === "GET")) {
+      return Response.json({
+        session: {
+          studentId: "S001",
+          activeStage: "training",
+          activeTaskId: "training_task_1",
+          tasks: [],
+          guideMessages: [],
+          events: [],
+        },
+      });
+    }
+    if (url === "/api/learning/ai-guide" && init?.method === "POST") {
+      return Response.json({
+        message: {
+          text: "AAIS 智能体已回复。",
+        },
+        turns: [
+          {
+            agentId: "A1",
+            label: "导学智能体",
+            content: "A1 已阅读上传文件。",
+            actions: ["guide-flow", "scaffold"],
+          },
+        ],
+      });
+    }
+    return Response.json({ ok: true });
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  return fetchMock;
 }

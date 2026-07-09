@@ -26,6 +26,17 @@ const placeholderLabels = new Map([
   ["AAIS_AI_ENDPOINT", "AI_ENDPOINT"],
   ["AAIS_AI_API_KEY", "AI_API_KEY"],
   ["AAIS_AI_MODEL", "AI_MODEL"],
+  ["AAIS_AI_FALLBACK_ENDPOINT", "AI_FALLBACK_ENDPOINT"],
+  ["AAIS_AI_FALLBACK_API_KEY", "AI_FALLBACK_API_KEY"],
+  ["AAIS_AI_FALLBACK_MODEL", "AI_FALLBACK_MODEL"],
+  ["AAIS_AI_THINKING_MODE", "AI_THINKING_MODE"],
+  ["AAIS_AI_TIMEOUT_MS", "AI_TIMEOUT_MS"],
+  ["AAIS_AI_MAX_RETRIES", "AI_MAX_RETRIES"],
+  ["AAIS_AI_FALLBACK_THINKING_MODE", "AI_FALLBACK_THINKING_MODE"],
+  ["AAIS_AI_FALLBACK_TIMEOUT_MS", "AI_FALLBACK_TIMEOUT_MS"],
+  ["AAIS_AI_FALLBACK_MAX_RETRIES", "AI_FALLBACK_MAX_RETRIES"],
+  ["AAIS_AI_EVAL_TIMEOUT_MS", "AI_EVAL_TIMEOUT_MS"],
+  ["AAIS_AI_EVAL_FALLBACK_TIMEOUT_MS", "AI_EVAL_FALLBACK_TIMEOUT_MS"],
   ["AAIS_AI_EVAL_VERSION", "AI_EVAL_VERSION"],
 ]);
 
@@ -55,10 +66,33 @@ const oidcNames = new Set([
   ...oidcExplicitEndpointNames,
 ]);
 
-const liveAiEvalLocalNames = [
+const liveAiPrimaryLocalNames = [
   "AAIS_AI_ENDPOINT",
   "AAIS_AI_API_KEY",
   "AAIS_AI_MODEL",
+];
+
+const liveAiFallbackLocalNames = [
+  "AAIS_AI_FALLBACK_ENDPOINT",
+  "AAIS_AI_FALLBACK_API_KEY",
+  "AAIS_AI_FALLBACK_MODEL",
+];
+
+const liveAiRuntimeLocalNames = [
+  "AAIS_AI_THINKING_MODE",
+  "AAIS_AI_TIMEOUT_MS",
+  "AAIS_AI_MAX_RETRIES",
+  "AAIS_AI_FALLBACK_THINKING_MODE",
+  "AAIS_AI_FALLBACK_TIMEOUT_MS",
+  "AAIS_AI_FALLBACK_MAX_RETRIES",
+];
+
+const liveAiEvalLocalNames = [
+  ...liveAiPrimaryLocalNames,
+  ...liveAiFallbackLocalNames,
+  ...liveAiRuntimeLocalNames,
+  "AAIS_AI_EVAL_TIMEOUT_MS",
+  "AAIS_AI_EVAL_FALLBACK_TIMEOUT_MS",
   "AAIS_AI_EVAL_VERSION",
 ];
 
@@ -141,6 +175,8 @@ export async function generateAaisPrivateEnvTemplate(input = {}) {
           liveAiEval: {
             envFilePath: privateEnvFilePath,
             requiredNames: liveAiEvalLocalNames,
+            primaryProvider: "Qwen via AAIS_AI_*",
+            fallbackProvider: "DeepSeek via AAIS_AI_FALLBACK_*",
             preflightCommand: [
               "npm run verify:enterprise-gaps --",
               "--mode live-ai-eval",
@@ -152,10 +188,16 @@ export async function generateAaisPrivateEnvTemplate(input = {}) {
             evaluationCommand: [
               "npm run ai:evaluate --",
               `--env-file ${privateEnvFilePath}`,
-              "--output output/aais-ai-eval-deepseek-v4-pro.json",
+              "--output output/aais-ai-eval-provider-chain-latest.json",
               "--env-json-output output/aais-ai-eval-inline-latest.json",
               "--eval-version <AAIS_AI_EVAL_VERSION>",
               `--release-id ${releaseId ?? "<release-id>"}`,
+            ].join(" "),
+            runtimeSmokeCommand: [
+              "npm run ai:runtime-smoke --",
+              `--env-file ${privateEnvFilePath}`,
+              `--base-url ${baseUrl}`,
+              "--output output/aais-ai-runtime-smoke-latest.json",
             ].join(" "),
           },
         }
@@ -210,6 +252,8 @@ function renderTemplate({
     "# Provider placeholders intentionally fail closed in provision:vercel-env.",
     "# Some OIDC names may already exist in Vercel; they are included here for local verify:oidc-config only.",
     "# Live AI eval names may be included for local evidence only; fill them only in the private env file.",
+    "# For trial live AI, use AAIS_AI_* for Qwen primary and AAIS_AI_FALLBACK_* for DeepSeek fallback.",
+    "# AAIS_AI_TIMEOUT_MS and AAIS_AI_FALLBACK_TIMEOUT_MS affect the student-facing runtime; AAIS_AI_EVAL_* timeouts affect only npm run ai:evaluate.",
     "# provision:vercel-env applies only names requested by the Vercel env report.",
     "# For Neon, prefer AAIS_DATABASE_URL; Vercel Neon aliases are also accepted by the provisioner.",
     `# Suggested AAIS_OIDC_REDIRECT_URI: ${oidcRedirectUri}`,
@@ -235,7 +279,11 @@ function getLocalEvidenceOnlyVariables({ gapEvidenceReport, provisionVariables }
     ...getSafeEnvNames(required.invalid),
   ]);
   const provisionNames = new Set(provisionVariables);
-  return liveAiEvalLocalNames.filter((name) => gapNames.has(name) && !provisionNames.has(name));
+  const liveAiPrimaryNeeded = liveAiPrimaryLocalNames.some((name) => gapNames.has(name));
+  if (!liveAiPrimaryNeeded && !gapNames.has("AAIS_AI_EVAL_VERSION")) {
+    return [];
+  }
+  return liveAiEvalLocalNames.filter((name) => !provisionNames.has(name));
 }
 
 function getTemplateVariables(missing) {
@@ -274,6 +322,18 @@ function templateValueFor(name, { releaseId, deploymentGitCommit, oidcRedirectUr
   }
   if (name === "AAIS_OIDC_REDIRECT_URI") {
     return oidcRedirectUri;
+  }
+  if (name === "AAIS_AI_THINKING_MODE" || name === "AAIS_AI_FALLBACK_THINKING_MODE") {
+    return "disabled";
+  }
+  if (name === "AAIS_AI_TIMEOUT_MS" || name === "AAIS_AI_FALLBACK_TIMEOUT_MS") {
+    return "30000";
+  }
+  if (name === "AAIS_AI_MAX_RETRIES" || name === "AAIS_AI_FALLBACK_MAX_RETRIES") {
+    return "0";
+  }
+  if (name === "AAIS_AI_EVAL_TIMEOUT_MS" || name === "AAIS_AI_EVAL_FALLBACK_TIMEOUT_MS") {
+    return "30000";
   }
   return `<REQUIRED:${placeholderFor(name)}>`;
 }

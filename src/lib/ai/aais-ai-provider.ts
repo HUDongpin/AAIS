@@ -5,11 +5,23 @@ import type {
   AaisPhase,
   Locale,
 } from "@/data/aais";
+import type { AaisGuideAttachment } from "@/lib/ai/aais-guide-attachments";
+import {
+  createDeterministicAaisAiRuntimeProfile,
+  createManualAaisAiRuntimeProfile,
+  readAaisAiRuntimeConfig,
+  studentRuntimeDefaultMaxRetries,
+  studentRuntimeDefaultTimeoutMs,
+  studentRuntimeMaxTokens,
+  type AaisAiRuntimeProfile,
+  type AaisAiRuntimeProviderCandidate,
+} from "@/lib/ai/aais-ai-runtime-config";
 
 type AaisProviderWorkspaceState = {
   currentStep: string;
   artifactText?: string;
   helpRequestsUsed?: number;
+  attachments?: AaisGuideAttachment[];
 };
 
 export type AaisModelRequest = {
@@ -41,6 +53,15 @@ export type AaisModelRuntime = {
     secrets: "omitted";
     prompt: "summarized";
   };
+  providerChain?: {
+    selected: "primary" | "fallback" | "deterministic";
+    fallbackUsed: boolean;
+    failures: Array<{
+      provider: "primary" | "fallback";
+      reason: AaisProviderFailureReason;
+    }>;
+  };
+  runtimeProfile?: AaisAiRuntimeProfile;
 };
 
 export type AaisModelResponse = {
@@ -60,7 +81,47 @@ type OpenAiCompatibleProviderInput = {
   fetchImpl?: typeof fetch;
   timeoutMs?: number;
   maxRetries?: number;
+  maxTokens?: number;
+  runtimeProfile?: AaisAiRuntimeProfile;
 };
+
+type OpenAiCompatibleProviderCandidate = OpenAiCompatibleProviderInput & {
+  providerRole: "primary" | "fallback";
+  runtimeProfile?: AaisAiRuntimeProfile;
+};
+
+type OpenAiCompatibleProviderChainInput = {
+  primary: OpenAiCompatibleProviderCandidate;
+  fallback?: OpenAiCompatibleProviderCandidate;
+};
+
+type AaisProviderFailureReason =
+  | "abort-timeout"
+  | "connect-timeout"
+  | "empty-response"
+  | "http-status"
+  | "provider-error";
+
+type AaisProviderFailure = {
+  reason: AaisProviderFailureReason;
+  attempts: number;
+};
+
+type AaisProviderChainFailure = {
+  provider: "primary" | "fallback";
+  reason: AaisProviderFailureReason;
+};
+
+type AaisProviderAttemptResult =
+  | {
+    ok: true;
+    text: string;
+    runtime: AaisModelRuntime;
+  }
+  | {
+    ok: false;
+    failure: AaisProviderFailure;
+  };
 
 const redaction = {
   secrets: "omitted",
@@ -70,25 +131,24 @@ const redaction = {
 const guardrailPolicy = "aais-age-appropriate-output-v1" as const;
 
 export function createConfiguredAaisModelProvider(): AaisModelProvider {
-  if (process.env.AAIS_AI_PROVIDER === "openai-compatible") {
-    const endpoint = process.env.AAIS_AI_ENDPOINT?.trim();
-    const apiKey = process.env.AAIS_AI_API_KEY?.trim();
-    const model = process.env.AAIS_AI_MODEL?.trim();
-    if (endpoint && apiKey && model && isLiveProviderApprovedForRuntime()) {
-      return createOpenAiCompatibleAaisProvider({
-        endpoint,
-        apiKey,
-        model,
-        thinkingMode: readThinkingMode(process.env.AAIS_AI_THINKING_MODE),
-        timeoutMs: readPositiveInteger(process.env.AAIS_AI_TIMEOUT_MS, 8000),
-        maxRetries: readPositiveInteger(process.env.AAIS_AI_MAX_RETRIES, 1),
+  const runtimeConfig = readAaisAiRuntimeConfig();
+  if (runtimeConfig.primary && isLiveProviderApprovedForRuntime()) {
+    if (runtimeConfig.fallback) {
+      return createOpenAiCompatibleAaisProviderChain({
+        primary: toOpenAiCompatibleCandidate(runtimeConfig.primary, runtimeConfig.profile),
+        fallback: toOpenAiCompatibleCandidate(runtimeConfig.fallback, runtimeConfig.profile),
       });
     }
+    return createOpenAiCompatibleAaisProvider(
+      toOpenAiCompatibleCandidate(runtimeConfig.primary, runtimeConfig.profile),
+    );
   }
-  return createDeterministicAaisProvider();
+  return createDeterministicAaisProvider(runtimeConfig.profile);
 }
 
-export function createDeterministicAaisProvider(): AaisModelProvider {
+export function createDeterministicAaisProvider(
+  runtimeProfile: AaisAiRuntimeProfile = createDeterministicAaisAiRuntimeProfile(),
+): AaisModelProvider {
   return {
     async generate(request) {
       return {
@@ -104,6 +164,7 @@ export function createDeterministicAaisProvider(): AaisModelProvider {
             reasons: ["deterministic-template"],
           },
           redaction,
+          runtimeProfile,
         },
       };
     },
@@ -113,60 +174,189 @@ export function createDeterministicAaisProvider(): AaisModelProvider {
 export function createOpenAiCompatibleAaisProvider(
   input: OpenAiCompatibleProviderInput,
 ): AaisModelProvider {
+  const runtimeProfile = input.runtimeProfile ?? createManualAaisAiRuntimeProfile(input);
   return {
     async generate(request) {
-      const maxAttempts = Math.max(1, (input.maxRetries ?? 1) + 1);
-
-      for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-        try {
-          const text = await callOpenAiCompatibleProvider(input, request);
-          const guardrail = evaluateAaisModelOutput(text);
-          if (guardrail.status === "blocked") {
-            return {
-              text: request.fallbackText,
-              runtime: {
-                provider: "openai-compatible",
-                model: input.model,
-                attempts: attempt,
-                status: "fallback",
-                guardrail,
-                redaction,
-              },
-            };
-          }
-          return {
-            text,
-            runtime: {
-              provider: "openai-compatible",
-              model: input.model,
-              attempts: attempt,
-              status: "ok",
-              guardrail,
-              redaction,
-            },
-          };
-        } catch {
-          if (attempt === maxAttempts) {
-            break;
-          }
-        }
+      const result = await generateWithOpenAiCompatibleCandidate({
+        ...input,
+        providerRole: "primary",
+        runtimeProfile,
+      }, request);
+      if (result.ok) {
+        return result;
       }
-
       return {
         text: request.fallbackText,
         runtime: {
           provider: "openai-compatible",
           model: input.model,
-          attempts: maxAttempts,
+          attempts: result.failure.attempts,
           status: "fallback",
           guardrail: {
             policy: guardrailPolicy,
             status: "not-applicable",
-            reasons: ["provider-unavailable"],
+            reasons: [result.failure.reason],
           },
           redaction,
+          runtimeProfile,
         },
       };
+    },
+  };
+}
+
+function createOpenAiCompatibleAaisProviderChain(
+  input: OpenAiCompatibleProviderChainInput,
+): AaisModelProvider {
+  return {
+    async generate(request) {
+      const primaryResult = await generateWithOpenAiCompatibleCandidate(input.primary, request);
+      if (primaryResult.ok) {
+        return {
+          text: primaryResult.text,
+          runtime: {
+            ...primaryResult.runtime,
+            providerChain: {
+              selected: "primary",
+              fallbackUsed: false,
+              failures: [],
+            },
+          },
+        };
+      }
+
+      const failures: AaisProviderChainFailure[] = [
+        {
+          provider: "primary",
+          reason: primaryResult.failure.reason,
+        },
+      ];
+
+      if (input.fallback) {
+        const fallbackResult = await generateWithOpenAiCompatibleCandidate(input.fallback, request);
+        if (fallbackResult.ok) {
+          return {
+            text: fallbackResult.text,
+            runtime: {
+              ...fallbackResult.runtime,
+              attempts: primaryResult.failure.attempts + fallbackResult.runtime.attempts,
+              providerChain: {
+                selected: "fallback",
+                fallbackUsed: true,
+                failures,
+              },
+            },
+          };
+        }
+        failures.push({
+          provider: "fallback",
+          reason: fallbackResult.failure.reason,
+        });
+        return createDeterministicChainFallback({
+          request,
+          model: input.fallback.model,
+          runtimeProfile: input.fallback.runtimeProfile,
+          attempts: primaryResult.failure.attempts + fallbackResult.failure.attempts,
+          failures,
+        });
+      }
+
+      return createDeterministicChainFallback({
+        request,
+        model: input.primary.model,
+        runtimeProfile: input.primary.runtimeProfile,
+        attempts: primaryResult.failure.attempts,
+        failures,
+      });
+    },
+  };
+}
+
+async function generateWithOpenAiCompatibleCandidate(
+  input: OpenAiCompatibleProviderCandidate,
+  request: AaisModelRequest,
+): Promise<AaisProviderAttemptResult> {
+  const maxAttempts = Math.max(1, (input.maxRetries ?? studentRuntimeDefaultMaxRetries) + 1);
+  let failureReason: AaisProviderFailureReason = "provider-error";
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      const text = await callOpenAiCompatibleProvider(input, request);
+      const guardrail = evaluateAaisModelOutput(text);
+      if (guardrail.status === "blocked") {
+        return {
+          ok: true,
+          text: request.fallbackText,
+          runtime: {
+            provider: "openai-compatible",
+            model: input.model,
+            attempts: attempt,
+            status: "fallback",
+            guardrail,
+            redaction,
+            runtimeProfile: input.runtimeProfile,
+          },
+        };
+      }
+      return {
+        ok: true,
+        text,
+        runtime: {
+          provider: "openai-compatible",
+          model: input.model,
+          attempts: attempt,
+          status: "ok",
+          guardrail,
+          redaction,
+          runtimeProfile: input.runtimeProfile,
+        },
+      };
+    } catch (error) {
+      failureReason = classifyProviderError(error);
+      if (attempt === maxAttempts) {
+        break;
+      }
+    }
+  }
+
+  return {
+    ok: false,
+    failure: {
+      reason: failureReason,
+      attempts: maxAttempts,
+    },
+  };
+}
+
+function createDeterministicChainFallback(input: {
+  request: AaisModelRequest;
+  model: string;
+  runtimeProfile?: AaisAiRuntimeProfile;
+  attempts: number;
+  failures: Array<{
+    provider: "primary" | "fallback";
+    reason: AaisProviderFailureReason;
+  }>;
+}): AaisModelResponse {
+  return {
+    text: input.request.fallbackText,
+    runtime: {
+      provider: "openai-compatible",
+      model: input.model,
+      attempts: input.attempts,
+      status: "fallback",
+      guardrail: {
+        policy: guardrailPolicy,
+        status: "not-applicable",
+        reasons: input.failures.map((failure) => failure.reason),
+      },
+      redaction,
+      runtimeProfile: input.runtimeProfile,
+      providerChain: {
+        selected: "deterministic",
+        fallbackUsed: input.failures.some((failure) => failure.provider === "fallback"),
+        failures: input.failures,
+      },
     },
   };
 }
@@ -176,7 +366,7 @@ async function callOpenAiCompatibleProvider(
   request: AaisModelRequest,
 ) {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), input.timeoutMs ?? 8000);
+  const timeout = setTimeout(() => controller.abort(), input.timeoutMs ?? studentRuntimeDefaultTimeoutMs);
   try {
     const response = await (input.fetchImpl ?? fetch)(input.endpoint, {
       method: "POST",
@@ -187,7 +377,7 @@ async function callOpenAiCompatibleProvider(
       body: JSON.stringify({
         model: input.model,
         temperature: 0.2,
-        max_tokens: 360,
+        max_tokens: input.maxTokens ?? studentRuntimeMaxTokens,
         ...(input.thinkingMode === "disabled" ? { thinking: { type: "disabled" } } : {}),
         messages: [
           {
@@ -212,6 +402,12 @@ async function callOpenAiCompatibleProvider(
                 currentStep: request.workspaceState.currentStep,
                 artifactCharacters: request.workspaceState.artifactText?.length ?? 0,
                 helpRequestsUsed: request.workspaceState.helpRequestsUsed ?? 0,
+                attachments: request.workspaceState.attachments?.map((attachment) => ({
+                  name: attachment.name,
+                  mediaType: attachment.mediaType,
+                  sizeBytes: attachment.sizeBytes,
+                  extractedText: attachment.extractedText,
+                })) ?? [],
               },
             }),
           },
@@ -220,7 +416,7 @@ async function callOpenAiCompatibleProvider(
       signal: controller.signal,
     });
     if (!response.ok) {
-      throw new Error(`AAIS model provider returned ${response.status}`);
+      throw createProviderError("http-status");
     }
     const body = (await response.json()) as {
       choices?: Array<{
@@ -231,7 +427,7 @@ async function callOpenAiCompatibleProvider(
     };
     const content = body.choices?.[0]?.message?.content?.trim();
     if (!content) {
-      throw new Error("AAIS model provider returned an empty response");
+      throw createProviderError("empty-response");
     }
     return content;
   } finally {
@@ -239,13 +435,70 @@ async function callOpenAiCompatibleProvider(
   }
 }
 
-function readPositiveInteger(value: string | undefined, fallback: number) {
-  const parsed = Number.parseInt(value ?? "", 10);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+function toOpenAiCompatibleCandidate(
+  candidate: AaisAiRuntimeProviderCandidate,
+  runtimeProfile: AaisAiRuntimeProfile,
+): OpenAiCompatibleProviderCandidate {
+  return {
+    endpoint: candidate.endpoint,
+    apiKey: candidate.apiKey,
+    model: candidate.model,
+    thinkingMode: candidate.thinkingMode,
+    timeoutMs: candidate.timeoutMs,
+    maxRetries: candidate.maxRetries,
+    maxTokens: candidate.maxTokens,
+    providerRole: candidate.providerRole,
+    runtimeProfile,
+  };
 }
 
-function readThinkingMode(value: string | undefined): "disabled" | undefined {
-  return value?.trim().toLowerCase() === "disabled" ? "disabled" : undefined;
+function createProviderError(reason: AaisProviderFailureReason) {
+  return Object.assign(new Error(reason), {
+    reason,
+  });
+}
+
+function classifyProviderError(error: unknown): AaisProviderFailureReason {
+  const errorWithReason = error as {
+    reason?: unknown;
+    name?: unknown;
+    message?: unknown;
+    cause?: {
+      code?: unknown;
+      name?: unknown;
+      message?: unknown;
+    };
+  };
+  if (isProviderFailureReason(errorWithReason.reason)) {
+    return errorWithReason.reason;
+  }
+  const name = String(errorWithReason.name ?? "");
+  if (name === "AbortError") {
+    return "abort-timeout";
+  }
+  const causeCode = String(errorWithReason.cause?.code ?? "");
+  const causeName = String(errorWithReason.cause?.name ?? "");
+  const causeMessage = String(errorWithReason.cause?.message ?? "");
+  const message = String(errorWithReason.message ?? "");
+  if (
+    causeCode === "UND_ERR_CONNECT_TIMEOUT"
+    || causeName === "ConnectTimeoutError"
+    || /connect timeout/i.test(causeMessage)
+    || /connect timeout/i.test(message)
+  ) {
+    return "connect-timeout";
+  }
+  return "provider-error";
+}
+
+function isProviderFailureReason(value: unknown): value is AaisProviderFailureReason {
+  return [
+    "abort-timeout",
+    "connect-timeout",
+    "empty-response",
+    "http-status",
+    "provider-error",
+  ].includes(String(value));
 }
 
 function isLiveProviderApprovedForRuntime() {

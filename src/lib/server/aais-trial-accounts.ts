@@ -42,7 +42,7 @@ type ConfiguredTrialAccountLookup =
       accounts: null;
     };
 
-const devTrialAccounts: TrialAccountRecord[] = [
+const builtInLearnerTrialAccounts: TrialAccountRecord[] = [
   {
     id: "Bobie",
     displayName: "Bobie",
@@ -116,9 +116,12 @@ export function isAaisTrialLoginEnabled() {
 function readTrialAccounts() {
   const configuredAccounts = readConfiguredTrialAccounts();
   if (configuredAccounts) {
-    return configuredAccounts;
+    if (isProductionRuntime()) {
+      return configuredAccounts;
+    }
+    return mergeConfiguredAccountsWithBuiltInLearners(configuredAccounts);
   }
-  return isProductionRuntime() ? null : devTrialAccounts;
+  return isProductionRuntime() ? null : builtInLearnerTrialAccounts;
 }
 
 function readConfiguredTrialAccounts() {
@@ -161,6 +164,12 @@ function readConfiguredTrialAccountLookup(): ConfiguredTrialAccountLookup {
         accounts: null,
       };
     }
+    if (isProductionRuntime() && accounts.some((account) => account.role !== "student")) {
+      return {
+        status: "invalid",
+        accounts: null,
+      };
+    }
     return {
       status: "configured",
       accounts,
@@ -196,6 +205,14 @@ function requireTrialAccount(account: Partial<TrialAccountRecord>): TrialAccount
 
 function isAaisSessionRole(value: unknown): value is AaisSessionActor["role"] {
   return value === "student" || value === "teacher" || value === "admin";
+}
+
+function mergeConfiguredAccountsWithBuiltInLearners(configuredAccounts: TrialAccountRecord[]) {
+  const builtInIds = new Set(builtInLearnerTrialAccounts.map((account) => account.id));
+  return [
+    ...builtInLearnerTrialAccounts,
+    ...configuredAccounts.filter((account) => !builtInIds.has(account.id)),
+  ];
 }
 
 function passwordMatches(password: string, record: PasswordRecord) {

@@ -15,7 +15,12 @@ export default function RootLayout({
   return (
     <html lang="zh-CN">
       <body>
-        {children}
+        <a className="aais-skip-link" href="#aais-main-content">
+          跳到主要内容
+        </a>
+        <div id="aais-main-content" tabIndex={-1}>
+          {children}
+        </div>
         <Analytics />
       </body>
     </html>

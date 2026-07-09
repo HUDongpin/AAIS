@@ -12,129 +12,96 @@ import {
   UsersThree,
 } from "@phosphor-icons/react";
 import { Header } from "@/components/layout/header";
-
-type AaisCohortAnalytics = {
-  dashboard: {
-    cohort: {
-      learnerCount: number;
-      trainingCompleted: number;
-      completedPracticeTasks: number;
-      scaffoldRequests: number;
-      coachingSignals: number;
-      aiInteractions: number;
-      aiAcceptanceDecisions: number;
-      riskBreakdown: {
-        high: number;
-        medium: number;
-        low: number;
-      };
-    };
-  };
-  learners: AaisCohortLearner[];
-  integrations: {
-    factLayer: string;
-    joinKeys: string[];
-  };
-  privacy: {
-    actorMode: string;
-    rawPromptStorage: string;
-    minimumNecessaryFields: boolean;
-  };
-};
-
-type AaisCohortLearner = {
-  learnerKey: string;
-  sessionKey?: string;
-  sessionId?: string;
-  updatedAt: string;
-  trainingCompleted: boolean;
-  activePracticeTaskId: string | null;
-  completedPracticeTasks: number;
-  scaffoldRequests: number;
-  coachingSignals: number;
-  aiInteractions: number;
-  aiAcceptanceDecisions: number;
-  reflectionStatus: string;
-  riskLevel: "high" | "medium" | "low";
-  priorityReasons: string[];
-};
-
-type AaisCohortAnalyticsResponse = {
-  analytics?: AaisCohortAnalytics;
-  error?: string;
-};
-
-type CohortFilterState = {
-  phase: "all" | "training" | "practice";
-  agent: "all" | "A1" | "A2" | "A3" | "A4" | "platform";
-  event: "all" | "artifact_saved" | "artifact_edited" | "planning_submitted" | "ai_acceptance_recorded" | "coaching_push" | "scaffold_request" | "self_report_saved";
-};
-
-const defaultFilters: CohortFilterState = {
-  phase: "all",
-  agent: "all",
-  event: "all",
-};
-
-const emptyAnalytics: AaisCohortAnalytics = {
-  dashboard: {
-    cohort: {
-      learnerCount: 0,
-      trainingCompleted: 0,
-      completedPracticeTasks: 0,
-      scaffoldRequests: 0,
-      coachingSignals: 0,
-      aiInteractions: 0,
-      aiAcceptanceDecisions: 0,
-      riskBreakdown: {
-        high: 0,
-        medium: 0,
-        low: 0,
-      },
-    },
-  },
-  learners: [],
-  integrations: {
-    factLayer: "lrs",
-    joinKeys: [],
-  },
-  privacy: {
-    actorMode: "pseudonymous",
-    rawPromptStorage: "excluded_from_lrs",
-    minimumNecessaryFields: true,
-  },
-};
+import { getAaisApiErrorMessage } from "@/lib/client/aais-api-error";
+import {
+  MetricTile,
+  RiskBand,
+  SelectField,
+  StatusPill,
+  buildCohortAnalyticsUrl,
+  buildCohortExportUrl,
+  buildCohortRecommendationsUrl,
+  defaultFilters,
+  downloadText,
+  emptyAnalytics,
+  formatPriorityReason,
+  formatRecommendationPriority,
+  formatReflectionStatus,
+  formatRiskLevel,
+  formatUpdatedAt,
+  getAaisCsrfHeader,
+  parseAttachmentFileName,
+  selectSafeCohortAnalytics,
+  selectSafeRecommendations,
+  shouldPrioritizeLearner,
+  type AaisCohortAnalytics,
+  type AaisCohortAnalyticsResponse,
+  type AaisLearnerRecommendation,
+  type AaisRecommendationsResponse,
+  type CohortFilterState,
+} from "@/components/pages/teacher-dashboard/teacher-dashboard-support";
 
 export function TeacherDashboardPage() {
   const [analytics, setAnalytics] = useState<AaisCohortAnalytics | null>(null);
+  const [recommendations, setRecommendations] = useState<AaisLearnerRecommendation[]>([]);
+  const [recommendationsEnabled, setRecommendationsEnabled] = useState(true);
   const [error, setError] = useState("");
+  const [loading, setLoading] = useState(true);
   const [filters, setFilters] = useState<CohortFilterState>(defaultFilters);
+  const [learnerOffset, setLearnerOffset] = useState(0);
   const [refreshTick, setRefreshTick] = useState(0);
+  const [exportingFormat, setExportingFormat] = useState<"csv" | "json" | null>(null);
+  const [activeOverrideId, setActiveOverrideId] = useState<string | null>(null);
   const [exportStatus, setExportStatus] = useState("");
-  const analyticsUrl = useMemo(() => buildCohortAnalyticsUrl(filters), [filters]);
+  const [overrideStatus, setOverrideStatus] = useState("");
+  const learnerPageLimit = 25;
+  const analyticsUrl = useMemo(() => buildCohortAnalyticsUrl(filters, {
+    limit: learnerPageLimit,
+    offset: learnerOffset,
+  }), [filters, learnerOffset]);
+  const recommendationsUrl = useMemo(() => buildCohortRecommendationsUrl(filters), [filters]);
 
   useEffect(() => {
     let cancelled = false;
 
     async function loadCohortAnalytics() {
+      setLoading(true);
       try {
-        const response = await fetch(analyticsUrl);
+        const [response, recommendationsResponse] = await Promise.all([
+          fetch(analyticsUrl),
+          fetch(recommendationsUrl),
+        ]);
         const body = (await response.json()) as AaisCohortAnalyticsResponse;
         if (!response.ok || !body.analytics) {
           throw new Error(response.status === 403
             ? "教师或管理员登录后可查看 cohort dashboard。"
-            : body.error ?? "AAIS cohort analytics request failed.");
+            : getAaisApiErrorMessage(body, "AAIS cohort analytics request failed."));
         }
+        const recommendationsBody = recommendationsResponse.ok
+          ? (await recommendationsResponse.json()) as AaisRecommendationsResponse
+          : null;
+        const nextRecommendationsEnabled = recommendationsBody?.policy?.enabled !== false;
         if (!cancelled) {
           setAnalytics(selectSafeCohortAnalytics(body.analytics));
+          setRecommendations(nextRecommendationsEnabled
+            ? selectSafeRecommendations(recommendationsBody?.recommendations ?? [])
+            : []
+          );
+          setRecommendationsEnabled(nextRecommendationsEnabled);
           setError("");
         }
       } catch (caught) {
         if (!cancelled) {
           setAnalytics(null);
+          setRecommendations([]);
+          setRecommendationsEnabled(true);
           setError(caught instanceof Error
             ? caught.message
             : "AAIS cohort analytics request failed.");
+        }
+      } finally {
+        if (!cancelled) {
+          setLoading(false);
         }
       }
     }
@@ -144,17 +111,37 @@ export function TeacherDashboardPage() {
     return () => {
       cancelled = true;
     };
-  }, [analyticsUrl, refreshTick]);
+  }, [analyticsUrl, recommendationsUrl, refreshTick]);
 
   const safeAnalytics = analytics ?? emptyAnalytics;
   const cohort = safeAnalytics.dashboard.cohort;
+  const pagination = safeAnalytics.pagination ?? {
+    limit: learnerPageLimit,
+    offset: 0,
+    returnedLearners: safeAnalytics.learners.length,
+    totalLearners: cohort.learnerCount,
+    hasPreviousPage: false,
+    hasNextPage: safeAnalytics.learners.length < cohort.learnerCount,
+  };
   const followUpLearners = useMemo(
     () => safeAnalytics.learners.filter(shouldPrioritizeLearner),
     [safeAnalytics.learners],
   );
   const rows = followUpLearners.length ? followUpLearners : safeAnalytics.learners;
+  const pageStart = pagination.totalLearners ? pagination.offset + 1 : 0;
+  const pageEnd = pagination.offset + pagination.returnedLearners;
+
+  function updateFilter(nextFilters: CohortFilterState) {
+    setLearnerOffset(0);
+    setFilters(nextFilters);
+  }
 
   async function downloadCohortExport(format: "csv" | "json") {
+    if (exportingFormat) {
+      return;
+    }
+    setExportingFormat(format);
+    setExportStatus(format === "csv" ? "CSV 正在生成..." : "JSON 正在生成...");
     try {
       const response = await fetch(buildCohortExportUrl(filters, format));
       if (!response.ok) {
@@ -167,18 +154,68 @@ export function TeacherDashboardPage() {
       setExportStatus(format === "csv" ? "CSV 已生成" : "JSON 已生成");
     } catch {
       setExportStatus("Cohort export failed.");
+    } finally {
+      setExportingFormat(null);
+    }
+  }
+
+  async function recordRecommendationOverride(recommendation: AaisLearnerRecommendation) {
+    if (activeOverrideId) {
+      return;
+    }
+    setActiveOverrideId(recommendation.id);
+    setOverrideStatus("正在记录推荐处理...");
+    try {
+      const response = await fetch("/api/learning/recommendations", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          ...getAaisCsrfHeader(),
+        },
+        body: JSON.stringify({
+          recommendationId: recommendation.id,
+          learnerKey: recommendation.learnerKey,
+          sessionKey: recommendation.sessionKey,
+          ruleId: recommendation.ruleId,
+          targetTaskId: recommendation.targetTaskId,
+          decision: "accepted",
+        }),
+      });
+      const body = (await response.json().catch(() => null)) as AaisRecommendationsResponse | null;
+      if (!response.ok) {
+        throw new Error(getAaisApiErrorMessage(body, "AAIS recommendation override failed."));
+      }
+      setRecommendations((current) =>
+        current.filter((candidate) => candidate.id !== recommendation.id)
+      );
+      setOverrideStatus("推荐处理已记录");
+    } catch (caught) {
+      setOverrideStatus(caught instanceof Error
+        ? caught.message
+        : "AAIS recommendation override failed.");
+    } finally {
+      setActiveOverrideId(null);
     }
   }
 
   return (
     <div className="min-h-[100dvh] bg-[var(--background)] text-[var(--foreground)]">
       <Header />
-      <main className="mx-auto grid w-full max-w-[1608px] gap-5 px-3 py-6 sm:px-4 lg:px-5 2xl:px-6">
+      <main
+        className="mx-auto grid w-full max-w-[1608px] gap-5 px-3 py-6 sm:px-4 lg:px-5 2xl:px-6"
+        aria-labelledby="aais-dashboard-heading"
+        aria-busy={loading || Boolean(exportingFormat) || Boolean(activeOverrideId)}
+      >
         <section className="rounded-2xl border border-[#dfe7f6] bg-white p-5 shadow-[0_18px_44px_rgba(46,58,91,0.08)] sm:p-6">
           <div className="flex flex-wrap items-start justify-between gap-4">
             <div>
-              <p className="text-sm font-semibold text-[#1f6feb]">Cohort learning analytics</p>
-              <h1 className="mt-1 text-3xl font-black tracking-normal text-[#171b35]">教师看板</h1>
+              <p className="text-sm font-semibold text-[#1557c0]">Cohort learning analytics</p>
+              <h1
+                id="aais-dashboard-heading"
+                className="mt-1 text-3xl font-black tracking-normal text-[#171b35]"
+              >
+                教师看板
+              </h1>
               <p className="mt-2 max-w-3xl text-sm leading-6 text-[#59657a]">
                 聚合训练完成、支架依赖、A3 监督与 A2 coaching 信号、AI 互动和反思证据，帮助教师快速定位需要跟进的学习者。
               </p>
@@ -195,8 +232,24 @@ export function TeacherDashboardPage() {
             </div>
           </div>
 
+          {loading ? (
+            <p
+              className="mt-5 rounded-lg border border-[#d8e6fb] bg-[#f8fbff] px-4 py-3 text-sm font-semibold text-[#3f4b69]"
+              role="status"
+              aria-live="polite"
+              aria-atomic="true"
+            >
+              正在加载 cohort analytics...
+            </p>
+          ) : null}
+
           {error ? (
-            <p className="mt-5 rounded-lg border border-[#f0b7c9] bg-[#fff1f5] px-4 py-3 text-sm font-semibold text-[#a12f56]">
+            <p
+              className="mt-5 rounded-lg border border-[#f0b7c9] bg-[#fff1f5] px-4 py-3 text-sm font-semibold text-[#a12f56]"
+              role="alert"
+              aria-live="assertive"
+              aria-atomic="true"
+            >
               {error}
             </p>
           ) : null}
@@ -205,7 +258,7 @@ export function TeacherDashboardPage() {
             <SelectField
               label="Phase"
               value={filters.phase}
-              onChange={(value) => setFilters((current) => ({ ...current, phase: value as CohortFilterState["phase"] }))}
+              onChange={(value) => updateFilter({ ...filters, phase: value as CohortFilterState["phase"] })}
               options={[
                 ["all", "全部"],
                 ["training", "Training"],
@@ -215,7 +268,7 @@ export function TeacherDashboardPage() {
             <SelectField
               label="Agent"
               value={filters.agent}
-              onChange={(value) => setFilters((current) => ({ ...current, agent: value as CohortFilterState["agent"] }))}
+              onChange={(value) => updateFilter({ ...filters, agent: value as CohortFilterState["agent"] })}
               options={[
                 ["all", "全部"],
                 ["platform", "Platform"],
@@ -228,7 +281,7 @@ export function TeacherDashboardPage() {
             <SelectField
               label="Event"
               value={filters.event}
-              onChange={(value) => setFilters((current) => ({ ...current, event: value as CohortFilterState["event"] }))}
+              onChange={(value) => updateFilter({ ...filters, event: value as CohortFilterState["event"] })}
               options={[
                 ["all", "全部"],
                 ["coaching_push", "A2 coaching"],
@@ -243,30 +296,40 @@ export function TeacherDashboardPage() {
             <button
               type="button"
               onClick={() => setRefreshTick((value) => value + 1)}
-              className="inline-flex min-h-11 items-center justify-center gap-2 rounded-lg border border-[#cfe0f5] bg-white px-3 text-sm font-bold text-[#1f6feb] outline-none transition hover:border-[#1f6feb] focus-visible:ring-2 focus-visible:ring-[#1f6feb]"
+              disabled={loading}
+              className="inline-flex min-h-11 items-center justify-center gap-2 rounded-lg border border-[#cfe0f5] bg-white px-3 text-sm font-bold text-[#1557c0] outline-none transition hover:border-[#1f6feb] disabled:cursor-not-allowed disabled:opacity-60 focus-visible:ring-2 focus-visible:ring-[#1f6feb]"
             >
               <ChartLineUp size={16} weight="duotone" />
-              刷新
+              {loading ? "刷新中" : "刷新"}
             </button>
             <button
               type="button"
               onClick={() => void downloadCohortExport("csv")}
-              className="inline-flex min-h-11 items-center justify-center gap-2 rounded-lg border border-[#d8e6fb] bg-white px-3 text-sm font-bold text-[#3f4b69] outline-none transition hover:border-[#1f6feb] focus-visible:ring-2 focus-visible:ring-[#1f6feb]"
+              disabled={loading || Boolean(exportingFormat)}
+              className="inline-flex min-h-11 items-center justify-center gap-2 rounded-lg border border-[#d8e6fb] bg-white px-3 text-sm font-bold text-[#3f4b69] outline-none transition hover:border-[#1f6feb] disabled:cursor-not-allowed disabled:opacity-60 focus-visible:ring-2 focus-visible:ring-[#1f6feb]"
             >
               <Database size={16} weight="duotone" />
-              CSV
+              {exportingFormat === "csv" ? "CSV 生成中" : "CSV"}
             </button>
             <button
               type="button"
               onClick={() => void downloadCohortExport("json")}
-              className="inline-flex min-h-11 items-center justify-center gap-2 rounded-lg border border-[#d8e6fb] bg-white px-3 text-sm font-bold text-[#3f4b69] outline-none transition hover:border-[#1f6feb] focus-visible:ring-2 focus-visible:ring-[#1f6feb]"
+              disabled={loading || Boolean(exportingFormat)}
+              className="inline-flex min-h-11 items-center justify-center gap-2 rounded-lg border border-[#d8e6fb] bg-white px-3 text-sm font-bold text-[#3f4b69] outline-none transition hover:border-[#1f6feb] disabled:cursor-not-allowed disabled:opacity-60 focus-visible:ring-2 focus-visible:ring-[#1f6feb]"
             >
               <ShieldCheck size={16} weight="duotone" />
-              JSON
+              {exportingFormat === "json" ? "JSON 生成中" : "JSON"}
             </button>
           </div>
           {exportStatus ? (
-            <p className="mt-2 text-xs font-bold text-[#4f5873]">{exportStatus}</p>
+            <p
+              className="mt-2 text-xs font-bold text-[#4f5873]"
+              role="status"
+              aria-live="polite"
+              aria-atomic="true"
+            >
+              {exportStatus}
+            </p>
           ) : null}
         </section>
 
@@ -288,9 +351,27 @@ export function TeacherDashboardPage() {
                   <h2 className="text-lg font-black text-[#171b35]">学习者风险队列</h2>
                   <p className="mt-1 text-sm text-[#68708a]">优先显示训练未完成、反思证据不足或 A3/A2 信号较多的学习者。</p>
                 </div>
-                <span className="rounded-full border border-[#d8e6fb] bg-[#f8fbff] px-3 py-1 text-xs font-bold text-[#1f6feb]">
-                  {followUpLearners.length || rows.length} 条
-                </span>
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="rounded-full border border-[#d8e6fb] bg-[#f8fbff] px-3 py-1 text-xs font-bold text-[#1557c0]">
+                    {pageStart}-{pageEnd} / {pagination.totalLearners}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setLearnerOffset((value) => Math.max(0, value - pagination.limit))}
+                    disabled={loading || !pagination.hasPreviousPage}
+                    className="inline-flex min-h-8 items-center rounded-lg border border-[#d8e6fb] bg-white px-3 text-xs font-bold text-[#3f4b69] outline-none transition hover:border-[#1f6feb] disabled:cursor-not-allowed disabled:opacity-45 focus-visible:ring-2 focus-visible:ring-[#1f6feb]"
+                  >
+                    上一页
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setLearnerOffset((value) => value + pagination.limit)}
+                    disabled={loading || !pagination.hasNextPage}
+                    className="inline-flex min-h-8 items-center rounded-lg border border-[#d8e6fb] bg-white px-3 text-xs font-bold text-[#3f4b69] outline-none transition hover:border-[#1f6feb] disabled:cursor-not-allowed disabled:opacity-45 focus-visible:ring-2 focus-visible:ring-[#1f6feb]"
+                  >
+                    下一页
+                  </button>
+                </div>
               </div>
             </div>
 
@@ -367,6 +448,61 @@ export function TeacherDashboardPage() {
           </div>
 
           <aside className="grid content-start gap-5">
+            <section
+              className="rounded-2xl border border-[#dfe7f6] bg-white p-5 shadow-[0_18px_44px_rgba(46,58,91,0.08)]"
+              aria-busy={Boolean(activeOverrideId)}
+            >
+              <div className="flex items-center justify-between gap-3">
+                <h2 className="text-lg font-black text-[#171b35]">推荐跟进</h2>
+                <span className="text-xs font-bold text-[#68708a]">
+                  {recommendationsEnabled ? `${recommendations.length} 条` : "已暂停"}
+                </span>
+              </div>
+              <div className="mt-4 grid gap-3">
+                {!recommendationsEnabled ? (
+                  <p className="text-sm font-semibold leading-6 text-[#68708a]">
+                    规则推荐已暂停。
+                  </p>
+                ) : recommendations.length ? recommendations.slice(0, 4).map((recommendation) => (
+                  <div key={recommendation.id} className="border-t border-[#edf1f8] pt-3 first:border-t-0 first:pt-0">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <p className="text-sm font-black text-[#222842]">{recommendation.title}</p>
+                        <p className="mt-1 text-xs font-bold text-[#68708a]">{recommendation.learnerKey}</p>
+                      </div>
+                      <StatusPill tone={recommendation.priority === "low" ? "ok" : "risk"}>
+                        {formatRecommendationPriority(recommendation.priority)}
+                      </StatusPill>
+                    </div>
+                    <p className="mt-2 text-sm leading-6 text-[#4f5873]">{recommendation.reasons[0]}</p>
+                    <button
+                      type="button"
+                      onClick={() => void recordRecommendationOverride(recommendation)}
+                      disabled={Boolean(activeOverrideId)}
+                      className="mt-3 inline-flex min-h-9 items-center justify-center gap-2 rounded-lg border border-[#d8e6fb] bg-[#f8fbff] px-3 text-xs font-bold text-[#1557c0] outline-none transition hover:border-[#1f6feb] disabled:cursor-not-allowed disabled:opacity-60 focus-visible:ring-2 focus-visible:ring-[#1f6feb]"
+                    >
+                      <CheckCircle size={14} weight="duotone" />
+                      {activeOverrideId === recommendation.id ? "记录中..." : "标记已处理"}
+                    </button>
+                  </div>
+                )) : (
+                  <p className="text-sm font-semibold leading-6 text-[#68708a]">
+                    暂无需要立即跟进的规则建议。
+                  </p>
+                )}
+              </div>
+              {overrideStatus ? (
+                <p
+                  className="mt-3 text-xs font-bold text-[#4f5873]"
+                  role="status"
+                  aria-live="polite"
+                  aria-atomic="true"
+                >
+                  {overrideStatus}
+                </p>
+              ) : null}
+            </section>
+
             <section className="rounded-2xl border border-[#dfe7f6] bg-white p-5 shadow-[0_18px_44px_rgba(46,58,91,0.08)]">
               <h2 className="text-lg font-black text-[#171b35]">风险分层</h2>
               <div className="mt-4 grid gap-3">
@@ -380,13 +516,13 @@ export function TeacherDashboardPage() {
               <h2 className="text-lg font-black text-[#171b35]">数据边界</h2>
               <div className="mt-4 grid gap-3 text-sm leading-6 text-[#4f5873]">
                 <p className="rounded-lg border border-[#e1e8f5] bg-[#f8fbff] px-3 py-2">
-                  Actor mode: <strong className="text-[#1f6feb]">{safeAnalytics.privacy.actorMode}</strong>
+                  Actor mode: <strong className="text-[#1557c0]">{safeAnalytics.privacy.actorMode}</strong>
                 </p>
                 <p className="rounded-lg border border-[#e1e8f5] bg-[#f8fbff] px-3 py-2">
-                  Raw prompt storage: <strong className="text-[#1f6feb]">{safeAnalytics.privacy.rawPromptStorage}</strong>
+                  Raw prompt storage: <strong className="text-[#1557c0]">{safeAnalytics.privacy.rawPromptStorage}</strong>
                 </p>
                 <p className="rounded-lg border border-[#e1e8f5] bg-[#f8fbff] px-3 py-2">
-                  Minimum necessary fields: <strong className="text-[#1f6feb]">{String(safeAnalytics.privacy.minimumNecessaryFields)}</strong>
+                  Minimum necessary fields: <strong className="text-[#1557c0]">{String(safeAnalytics.privacy.minimumNecessaryFields)}</strong>
                 </p>
               </div>
             </section>
@@ -397,7 +533,7 @@ export function TeacherDashboardPage() {
                 {safeAnalytics.integrations.joinKeys.map((key) => (
                   <span
                     key={key}
-                    className="rounded-full border border-[#d8e6fb] bg-[#f8fbff] px-3 py-1 text-xs font-bold text-[#1f6feb]"
+                    className="rounded-full border border-[#d8e6fb] bg-[#f8fbff] px-3 py-1 text-xs font-bold text-[#1557c0]"
                   >
                     {key}
                   </span>
@@ -407,220 +543,6 @@ export function TeacherDashboardPage() {
           </aside>
         </section>
       </main>
-    </div>
-  );
-}
-
-function selectSafeCohortAnalytics(analytics: AaisCohortAnalytics): AaisCohortAnalytics {
-  return {
-    dashboard: {
-      cohort: {
-        ...analytics.dashboard.cohort,
-        aiAcceptanceDecisions: analytics.dashboard.cohort.aiAcceptanceDecisions ?? 0,
-        riskBreakdown: analytics.dashboard.cohort.riskBreakdown
-          ?? emptyAnalytics.dashboard.cohort.riskBreakdown,
-      },
-    },
-    learners: analytics.learners.map((learner) => ({
-      learnerKey: learner.learnerKey,
-      sessionKey: learner.sessionKey ?? learner.sessionId ?? "session-redacted",
-      updatedAt: learner.updatedAt,
-      trainingCompleted: learner.trainingCompleted,
-      activePracticeTaskId: learner.activePracticeTaskId,
-      completedPracticeTasks: learner.completedPracticeTasks,
-      scaffoldRequests: learner.scaffoldRequests,
-      coachingSignals: learner.coachingSignals,
-      aiInteractions: learner.aiInteractions,
-      aiAcceptanceDecisions: learner.aiAcceptanceDecisions ?? 0,
-      reflectionStatus: learner.reflectionStatus,
-      riskLevel: learner.riskLevel ?? "low",
-      priorityReasons: Array.isArray(learner.priorityReasons) ? learner.priorityReasons : [],
-    })),
-    integrations: analytics.integrations,
-    privacy: analytics.privacy,
-  };
-}
-
-function buildCohortAnalyticsUrl(filters: CohortFilterState) {
-  return buildCohortUrl("/api/learning/analytics", filters);
-}
-
-function buildCohortExportUrl(filters: CohortFilterState, format: "csv" | "json") {
-  return buildCohortUrl("/api/learning/export", filters, format);
-}
-
-function buildCohortUrl(basePath: string, filters: CohortFilterState, format?: "csv" | "json") {
-  const params = new URLSearchParams({
-    scope: "cohort",
-  });
-  if (format) {
-    params.set("format", format);
-  }
-  if (filters.phase !== "all") {
-    params.set("phase", filters.phase);
-  }
-  if (filters.agent !== "all") {
-    params.set("agent", filters.agent);
-  }
-  if (filters.event !== "all") {
-    params.set("event", filters.event);
-  }
-  return `${basePath}?${params.toString()}`;
-}
-
-function SelectField({
-  label,
-  value,
-  options,
-  onChange,
-}: {
-  label: string;
-  value: string;
-  options: Array<[string, string]>;
-  onChange: (value: string) => void;
-}) {
-  return (
-    <label className="grid gap-1 text-xs font-bold text-[#4f5873]">
-      <span>{label}</span>
-      <select
-        aria-label={label}
-        value={value}
-        onChange={(event) => onChange(event.target.value)}
-        className="h-11 rounded-lg border border-[#d8e6fb] bg-white px-3 text-sm font-bold text-[#222842] outline-none transition focus:border-[#1f6feb] focus-visible:ring-2 focus-visible:ring-[#1f6feb]"
-      >
-        {options.map(([optionValue, optionLabel]) => (
-          <option key={optionValue} value={optionValue}>
-            {optionLabel}
-          </option>
-        ))}
-      </select>
-    </label>
-  );
-}
-
-function parseAttachmentFileName(disposition: string | null) {
-  const match = /filename="([^"]+)"/.exec(disposition ?? "");
-  return match?.[1];
-}
-
-function downloadText(fileName: string, text: string, contentType: string) {
-  const blob = new Blob([text], { type: contentType });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = fileName;
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
-  URL.revokeObjectURL(url);
-}
-
-function shouldPrioritizeLearner(learner: AaisCohortLearner) {
-  return learner.riskLevel !== "low"
-    || !learner.trainingCompleted
-    || learner.reflectionStatus !== "evidence_present"
-    || learner.coachingSignals > 0;
-}
-
-function formatRiskLevel(level: AaisCohortLearner["riskLevel"]) {
-  if (level === "high") {
-    return "高风险";
-  }
-  if (level === "medium") {
-    return "中风险";
-  }
-  return "低风险";
-}
-
-function formatPriorityReason(reason: string) {
-  const labels: Record<string, string> = {
-    training_incomplete: "训练未完成",
-    reflection_missing: "需补反思",
-    a2_coaching_signals: "A3/A2 已触发",
-    high_scaffold_dependency: "支架依赖高",
-    no_ai_interaction_after_coaching: "需要跟进 AI 使用决策",
-  };
-  return labels[reason] ?? "需跟进";
-}
-
-function formatReflectionStatus(status: string) {
-  return status === "evidence_present" ? "证据充分" : "需补反思";
-}
-
-function formatUpdatedAt(value: string) {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) {
-    return "更新时间未知";
-  }
-  return new Intl.DateTimeFormat("zh-HK", {
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-  }).format(date);
-}
-
-function MetricTile({
-  icon: Icon,
-  label,
-  value,
-}: {
-  icon: typeof UsersThree;
-  label: string;
-  value: number;
-}) {
-  return (
-    <article className="rounded-2xl border border-[#dfe7f6] bg-white p-4 shadow-[0_18px_44px_rgba(46,58,91,0.08)]">
-      <div className="flex items-center justify-between gap-3">
-        <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-[#eef6ff] text-[#1f6feb]">
-          <Icon size={22} weight="duotone" />
-        </span>
-        <p className="text-2xl font-black tracking-normal text-[#171b35]">{value}</p>
-      </div>
-      <p className="mt-3 text-sm font-bold text-[#4f5873]">{label}</p>
-    </article>
-  );
-}
-
-function StatusPill({
-  children,
-  tone,
-}: {
-  children: string;
-  tone: "ok" | "risk";
-}) {
-  return (
-    <span
-      className={[
-        "inline-flex min-h-7 items-center rounded-full border px-2.5 py-1 text-xs font-bold",
-        tone === "ok"
-          ? "border-[#cfe0f5] bg-[#f8fbff] text-[#1f6feb]"
-          : "border-[#f0d5b4] bg-[#fff8ed] text-[#8a5a12]",
-      ].join(" ")}
-    >
-      {children}
-    </span>
-  );
-}
-
-function RiskBand({
-  label,
-  value,
-  tone,
-}: {
-  label: string;
-  value: number;
-  tone: "risk" | "watch" | "ok";
-}) {
-  const toneClass = {
-    risk: "border-[#f0d5b4] bg-[#fff8ed] text-[#8a5a12]",
-    watch: "border-[#d8e6fb] bg-[#f8fbff] text-[#1f6feb]",
-    ok: "border-[#cfe8dd] bg-[#f4fbf7] text-[#1d6b45]",
-  }[tone];
-  return (
-    <div className={`flex items-center justify-between rounded-lg border px-3 py-2 ${toneClass}`}>
-      <span className="text-sm font-bold">{label}</span>
-      <span className="text-lg font-black">{value}</span>
     </div>
   );
 }

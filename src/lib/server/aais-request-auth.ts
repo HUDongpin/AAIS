@@ -1,8 +1,9 @@
 import {
   getAaisSessionCookieName,
-  verifyAaisSessionToken,
+  verifyAaisSessionTokenWithMetadata,
   type AaisSessionActor,
 } from "@/lib/server/aais-session";
+import { isAaisSessionTokenRevoked } from "@/lib/server/aais-session-revocations";
 
 export class AaisAuthError extends Error {
   constructor() {
@@ -10,17 +11,34 @@ export class AaisAuthError extends Error {
   }
 }
 
-export function resolveAaisStudentId(request: Request) {
-  return requireAaisSessionActor(request).id;
+export async function resolveAaisStudentId(request: Request) {
+  return (await requireAaisSessionActor(request)).id;
 }
 
-export function requireAaisSessionActor(request: Request): AaisSessionActor {
+export async function requireAaisSessionActor(request: Request): Promise<AaisSessionActor> {
   const token = readCookie(request.headers.get("cookie"), getAaisSessionCookieName());
-  const actor = verifyAaisSessionToken(token);
-  if (!actor) {
+  const verified = await verifyAaisRequestSessionToken(token);
+  if (!verified) {
     throw new AaisAuthError();
   }
-  return actor;
+  return verified;
+}
+
+export async function verifyAaisRequestSessionToken(
+  token: string | null | undefined,
+): Promise<AaisSessionActor | null> {
+  const verified = verifyAaisSessionTokenWithMetadata(token);
+  if (!verified) {
+    return null;
+  }
+  try {
+    if (await isAaisSessionTokenRevoked({ tokenHash: verified.tokenHash })) {
+      return null;
+    }
+  } catch {
+    return null;
+  }
+  return verified.actor;
 }
 
 export function isAaisAuthError(error: unknown) {

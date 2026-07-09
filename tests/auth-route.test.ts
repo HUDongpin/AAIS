@@ -1,4 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { getAaisCsrfCookieName } from "@/lib/server/aais-csrf";
+import { getAaisSessionCookieName } from "@/lib/server/aais-session";
+import { clearAaisSessionRevocationsForTest } from "@/lib/server/aais-session-revocations";
 import { createPasswordRecord } from "@/lib/server/aais-trial-accounts";
 
 const accountConfig = JSON.stringify([
@@ -25,6 +28,11 @@ afterEach(() => {
   delete process.env.AAIS_SESSION_SECRET;
   delete process.env.AAIS_TRIAL_ACCOUNTS_JSON;
   delete process.env.AAIS_TRIAL_SMOKE_ACCOUNTS_JSON;
+  clearAaisSessionRevocationsForTest();
+  vi.restoreAllMocks();
+  vi.doUnmock("@/lib/server/aais-users");
+  vi.doUnmock("@/lib/server/aais-auth-rate-limit");
+  vi.resetModules();
   vi.unstubAllEnvs();
 });
 
@@ -34,7 +42,7 @@ describe("AAIS trial account auth route", () => {
     const bobie = await POST(
       new Request("http://localhost/api/auth/app-session", {
         method: "POST",
-        body: JSON.stringify({
+        body: authBody({
           account: "Bobie",
           password: "12345",
         }),
@@ -58,7 +66,7 @@ describe("AAIS trial account auth route", () => {
     const phoebe = await POST(
       new Request("http://localhost/api/auth/app-session", {
         method: "POST",
-        body: JSON.stringify({
+        body: authBody({
           account: "Phoebe",
           password: "12345",
         }),
@@ -75,7 +83,7 @@ describe("AAIS trial account auth route", () => {
     const wrongPassword = await POST(
       new Request("http://localhost/api/auth/app-session", {
         method: "POST",
-        body: JSON.stringify({
+        body: authBody({
           account: "Bobie",
           password: "wrong",
         }),
@@ -86,13 +94,35 @@ describe("AAIS trial account auth route", () => {
     const unknown = await POST(
       new Request("http://localhost/api/auth/app-session", {
         method: "POST",
-        body: JSON.stringify({
+        body: authBody({
           account: "Alice",
           password: "12345",
         }),
       }),
     );
     expect(unknown.status).toBe(401);
+  });
+
+  it("requires explicit terms, privacy, and guardian consent acknowledgement before login", async () => {
+    const { POST } = await import("@/app/api/auth/app-session/route");
+
+    const response = await POST(
+      new Request("http://localhost/api/auth/app-session", {
+        method: "POST",
+        body: JSON.stringify({
+          account: "Bobie",
+          password: "12345",
+        }),
+      }),
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(428);
+    expect(body.error).toEqual({
+      code: "AAIS_LOGIN_CONSENT_REQUIRED",
+      message: "AAIS terms, privacy, and guardian consent acknowledgement is required before login.",
+    });
+    expect(response.headers.get("set-cookie") ?? "").not.toContain("aais_session=");
   });
 
   it("allows smoke-only educator accounts without replacing configured learners", async () => {
@@ -109,7 +139,7 @@ describe("AAIS trial account auth route", () => {
     const learner = await POST(
       new Request("http://localhost/api/auth/app-session", {
         method: "POST",
-        body: JSON.stringify({
+        body: authBody({
           account: "Bobie",
           password: "12345",
         }),
@@ -118,7 +148,7 @@ describe("AAIS trial account auth route", () => {
     const teacher = await POST(
       new Request("http://localhost/api/auth/app-session", {
         method: "POST",
-        body: JSON.stringify({
+        body: authBody({
           account: "teacher-smoke",
           password: "teacher-secret",
         }),
@@ -136,6 +166,108 @@ describe("AAIS trial account auth route", () => {
     expect(JSON.stringify(teacherBody)).not.toContain("teacher-secret");
   });
 
+  it("authenticates database users before falling back to trial accounts", async () => {
+    vi.resetModules();
+    const authenticateAaisUserAccount = vi.fn(async () => ({
+      status: "ok" as const,
+      actor: {
+        id: "user-teacher",
+        role: "teacher" as const,
+        displayName: "Teacher A",
+      },
+    }));
+    vi.doMock("@/lib/server/aais-users", () => ({
+      authenticateAaisUserAccount,
+    }));
+    const { POST } = await import("@/app/api/auth/app-session/route");
+
+    const response = await POST(
+      new Request("http://localhost/api/auth/app-session", {
+        method: "POST",
+        body: authBody({
+          account: "teacher@example.test",
+          password: "db-password-123",
+        }),
+      }),
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(authenticateAaisUserAccount).toHaveBeenCalledWith(
+      "teacher@example.test",
+      "db-password-123",
+    );
+    expect(body.appSession.actor).toMatchObject({
+      id: "user-teacher",
+      displayName: "Teacher A",
+      role: "teacher",
+    });
+    expect(JSON.stringify(body)).not.toContain("db-password-123");
+  });
+
+  it("does not merge built-in learner demo accounts into production trial auth", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    process.env.AAIS_TRIAL_ACCOUNTS_JSON = JSON.stringify([
+      {
+        id: "student-smoke",
+        displayName: "Student Smoke",
+        role: "student",
+        password: createPasswordRecord("student-secret"),
+      },
+    ]);
+    const { POST } = await import("@/app/api/auth/app-session/route");
+
+    const response = await POST(
+      new Request("http://localhost/api/auth/app-session", {
+        method: "POST",
+        body: authBody({
+          account: "Bobie",
+          password: "12345",
+        }),
+      }),
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(401);
+    expect(body.error).toEqual({
+      code: "AAIS_INVALID_CREDENTIALS",
+      message: "Invalid AAIS trial account or password.",
+    });
+    expect(response.headers.get("set-cookie") ?? "").not.toContain("aais_session=");
+  });
+
+  it("refuses production educator trial accounts so teachers and admins use database or OIDC identities", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    process.env.AAIS_TRIAL_ACCOUNTS_JSON = JSON.stringify([
+      {
+        id: "teacher-smoke",
+        displayName: "Teacher Smoke",
+        role: "teacher",
+        password: createPasswordRecord("teacher-secret"),
+      },
+    ]);
+    const { POST } = await import("@/app/api/auth/app-session/route");
+
+    const response = await POST(
+      new Request("http://localhost/api/auth/app-session", {
+        method: "POST",
+        body: authBody({
+          account: "teacher-smoke",
+          password: "teacher-secret",
+        }),
+      }),
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(503);
+    expect(body.error).toEqual({
+      code: "AAIS_AUTH_NOT_CONFIGURED",
+      message: "AAIS auth is not configured.",
+    });
+    expect(response.headers.get("set-cookie") ?? "").not.toContain("aais_session=");
+    expect(JSON.stringify(body)).not.toContain("teacher-secret");
+  });
+
   it("rate limits repeated failed login attempts for the same account and client", async () => {
     vi.resetModules();
     const { POST } = await import("@/app/api/auth/app-session/route");
@@ -146,7 +278,7 @@ describe("AAIS trial account auth route", () => {
           headers: {
             "x-forwarded-for": "203.0.113.24",
           },
-          body: JSON.stringify({
+          body: authBody({
             account: "Bobie",
             password,
           }),
@@ -164,7 +296,10 @@ describe("AAIS trial account auth route", () => {
     expect(blocked.status).toBe(429);
     expect(blocked.headers.get("retry-after")).toBeTruthy();
     expect(blockedBody).toMatchObject({
-      error: "Too many login attempts. Please retry later.",
+      error: {
+        code: "AAIS_LOGIN_RATE_LIMITED",
+        message: "Too many login attempts. Please retry later.",
+      },
       retryAfterSeconds: expect.any(Number),
     });
     expect(JSON.stringify(blockedBody)).not.toContain("wrong");
@@ -174,6 +309,63 @@ describe("AAIS trial account auth route", () => {
     expect(correctPasswordDuringLock.headers.get("set-cookie") ?? "").not.toContain("aais_session=");
   });
 
+  it("fails closed with a redacted 503 when login rate-limit storage is unavailable", async () => {
+    vi.resetModules();
+    const checkAaisLoginRateLimit = vi.fn(async () => {
+      throw new Error("relation aais_login_rate_limits does not exist");
+    });
+    const recordAaisLoginFailure = vi.fn();
+    const clearAaisLoginFailures = vi.fn();
+    vi.doMock("@/lib/server/aais-auth-rate-limit", () => ({
+      checkAaisLoginRateLimit,
+      recordAaisLoginFailure,
+      clearAaisLoginFailures,
+    }));
+    const info = vi.spyOn(console, "info").mockImplementation(() => undefined);
+    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const { POST } = await import("@/app/api/auth/app-session/route");
+
+    const response = await POST(
+      new Request("http://localhost/api/auth/app-session", {
+        method: "POST",
+        headers: {
+          "x-forwarded-for": "203.0.113.24",
+        },
+        body: authBody({
+          account: "Bobie",
+          password: "12345",
+        }),
+      }),
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(503);
+    expect(body.error).toEqual({
+      code: "AAIS_LOGIN_RATE_LIMIT_UNAVAILABLE",
+      message: "AAIS login protection is temporarily unavailable.",
+    });
+    expect(response.headers.get("set-cookie") ?? "").not.toContain("aais_session=");
+    expect(checkAaisLoginRateLimit).toHaveBeenCalledOnce();
+    expect(recordAaisLoginFailure).not.toHaveBeenCalled();
+    expect(clearAaisLoginFailures).not.toHaveBeenCalled();
+    const auditEvents = info.mock.calls.map((call) => JSON.parse(String(call[0])));
+    expect(auditEvents).toEqual([
+      expect.objectContaining({
+        event: "auth.login.failure",
+        outcome: "failure",
+        metadata: {
+          reason: "rate_limit_unavailable",
+        },
+      }),
+    ]);
+    const errorOutput = error.mock.calls.map((call) => String(call[0])).join("\n");
+    expect(errorOutput).toContain("AAIS_LOGIN_RATE_LIMIT_UNAVAILABLE");
+    expect(JSON.stringify(body)).not.toContain("Bobie");
+    expect(JSON.stringify(body)).not.toContain("12345");
+    expect(errorOutput).not.toContain("Bobie");
+    expect(errorOutput).not.toContain("12345");
+  });
+
   it("records redacted audit events for login success and failure", async () => {
     const info = vi.spyOn(console, "info").mockImplementation(() => undefined);
     const { POST } = await import("@/app/api/auth/app-session/route");
@@ -181,7 +373,7 @@ describe("AAIS trial account auth route", () => {
     await POST(
       new Request("http://localhost/api/auth/app-session", {
         method: "POST",
-        body: JSON.stringify({
+        body: authBody({
           account: "Bobie",
           password: "12345",
         }),
@@ -190,7 +382,7 @@ describe("AAIS trial account auth route", () => {
     await POST(
       new Request("http://localhost/api/auth/app-session", {
         method: "POST",
-        body: JSON.stringify({
+        body: authBody({
           account: "Bobie",
           password: "wrong",
         }),
@@ -207,6 +399,10 @@ describe("AAIS trial account auth route", () => {
     ]);
     expect(new Set(auditEvents.map((event) => event.actorId)).size).toBe(1);
     expect(auditEvents.every((event) => event.actorIdRedaction === "sha256-16")).toBe(true);
+    expect(auditEvents.find((event) => event.event === "auth.login.success")?.metadata).toMatchObject({
+      consentAcknowledged: true,
+      consentVersion: "terms-privacy-guardian-v1",
+    });
     expect(JSON.stringify(auditEvents)).not.toContain("Bobie");
     expect(JSON.stringify(auditEvents)).not.toContain("12345");
     expect(JSON.stringify(auditEvents)).not.toContain("wrong");
@@ -220,7 +416,7 @@ describe("AAIS trial account auth route", () => {
     const response = await POST(
       new Request("http://localhost/api/auth/app-session", {
         method: "POST",
-        body: JSON.stringify({
+        body: authBody({
           account: "Bobie",
           password: "12345",
         }),
@@ -238,7 +434,7 @@ describe("AAIS trial account auth route", () => {
     const response = await POST(
       new Request("http://localhost/api/auth/app-session", {
         method: "POST",
-        body: JSON.stringify({
+        body: authBody({
           account: "Bobie",
           password: "12345",
         }),
@@ -247,7 +443,10 @@ describe("AAIS trial account auth route", () => {
     const body = await response.json();
 
     expect(response.status).toBe(404);
-    expect(body.error).toBe("AAIS trial login is disabled.");
+    expect(body.error).toEqual({
+      code: "AAIS_TRIAL_LOGIN_DISABLED",
+      message: "AAIS trial login is disabled.",
+    });
     expect(response.headers.get("set-cookie") ?? "").not.toContain("aais_session=");
   });
 
@@ -259,7 +458,7 @@ describe("AAIS trial account auth route", () => {
     const response = await POST(
       new Request("http://localhost/api/auth/app-session", {
         method: "POST",
-        body: JSON.stringify({
+        body: authBody({
           account: "Bobie",
           password: "12345",
         }),
@@ -282,4 +481,72 @@ describe("AAIS trial account auth route", () => {
     expect(setCookie).toContain("aais_student_id=");
     expect(setCookie).toContain("aais_display_name=");
   });
+
+  it("revokes the signed session token on logout", async () => {
+    vi.resetModules();
+    const authRoute = await import("@/app/api/auth/app-session/route");
+    const sessionRoute = await import("@/app/api/learning/session/route");
+    const login = await authRoute.POST(
+      new Request("http://localhost/api/auth/app-session", {
+        method: "POST",
+        body: authBody({
+          account: "Bobie",
+          password: "12345",
+        }),
+      }),
+    );
+    const setCookie = login.headers.get("set-cookie") ?? "";
+    const cookie = [
+      `${getAaisSessionCookieName()}=${extractCookie(setCookie, getAaisSessionCookieName())}`,
+      `${getAaisCsrfCookieName()}=${extractCookie(setCookie, getAaisCsrfCookieName())}`,
+    ].join("; ");
+
+    const beforeLogout = await sessionRoute.GET(
+      new Request("http://localhost/api/learning/session", {
+        headers: { cookie },
+      }),
+    );
+    const logout = await authRoute.DELETE(
+      new Request("http://localhost/api/auth/app-session", {
+        method: "DELETE",
+        headers: { cookie },
+      }),
+    );
+    const logoutBody = await logout.json();
+    const afterLogout = await sessionRoute.GET(
+      new Request("http://localhost/api/learning/session", {
+        headers: { cookie },
+      }),
+    );
+    const afterLogoutBody = await afterLogout.json();
+
+    expect(beforeLogout.status).toBe(200);
+    expect(logout.status).toBe(200);
+    expect(logoutBody).toMatchObject({
+      ok: true,
+      sessionRevoked: true,
+      secrets: "redacted",
+    });
+    expect(afterLogout.status).toBe(401);
+    expect(afterLogoutBody.error).toEqual({
+      code: "AAIS_AUTH_REQUIRED",
+      message: "AAIS authentication is required.",
+    });
+  });
 });
+
+function extractCookie(setCookie: string, name: string) {
+  const match = setCookie.match(new RegExp(`${name}=([^;,]+)`));
+  return match?.[1] ?? "";
+}
+
+function authBody(body: {
+  account: string;
+  password: string;
+  from?: string | null;
+}) {
+  return JSON.stringify({
+    consentAccepted: true,
+    ...body,
+  });
+}

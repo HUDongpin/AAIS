@@ -10,6 +10,11 @@ describe("AAIS legal notice pages", () => {
     expect(privacyMetadata.title).toBe("Privacy | AAIS");
     expect(screen.getByRole("heading", { name: "隐私与学习数据说明" })).toBeTruthy();
     expect(screen.getByText(/CSV 字段会进行 spreadsheet-safe escaping/)).toBeTruthy();
+    expect(screen.getByText(/未确认时 AAIS 不会签发 session cookie/)).toBeTruthy();
+    expect(screen.getAllByText(/\/api\/learning\/privacy/).length).toBeGreaterThan(0);
+    expect(screen.getByText(/删除学习数据不会自动删除登录账号/)).toBeTruthy();
+    expect(screen.getByText(/真实 cohort 前置条件/)).toBeTruthy();
+    expect(screen.getByText(/FERPA、COPPA、GDPR、PIPL/)).toBeTruthy();
     expect(screen.getByRole("link", { name: "返回登录" }).getAttribute("href")).toBe("/login");
   });
 

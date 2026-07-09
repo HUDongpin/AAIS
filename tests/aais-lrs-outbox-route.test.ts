@@ -4,16 +4,22 @@ import { createAaisSessionToken } from "@/lib/server/aais-session";
 
 const flushMock = vi.fn();
 const requeueMock = vi.fn();
+const monitoringMock = vi.fn();
 
 beforeEach(() => {
   process.env.AAIS_SESSION_SECRET = "test-session-secret-with-at-least-32-characters";
   flushMock.mockReset();
   requeueMock.mockReset();
+  monitoringMock.mockReset();
   vi.spyOn(console, "info").mockImplementation(() => undefined);
   vi.resetModules();
   vi.doMock("@/lib/server/aais-learning-store", () => ({
     flushAaisPersistentLrsOutbox: flushMock,
+    getAaisDatabaseConfiguration: () => null,
     requeueAaisPersistentLrsDeadLetters: requeueMock,
+  }));
+  vi.doMock("@/lib/server/aais-monitoring", () => ({
+    recordAaisMonitoringIssue: monitoringMock,
   }));
 });
 
@@ -22,6 +28,7 @@ afterEach(() => {
   delete process.env.AAIS_LRS_OUTBOX_FLUSH_TOKEN;
   delete process.env.CRON_SECRET;
   vi.doUnmock("@/lib/server/aais-learning-store");
+  vi.doUnmock("@/lib/server/aais-monitoring");
   vi.unstubAllEnvs();
   vi.restoreAllMocks();
 });
@@ -39,7 +46,10 @@ describe("AAIS LRS persistent outbox flush route", () => {
 
     expect(response.status).toBe(401);
     expect(body).toEqual({
-      error: "AAIS authentication is required.",
+      error: {
+        code: "AAIS_AUTH_REQUIRED",
+        message: "AAIS authentication is required.",
+      },
       secrets: "redacted",
     });
     expect(flushMock).not.toHaveBeenCalled();
@@ -229,6 +239,22 @@ describe("AAIS LRS persistent outbox flush route", () => {
     expect(flushMock).toHaveBeenCalledWith({ limit: 200 });
     expect(body.authorization.mode).toBe("bearer-token");
     expect(JSON.stringify(body)).not.toContain(process.env.AAIS_LRS_OUTBOX_FLUSH_TOKEN);
+    expect(monitoringMock).toHaveBeenCalledWith(expect.objectContaining({
+      event: "aais.lrs_outbox.degraded",
+      message: "AAIS LRS outbox flush partial",
+      route: "/api/learning/lrs/outbox/flush",
+      tags: expect.objectContaining({
+        "aais.auth_mode": "bearer-token",
+        "aais.outbox_action": "flush",
+        "aais.outbox_status": "partial",
+      }),
+      extra: expect.objectContaining({
+        authMode: "bearer-token",
+        failed: 1,
+        secrets: "redacted",
+      }),
+    }));
+    expect(JSON.stringify(monitoringMock.mock.calls)).not.toContain(process.env.AAIS_LRS_OUTBOX_FLUSH_TOKEN);
     const auditEvents = readAuditEvents();
     expect(auditEvents).toMatchObject([
       {
@@ -356,9 +382,13 @@ describe("AAIS LRS persistent outbox flush route", () => {
 
     expect(response.status).toBe(400);
     expect(body).toEqual({
-      error: "AAIS LRS outbox GET only supports flush.",
+      error: {
+        code: "AAIS_LRS_OUTBOX_ACTION_UNSUPPORTED",
+        message: "AAIS LRS outbox action is not supported.",
+      },
       secrets: "redacted",
     });
+    expect(JSON.stringify(body)).not.toContain("requeue-dead-letter");
     expect(flushMock).not.toHaveBeenCalled();
     expect(requeueMock).not.toHaveBeenCalled();
     expect(readAuditEvents()).toMatchObject([
@@ -401,6 +431,7 @@ describe("AAIS LRS persistent outbox flush route", () => {
     expect(response.status).toBe(200);
     expect(body.authorization.mode).toBe("admin-session");
     expect(flushMock).toHaveBeenCalledWith({ limit: 50 });
+    expect(monitoringMock).not.toHaveBeenCalled();
   });
 
   it("returns 503 when persistent outbox storage is not configured", async () => {
@@ -425,6 +456,23 @@ describe("AAIS LRS persistent outbox flush route", () => {
     expect(response.status).toBe(503);
     expect(body.outbox.status).toBe("not_configured");
     expect(JSON.stringify(body)).not.toContain("test-session-secret");
+    expect(monitoringMock).toHaveBeenCalledWith(expect.objectContaining({
+      event: "aais.lrs_outbox.degraded",
+      message: "AAIS LRS outbox flush not_configured",
+      status: 503,
+      route: "/api/learning/lrs/outbox/flush",
+      tags: expect.objectContaining({
+        "aais.auth_mode": "admin-session",
+        "aais.outbox_action": "flush",
+        "aais.outbox_status": "not_configured",
+      }),
+      extra: expect.objectContaining({
+        authMode: "admin-session",
+        sent: 0,
+        secrets: "redacted",
+      }),
+    }));
+    expect(JSON.stringify(monitoringMock.mock.calls)).not.toContain("test-session-secret");
   });
 });
 

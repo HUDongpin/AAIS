@@ -10,6 +10,7 @@ const redaction = {
 
 const guardrailPolicy = "aais-age-appropriate-output-v1";
 const agentEvidenceContractVersion = "aais-a1-a4-ca-eval-v2";
+const defaultEvalProviderTimeoutMs = 30000;
 const requiredAgentCoverage = {
   A1: {
     label: "导学智能体",
@@ -99,18 +100,6 @@ const defaultSamples = [
 
 export async function runAaisAiEvaluation(input = {}) {
   const envValues = await readEnvFile(input.envFilePath);
-  const endpoint = requireValue(
-    input.endpoint ?? envValues.get("AAIS_AI_ENDPOINT") ?? process.env.AAIS_AI_ENDPOINT,
-    "AAIS_AI_ENDPOINT",
-  );
-  const apiKey = requireValue(
-    input.apiKey ?? envValues.get("AAIS_AI_API_KEY") ?? process.env.AAIS_AI_API_KEY,
-    "AAIS_AI_API_KEY",
-  );
-  const model = requireValue(
-    input.model ?? envValues.get("AAIS_AI_MODEL") ?? process.env.AAIS_AI_MODEL,
-    "AAIS_AI_MODEL",
-  );
   const evalVersion = requireValue(
     input.evalVersion ?? envValues.get("AAIS_AI_EVAL_VERSION") ?? process.env.AAIS_AI_EVAL_VERSION,
     "AAIS_AI_EVAL_VERSION",
@@ -119,23 +108,34 @@ export async function runAaisAiEvaluation(input = {}) {
   const fetchImpl = input.fetchImpl ?? fetch;
   const evaluatedAt = (input.now ?? new Date()).toISOString();
   const releaseId = readReleaseId(input.releaseId ?? envValues.get("AAIS_RELEASE_ID") ?? process.env.AAIS_RELEASE_ID);
-  const thinkingMode = input.thinkingMode
-    ?? readThinkingMode(envValues.get("AAIS_AI_THINKING_MODE") ?? process.env.AAIS_AI_THINKING_MODE);
-  const timeoutMs = input.timeoutMs
-    ?? readPositiveInteger(envValues.get("AAIS_AI_TIMEOUT_MS") ?? process.env.AAIS_AI_TIMEOUT_MS, 8000);
+  const providers = readProviderCandidates({ input, envValues });
+  const providerSelection = await selectProvider({
+    providers,
+    fetchImpl,
+  });
+  const selectedProvider = providerSelection.selectedProvider ?? providers[0];
   const results = [];
   const agentEvidence = buildAgentEvidenceCoverage(samples);
 
-  for (const sample of samples) {
-    results.push(await evaluateSample({
-      endpoint,
-      apiKey,
-      model,
-      thinkingMode,
-      sample,
-      fetchImpl,
-      timeoutMs,
-    }));
+  if (providerSelection.selectedProvider) {
+    for (const sample of samples) {
+      results.push(await evaluateSample({
+        provider: selectedProvider,
+        sample,
+        fetchImpl,
+      }));
+    }
+  } else {
+    const firstFailure = providerSelection.candidates.find((candidate) => candidate.preflight.status === "failed");
+    const reason = firstFailure?.preflight.reason ?? "provider-error";
+    for (const sample of samples) {
+      results.push({
+        id: sample.id,
+        agentId: readAgentId(sample.agentId),
+        status: "failed",
+        reasons: [reason],
+      });
+    }
   }
 
   const blockedCount = results.filter((result) => result.status !== "passed").length;
@@ -143,7 +143,7 @@ export async function runAaisAiEvaluation(input = {}) {
     schemaVersion: 1,
     evalVersion,
     provider: "openai-compatible",
-    model,
+    model: selectedProvider.model,
     status: blockedCount === 0 && agentEvidence.complete ? "passed" : "failed",
     passedAt: evaluatedAt,
     ...(releaseId ? { release: { id: releaseId } } : {}),
@@ -151,6 +151,12 @@ export async function runAaisAiEvaluation(input = {}) {
     blockedCount,
     guardrailPolicy,
     sampleIds: samples.map((sample) => sample.id),
+    providerSelection: {
+      selected: providerSelection.selectedProvider?.role ?? null,
+      selectedModel: selectedProvider.model,
+      fallbackUsed: providerSelection.selectedProvider?.role === "fallback",
+      candidates: providerSelection.candidates,
+    },
     agentEvidence,
     results,
     redaction,
@@ -171,16 +177,12 @@ export async function runAaisAiEvaluation(input = {}) {
   return manifest;
 }
 
-async function evaluateSample({ endpoint, apiKey, model, thinkingMode, sample, fetchImpl, timeoutMs }) {
+async function evaluateSample({ provider, sample, fetchImpl }) {
   try {
     const text = await callOpenAiCompatibleProvider({
-      endpoint,
-      apiKey,
-      model,
-      thinkingMode,
+      provider,
       sample,
       fetchImpl,
-      timeoutMs,
     });
     const guardrail = evaluateAaisModelOutput(text);
     return {
@@ -189,31 +191,31 @@ async function evaluateSample({ endpoint, apiKey, model, thinkingMode, sample, f
       status: guardrail.status === "passed" ? "passed" : "blocked",
       reasons: guardrail.reasons,
     };
-  } catch {
+  } catch (error) {
     return {
       id: sample.id,
       agentId: readAgentId(sample.agentId),
       status: "failed",
-      reasons: ["provider-unavailable"],
+      reasons: [classifyProviderError(error)],
     };
   }
 }
 
-async function callOpenAiCompatibleProvider({ endpoint, apiKey, model, thinkingMode, sample, fetchImpl, timeoutMs }) {
+async function callOpenAiCompatibleProvider({ provider, sample, fetchImpl }) {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  const timeout = setTimeout(() => controller.abort(), provider.timeoutMs);
   try {
-    const response = await fetchImpl(endpoint, {
+    const response = await fetchImpl(provider.endpoint, {
       method: "POST",
       headers: {
-        authorization: `Bearer ${apiKey}`,
+        authorization: `Bearer ${provider.apiKey}`,
         "content-type": "application/json",
       },
       body: JSON.stringify({
-        model,
+        model: provider.model,
         temperature: 0.2,
         max_tokens: 360,
-        ...(thinkingMode === "disabled" ? { thinking: { type: "disabled" } } : {}),
+        ...(provider.thinkingMode === "disabled" ? { thinking: { type: "disabled" } } : {}),
         messages: [
           {
             role: "system",
@@ -243,16 +245,123 @@ async function callOpenAiCompatibleProvider({ endpoint, apiKey, model, thinkingM
       signal: controller.signal,
     });
     if (!response.ok) {
-      throw new Error(`AAIS model provider returned ${response.status}`);
+      throw createProviderError("http-status");
     }
     const body = await response.json();
     const content = body?.choices?.[0]?.message?.content?.trim();
     if (!content) {
-      throw new Error("AAIS model provider returned an empty response");
+      throw createProviderError("empty-response");
     }
     return content;
   } finally {
     clearTimeout(timeout);
+  }
+}
+
+function readProviderCandidates({ input, envValues }) {
+  const primary = {
+    role: "primary",
+    endpoint: requireValue(
+      input.endpoint ?? envValues.get("AAIS_AI_ENDPOINT") ?? process.env.AAIS_AI_ENDPOINT,
+      "AAIS_AI_ENDPOINT",
+    ),
+    apiKey: requireValue(
+      input.apiKey ?? envValues.get("AAIS_AI_API_KEY") ?? process.env.AAIS_AI_API_KEY,
+      "AAIS_AI_API_KEY",
+    ),
+    model: requireValue(
+      input.model ?? envValues.get("AAIS_AI_MODEL") ?? process.env.AAIS_AI_MODEL,
+      "AAIS_AI_MODEL",
+    ),
+    thinkingMode: input.thinkingMode
+      ?? readThinkingMode(envValues.get("AAIS_AI_THINKING_MODE") ?? process.env.AAIS_AI_THINKING_MODE),
+    timeoutMs: readPositiveInteger(
+      input.timeoutMs
+        ?? envValues.get("AAIS_AI_EVAL_TIMEOUT_MS")
+        ?? process.env.AAIS_AI_EVAL_TIMEOUT_MS,
+      defaultEvalProviderTimeoutMs,
+    ),
+  };
+  const fallbackEndpoint = input.fallbackEndpoint
+    ?? envValues.get("AAIS_AI_FALLBACK_ENDPOINT")
+    ?? process.env.AAIS_AI_FALLBACK_ENDPOINT;
+  const fallbackApiKey = input.fallbackApiKey
+    ?? envValues.get("AAIS_AI_FALLBACK_API_KEY")
+    ?? process.env.AAIS_AI_FALLBACK_API_KEY;
+  const fallbackModel = input.fallbackModel
+    ?? envValues.get("AAIS_AI_FALLBACK_MODEL")
+    ?? process.env.AAIS_AI_FALLBACK_MODEL;
+  const fallback = fallbackEndpoint && fallbackApiKey && fallbackModel
+    ? {
+      role: "fallback",
+      endpoint: String(fallbackEndpoint).trim(),
+      apiKey: String(fallbackApiKey).trim(),
+      model: String(fallbackModel).trim(),
+      thinkingMode: input.fallbackThinkingMode
+        ?? readThinkingMode(
+          envValues.get("AAIS_AI_FALLBACK_THINKING_MODE")
+            ?? process.env.AAIS_AI_FALLBACK_THINKING_MODE,
+        ),
+      timeoutMs: readPositiveInteger(
+        input.fallbackTimeoutMs
+          ?? envValues.get("AAIS_AI_EVAL_FALLBACK_TIMEOUT_MS")
+          ?? process.env.AAIS_AI_EVAL_FALLBACK_TIMEOUT_MS
+          ?? envValues.get("AAIS_AI_EVAL_TIMEOUT_MS")
+          ?? process.env.AAIS_AI_EVAL_TIMEOUT_MS,
+        defaultEvalProviderTimeoutMs,
+      ),
+    }
+    : null;
+  return fallback ? [primary, fallback] : [primary];
+}
+
+async function selectProvider({ providers, fetchImpl }) {
+  const candidates = [];
+  for (const provider of providers) {
+    const preflight = await preflightProvider({ provider, fetchImpl });
+    candidates.push({
+      provider: provider.role,
+      model: provider.model,
+      preflight,
+    });
+    if (preflight.status === "passed") {
+      return {
+        selectedProvider: provider,
+        candidates,
+      };
+    }
+  }
+  return {
+    selectedProvider: null,
+    candidates,
+  };
+}
+
+async function preflightProvider({ provider, fetchImpl }) {
+  try {
+    await callOpenAiCompatibleProvider({
+      provider,
+      sample: {
+        id: "provider-preflight",
+        agentId: "A1",
+        label: "导学智能体",
+        phase: "training",
+        taskId: "training_task_1",
+        caModules: ["Scaffolding", "Fading"],
+        responsibility: "frontend-guide-scaffolding",
+        interactionMode: "direct-student-dialogue",
+        learnerInput: "请只回复 OK，用于连通性预检。",
+      },
+      fetchImpl,
+    });
+    return {
+      status: "passed",
+    };
+  } catch (error) {
+    return {
+      status: "failed",
+      reason: classifyProviderError(error),
+    };
   }
 }
 
@@ -349,6 +458,44 @@ function containsSecretLikeContent(text) {
   ].some((pattern) => pattern.test(text));
 }
 
+function createProviderError(reason) {
+  return Object.assign(new Error(reason), {
+    reason,
+  });
+}
+
+function classifyProviderError(error) {
+  if (isProviderFailureReason(error?.reason)) {
+    return error.reason;
+  }
+  if (error?.name === "AbortError") {
+    return "abort-timeout";
+  }
+  const causeCode = String(error?.cause?.code ?? "");
+  const causeName = String(error?.cause?.name ?? "");
+  const causeMessage = String(error?.cause?.message ?? "");
+  const message = String(error?.message ?? "");
+  if (
+    causeCode === "UND_ERR_CONNECT_TIMEOUT"
+    || causeName === "ConnectTimeoutError"
+    || /connect timeout/i.test(causeMessage)
+    || /connect timeout/i.test(message)
+  ) {
+    return "connect-timeout";
+  }
+  return "provider-error";
+}
+
+function isProviderFailureReason(value) {
+  return [
+    "abort-timeout",
+    "connect-timeout",
+    "empty-response",
+    "http-status",
+    "provider-error",
+  ].includes(String(value));
+}
+
 function requireValue(value, label) {
   const trimmed = String(value ?? "").trim();
   if (!trimmed) {
@@ -442,6 +589,12 @@ async function main() {
     endpoint: args.get("endpoint"),
     apiKey: args.get("api-key"),
     model: args.get("model"),
+    fallbackEndpoint: args.get("fallback-endpoint"),
+    fallbackApiKey: args.get("fallback-api-key"),
+    fallbackModel: args.get("fallback-model"),
+    fallbackThinkingMode: args.get("fallback-thinking-mode"),
+    timeoutMs: args.get("timeout-ms"),
+    fallbackTimeoutMs: args.get("fallback-timeout-ms"),
     evalVersion: args.get("eval-version"),
     releaseId: args.get("release-id"),
     thinkingMode: args.get("thinking-mode"),

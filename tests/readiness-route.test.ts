@@ -3,15 +3,41 @@ import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  createAaisSessionToken,
+  getAaisSessionCookieName,
+} from "@/lib/server/aais-session";
 import { createPasswordRecord } from "@/lib/server/aais-trial-accounts";
 
-let databaseProbeMode: "ok" | "error" = "ok";
+let databaseProbeMode: "ok" | "missing_schema" | "error" = "ok";
 
 vi.mock("pg", () => ({
   Pool: class {
     async query(sql: string) {
       if (databaseProbeMode === "error") {
         throw new Error("database unavailable");
+      }
+      if (/to_regclass/i.test(sql)) {
+        return {
+          rows: [{
+            learner_sessions_table: databaseProbeMode === "missing_schema" ? null : "aais_learner_sessions",
+            learner_task_state_table: databaseProbeMode === "missing_schema" ? null : "aais_learner_task_state",
+            lrs_outbox_table: databaseProbeMode === "missing_schema" ? null : "aais_lrs_outbox",
+            login_rate_limits_table: databaseProbeMode === "missing_schema" ? null : "aais_login_rate_limits",
+            events_table: databaseProbeMode === "missing_schema" ? null : "aais_events",
+            users_table: databaseProbeMode === "missing_schema" ? null : "aais_users",
+            user_auth_tokens_table: databaseProbeMode === "missing_schema" ? null : "aais_user_auth_tokens",
+            session_revocations_table: databaseProbeMode === "missing_schema" ? null : "aais_session_revocations",
+            courses_table: databaseProbeMode === "missing_schema" ? null : "aais_courses",
+            course_tasks_table: databaseProbeMode === "missing_schema" ? null : "aais_course_tasks",
+            enrollments_table: databaseProbeMode === "missing_schema" ? null : "aais_enrollments",
+          }],
+        };
+      }
+      if (/from aais_session_revocations/i.test(sql)) {
+        return {
+          rows: [],
+        };
       }
       if (/select 1/i.test(sql)) {
         return {
@@ -48,6 +74,12 @@ const enterpriseEnv = [
   "LRS_ENDPOINT",
   "LRS_USERNAME",
   "LRS_PASSWORD",
+  "SENTRY_DSN",
+  "NEXT_PUBLIC_SENTRY_DSN",
+  "AAIS_SENTRY_ALERTS_CONFIGURED",
+  "AAIS_UPTIME_LOGIN_CHECK_URL",
+  "CRON_SECRET",
+  "AAIS_CRON_FAILURE_ALERTS_CONFIGURED",
   "AAIS_OIDC_ISSUER",
   "AAIS_OIDC_CLIENT_ID",
   "AAIS_OIDC_CLIENT_SECRET",
@@ -63,11 +95,25 @@ const enterpriseEnv = [
   "AAIS_AI_ENDPOINT",
   "AAIS_AI_API_KEY",
   "AAIS_AI_MODEL",
+  "AAIS_AI_TIMEOUT_MS",
+  "AAIS_AI_MAX_RETRIES",
+  "AAIS_AI_THINKING_MODE",
+  "AAIS_AI_FALLBACK_ENDPOINT",
+  "AAIS_AI_FALLBACK_API_KEY",
+  "AAIS_AI_FALLBACK_MODEL",
+  "AAIS_AI_FALLBACK_TIMEOUT_MS",
+  "AAIS_AI_FALLBACK_MAX_RETRIES",
+  "AAIS_AI_FALLBACK_THINKING_MODE",
   "AAIS_AI_EVAL_APPROVED",
   "AAIS_AI_EVAL_VERSION",
   "AAIS_AI_EVAL_MANIFEST_PATH",
+  "DASHSCOPE_API_KEY",
+  "DASHSCOPE_MODEL",
+  "QWEN_API_KEY",
+  "QWEN_MODEL",
   "AAIS_RELEASE_ID",
   "AAIS_DEPLOYMENT_GIT_COMMIT_SHA",
+  "AAIS_READINESS_BEARER_TOKEN",
   "VERCEL",
   "VERCEL_GIT_COMMIT_SHA",
 ];
@@ -163,6 +209,14 @@ afterEach(async () => {
   await rm(tempDir, { force: true, recursive: true });
 });
 
+function stubMonitoringEnv() {
+  vi.stubEnv("SENTRY_DSN", "https://private@example.ingest.sentry.io/123");
+  vi.stubEnv("AAIS_SENTRY_ALERTS_CONFIGURED", "true");
+  vi.stubEnv("AAIS_UPTIME_LOGIN_CHECK_URL", "https://uptime.example.test/aais-login");
+  vi.stubEnv("CRON_SECRET", "cron-secret-that-must-not-leak");
+  vi.stubEnv("AAIS_CRON_FAILURE_ALERTS_CONFIGURED", "true");
+}
+
 describe("AAIS readiness route", () => {
   it("reports a redacted ready status when enterprise production configuration is complete", async () => {
     vi.stubEnv("AAIS_SESSION_SECRET", "session-secret-that-must-not-leak");
@@ -171,6 +225,7 @@ describe("AAIS readiness route", () => {
     vi.stubEnv("LRS_ENDPOINT", "https://lrs.example.test/xapi");
     vi.stubEnv("LRS_USERNAME", "lrs-user");
     vi.stubEnv("LRS_PASSWORD", "lrs-password-that-must-not-leak");
+    stubMonitoringEnv();
     vi.stubEnv("AAIS_OIDC_ISSUER", "https://idp.example.test");
     vi.stubEnv("AAIS_OIDC_CLIENT_ID", "aais-client");
     vi.stubEnv("AAIS_OIDC_CLIENT_SECRET", "oidc-secret-that-must-not-leak");
@@ -255,6 +310,26 @@ describe("AAIS readiness route", () => {
               auth: ["admin-session-csrf", "bearer-token"],
               redaction: "payloads-excluded",
             },
+          },
+        },
+        monitoring: {
+          status: "ok",
+          sentry: {
+            status: "ok",
+            dsnConfigured: true,
+            source: "SENTRY_DSN",
+            alertsConfigured: true,
+          },
+          uptime: {
+            status: "ok",
+            loginCheckConfigured: true,
+            source: "AAIS_UPTIME_LOGIN_CHECK_URL",
+          },
+          cron: {
+            status: "ok",
+            scheduleConfigured: true,
+            secretConfigured: true,
+            alertsConfigured: true,
           },
         },
         agentEvidence: {
@@ -417,6 +492,102 @@ describe("AAIS readiness route", () => {
     expect(serialized).not.toContain("0123456789abcdef0123456789abcdef01234567");
   });
 
+  it("returns only bare status to anonymous external readiness callers", async () => {
+    vi.stubEnv("AAIS_RELEASE_ID", "aais-2026-06-30-rc1");
+    vi.stubEnv("VERCEL", "1");
+    vi.stubEnv("VERCEL_GIT_COMMIT_SHA", "0123456789abcdef0123456789abcdef01234567");
+    const { GET } = await import("@/app/api/system/readiness/route");
+
+    const response = await GET(new Request("http://localhost/api/system/readiness"));
+    const body = await response.json();
+
+    expect(response.status).toBe(503);
+    expect(body).toEqual({
+      status: "not_ready",
+    });
+    const serialized = JSON.stringify(body);
+    expect(serialized).not.toContain("aais-2026-06-30-rc1");
+    expect(serialized).not.toContain("0123456789abcdef0123456789abcdef01234567");
+    expect(serialized).not.toContain("AAIS_SESSION_SECRET");
+  });
+
+  it("returns the full readiness report to callers with the configured bearer token", async () => {
+    vi.stubEnv("AAIS_READINESS_BEARER_TOKEN", "readiness-token-with-at-least-32-characters");
+    vi.stubEnv("AAIS_RELEASE_ID", "aais-2026-06-30-rc1");
+    const { GET } = await import("@/app/api/system/readiness/route");
+
+    const response = await GET(
+      new Request("http://localhost/api/system/readiness", {
+        headers: {
+          authorization: "Bearer readiness-token-with-at-least-32-characters",
+        },
+      }),
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(503);
+    expect(body.release).toMatchObject({
+      id: "aais-2026-06-30-rc1",
+      source: "AAIS_RELEASE_ID",
+    });
+    expect(body.checks).toBeTruthy();
+    expect(JSON.stringify(body)).not.toContain("readiness-token-with-at-least-32-characters");
+  });
+
+  it("rejects invalid readiness bearer tokens without returning diagnostics", async () => {
+    vi.stubEnv("AAIS_READINESS_BEARER_TOKEN", "readiness-token-with-at-least-32-characters");
+    vi.stubEnv("AAIS_RELEASE_ID", "aais-2026-06-30-rc1");
+    const { GET } = await import("@/app/api/system/readiness/route");
+
+    const response = await GET(
+      new Request("http://localhost/api/system/readiness", {
+        headers: {
+          authorization: "Bearer wrong-readiness-token",
+        },
+      }),
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(403);
+    expect(body).toEqual({
+      error: {
+        code: "AAIS_READINESS_FORBIDDEN",
+        message: "AAIS readiness authorization failed.",
+      },
+      secrets: "redacted",
+    });
+    const serialized = JSON.stringify(body);
+    expect(serialized).not.toContain("readiness-token-with-at-least-32-characters");
+    expect(serialized).not.toContain("aais-2026-06-30-rc1");
+  });
+
+  it("returns the full readiness report to admin sessions", async () => {
+    vi.stubEnv("AAIS_SESSION_SECRET", "session-secret-that-must-not-leak");
+    vi.stubEnv("AAIS_RELEASE_ID", "aais-2026-06-30-rc1");
+    const adminToken = createAaisSessionToken({
+      id: "admin-a",
+      displayName: "Admin A",
+      role: "admin",
+    });
+    const { GET } = await import("@/app/api/system/readiness/route");
+
+    const response = await GET(
+      new Request("http://localhost/api/system/readiness", {
+        headers: {
+          cookie: `${getAaisSessionCookieName()}=${encodeURIComponent(adminToken)}`,
+        },
+      }),
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(503);
+    expect(body.release).toMatchObject({
+      id: "aais-2026-06-30-rc1",
+    });
+    expect(body.checks.session.status).toBe("ok");
+    expect(JSON.stringify(body)).not.toContain("Admin A");
+  });
+
   it("uses explicit deployment git commit metadata when Vercel git metadata is unavailable", async () => {
     vi.stubEnv("AAIS_RELEASE_ID", "aais-2026-06-30-rc1");
     vi.stubEnv("AAIS_DEPLOYMENT_GIT_COMMIT_SHA", "fedcba9876543210fedcba9876543210fedcba98");
@@ -450,6 +621,7 @@ describe("AAIS readiness route", () => {
     vi.stubEnv("LRS_ENDPOINT", "https://lrs.example.test/xapi");
     vi.stubEnv("LRS_USERNAME", "lrs-user");
     vi.stubEnv("LRS_PASSWORD", "lrs-password-that-must-not-leak");
+    stubMonitoringEnv();
     vi.stubEnv("AAIS_OIDC_ISSUER", "https://idp.example.test");
     vi.stubEnv("AAIS_OIDC_CLIENT_ID", "aais-client");
     vi.stubEnv("AAIS_OIDC_CLIENT_SECRET", "oidc-secret-that-must-not-leak");
@@ -496,6 +668,7 @@ describe("AAIS readiness route", () => {
     vi.stubEnv("LRS_ENDPOINT", "https://lrs.example.test/xapi");
     vi.stubEnv("LRS_USERNAME", "lrs-user");
     vi.stubEnv("LRS_PASSWORD", "lrs-password-that-must-not-leak");
+    stubMonitoringEnv();
     vi.stubEnv("AAIS_OIDC_ISSUER", "https://idp.example.test");
     vi.stubEnv("AAIS_OIDC_CLIENT_ID", "aais-client");
     vi.stubEnv("AAIS_OIDC_CLIENT_SECRET", "oidc-secret-that-must-not-leak");
@@ -534,6 +707,7 @@ describe("AAIS readiness route", () => {
     vi.stubEnv("LRS_ENDPOINT", "https://lrs.example.test/xapi");
     vi.stubEnv("LRS_USERNAME", "lrs-user");
     vi.stubEnv("LRS_PASSWORD", "lrs-password-that-must-not-leak");
+    stubMonitoringEnv();
     const { GET } = await import("@/app/api/system/readiness/route");
 
     const response = await GET();
@@ -571,6 +745,56 @@ describe("AAIS readiness route", () => {
     expect(JSON.stringify(body)).not.toContain("database-secret");
   });
 
+  it("fails closed when production monitoring evidence is not configured", async () => {
+    vi.stubEnv("AAIS_SESSION_SECRET", "session-secret-that-must-not-leak");
+    vi.stubEnv("AAIS_TRIAL_ACCOUNTS_JSON", trialAccountConfig);
+    vi.stubEnv("DATABASE_URL", "postgres://aais:database-secret@ep-prod.us-east-1.aws.neon.tech/aais");
+    vi.stubEnv("LRS_ENDPOINT", "https://lrs.example.test/xapi");
+    vi.stubEnv("LRS_USERNAME", "lrs-user");
+    vi.stubEnv("LRS_PASSWORD", "lrs-password-that-must-not-leak");
+    const { GET } = await import("@/app/api/system/readiness/route");
+
+    const response = await GET();
+    const body = await response.json();
+
+    expect(response.status).toBe(503);
+    expect(body).toMatchObject({
+      status: "not_ready",
+      checks: {
+        monitoring: {
+          status: "missing",
+          sentry: {
+            status: "missing",
+            dsnConfigured: false,
+            source: "missing",
+            alertsConfigured: false,
+          },
+          uptime: {
+            status: "missing",
+            loginCheckConfigured: false,
+            source: "missing",
+          },
+          cron: {
+            status: "missing",
+            scheduleConfigured: true,
+            secretConfigured: false,
+            alertsConfigured: false,
+          },
+        },
+      },
+    });
+    expect(body.issues).toEqual(
+      expect.arrayContaining([
+        "SENTRY_DSN/NEXT_PUBLIC_SENTRY_DSN",
+        "AAIS_SENTRY_ALERTS_CONFIGURED",
+        "AAIS_UPTIME_LOGIN_CHECK_URL",
+        "CRON_SECRET",
+        "AAIS_CRON_FAILURE_ALERTS_CONFIGURED",
+      ]),
+    );
+    expect(JSON.stringify(body)).not.toContain("database-secret");
+  });
+
   it("accepts OIDC issuer discovery when explicit provider endpoints are not set", async () => {
     vi.stubEnv("AAIS_SESSION_SECRET", "session-secret-that-must-not-leak");
     vi.stubEnv("AAIS_TRIAL_LOGIN_ENABLED", "false");
@@ -578,6 +802,7 @@ describe("AAIS readiness route", () => {
     vi.stubEnv("LRS_ENDPOINT", "https://lrs.example.test/xapi");
     vi.stubEnv("LRS_USERNAME", "lrs-user");
     vi.stubEnv("LRS_PASSWORD", "lrs-password-that-must-not-leak");
+    stubMonitoringEnv();
     vi.stubEnv("AAIS_OIDC_ISSUER", "https://idp.example.test");
     vi.stubEnv("AAIS_OIDC_CLIENT_ID", "aais-client");
     vi.stubEnv("AAIS_OIDC_CLIENT_SECRET", "oidc-secret-that-must-not-leak");
@@ -606,6 +831,7 @@ describe("AAIS readiness route", () => {
     vi.stubEnv("LRS_ENDPOINT", "https://lrs.example.test/xapi");
     vi.stubEnv("LRS_USERNAME", "lrs-user");
     vi.stubEnv("LRS_PASSWORD", "lrs-password-that-must-not-leak");
+    stubMonitoringEnv();
     vi.stubEnv("AAIS_OIDC_ISSUER", "https://idp.example.test");
     vi.stubEnv("AAIS_OIDC_CLIENT_ID", "aais-client");
     vi.stubEnv("AAIS_OIDC_CLIENT_SECRET", "oidc-secret-that-must-not-leak");
@@ -653,6 +879,7 @@ describe("AAIS readiness route", () => {
     vi.stubEnv("LRS_ENDPOINT", "https://lrs.example.test/xapi");
     vi.stubEnv("LRS_USERNAME", "lrs-user");
     vi.stubEnv("LRS_PASSWORD", "lrs-password-that-must-not-leak");
+    stubMonitoringEnv();
     vi.stubEnv("AAIS_OIDC_ISSUER", "https://idp.example.test");
     vi.stubEnv("AAIS_OIDC_CLIENT_ID", "aais-client");
     vi.stubEnv("AAIS_OIDC_CLIENT_SECRET", "oidc-secret-that-must-not-leak");
@@ -696,9 +923,56 @@ describe("AAIS readiness route", () => {
         "AAIS_TRIAL_ACCOUNTS_JSON",
         "AAIS_DATABASE_URL",
         "LRS_ENDPOINT/LRS_USERNAME/LRS_PASSWORD",
+        "SENTRY_DSN/NEXT_PUBLIC_SENTRY_DSN",
+        "AAIS_SENTRY_ALERTS_CONFIGURED",
+        "AAIS_UPTIME_LOGIN_CHECK_URL",
+        "CRON_SECRET",
+        "AAIS_CRON_FAILURE_ALERTS_CONFIGURED",
       ]),
     );
     expect(body.secrets).toBe("redacted");
+  });
+
+  it("reports Qwen DashScope alias configuration as live AI in development", async () => {
+    vi.stubEnv("NODE_ENV", "development");
+    vi.stubEnv("AAIS_AI_PROVIDER", "qwen");
+    vi.stubEnv("DASHSCOPE_API_KEY", "dashscope-secret-that-must-not-leak");
+    vi.stubEnv("AAIS_AI_MODEL", "qwen3.6-plus");
+    const { GET } = await import("@/app/api/system/readiness/route");
+
+    const response = await GET();
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.checks.ai).toMatchObject({
+      status: "ok",
+      provider: "openai-compatible",
+      evalVersion: null,
+      evalManifest: "not-required",
+      modelFingerprint: modelFingerprint("qwen3.6-plus"),
+      runtimeProfile: {
+        mode: "live",
+        primary: {
+          provider: "qwen",
+          modelFingerprint: modelFingerprint("qwen3.6-plus"),
+          thinkingMode: "disabled",
+          timeoutMs: {
+            configured: null,
+            effective: 12000,
+            clamped: false,
+            max: 30000,
+          },
+          maxRetries: 1,
+        },
+        fallback: null,
+        redaction: {
+          secrets: "omitted",
+          endpoints: "omitted",
+        },
+      },
+    });
+    expect(JSON.stringify(body)).not.toContain("dashscope-secret-that-must-not-leak");
+    expect(JSON.stringify(body)).not.toContain("dashscope.aliyuncs.com");
   });
 
   it("requires a verified AI evaluation manifest before production live AI is ready", async () => {
@@ -708,6 +982,7 @@ describe("AAIS readiness route", () => {
     vi.stubEnv("LRS_ENDPOINT", "https://lrs.example.test/xapi");
     vi.stubEnv("LRS_USERNAME", "lrs-user");
     vi.stubEnv("LRS_PASSWORD", "lrs-password-that-must-not-leak");
+    stubMonitoringEnv();
     vi.stubEnv("AAIS_OIDC_ISSUER", "https://idp.example.test");
     vi.stubEnv("AAIS_OIDC_CLIENT_ID", "aais-client");
     vi.stubEnv("AAIS_OIDC_CLIENT_SECRET", "oidc-secret-that-must-not-leak");
@@ -739,6 +1014,8 @@ describe("AAIS readiness route", () => {
       expect.arrayContaining(["AAIS_AI_EVAL_MANIFEST"]),
     );
     expect(JSON.stringify(body)).not.toContain("ai-secret-that-must-not-leak");
+    expect(JSON.stringify(body)).not.toContain("cron-secret-that-must-not-leak");
+    expect(JSON.stringify(body)).not.toContain("private@example.ingest.sentry.io");
   });
 
   it("accepts a redacted inline AI evaluation manifest JSON for Vercel production", async () => {
@@ -748,6 +1025,7 @@ describe("AAIS readiness route", () => {
     vi.stubEnv("LRS_ENDPOINT", "https://lrs.example.test/xapi");
     vi.stubEnv("LRS_USERNAME", "lrs-user");
     vi.stubEnv("LRS_PASSWORD", "lrs-password-that-must-not-leak");
+    stubMonitoringEnv();
     vi.stubEnv("AAIS_OIDC_ISSUER", "https://idp.example.test");
     vi.stubEnv("AAIS_OIDC_CLIENT_ID", "aais-client");
     vi.stubEnv("AAIS_OIDC_CLIENT_SECRET", "oidc-secret-that-must-not-leak");
@@ -904,6 +1182,42 @@ describe("AAIS readiness route", () => {
     expect(JSON.stringify(body)).not.toContain("database unavailable");
   });
 
+  it("fails closed when production database migrations have not created required tables", async () => {
+    databaseProbeMode = "missing_schema";
+    vi.stubEnv("AAIS_SESSION_SECRET", "session-secret-that-must-not-leak");
+    vi.stubEnv("AAIS_TRIAL_ACCOUNTS_JSON", trialAccountConfig);
+    vi.stubEnv("AAIS_DATABASE_URL", "postgres://aais:database-secret@example.test/aais");
+    vi.stubEnv("LRS_ENDPOINT", "https://lrs.example.test/xapi");
+    vi.stubEnv("LRS_USERNAME", "lrs-user");
+    vi.stubEnv("LRS_PASSWORD", "lrs-password-that-must-not-leak");
+    vi.stubEnv("AAIS_OIDC_ISSUER", "https://idp.example.test");
+    vi.stubEnv("AAIS_OIDC_CLIENT_ID", "aais-client");
+    vi.stubEnv("AAIS_OIDC_CLIENT_SECRET", "oidc-secret-that-must-not-leak");
+    vi.stubEnv("AAIS_OIDC_REDIRECT_URI", "https://aais.example.test/api/auth/oidc/callback");
+    vi.stubEnv("AAIS_OIDC_AUTHORIZATION_ENDPOINT", "https://idp.example.test/oauth2/authorize");
+    vi.stubEnv("AAIS_OIDC_TOKEN_ENDPOINT", "https://idp.example.test/oauth2/token");
+    vi.stubEnv("AAIS_OIDC_JWKS_URI", "https://idp.example.test/.well-known/jwks.json");
+    const { GET } = await import("@/app/api/system/readiness/route");
+
+    const response = await GET();
+    const body = await response.json();
+
+    expect(response.status).toBe(503);
+    expect(body).toMatchObject({
+      status: "not_ready",
+      checks: {
+        storage: {
+          status: "blocked",
+          mode: "postgres",
+          probe: "failed",
+        },
+      },
+      secrets: "redacted",
+    });
+    expect(body.issues).toEqual(expect.arrayContaining(["AAIS_DATABASE_URL_CONNECTIVITY"]));
+    expect(JSON.stringify(body)).not.toContain("database-secret");
+  });
+
   it("fails closed when production trial accounts are not configured", async () => {
     vi.stubEnv("AAIS_SESSION_SECRET", "session-secret-that-must-not-leak");
     vi.stubEnv("AAIS_DATABASE_URL", "postgres://aais:database-secret@example.test/aais");
@@ -982,6 +1296,48 @@ describe("AAIS readiness route", () => {
     });
     expect(body.issues).toEqual(expect.arrayContaining(["AAIS_TRIAL_ACCOUNTS_JSON"]));
     expect(JSON.stringify(body)).not.toContain("trial-password-that-must-not-leak");
+  });
+
+  it("reports production educator trial accounts as invalid so teacher/admin access uses real users", async () => {
+    vi.stubEnv("AAIS_SESSION_SECRET", "session-secret-that-must-not-leak");
+    vi.stubEnv("AAIS_TRIAL_ACCOUNTS_JSON", JSON.stringify([
+      {
+        id: "teacher-smoke",
+        displayName: "Teacher Smoke",
+        role: "teacher",
+        password: createPasswordRecord("teacher-password-that-must-not-leak"),
+      },
+    ]));
+    vi.stubEnv("AAIS_DATABASE_URL", "postgres://aais:database-secret@example.test/aais");
+    vi.stubEnv("LRS_ENDPOINT", "https://lrs.example.test/xapi");
+    vi.stubEnv("LRS_USERNAME", "lrs-user");
+    vi.stubEnv("LRS_PASSWORD", "lrs-password-that-must-not-leak");
+    vi.stubEnv("AAIS_OIDC_ISSUER", "https://idp.example.test");
+    vi.stubEnv("AAIS_OIDC_CLIENT_ID", "aais-client");
+    vi.stubEnv("AAIS_OIDC_CLIENT_SECRET", "oidc-secret-that-must-not-leak");
+    vi.stubEnv("AAIS_OIDC_REDIRECT_URI", "https://aais.example.test/api/auth/oidc/callback");
+    vi.stubEnv("AAIS_OIDC_AUTHORIZATION_ENDPOINT", "https://idp.example.test/oauth2/authorize");
+    vi.stubEnv("AAIS_OIDC_TOKEN_ENDPOINT", "https://idp.example.test/oauth2/token");
+    vi.stubEnv("AAIS_OIDC_JWKS_URI", "https://idp.example.test/.well-known/jwks.json");
+    const { GET } = await import("@/app/api/system/readiness/route");
+
+    const response = await GET();
+    const body = await response.json();
+
+    expect(response.status).toBe(503);
+    expect(body).toMatchObject({
+      status: "not_ready",
+      checks: {
+        trialAccounts: {
+          status: "invalid",
+          configured: false,
+          accountCount: 0,
+        },
+      },
+      secrets: "redacted",
+    });
+    expect(body.issues).toEqual(expect.arrayContaining(["AAIS_TRIAL_ACCOUNTS_JSON"]));
+    expect(JSON.stringify(body)).not.toContain("teacher-password-that-must-not-leak");
   });
 });
 

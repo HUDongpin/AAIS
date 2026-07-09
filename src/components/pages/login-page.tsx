@@ -1,50 +1,23 @@
 "use client";
 
-import { useCallback, useState, type FormEvent, type ReactNode } from "react";
-import Image from "next/image";
-import { useRouter } from "next/navigation";
+import { useCallback, useRef, useState, type FormEvent } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import {
-  Brain,
   CaretDown,
-  CheckCircle,
   Eye,
   EyeSlash,
-  GraduationCap,
   LockKey,
-  PaperPlaneTilt,
   Sparkle,
-  Student,
   UserCircle,
 } from "@phosphor-icons/react";
-
-const loginCopy = {
-  brandName: "AAIS",
-  brandSubline: "Apprenticeship AI system",
-  welcome: "欢迎来到 AAIS：专注 Cognitive Apprenticeship 的智能学习平台",
-  accountLogin: "账号密码登录",
-  ssoLogin: "使用机构 SSO 登录",
-  accountLabel: "账号",
-  accountPlaceholder: "学生账号",
-  passwordLabel: "密码",
-  passwordPlaceholder: "请输入密码",
-  submit: "立即登录",
-  consent: "我已阅读并同意",
-  terms: "用户协议",
-  privacy: "隐私政策",
-  emptyError: "请输入账号和密码。",
-  invalidError: "账号或密码不匹配，请使用已授权的 AAIS 账号登录。",
-  serverError: "登录服务暂时不可用，请稍后再试。",
-};
-
-type LoginDeckCard = {
-  id: "guided" | "reflective";
-  title: string;
-  accent: string;
-  chips: [string, string, string];
-  footer: string;
-  assetSrc: string;
-  assetAlt: string;
-};
+import { getAaisApiErrorMessage } from "@/lib/client/aais-api-error";
+import {
+  LoginDesignDeck,
+  LoginMobileDesignCarousel,
+  loginCopy,
+  loginDeckCards,
+  loginSerifFontFamily,
+} from "@/components/pages/login/login-design";
 
 type LoginPageProps = {
   trialLoginEnabled?: boolean;
@@ -52,44 +25,44 @@ type LoginPageProps = {
 
 export function LoginPage({ trialLoginEnabled = true }: LoginPageProps) {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const inviteToken = searchParams.get("invite_token")?.trim() ?? "";
+  const resetToken = searchParams.get("reset_token")?.trim() ?? "";
+  const passwordToken = inviteToken || resetToken;
   const [account, setAccount] = useState("");
   const [password, setPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
+  const [consentAccepted, setConsentAccepted] = useState(false);
   const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+  const [resetMode, setResetMode] = useState(false);
+  const [resetEmail, setResetEmail] = useState("");
+  const [passwordTokenConsumed, setPasswordTokenConsumed] = useState(false);
   const [submitting, setSubmitting] = useState(false);
-  const oidcStartHref = getOidcStartHref();
-
-  const cards: LoginDeckCard[] = [
-    {
-      id: "guided",
-      title: "智能导学",
-      accent: "训练阶段",
-      chips: ["专家示范视频", "理解测评反馈", "任务说明分发"],
-      footer: "从专家建模开始，逐步进入训练任务",
-      assetSrc: "/login/uais-student-card-illustration.png",
-      assetAlt: "两位学生使用平板电脑和笔记本电脑自主学习",
-    },
-    {
-      id: "reflective",
-      title: "实践反思",
-      accent: "练习阶段",
-      chips: ["行为监测推送", "专家轨迹对比", "元认知支架"],
-      footer: "把学习过程、反思文本和最终产出保留下来",
-      assetSrc: "/login/uais-teacher-card-illustration.png",
-      assetAlt: "学习者在智能系统中整理任务和反馈",
-    },
-  ];
+  const submittingRef = useRef(false);
+  const passwordTokenMode = Boolean(passwordToken) && !passwordTokenConsumed;
 
   const handleSubmit = useCallback(
     async (event: FormEvent<HTMLFormElement>) => {
       event.preventDefault();
+      if (submittingRef.current) {
+        return;
+      }
       setError("");
+      setNotice("");
 
       if (!account.trim() || !password) {
         setError(loginCopy.emptyError);
         return;
       }
+      if (!consentAccepted) {
+        setError(loginCopy.consentRequiredError);
+        return;
+      }
 
+      submittingRef.current = true;
       setSubmitting(true);
       try {
         const response = await fetch("/api/auth/app-session", {
@@ -101,11 +74,15 @@ export function LoginPage({ trialLoginEnabled = true }: LoginPageProps) {
           body: JSON.stringify({
             account,
             password,
+            consentAccepted,
             from: new URLSearchParams(window.location.search).get("from"),
           }),
         });
         const result = (await response.json().catch(() => null)) as {
-          error?: string;
+          error?: string | {
+            code?: string;
+            message?: string;
+          };
           redirectTarget?: string;
           appSession?: {
             actor?: {
@@ -116,7 +93,9 @@ export function LoginPage({ trialLoginEnabled = true }: LoginPageProps) {
         } | null;
 
         if (!response.ok) {
-          setError(response.status === 401 ? loginCopy.invalidError : (result?.error ?? loginCopy.serverError));
+          setError(response.status === 401
+            ? loginCopy.invalidError
+            : getAaisApiErrorMessage(result, loginCopy.serverError));
           return;
         }
 
@@ -130,14 +109,118 @@ export function LoginPage({ trialLoginEnabled = true }: LoginPageProps) {
       } catch {
         setError(loginCopy.serverError);
       } finally {
+        submittingRef.current = false;
         setSubmitting(false);
       }
     },
-    [account, password, router],
+    [account, consentAccepted, password, router],
+  );
+
+  const handleSetPassword = useCallback(
+    async (event: FormEvent<HTMLFormElement>) => {
+      event.preventDefault();
+      if (submittingRef.current) {
+        return;
+      }
+      setError("");
+      setNotice("");
+
+      if (newPassword.length < 10) {
+        setError(loginCopy.passwordLengthError);
+        return;
+      }
+      if (newPassword !== confirmPassword) {
+        setError(loginCopy.passwordMismatchError);
+        return;
+      }
+
+      submittingRef.current = true;
+      setSubmitting(true);
+      try {
+        const response = await fetch("/api/auth/password", {
+          method: "POST",
+          credentials: "same-origin",
+          headers: {
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            action: "set-password",
+            token: passwordToken,
+            password: newPassword,
+          }),
+        });
+        const result = await response.json().catch(() => null);
+        if (!response.ok) {
+          setError(getAaisApiErrorMessage(result, loginCopy.serverError));
+          return;
+        }
+        setNewPassword("");
+        setConfirmPassword("");
+        setPasswordTokenConsumed(true);
+        setNotice(loginCopy.setPasswordSuccess);
+        router.replace("/login");
+      } catch {
+        setError(loginCopy.serverError);
+      } finally {
+        submittingRef.current = false;
+        setSubmitting(false);
+      }
+    },
+    [confirmPassword, newPassword, passwordToken, router],
+  );
+
+  const handleResetRequest = useCallback(
+    async (event: FormEvent<HTMLFormElement>) => {
+      event.preventDefault();
+      if (submittingRef.current) {
+        return;
+      }
+      setError("");
+      setNotice("");
+
+      if (!resetEmail.trim()) {
+        setError(loginCopy.emailError);
+        return;
+      }
+
+      submittingRef.current = true;
+      setSubmitting(true);
+      try {
+        const response = await fetch("/api/auth/password", {
+          method: "POST",
+          credentials: "same-origin",
+          headers: {
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            action: "request-reset",
+            email: resetEmail,
+          }),
+        });
+        const result = await response.json().catch(() => null);
+        if (!response.ok) {
+          setError(getAaisApiErrorMessage(result, loginCopy.serverError));
+          return;
+        }
+        setResetEmail("");
+        setResetMode(false);
+        setNotice(loginCopy.resetSuccess);
+      } catch {
+        setError(loginCopy.serverError);
+      } finally {
+        submittingRef.current = false;
+        setSubmitting(false);
+      }
+    },
+    [resetEmail],
   );
 
   return (
-    <div className="min-h-[100dvh] overflow-hidden bg-[#fbfdff] text-[#151a32]">
+    <div
+      className="min-h-[100dvh] overflow-hidden bg-[#fbfdff] text-[#151a32]"
+      style={{ fontFamily: loginSerifFontFamily }}
+      data-trial-login={trialLoginEnabled ? "enabled" : "disabled"}
+    >
       <div className="mx-auto grid min-h-[100dvh] w-full max-w-[1760px] grid-cols-1 lg:grid-cols-[1.18fr_0.82fr]">
         <section className="relative hidden min-h-[100dvh] items-center px-10 py-10 lg:flex">
           <div className="absolute left-10 top-8 flex items-center gap-3 xl:left-16">
@@ -153,11 +236,14 @@ export function LoginPage({ trialLoginEnabled = true }: LoginPageProps) {
           </div>
 
           <div className="relative mx-auto w-full max-w-[930px]">
-            <LoginDesignDeck cards={cards} />
+            <LoginDesignDeck cards={loginDeckCards} />
           </div>
         </section>
 
-        <main className="relative flex min-h-[100dvh] items-center px-5 py-8 sm:px-8 lg:px-10 xl:px-16">
+        <main
+          className="relative flex min-h-[100dvh] items-center px-5 py-8 sm:px-8 lg:px-10 xl:px-16"
+          aria-labelledby="aais-login-heading"
+        >
           <button
             type="button"
             className="absolute right-5 top-5 inline-flex h-10 items-center gap-1 rounded-full px-3 text-sm font-semibold text-[#202640] outline-none transition hover:bg-[#eef4ff] active:translate-y-px focus-visible:ring-2 focus-visible:ring-[#1f6feb] sm:right-8 sm:top-8"
@@ -173,32 +259,163 @@ export function LoginPage({ trialLoginEnabled = true }: LoginPageProps) {
                 <Sparkle size={23} weight="duotone" />
               </span>
               <span>
-                <span className="block text-lg font-semibold tracking-normal">AAIS 学习端</span>
-                <span className="block text-xs font-medium text-[#647089]">Learning studio</span>
+                <span className="block text-lg font-semibold tracking-normal">{loginCopy.brandName}</span>
+                <span className="block text-xs font-medium text-[#647089]">
+                  {loginCopy.brandSubline}
+                </span>
               </span>
             </div>
 
-            <LoginMobileDesignCarousel cards={cards} />
+            <LoginMobileDesignCarousel cards={loginDeckCards} />
 
-            <h1 className="text-4xl font-black leading-[1.16] tracking-normal text-[#171b35] sm:text-5xl">
+            <h1
+              id="aais-login-heading"
+              className="text-2xl font-black leading-[1.16] tracking-normal text-[#171b35] sm:text-3xl"
+            >
               {loginCopy.welcome}
             </h1>
 
-            {trialLoginEnabled ? (
-              <div className="mt-9 inline-flex border-b border-[#1f6feb] pb-2 text-base font-bold text-[#1f6feb]">
-                {loginCopy.accountLogin}
-              </div>
+            <div className="mt-9 inline-flex border-b border-[#1f6feb] pb-2 text-base font-bold text-[#1f6feb]">
+              {passwordTokenMode
+                ? loginCopy.setPassword
+                : resetMode
+                  ? loginCopy.resetPassword
+                  : loginCopy.accountLogin}
+            </div>
+
+            {notice ? (
+              <p
+                className="mt-5 rounded-lg border border-[#9bd8b2] bg-[#ecfff3] px-4 py-3 text-sm font-semibold text-[#166534]"
+                role="status"
+                aria-live="polite"
+                aria-atomic="true"
+              >
+                {notice}
+              </p>
             ) : null}
 
-            <a
-              href={oidcStartHref}
-              className="mt-5 inline-flex h-12 w-full items-center justify-center rounded-xl border border-[#c8d9f5] bg-white px-5 text-base font-bold text-[#1f6feb] outline-none transition hover:border-[#1f6feb] hover:bg-[#eef4ff] focus-visible:ring-4 focus-visible:ring-[#1f6feb]/20"
-            >
-              {loginCopy.ssoLogin}
-            </a>
+            {passwordTokenMode ? (
+              <form onSubmit={handleSetPassword} className="mt-7 space-y-5" noValidate aria-busy={submitting}>
+                <label className="block space-y-2" htmlFor="aais-new-password">
+                  <span className="text-sm font-semibold text-[#2a314a]">
+                    {loginCopy.newPasswordLabel}
+                  </span>
+                  <span className="relative block">
+                    <LockKey
+                      className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-[#7d8aa3]"
+                      size={21}
+                      weight="regular"
+                    />
+                    <input
+                      id="aais-new-password"
+                      value={newPassword}
+                      onChange={(event) => setNewPassword(event.target.value)}
+                      className="h-14 w-full rounded-lg border border-[#c8d9f5] bg-white pl-12 pr-4 text-base font-medium text-[#18213a] outline-none transition placeholder:text-[#8794aa] focus:border-[#1f6feb] focus:ring-4 focus:ring-[#1f6feb]/15"
+                      autoComplete="new-password"
+                      placeholder={loginCopy.newPasswordPlaceholder}
+                      type="password"
+                    />
+                  </span>
+                </label>
 
-            {trialLoginEnabled ? (
-              <form onSubmit={handleSubmit} className="mt-7 space-y-5" noValidate>
+                <label className="block space-y-2" htmlFor="aais-confirm-password">
+                  <span className="text-sm font-semibold text-[#2a314a]">
+                    {loginCopy.confirmPasswordLabel}
+                  </span>
+                  <span className="relative block">
+                    <LockKey
+                      className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-[#7d8aa3]"
+                      size={21}
+                      weight="regular"
+                    />
+                    <input
+                      id="aais-confirm-password"
+                      value={confirmPassword}
+                      onChange={(event) => setConfirmPassword(event.target.value)}
+                      className="h-14 w-full rounded-lg border border-[#c8d9f5] bg-white pl-12 pr-4 text-base font-medium text-[#18213a] outline-none transition placeholder:text-[#8794aa] focus:border-[#1f6feb] focus:ring-4 focus:ring-[#1f6feb]/15"
+                      autoComplete="new-password"
+                      placeholder={loginCopy.confirmPasswordPlaceholder}
+                      type="password"
+                    />
+                  </span>
+                </label>
+
+                {error ? (
+                  <p
+                    className="rounded-lg border border-[#f0b7c9] bg-[#fff1f5] px-4 py-3 text-sm font-semibold text-[#a12f56]"
+                    role="alert"
+                    aria-live="assertive"
+                    aria-atomic="true"
+                  >
+                    {error}
+                  </p>
+                ) : null}
+
+                <button
+                  type="submit"
+                  disabled={submitting}
+                  className="inline-flex h-14 w-full items-center justify-center rounded-xl bg-[#1f6feb] px-6 text-base font-bold text-white shadow-[0_14px_34px_rgba(31,111,235,0.25)] outline-none transition hover:bg-[#1557c0] active:translate-y-px focus-visible:ring-4 focus-visible:ring-[#1f6feb]/25 disabled:cursor-not-allowed disabled:opacity-70"
+                >
+                  {submitting ? "保存中..." : loginCopy.setPasswordSubmit}
+                </button>
+              </form>
+            ) : resetMode ? (
+              <form onSubmit={handleResetRequest} className="mt-7 space-y-5" noValidate aria-busy={submitting}>
+                <label className="block space-y-2" htmlFor="aais-reset-email">
+                  <span className="text-sm font-semibold text-[#2a314a]">
+                    {loginCopy.resetEmailLabel}
+                  </span>
+                  <span className="relative block">
+                    <UserCircle
+                      className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-[#7d8aa3]"
+                      size={21}
+                      weight="duotone"
+                    />
+                    <input
+                      id="aais-reset-email"
+                      value={resetEmail}
+                      onChange={(event) => setResetEmail(event.target.value)}
+                      className="h-14 w-full rounded-lg border border-[#c8d9f5] bg-white pl-12 pr-4 text-base font-medium text-[#18213a] outline-none transition placeholder:text-[#8794aa] focus:border-[#1f6feb] focus:ring-4 focus:ring-[#1f6feb]/15"
+                      autoComplete="email"
+                      placeholder={loginCopy.resetEmailPlaceholder}
+                      type="email"
+                    />
+                  </span>
+                </label>
+
+                {error ? (
+                  <p
+                    className="rounded-lg border border-[#f0b7c9] bg-[#fff1f5] px-4 py-3 text-sm font-semibold text-[#a12f56]"
+                    role="alert"
+                    aria-live="assertive"
+                    aria-atomic="true"
+                  >
+                    {error}
+                  </p>
+                ) : null}
+
+                <button
+                  type="submit"
+                  disabled={submitting}
+                  className="inline-flex h-14 w-full items-center justify-center rounded-xl bg-[#1f6feb] px-6 text-base font-bold text-white shadow-[0_14px_34px_rgba(31,111,235,0.25)] outline-none transition hover:bg-[#1557c0] active:translate-y-px focus-visible:ring-4 focus-visible:ring-[#1f6feb]/25 disabled:cursor-not-allowed disabled:opacity-70"
+                >
+                  {submitting ? "发送中..." : loginCopy.resetSubmit}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setResetMode(false);
+                    setError("");
+                    setNotice("");
+                  }}
+                  className="inline-flex h-11 w-full items-center justify-center rounded-lg border border-[#c8d9f5] bg-white px-4 text-sm font-bold text-[#1f6feb] outline-none transition hover:bg-[#eef4ff] focus-visible:ring-2 focus-visible:ring-[#1f6feb]"
+                >
+                  {loginCopy.backToLogin}
+                </button>
+              </form>
+            ) : (
+              <form onSubmit={handleSubmit} className="mt-7 space-y-5" noValidate aria-busy={submitting}>
                 <label className="block space-y-2" htmlFor="aais-login-account">
                   <span className="text-sm font-semibold text-[#2a314a]">
                     {loginCopy.accountLabel}
@@ -254,8 +471,39 @@ export function LoginPage({ trialLoginEnabled = true }: LoginPageProps) {
                   </span>
                 </label>
 
+                <div className="rounded-lg border border-[#d6e4fb] bg-[#f7fbff] px-4 py-3">
+                  <label htmlFor="aais-login-consent" className="flex items-start gap-3">
+                    <input
+                      id="aais-login-consent"
+                      type="checkbox"
+                      checked={consentAccepted}
+                      required
+                      onChange={(event) => setConsentAccepted(event.target.checked)}
+                      className="mt-1 size-4 shrink-0 rounded border-[#aebfda] text-[#1f6feb] outline-none focus-visible:ring-2 focus-visible:ring-[#1f6feb]"
+                    />
+                    <span className="text-sm font-semibold leading-6 text-[#2a314a]">
+                      {loginCopy.consentCheckboxLabel}
+                    </span>
+                  </label>
+                  <p className="mt-2 pl-7 text-sm font-medium leading-6 text-[#5d6b84]">
+                    <a href="/terms" className="font-semibold text-[#1557c0] underline-offset-4 hover:underline">
+                      {loginCopy.terms}
+                    </a>
+                    <span> 和 </span>
+                    <a href="/privacy" className="font-semibold text-[#1557c0] underline-offset-4 hover:underline">
+                      {loginCopy.privacy}
+                    </a>
+                    <span> 将作为本次登录确认的依据。</span>
+                  </p>
+                </div>
+
                 {error ? (
-                  <p className="rounded-lg border border-[#f0b7c9] bg-[#fff1f5] px-4 py-3 text-sm font-semibold text-[#a12f56]">
+                  <p
+                    className="rounded-lg border border-[#f0b7c9] bg-[#fff1f5] px-4 py-3 text-sm font-semibold text-[#a12f56]"
+                    role="alert"
+                    aria-live="assertive"
+                    aria-atomic="true"
+                  >
                     {error}
                   </p>
                 ) : null}
@@ -268,19 +516,30 @@ export function LoginPage({ trialLoginEnabled = true }: LoginPageProps) {
                   {submitting ? "登录中..." : loginCopy.submit}
                 </button>
 
+                <button
+                  type="button"
+                  onClick={() => {
+                    setResetMode(true);
+                    setError("");
+                    setNotice("");
+                  }}
+                  className="inline-flex h-11 w-full items-center justify-center rounded-lg border border-[#c8d9f5] bg-white px-4 text-sm font-bold text-[#1f6feb] outline-none transition hover:bg-[#eef4ff] focus-visible:ring-2 focus-visible:ring-[#1f6feb]"
+                >
+                  {loginCopy.forgotPassword}
+                </button>
+
                 <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-[#69758d]">
-                  <CheckCircle size={17} weight="duotone" className="text-[#1f6feb]" />
-                  <span>{loginCopy.consent}</span>
-                  <a href="/terms" className="font-semibold text-[#1f6feb] underline-offset-4 hover:underline">
+                  <span>继续登录即使用当前账号进入受保护的学习空间。</span>
+                  <a href="/terms" className="font-semibold text-[#1557c0] underline-offset-4 hover:underline">
                     {loginCopy.terms}
                   </a>
                   <span>和</span>
-                  <a href="/privacy" className="font-semibold text-[#1f6feb] underline-offset-4 hover:underline">
+                  <a href="/privacy" className="font-semibold text-[#1557c0] underline-offset-4 hover:underline">
                     {loginCopy.privacy}
                   </a>
                 </p>
               </form>
-            ) : null}
+            )}
           </div>
         </main>
       </div>
@@ -290,111 +549,4 @@ export function LoginPage({ trialLoginEnabled = true }: LoginPageProps) {
 
 function isSafeLocalRedirectTarget(value: string | undefined): value is string {
   return Boolean(value?.startsWith("/") && !value.startsWith("//"));
-}
-
-function getOidcStartHref() {
-  if (typeof window === "undefined") {
-    return "/api/auth/oidc/start?from=%2Flearning";
-  }
-  const from = new URLSearchParams(window.location.search).get("from");
-  const safeFrom = from && isSafeLocalRedirectTarget(from) ? from : "/learning";
-  return `/api/auth/oidc/start?from=${encodeURIComponent(safeFrom)}`;
-}
-
-function LoginMobileDesignCarousel({ cards }: { cards: LoginDeckCard[] }) {
-  return (
-    <div className="-mx-5 mb-8 overflow-x-auto px-5 pb-3 lg:hidden" aria-label="AAIS login illustration cards">
-      <div className="flex w-max snap-x gap-4">
-        {cards.map((card) => (
-          <div key={card.id} className="w-[376px] shrink-0 snap-center" style={{ aspectRatio: "376 / 520" }}>
-            <LoginDesignCard card={card} />
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function LoginDesignDeck({ cards }: { cards: LoginDeckCard[] }) {
-  return (
-    <div className="relative w-full max-w-[930px]" style={{ aspectRatio: "766 / 520" }}>
-      <div className="grid h-full grid-cols-2 gap-[14px]">
-        {cards.map((card) => (
-          <LoginDesignCard key={card.id} card={card} />
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function LoginDesignCard({ card }: { card: LoginDeckCard }) {
-  const guided = card.id === "guided";
-  const FooterIcon = guided ? GraduationCap : Brain;
-
-  return (
-    <article className="relative flex h-full flex-col overflow-hidden rounded-[14px] border border-[#d8e6fb] bg-gradient-to-b from-white via-[#fbfdff] to-[#f2f7ff] px-[18px] pb-[16px] pt-[18px] shadow-[0_14px_42px_rgba(42,82,148,0.12)] 2xl:px-[20px] 2xl:pb-[18px] 2xl:pt-[20px]">
-      <div className="absolute inset-0 bg-[radial-gradient(circle_at_50%_42%,rgba(31,111,235,0.08),transparent_42%)]" />
-      <div className="relative z-20 text-center">
-        <h2 className="text-[20px] font-black leading-[1.05] text-[#65728c] 2xl:text-[24px]">
-          {card.title}
-          <span className="ml-1 text-[#1f6feb]">{card.accent}</span>
-        </h2>
-      </div>
-
-      <div className="relative z-20 mt-6 grid min-h-0 flex-1 grid-rows-[minmax(0,1fr)_auto] gap-3 2xl:mt-7 2xl:gap-4">
-        <div className="relative overflow-hidden rounded-[10px] border border-[#dfebfb] bg-[#f7fbff] shadow-[inset_0_1px_0_rgba(255,255,255,0.82)]">
-          <Image
-            src={card.assetSrc}
-            alt={card.assetAlt}
-            fill
-            sizes="300px"
-            priority
-            unoptimized
-            className="object-contain object-center"
-          />
-        </div>
-
-        <div className="relative z-30 grid grid-cols-1 gap-2 2xl:gap-3">
-          {card.chips.map((chip, index) => (
-            <FeatureChip
-              key={chip}
-              icon={
-                index === 0 ? (
-                  <GraduationCap size={22} weight="duotone" />
-                ) : index === 1 ? (
-                  <Student size={22} weight="duotone" />
-                ) : (
-                  <PaperPlaneTilt size={22} weight="duotone" />
-                )
-              }
-            >
-              {chip}
-            </FeatureChip>
-          ))}
-        </div>
-      </div>
-
-      <div className="relative z-30 mt-5 flex min-h-[58px] items-center justify-center gap-3 rounded-[8px] border border-[#d6e4fb] bg-[#edf5ff] px-4 py-3 text-center text-[13px] font-bold leading-[1.25] text-[#384967] shadow-[inset_0_1px_0_rgba(255,255,255,0.8)] 2xl:mt-6 2xl:min-h-[64px] 2xl:gap-4 2xl:text-[15px]">
-        <FooterIcon size={28} weight="duotone" className="shrink-0 text-[#1f6feb]" aria-hidden="true" />
-        <span className="min-w-0">{card.footer}</span>
-      </div>
-    </article>
-  );
-}
-
-function FeatureChip({
-  children,
-  icon,
-}: {
-  children: string;
-  icon: ReactNode;
-}) {
-  return (
-    <div className="flex min-h-[54px] w-full items-center gap-3 rounded-[8px] border border-[#d9e7fb] bg-white/95 px-4 py-3 text-[13px] font-black leading-[1.18] text-[#26304b] shadow-[0_12px_26px_rgba(42,82,148,0.12)] backdrop-blur 2xl:min-h-[60px] 2xl:text-[15px]">
-      <span className="grid size-7 shrink-0 place-items-center text-[#1f6feb] 2xl:size-8">
-        {icon}
-      </span>
-      <span className="min-w-0 flex-1 leading-[1.18]">{children}</span>
-    </div>
-  );
 }

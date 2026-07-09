@@ -42,7 +42,7 @@ describe("AAIS AI evaluation runner", () => {
       samples: enterpriseSamples(),
     });
 
-    expect(fetchMock).toHaveBeenCalledTimes(4);
+    expect(fetchMock).toHaveBeenCalledTimes(5);
     expect(fetchMock.mock.calls[0]?.[1]?.headers).toMatchObject({
       authorization: "Bearer secret-api-key-that-must-not-leak",
     });
@@ -163,7 +163,7 @@ describe("AAIS AI evaluation runner", () => {
       samples: enterpriseSamples(),
     });
 
-    expect(fetchMock).toHaveBeenCalledTimes(4);
+    expect(fetchMock).toHaveBeenCalledTimes(5);
     expect(fetchMock.mock.calls[0]?.[0]).toBe("https://ai.example.test/v1/chat/completions");
     expect(fetchMock.mock.calls[0]?.[1]?.headers).toMatchObject({
       authorization: "Bearer secret-api-key-from-env-file",
@@ -183,6 +183,172 @@ describe("AAIS AI evaluation runner", () => {
     const serialized = await readFile(outputPath, "utf8");
     expect(serialized).not.toContain("secret-api-key-from-env-file");
     expect(serialized).not.toContain("Provider coaching reply");
+  });
+
+  it("preflights the primary provider and automatically evaluates with fallback when primary cannot connect", async () => {
+    const fetchMock = vi.fn(async (url) => {
+      if (String(url).includes("qwen.example.test")) {
+        throw Object.assign(new TypeError("fetch failed"), {
+          cause: {
+            code: "UND_ERR_CONNECT_TIMEOUT",
+          },
+        });
+      }
+      return Response.json({
+        choices: [
+          {
+            message: {
+              content: "Fallback provider reply.",
+            },
+          },
+        ],
+      });
+    });
+
+    const manifest = await runAaisAiEvaluation({
+      endpoint: "https://qwen.example.test/compatible-mode/v1/chat/completions",
+      apiKey: "qwen-secret-key",
+      model: "qwen-plus",
+      fallbackEndpoint: "https://deepseek.example.test/v1/chat/completions",
+      fallbackApiKey: "deepseek-secret-key",
+      fallbackModel: "deepseek-v4-pro",
+      evalVersion: "eval-2026-07-03",
+      fetchImpl: fetchMock,
+      now: new Date("2026-07-03T00:00:00.000Z"),
+      samples: enterpriseSamples(),
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(6);
+    expect(fetchMock.mock.calls.map(([url]) => String(url))).toEqual([
+      "https://qwen.example.test/compatible-mode/v1/chat/completions",
+      "https://deepseek.example.test/v1/chat/completions",
+      "https://deepseek.example.test/v1/chat/completions",
+      "https://deepseek.example.test/v1/chat/completions",
+      "https://deepseek.example.test/v1/chat/completions",
+      "https://deepseek.example.test/v1/chat/completions",
+    ]);
+    expect(manifest).toMatchObject({
+      status: "passed",
+      provider: "openai-compatible",
+      model: "deepseek-v4-pro",
+      providerSelection: {
+        selected: "fallback",
+        selectedModel: "deepseek-v4-pro",
+        fallbackUsed: true,
+        candidates: [
+          {
+            provider: "primary",
+            model: "qwen-plus",
+            preflight: {
+              status: "failed",
+              reason: "connect-timeout",
+            },
+          },
+          {
+            provider: "fallback",
+            model: "deepseek-v4-pro",
+            preflight: {
+              status: "passed",
+            },
+          },
+        ],
+      },
+    });
+    expect(JSON.stringify(manifest)).not.toContain("qwen-secret-key");
+    expect(JSON.stringify(manifest)).not.toContain("deepseek-secret-key");
+    expect(JSON.stringify(manifest)).not.toContain("Fallback provider reply");
+  });
+
+  it("keeps long evaluation timeouts separate from the student runtime timeout", async () => {
+    vi.stubEnv("AAIS_AI_TIMEOUT_MS", "8000");
+    vi.stubEnv("AAIS_AI_EVAL_TIMEOUT_MS", "30000");
+    const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout");
+    const fetchMock = vi.fn(async () =>
+      Response.json({
+        choices: [
+          {
+            message: {
+              content: "Provider coaching reply that should never be stored verbatim.",
+            },
+          },
+        ],
+      }),
+    );
+
+    try {
+      const manifest = await runAaisAiEvaluation({
+        endpoint: "https://qwen.example.test/compatible-mode/v1/chat/completions",
+        apiKey: "qwen-secret-key",
+        model: "qwen-plus",
+        evalVersion: "eval-2026-07-03",
+        fetchImpl: fetchMock,
+        now: new Date("2026-07-03T00:00:00.000Z"),
+        samples: enterpriseSamples(),
+      });
+
+      expect(manifest.status).toBe("passed");
+      expect(setTimeoutSpy.mock.calls.map(([, timeoutMs]) => timeoutMs)).toEqual([
+        30000,
+        30000,
+        30000,
+        30000,
+        30000,
+      ]);
+    } finally {
+      setTimeoutSpy.mockRestore();
+    }
+  });
+
+  it("classifies sample provider failures without collapsing them to provider-unavailable", async () => {
+    const abortError = new Error("This operation was aborted");
+    abortError.name = "AbortError";
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(Response.json({
+        choices: [
+          {
+            message: {
+              content: "preflight ok",
+            },
+          },
+        ],
+      }))
+      .mockRejectedValueOnce(Object.assign(new TypeError("fetch failed"), {
+        cause: {
+          code: "UND_ERR_CONNECT_TIMEOUT",
+        },
+      }))
+      .mockRejectedValueOnce(abortError)
+      .mockResolvedValueOnce(new Response("temporarily unavailable", { status: 503 }))
+      .mockResolvedValueOnce(Response.json({
+        choices: [
+          {
+            message: {
+              content: "",
+            },
+          },
+        ],
+      }));
+
+    const manifest = await runAaisAiEvaluation({
+      endpoint: "https://qwen.example.test/compatible-mode/v1/chat/completions",
+      apiKey: "qwen-secret-key",
+      model: "qwen-plus",
+      evalVersion: "eval-2026-07-03",
+      fetchImpl: fetchMock,
+      now: new Date("2026-07-03T00:00:00.000Z"),
+      samples: enterpriseSamples(),
+    });
+
+    expect(manifest.status).toBe("failed");
+    expect(manifest.results.map((result) => result.reasons)).toEqual([
+      ["connect-timeout"],
+      ["abort-timeout"],
+      ["http-status"],
+      ["empty-response"],
+    ]);
+    expect(JSON.stringify(manifest)).not.toContain("provider-unavailable");
+    expect(JSON.stringify(manifest)).not.toContain("qwen-secret-key");
+    expect(JSON.stringify(manifest)).not.toContain("temporarily unavailable");
   });
 
   it("can disable provider thinking during live AI evaluation without storing secrets", async () => {

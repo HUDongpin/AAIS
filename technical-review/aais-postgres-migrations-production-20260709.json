@@ -1,0 +1,59 @@
+{
+  "schemaVersion": 1,
+  "status": "pass",
+  "applied": 7,
+  "skipped": 0,
+  "migrations": [
+    {
+      "version": "0001",
+      "name": "aais_baseline",
+      "fileName": "0001_aais_baseline.sql",
+      "status": "applied",
+      "checksum": "722e7889add3"
+    },
+    {
+      "version": "0002",
+      "name": "login_rate_limits",
+      "fileName": "0002_login_rate_limits.sql",
+      "status": "applied",
+      "checksum": "783367dd41b0"
+    },
+    {
+      "version": "0003",
+      "name": "aais_events",
+      "fileName": "0003_aais_events.sql",
+      "status": "applied",
+      "checksum": "1c7e4e763286"
+    },
+    {
+      "version": "0004",
+      "name": "learner_task_state",
+      "fileName": "0004_learner_task_state.sql",
+      "status": "applied",
+      "checksum": "2299382f88a9"
+    },
+    {
+      "version": "0005",
+      "name": "users_and_auth_tokens",
+      "fileName": "0005_users_and_auth_tokens.sql",
+      "status": "applied",
+      "checksum": "371cf1bac6a8"
+    },
+    {
+      "version": "0006",
+      "name": "session_revocations",
+      "fileName": "0006_session_revocations.sql",
+      "status": "applied",
+      "checksum": "92c3dc4f3fe6"
+    },
+    {
+      "version": "0007",
+      "name": "course_catalog",
+      "fileName": "0007_course_catalog.sql",
+      "status": "applied",
+      "checksum": "2a6390d33ebf"
+    }
+  ],
+  "secrets": "redacted",
+  "sourceEnv": "DATABASE_URL"
+}

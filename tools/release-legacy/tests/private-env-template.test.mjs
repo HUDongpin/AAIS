@@ -276,6 +276,17 @@ describe("AAIS private env template generator", () => {
       "AAIS_AI_ENDPOINT",
       "AAIS_AI_API_KEY",
       "AAIS_AI_MODEL",
+      "AAIS_AI_FALLBACK_ENDPOINT",
+      "AAIS_AI_FALLBACK_API_KEY",
+      "AAIS_AI_FALLBACK_MODEL",
+      "AAIS_AI_THINKING_MODE",
+      "AAIS_AI_TIMEOUT_MS",
+      "AAIS_AI_MAX_RETRIES",
+      "AAIS_AI_FALLBACK_THINKING_MODE",
+      "AAIS_AI_FALLBACK_TIMEOUT_MS",
+      "AAIS_AI_FALLBACK_MAX_RETRIES",
+      "AAIS_AI_EVAL_TIMEOUT_MS",
+      "AAIS_AI_EVAL_FALLBACK_TIMEOUT_MS",
       "AAIS_AI_EVAL_VERSION",
     ]);
     expect(report.template.validationOnlyVariables).toEqual(["AAIS_OIDC_REDIRECT_URI"]);
@@ -287,6 +298,17 @@ describe("AAIS private env template generator", () => {
       "AAIS_AI_ENDPOINT",
       "AAIS_AI_API_KEY",
       "AAIS_AI_MODEL",
+      "AAIS_AI_FALLBACK_ENDPOINT",
+      "AAIS_AI_FALLBACK_API_KEY",
+      "AAIS_AI_FALLBACK_MODEL",
+      "AAIS_AI_THINKING_MODE",
+      "AAIS_AI_TIMEOUT_MS",
+      "AAIS_AI_MAX_RETRIES",
+      "AAIS_AI_FALLBACK_THINKING_MODE",
+      "AAIS_AI_FALLBACK_TIMEOUT_MS",
+      "AAIS_AI_FALLBACK_MAX_RETRIES",
+      "AAIS_AI_EVAL_TIMEOUT_MS",
+      "AAIS_AI_EVAL_FALLBACK_TIMEOUT_MS",
       "AAIS_AI_EVAL_VERSION",
       "AAIS_OIDC_REDIRECT_URI",
     ]);
@@ -296,18 +318,42 @@ describe("AAIS private env template generator", () => {
         "AAIS_AI_ENDPOINT",
         "AAIS_AI_API_KEY",
         "AAIS_AI_MODEL",
+        "AAIS_AI_FALLBACK_ENDPOINT",
+        "AAIS_AI_FALLBACK_API_KEY",
+        "AAIS_AI_FALLBACK_MODEL",
+        "AAIS_AI_THINKING_MODE",
+        "AAIS_AI_TIMEOUT_MS",
+        "AAIS_AI_MAX_RETRIES",
+        "AAIS_AI_FALLBACK_THINKING_MODE",
+        "AAIS_AI_FALLBACK_TIMEOUT_MS",
+        "AAIS_AI_FALLBACK_MAX_RETRIES",
+        "AAIS_AI_EVAL_TIMEOUT_MS",
+        "AAIS_AI_EVAL_FALLBACK_TIMEOUT_MS",
         "AAIS_AI_EVAL_VERSION",
       ],
       preflightCommand:
         "npm run verify:enterprise-gaps -- --mode live-ai-eval --preflight-only --ai-eval-env-file .env.production.local --output output/aais-enterprise-gap-evidence-latest.json --release-id aais-2026-07-01-rc1",
       evaluationCommand:
-        "npm run ai:evaluate -- --env-file .env.production.local --output output/aais-ai-eval-deepseek-v4-pro.json --env-json-output output/aais-ai-eval-inline-latest.json --eval-version <AAIS_AI_EVAL_VERSION> --release-id aais-2026-07-01-rc1",
+        "npm run ai:evaluate -- --env-file .env.production.local --output output/aais-ai-eval-provider-chain-latest.json --env-json-output output/aais-ai-eval-inline-latest.json --eval-version <AAIS_AI_EVAL_VERSION> --release-id aais-2026-07-01-rc1",
+      runtimeSmokeCommand:
+        "npm run ai:runtime-smoke -- --env-file .env.production.local --base-url https://www.aais.site --output output/aais-ai-runtime-smoke-latest.json",
     });
 
     const template = await readFile(outputPath, "utf8");
     expect(template).toContain("AAIS_AI_ENDPOINT=<REQUIRED:AI_ENDPOINT>");
     expect(template).toContain("AAIS_AI_API_KEY=<REQUIRED:AI_API_KEY>");
     expect(template).toContain("AAIS_AI_MODEL=<REQUIRED:AI_MODEL>");
+    expect(template).toContain("AAIS_AI_FALLBACK_ENDPOINT=<REQUIRED:AI_FALLBACK_ENDPOINT>");
+    expect(template).toContain("AAIS_AI_FALLBACK_API_KEY=<REQUIRED:AI_FALLBACK_API_KEY>");
+    expect(template).toContain("AAIS_AI_FALLBACK_MODEL=<REQUIRED:AI_FALLBACK_MODEL>");
+    expect(template).toContain("AAIS_AI_THINKING_MODE=disabled");
+    expect(template).toContain("AAIS_AI_TIMEOUT_MS=30000");
+    expect(template).toContain("AAIS_AI_MAX_RETRIES=0");
+    expect(template).toContain("AAIS_AI_FALLBACK_THINKING_MODE=disabled");
+    expect(template).toContain("AAIS_AI_FALLBACK_TIMEOUT_MS=30000");
+    expect(template).toContain("AAIS_AI_FALLBACK_MAX_RETRIES=0");
+    expect(template).toContain("AAIS_AI_EVAL_TIMEOUT_MS=30000");
+    expect(template).toContain("AAIS_AI_EVAL_FALLBACK_TIMEOUT_MS=30000");
     expect(template).toContain("AAIS_AI_EVAL_VERSION=<REQUIRED:AI_EVAL_VERSION>");
     expect(template).toContain("AAIS_OIDC_REDIRECT_URI=https://www.aais.site/api/auth/oidc/callback");
     expect(template).not.toContain("AAIS_VERIFY_OIDC_CALLBACK_URL");

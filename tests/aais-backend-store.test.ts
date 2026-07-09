@@ -3,10 +3,12 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  isAaisSessionWriteConflictError,
   createAaisLearningStore,
   flushAaisPersistentLrsOutbox,
   getAaisPersistentLrsOutboxStatus,
   getAaisDatabaseConfiguration,
+  probeAaisLearningStorage,
   requeueAaisPersistentLrsDeadLetters,
 } from "@/lib/server/aais-learning-store";
 import * as lrsClient from "@/lib/server/aais-lrs-client";
@@ -224,9 +226,220 @@ describe("AAIS backend learning store", () => {
     const session = await reloaded.getOrCreateSession("S001");
 
     expect(session.tasks[0].artifactText).toBe("数据库持久化记录");
-    expect(database.queries.some((query) => /create table if not exists/i.test(query.sql))).toBe(true);
+    expect(database.queries.some((query) => /create table if not exists|alter table/i.test(query.sql))).toBe(false);
     expect(database.queries.some((query) => /insert into aais_learner_sessions/i.test(query.sql))).toBe(true);
+    expect(database.queries.some((query) => /insert into aais_learner_task_state/i.test(query.sql))).toBe(true);
+    expect(database.queries.some((query) => /insert into aais_events/i.test(query.sql))).toBe(true);
     expect(database.queries.some((query) => /select payload/i.test(query.sql))).toBe(true);
+    expect(database.eventRows.map((row) => row.event)).toEqual(
+      expect.arrayContaining(["session_created", "task_released", "artifact_saved"]),
+    );
+    expect(database.taskStateRows.find((row) => row.task === "training_task_1")).toMatchObject({
+      student_id: "S001",
+      session_id: session.sessionId,
+      phase: "training",
+      status: "active",
+      artifact_characters: 8,
+      self_report_characters: 0,
+    });
+    expect(JSON.stringify(database.eventRows)).not.toContain("数据库持久化记录");
+    expect(JSON.stringify(database.taskStateRows)).not.toContain("数据库持久化记录");
+  });
+
+  it("counts database daily guide usage from append-only event rows", async () => {
+    const database = createFakeDatabaseClient();
+    const store = createAaisLearningStore({ database });
+
+    await store.appendGuideExchange({
+      studentId: "S001",
+      phase: "training",
+      taskId: "training_task_1",
+      question: "今天第一次导学请求",
+      answer: "导学回复",
+      orchestration: {
+        graphId: "learning-ai-guide",
+        topologicalOrder: ["A1", "A2", "A3", "A4"],
+        threadId: "thread-1",
+      },
+    });
+    const usage = await store.getDailyGuideUsage("S001");
+
+    expect(usage.used).toBe(1);
+    expect(database.queries.some((query) =>
+      /^select count\(\*\)::int as count\s+from aais_events/i.test(query.sql.trim())
+    )).toBe(true);
+    expect(JSON.stringify(database.eventRows)).not.toContain("今天第一次导学请求");
+    expect(JSON.stringify(database.taskStateRows)).not.toContain("今天第一次导学请求");
+  });
+
+  it("checks migrated table presence without creating runtime database schema", async () => {
+    const migratedDatabase = createProbeDatabaseClient({
+      learnerSessionsTable: true,
+      learnerTaskStateTable: true,
+      lrsOutboxTable: true,
+      loginRateLimitsTable: true,
+      eventsTable: true,
+      usersTable: true,
+      userAuthTokensTable: true,
+      sessionRevocationsTable: true,
+    });
+    const missingRateLimitDatabase = createProbeDatabaseClient({
+      learnerSessionsTable: true,
+      learnerTaskStateTable: true,
+      lrsOutboxTable: true,
+      loginRateLimitsTable: false,
+      eventsTable: true,
+      usersTable: true,
+      userAuthTokensTable: true,
+      sessionRevocationsTable: true,
+    });
+    const missingEventsDatabase = createProbeDatabaseClient({
+      learnerSessionsTable: true,
+      learnerTaskStateTable: true,
+      lrsOutboxTable: true,
+      loginRateLimitsTable: true,
+      eventsTable: false,
+      usersTable: true,
+      userAuthTokensTable: true,
+      sessionRevocationsTable: true,
+    });
+    const missingTaskStateDatabase = createProbeDatabaseClient({
+      learnerSessionsTable: true,
+      learnerTaskStateTable: false,
+      lrsOutboxTable: true,
+      loginRateLimitsTable: true,
+      eventsTable: true,
+      usersTable: true,
+      userAuthTokensTable: true,
+      sessionRevocationsTable: true,
+    });
+    const missingUsersDatabase = createProbeDatabaseClient({
+      learnerSessionsTable: true,
+      learnerTaskStateTable: true,
+      lrsOutboxTable: true,
+      loginRateLimitsTable: true,
+      eventsTable: true,
+      usersTable: false,
+      userAuthTokensTable: true,
+      sessionRevocationsTable: true,
+    });
+    const missingCatalogDatabase = createProbeDatabaseClient({
+      learnerSessionsTable: true,
+      learnerTaskStateTable: true,
+      lrsOutboxTable: true,
+      loginRateLimitsTable: true,
+      eventsTable: true,
+      usersTable: true,
+      userAuthTokensTable: true,
+      sessionRevocationsTable: true,
+      coursesTable: false,
+    });
+
+    await expect(probeAaisLearningStorage({ database: migratedDatabase })).resolves.toEqual({
+      mode: "postgres",
+      status: "connected",
+    });
+    await expect(probeAaisLearningStorage({ database: missingRateLimitDatabase })).resolves.toEqual({
+      mode: "postgres",
+      status: "failed",
+    });
+    await expect(probeAaisLearningStorage({ database: missingEventsDatabase })).resolves.toEqual({
+      mode: "postgres",
+      status: "failed",
+    });
+    await expect(probeAaisLearningStorage({ database: missingTaskStateDatabase })).resolves.toEqual({
+      mode: "postgres",
+      status: "failed",
+    });
+    await expect(probeAaisLearningStorage({ database: missingUsersDatabase })).resolves.toEqual({
+      mode: "postgres",
+      status: "failed",
+    });
+    await expect(probeAaisLearningStorage({ database: missingCatalogDatabase })).resolves.toEqual({
+      mode: "postgres",
+      status: "failed",
+    });
+    expect(migratedDatabase.queries.map((query) => query.sql).join("\n")).not.toMatch(/create table|alter table/i);
+    expect(missingRateLimitDatabase.queries.map((query) => query.sql).join("\n")).not.toMatch(/create table|alter table/i);
+    expect(missingEventsDatabase.queries.map((query) => query.sql).join("\n")).not.toMatch(/create table|alter table/i);
+    expect(missingTaskStateDatabase.queries.map((query) => query.sql).join("\n")).not.toMatch(/create table|alter table/i);
+    expect(missingCatalogDatabase.queries.map((query) => query.sql).join("\n")).not.toMatch(/create table|alter table/i);
+    expect(missingUsersDatabase.queries.map((query) => query.sql).join("\n")).not.toMatch(/create table|alter table/i);
+  });
+
+  it("handles concurrent first-session creation without returning a write conflict", async () => {
+    const database = createFakeDatabaseClient();
+    const storeA = createAaisLearningStore({ database });
+    const storeB = createAaisLearningStore({ database });
+
+    const [sessionA, sessionB] = await Promise.all([
+      storeA.getOrCreateSession("S001"),
+      storeB.getOrCreateSession("S001"),
+    ]);
+
+    expect(sessionA.sessionId).toBe(sessionB.sessionId);
+    expect(sessionA.events.map((event) => event.event)).toContain("session_created");
+    expect(sessionB.events.map((event) => event.event)).toContain("session_created");
+  });
+
+  it("retries a learner-session write conflict and preserves independent text saves", async () => {
+    const info = vi.spyOn(console, "info").mockImplementation(() => undefined);
+    const database = createFakeDatabaseClient();
+    const storeA = createAaisLearningStore({ database });
+    const storeB = createAaisLearningStore({ database });
+    await storeA.getOrCreateSession("S001");
+
+    await Promise.all([
+      storeA.saveArtifact("S001", "training_task_1", "并发保存的作品"),
+      storeB.saveSelfReport("S001", "training_task_1", "并发保存的反思"),
+    ]);
+
+    const session = await createAaisLearningStore({ database }).getOrCreateSession("S001");
+    expect(session.tasks[0]).toMatchObject({
+      artifactText: "并发保存的作品",
+      selfReport: "并发保存的反思",
+    });
+    expect(session.events.map((event) => event.event)).toEqual(
+      expect.arrayContaining(["artifact_saved", "self_report_saved"]),
+    );
+    const conflictLogs = info.mock.calls.map((call) => JSON.parse(String(call[0])));
+    expect(conflictLogs).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          event: "aais.session.write_conflict",
+          learnerId: expect.stringMatching(/^learner:[a-f0-9]{16}$/),
+          learnerIdRedaction: "sha256-16",
+          resolution: "retrying",
+          secrets: "redacted",
+        }),
+      ]),
+    );
+    expect(JSON.stringify(conflictLogs)).not.toContain("S001");
+  });
+
+  it("fails a same-field learner-session write conflict instead of silently overwriting text", async () => {
+    const database = createFakeDatabaseClient();
+    const storeA = createAaisLearningStore({ database });
+    const storeB = createAaisLearningStore({ database });
+    await storeA.getOrCreateSession("S001");
+
+    const results = await Promise.allSettled([
+      storeA.saveArtifact("S001", "training_task_1", "第一个并发版本"),
+      storeB.saveArtifact("S001", "training_task_1", "第二个并发版本"),
+    ]);
+
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    const rejected = results.find((result) => result.status === "rejected");
+    expect(rejected?.status).toBe("rejected");
+    if (rejected?.status === "rejected") {
+      expect(isAaisSessionWriteConflictError(rejected.reason)).toBe(true);
+    }
+
+    const session = await createAaisLearningStore({ database }).getOrCreateSession("S001");
+    expect([
+      "第一个并发版本",
+      "第二个并发版本",
+    ]).toContain(session.tasks[0].artifactText);
   });
 
   it("persists LRS outbox rows in Postgres storage and can replay them", async () => {
@@ -644,6 +857,115 @@ describe("AAIS backend learning store", () => {
     expect(JSON.stringify(analytics)).not.toContain("第二位学习者的训练记录");
   });
 
+  it("summarizes database cohort analytics from aais_events without scanning session blobs", async () => {
+    const database = createFakeDatabaseClient();
+    const store = createAaisLearningStore({ database });
+    const rawSession = await store.completeTask("S001", "training_task_1");
+    await store.selectTask("S001", "practice_task_1");
+    await store.saveArtifact("S001", "practice_task_1", "第一位学习者的数据库低进展记录");
+    await store.saveArtifact("S001", "practice_task_1", "第一位学习者的数据库低进展记录");
+    await store.getOrCreateSession("S002");
+
+    database.queries.length = 0;
+    const analytics = await store.getCohortAnalytics({
+      phase: "practice",
+      agent: "A2",
+      event: "coaching_push",
+    });
+
+    expect(analytics).toMatchObject({
+      filters: {
+        applied: {
+          phase: "practice",
+          agent: "A2",
+          event: "coaching_push",
+        },
+      },
+      dashboard: {
+        cohort: {
+          learnerCount: 1,
+          trainingCompleted: 1,
+          coachingSignals: 1,
+          aiInteractions: 0,
+        },
+      },
+      learners: [
+        {
+          trainingCompleted: true,
+          activePracticeTaskId: "practice_task_1",
+          coachingSignals: 1,
+          aiInteractions: 0,
+        },
+      ],
+      integrations: {
+        factLayer: "aais_events",
+      },
+    });
+    expect(analytics.learners[0].learnerKey).toMatch(/^learner-[a-f0-9]{12}$/);
+    expect(analytics.learners[0].sessionKey).toMatch(/^session-[a-f0-9]{12}$/);
+    expect(JSON.stringify(analytics)).not.toContain("S001");
+    expect(JSON.stringify(analytics)).not.toContain(rawSession.sessionId);
+    expect(JSON.stringify(analytics)).not.toContain("第一位学习者的数据库低进展记录");
+    expect(database.queries.some((query) =>
+      /with matching_sessions as/i.test(query.sql) && /from aais_events/i.test(query.sql)
+    )).toBe(true);
+    expect(database.queries.some((query) =>
+      /^select payload(?:,\s*version)? from aais_learner_sessions order by/i.test(query.sql.trim())
+    )).toBe(false);
+  });
+
+  it("keeps SQL cohort analytics flat for 500 simulated learners", async () => {
+    const database = createFakeDatabaseClient();
+    database.seedEventRows(createFakeCohortPerformanceRows(500));
+    const store = createAaisLearningStore({ database });
+    const durations: number[] = [];
+    let analytics: Awaited<ReturnType<typeof store.getCohortAnalytics>> | null = null;
+
+    for (let run = 0; run < 5; run += 1) {
+      const startedAt = performance.now();
+      analytics = await store.getCohortAnalytics({
+        phase: "practice",
+        agent: "A2",
+        event: "coaching_push",
+      });
+      durations.push(performance.now() - startedAt);
+    }
+
+    const p95 = [...durations].sort((left, right) => left - right)[Math.ceil(durations.length * 0.95) - 1] ?? 0;
+    expect(p95).toBeLessThan(500);
+    expect(analytics?.dashboard.cohort.learnerCount).toBe(500);
+    expect(analytics?.integrations.factLayer).toBe("aais_events");
+    expect(database.queries.filter((query) =>
+      /with matching_sessions as/i.test(query.sql) && /from aais_events/i.test(query.sql)
+    )).toHaveLength(5);
+    expect(database.queries.some((query) =>
+      /^select payload(?:,\s*version)? from aais_learner_sessions order by/i.test(query.sql.trim())
+    )).toBe(false);
+  });
+
+  it("paginates cohort learner rows while preserving full aggregate totals", async () => {
+    const store = createAaisLearningStore({ rootDir: tempDir });
+    await store.getOrCreateSession("S001");
+    await store.getOrCreateSession("S002");
+    await store.getOrCreateSession("S003");
+
+    const analytics = await store.getCohortAnalytics({}, {
+      limit: 2,
+      offset: 1,
+    });
+
+    expect(analytics.dashboard.cohort.learnerCount).toBe(3);
+    expect(analytics.learners).toHaveLength(2);
+    expect(analytics.pagination).toEqual({
+      limit: 2,
+      offset: 1,
+      returnedLearners: 2,
+      totalLearners: 3,
+      hasPreviousPage: true,
+      hasNextPage: false,
+    });
+  });
+
   it("exports pseudonymous cohort session keys instead of internal learner session ids", async () => {
     const store = createAaisLearningStore({ rootDir: tempDir });
     const rawSession = await store.completeTask("S001", "training_task_1");
@@ -759,34 +1081,328 @@ describe("AAIS backend learning store", () => {
   });
 });
 
+type FakeAaisEventRow = {
+  id: string;
+  student_id: string;
+  session_id: string;
+  phase: string;
+  task: string;
+  agent: string;
+  event: string;
+  event_time: string;
+  detail: Record<string, unknown>;
+};
+
+type FakeLearnerTaskStateRow = {
+  student_id: string;
+  session_id: string;
+  task: string;
+  phase: string;
+  status: string;
+  artifact_characters: number;
+  self_report_characters: number;
+  scaffold_requests: number;
+  updated_at: string;
+};
+
+function summarizeFakeSqlCohortRows(events: FakeAaisEventRow[], params: unknown[]) {
+  const [phase, task, agent, eventName, cohort, role, courseId] = params.map(readNullableFakeFilter);
+  const matchingSessionKeys = new Set(
+    events
+      .filter((event) => matchesFakeSqlCohortFilters(event, {
+        phase,
+        task,
+        agent,
+        eventName,
+        cohort,
+        role,
+        courseId,
+      }))
+      .map(createFakeSessionKey),
+  );
+  const groups = new Map<string, {
+    student_id: string;
+    session_id: string;
+    all: FakeAaisEventRow[];
+    filtered: FakeAaisEventRow[];
+  }>();
+  for (const event of events) {
+    const key = createFakeSessionKey(event);
+    if (!matchingSessionKeys.has(key)) {
+      continue;
+    }
+    const group = groups.get(key) ?? {
+      student_id: event.student_id,
+      session_id: event.session_id,
+      all: [],
+      filtered: [],
+    };
+    group.all.push(event);
+    if (matchesFakeSqlCohortFilters(event, {
+      phase,
+      task,
+      agent,
+      eventName,
+      cohort,
+      role,
+      courseId,
+    })) {
+      group.filtered.push(event);
+    }
+    groups.set(key, group);
+  }
+
+  return Array.from(groups.values())
+    .map((group) => {
+      const allEvents = [...group.all].sort(compareFakeAaisEventsDesc);
+      const activePracticeEvent = allEvents.find((event) =>
+        event.phase === "practice"
+        && event.task
+        && fakeActivePracticeTaskEvents.has(event.event)
+      );
+      const aiAcceptanceDecisionKeys = new Set(
+        group.filtered
+          .filter((event) => event.event === "ai_acceptance_recorded")
+          .map((event) => readFakeDetailText(event.detail, "decision_key") || event.id),
+      );
+      return {
+        student_id: group.student_id,
+        session_id: group.session_id,
+        updated_at: allEvents[0]?.event_time ?? new Date(0).toISOString(),
+        training_completed: group.all.some((event) =>
+          event.phase === "training" && event.event === "task_completed"
+        ),
+        active_practice_task_id: activePracticeEvent?.task ?? null,
+        completed_practice_tasks: new Set(
+          group.all
+            .filter((event) => event.phase === "practice" && event.event === "task_completed")
+            .map((event) => event.task),
+        ).size,
+        scaffold_requests: countFakeEvents(group.filtered, ["scaffold_request"]),
+        coaching_signals: countFakeEvents(group.filtered, ["coaching_push", "monitoring_pause_detected"]),
+        ai_prompt_response_events: countFakeEvents(group.filtered, [
+          "ai_prompt_submitted",
+          "ai_response_completed",
+        ]),
+        ai_acceptance_decisions: aiAcceptanceDecisionKeys.size,
+        self_report_count: countFakeEvents(group.filtered, ["self_report_saved"]),
+        expert_trace_count: countFakeEvents(group.filtered, ["expert_trace_compared"]),
+      };
+    })
+    .sort((left, right) =>
+      Date.parse(String(right.updated_at)) - Date.parse(String(left.updated_at))
+      || String(left.student_id).localeCompare(String(right.student_id))
+    );
+}
+
+const fakeActivePracticeTaskEvents = new Set([
+  "task_selected",
+  "task_completed",
+  "artifact_saved",
+  "artifact_edited",
+  "self_report_saved",
+  "scaffold_request",
+  "coaching_push",
+  "monitoring_pause_detected",
+  "ai_prompt_submitted",
+  "ai_response_completed",
+  "ai_acceptance_recorded",
+  "expert_trace_compared",
+]);
+
+function readNullableFakeFilter(value: unknown) {
+  return typeof value === "string" && value ? value : null;
+}
+
+function matchesFakeSqlCohortFilters(
+  event: FakeAaisEventRow,
+  filters: {
+    phase: string | null | undefined;
+    task: string | null | undefined;
+    agent: string | null | undefined;
+    eventName: string | null | undefined;
+    cohort: string | null | undefined;
+    role: string | null | undefined;
+    courseId: string | null | undefined;
+  },
+) {
+  return (!filters.phase || event.phase === filters.phase)
+    && (!filters.task || event.task === filters.task)
+    && (!filters.agent || event.agent === filters.agent)
+    && (!filters.eventName || event.event === filters.eventName)
+    && (!filters.cohort || readFakeDetailText(event.detail, "cohort") === filters.cohort)
+    && (!filters.role || readFakeDetailText(event.detail, "role") === filters.role)
+    && (
+      !filters.courseId
+      || readFakeDetailText(event.detail, "course_id") === filters.courseId
+      || readFakeDetailText(event.detail, "courseId") === filters.courseId
+    );
+}
+
+function createFakeSessionKey(event: FakeAaisEventRow) {
+  return `${event.student_id}\0${event.session_id}`;
+}
+
+function compareFakeAaisEventsDesc(left: FakeAaisEventRow, right: FakeAaisEventRow) {
+  return Date.parse(right.event_time) - Date.parse(left.event_time)
+    || right.id.localeCompare(left.id);
+}
+
+function countFakeEvents(events: FakeAaisEventRow[], names: string[]) {
+  const wanted = new Set(names);
+  return events.filter((event) => wanted.has(event.event)).length;
+}
+
+function createFakeCohortPerformanceRows(learnerCount: number) {
+  const rows: FakeAaisEventRow[] = [];
+  const baseTime = Date.UTC(2026, 0, 1, 0, 0, 0);
+  for (let index = 0; index < learnerCount; index += 1) {
+    const studentId = `S-perf-${String(index).padStart(3, "0")}`;
+    const sessionId = `session-perf-${String(index).padStart(3, "0")}`;
+    const detail = {
+      cohort: "perf-cohort",
+      role: "learner",
+      course_id: "cognitive-apprenticeship",
+    };
+    rows.push(
+      createFakeAaisEventRow({
+        id: `${studentId}-training-complete`,
+        studentId,
+        sessionId,
+        phase: "training",
+        task: "training_task_1",
+        agent: "A1",
+        event: "task_completed",
+        eventTime: new Date(baseTime + index * 1_000).toISOString(),
+        detail,
+      }),
+      createFakeAaisEventRow({
+        id: `${studentId}-practice-selected`,
+        studentId,
+        sessionId,
+        phase: "practice",
+        task: "practice_task_1",
+        agent: "A1",
+        event: "task_selected",
+        eventTime: new Date(baseTime + index * 1_000 + 100).toISOString(),
+        detail,
+      }),
+      createFakeAaisEventRow({
+        id: `${studentId}-coaching-push`,
+        studentId,
+        sessionId,
+        phase: "practice",
+        task: "practice_task_1",
+        agent: "A2",
+        event: "coaching_push",
+        eventTime: new Date(baseTime + index * 1_000 + 200).toISOString(),
+        detail,
+      }),
+    );
+  }
+  return rows;
+}
+
+function createFakeAaisEventRow(input: {
+  id: string;
+  studentId: string;
+  sessionId: string;
+  phase: string;
+  task: string;
+  agent: string;
+  event: string;
+  eventTime: string;
+  detail: Record<string, unknown>;
+}): FakeAaisEventRow {
+  return {
+    id: input.id,
+    student_id: input.studentId,
+    session_id: input.sessionId,
+    phase: input.phase,
+    task: input.task,
+    agent: input.agent,
+    event: input.event,
+    event_time: input.eventTime,
+    detail: input.detail,
+  };
+}
+
+function readFakeDetailText(detail: Record<string, unknown>, key: string) {
+  const value = detail[key];
+  return typeof value === "string" && value ? value : null;
+}
+
 function createFakeDatabaseClient() {
-  const sessions = new Map<string, unknown>();
+  const sessions = new Map<string, {
+    payload: unknown;
+    version: number;
+  }>();
   const outbox = new Map<string, {
     id: string;
     payload: AaisEvent;
     status: string;
     attempts: number;
   }>();
+  const events = new Map<string, FakeAaisEventRow>();
+  const taskState = new Map<string, FakeLearnerTaskStateRow>();
   const queries: Array<{ sql: string; params: unknown[] }> = [];
 
   return {
+    eventRows: Array.from(events.values()),
     outboxRows: Array.from(outbox.values()),
+    taskStateRows: Array.from(taskState.values()),
     queries,
+    seedEventRows(rows: FakeAaisEventRow[]) {
+      for (const row of rows) {
+        events.set(row.id, row);
+      }
+      this.eventRows = Array.from(events.values());
+    },
     async query(sql: string, params: unknown[] = []) {
       queries.push({ sql, params });
-      if (/^create table/i.test(sql.trim())) {
+      if (/^(create|alter) table/i.test(sql.trim())) {
         return { rows: [] };
+      }
+      if (/^with matching_sessions as/i.test(sql.trim())) {
+        return {
+          rows: summarizeFakeSqlCohortRows(Array.from(events.values()), params),
+        };
+      }
+      if (/^select count\(\*\)::int as count\s+from aais_events/i.test(sql.trim())) {
+        const [studentId, start, end] = params.map(String);
+        return {
+          rows: [{
+            count: Array.from(events.values()).filter((event) =>
+              event.student_id === studentId
+              && event.event === "ai_prompt_submitted"
+              && event.event_time >= start
+              && event.event_time < end
+            ).length,
+          }],
+        };
       }
       if (/^select payload from aais_lrs_outbox/i.test(sql.trim())) {
         const row = outbox.get(String(params[0]));
         return { rows: row ? [{ payload: row.payload }] : [] };
       }
-      if (/^select payload from aais_learner_sessions order by/i.test(sql.trim())) {
-        return { rows: Array.from(sessions.values()).map((payload) => ({ payload })) };
+      if (/^select payload(?:,\s*version)? from aais_learner_sessions order by/i.test(sql.trim())) {
+        return {
+          rows: Array.from(sessions.values()).map((row) => ({
+            payload: row.payload,
+            version: row.version,
+          })),
+        };
       }
       if (/^select payload/i.test(sql.trim())) {
-        const payload = sessions.get(String(params[0]));
-        return { rows: payload ? [{ payload }] : [] };
+        const row = sessions.get(String(params[0]));
+        return {
+          rows: row
+            ? [{
+                payload: row.payload,
+                version: row.version,
+              }]
+            : [],
+        };
       }
       if (/^select id, payload, attempts/i.test(sql.trim())) {
         return {
@@ -809,7 +1425,59 @@ function createFakeDatabaseClient() {
         };
       }
       if (/^insert into aais_learner_sessions/i.test(sql.trim())) {
-        sessions.set(String(params[0]), params[1]);
+        const studentId = String(params[0]);
+        if (sessions.has(studentId)) {
+          return { rows: [] };
+        }
+        sessions.set(studentId, {
+          payload: params[1],
+          version: 0,
+        });
+        return { rows: [{ version: 0 }] };
+      }
+      if (/^update aais_learner_sessions/i.test(sql.trim())) {
+        const studentId = String(params[0]);
+        const row = sessions.get(studentId);
+        const expectedVersion = Number(params[2]);
+        if (!row || row.version !== expectedVersion) {
+          return { rows: [] };
+        }
+        row.payload = params[1];
+        row.version += 1;
+        return { rows: [{ version: row.version }] };
+      }
+      if (/^insert into aais_events/i.test(sql.trim())) {
+        const id = String(params[0]);
+        if (!events.has(id)) {
+          events.set(id, {
+            id,
+            student_id: String(params[1]),
+            session_id: String(params[2]),
+            phase: String(params[3]),
+            task: String(params[4]),
+            agent: String(params[5]),
+            event: String(params[6]),
+            event_time: String(params[7]),
+            detail: JSON.parse(String(params[8])) as Record<string, unknown>,
+          });
+        }
+        this.eventRows = Array.from(events.values());
+        return { rows: [] };
+      }
+      if (/^insert into aais_learner_task_state/i.test(sql.trim())) {
+        const key = `${String(params[0])}\0${String(params[2])}`;
+        taskState.set(key, {
+          student_id: String(params[0]),
+          session_id: String(params[1]),
+          task: String(params[2]),
+          phase: String(params[3]),
+          status: String(params[4]),
+          artifact_characters: Number(params[5]),
+          self_report_characters: Number(params[6]),
+          scaffold_requests: Number(params[7]),
+          updated_at: String(params[8]),
+        });
+        this.taskStateRows = Array.from(taskState.values());
         return { rows: [] };
       }
       if (/^insert into aais_lrs_outbox/i.test(sql.trim())) {
@@ -852,6 +1520,46 @@ function createFakeDatabaseClient() {
         return { rows: [] };
       }
       throw new Error(`Unexpected query: ${sql}`);
+    },
+  };
+}
+
+function createProbeDatabaseClient(input: {
+  learnerSessionsTable: boolean;
+  learnerTaskStateTable: boolean;
+  lrsOutboxTable: boolean;
+  loginRateLimitsTable: boolean;
+  eventsTable: boolean;
+  usersTable: boolean;
+  userAuthTokensTable: boolean;
+  sessionRevocationsTable: boolean;
+  coursesTable?: boolean;
+  courseTasksTable?: boolean;
+  enrollmentsTable?: boolean;
+}) {
+  const queries: Array<{ sql: string; params: unknown[] }> = [];
+  return {
+    queries,
+    async query(sql: string, params: unknown[] = []) {
+      queries.push({ sql, params });
+      if (/to_regclass/i.test(sql)) {
+        return {
+          rows: [{
+            learner_sessions_table: input.learnerSessionsTable ? "aais_learner_sessions" : null,
+            learner_task_state_table: input.learnerTaskStateTable ? "aais_learner_task_state" : null,
+            lrs_outbox_table: input.lrsOutboxTable ? "aais_lrs_outbox" : null,
+            login_rate_limits_table: input.loginRateLimitsTable ? "aais_login_rate_limits" : null,
+            events_table: input.eventsTable ? "aais_events" : null,
+            users_table: input.usersTable ? "aais_users" : null,
+            user_auth_tokens_table: input.userAuthTokensTable ? "aais_user_auth_tokens" : null,
+            session_revocations_table: input.sessionRevocationsTable ? "aais_session_revocations" : null,
+            courses_table: input.coursesTable === false ? null : "aais_courses",
+            course_tasks_table: input.courseTasksTable === false ? null : "aais_course_tasks",
+            enrollments_table: input.enrollmentsTable === false ? null : "aais_enrollments",
+          }],
+        };
+      }
+      return { rows: [{ ok: 1 }] };
     },
   };
 }

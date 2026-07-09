@@ -12,30 +12,50 @@ import {
   getAaisExpiredCookieOptions,
   getAaisSessionCookieName,
   getAaisSessionCookieOptions,
+  verifyAaisSessionTokenWithMetadata,
 } from "@/lib/server/aais-session";
+import { revokeAaisSessionToken } from "@/lib/server/aais-session-revocations";
 import {
   checkAaisLoginRateLimit,
   clearAaisLoginFailures,
   recordAaisLoginFailure,
+  type AaisLoginRateLimitResult,
 } from "@/lib/server/aais-auth-rate-limit";
 import { authenticateAaisTrialAccount, isAaisTrialLoginEnabled } from "@/lib/server/aais-trial-accounts";
+import { authenticateAaisUserAccount } from "@/lib/server/aais-users";
+import { createAaisApiErrorResponse } from "@/lib/server/aais-api-error";
+
+const aaisLoginConsentVersion = "terms-privacy-guardian-v1";
 
 export async function POST(request: Request) {
-  if (!isAaisTrialLoginEnabled()) {
-    return NextResponse.json({ error: "AAIS trial login is disabled." }, { status: 404 });
-  }
-
   const body = (await request.json().catch(() => null)) as {
     account?: string;
     password?: string;
+    consentAccepted?: boolean;
     from?: string | null;
   } | null;
 
   if (!body?.account?.trim() || !body.password) {
-    return NextResponse.json({ error: "Account and password are required." }, { status: 401 });
+    return createAaisApiErrorResponse({
+      code: "AAIS_AUTH_REQUIRED_FIELDS",
+      message: "Account and password are required.",
+      status: 401,
+    });
+  }
+  if (body.consentAccepted !== true) {
+    return createAaisApiErrorResponse({
+      code: "AAIS_LOGIN_CONSENT_REQUIRED",
+      message: "AAIS terms, privacy, and guardian consent acknowledgement is required before login.",
+      status: 428,
+    });
   }
   const account = body.account.trim();
-  const rateLimit = checkAaisLoginRateLimit({ accountId: account, request });
+  let rateLimit: AaisLoginRateLimitResult;
+  try {
+    rateLimit = await checkAaisLoginRateLimit({ accountId: account, request });
+  } catch (error) {
+    return createRateLimitUnavailableResponse(account, error);
+  }
   if (rateLimit.status === "blocked") {
     recordAaisAuditEvent({
       event: "auth.login.failure",
@@ -48,8 +68,15 @@ export async function POST(request: Request) {
     });
     return createRateLimitResponse(rateLimit.retryAfterSeconds);
   }
-  const authResult = authenticateAaisTrialAccount(account, body.password);
+  const authResult = await authenticateAaisAccount(account, body.password);
   if (authResult.status === "not_configured") {
+    if (!isAaisTrialLoginEnabled()) {
+      return createAaisApiErrorResponse({
+        code: "AAIS_TRIAL_LOGIN_DISABLED",
+        message: "AAIS trial login is disabled.",
+        status: 404,
+      });
+    }
     recordAaisAuditEvent({
       event: "auth.login.failure",
       actorId: account,
@@ -58,10 +85,19 @@ export async function POST(request: Request) {
         reason: "not_configured",
       },
     });
-    return NextResponse.json({ error: "AAIS auth is not configured." }, { status: 503 });
+    return createAaisApiErrorResponse({
+      code: "AAIS_AUTH_NOT_CONFIGURED",
+      message: "AAIS auth is not configured.",
+      status: 503,
+    });
   }
   if (authResult.status !== "ok") {
-    const failureLimit = recordAaisLoginFailure({ accountId: account, request });
+    let failureLimit: AaisLoginRateLimitResult;
+    try {
+      failureLimit = await recordAaisLoginFailure({ accountId: account, request });
+    } catch (error) {
+      return createRateLimitUnavailableResponse(account, error);
+    }
     recordAaisAuditEvent({
       event: "auth.login.failure",
       actorId: account,
@@ -76,13 +112,25 @@ export async function POST(request: Request) {
     if (failureLimit.status === "blocked") {
       return createRateLimitResponse(failureLimit.retryAfterSeconds);
     }
-    return NextResponse.json({ error: "Invalid AAIS trial account or password." }, { status: 401 });
+    return createAaisApiErrorResponse({
+      code: "AAIS_INVALID_CREDENTIALS",
+      message: "Invalid AAIS trial account or password.",
+      status: 401,
+    });
   }
-  clearAaisLoginFailures({ accountId: account, request });
+  try {
+    await clearAaisLoginFailures({ accountId: account, request });
+  } catch (error) {
+    return createRateLimitUnavailableResponse(account, error);
+  }
   recordAaisAuditEvent({
     event: "auth.login.success",
     actorId: authResult.actor.id,
     outcome: "success",
+    metadata: {
+      consentAcknowledged: true,
+      consentVersion: aaisLoginConsentVersion,
+    },
   });
 
   const redirectTarget = body.from?.startsWith("/") && !body.from.startsWith("//")
@@ -114,8 +162,51 @@ export async function POST(request: Request) {
   return response;
 }
 
-export async function DELETE() {
-  const response = NextResponse.json({ ok: true });
+async function authenticateAaisAccount(account: string, password: string) {
+  const userResult = await authenticateAaisUserAccount(account, password);
+  if (userResult.status === "ok") {
+    return userResult;
+  }
+  if (!isAaisTrialLoginEnabled()) {
+    return userResult.status === "not_configured"
+      ? { status: "not_configured" as const }
+      : { status: "invalid" as const };
+  }
+  const trialResult = authenticateAaisTrialAccount(account, password);
+  if (trialResult.status === "ok") {
+    return trialResult;
+  }
+  if (userResult.status === "not_configured" && trialResult.status === "not_configured") {
+    return { status: "not_configured" as const };
+  }
+  return { status: "invalid" as const };
+}
+
+export async function DELETE(request?: Request) {
+  const token = request ? readCookie(request.headers.get("cookie"), getAaisSessionCookieName()) : null;
+  const verified = verifyAaisSessionTokenWithMetadata(token);
+  const revocation = verified
+    ? await revokeAaisSessionToken({
+        tokenHash: verified.tokenHash,
+        actorId: verified.actor.id,
+        expiresAt: verified.expiresAt,
+      })
+    : null;
+  if (verified) {
+    recordAaisAuditEvent({
+      event: "auth.logout",
+      actorId: verified.actor.id,
+      outcome: "success",
+      metadata: {
+        revocationStorage: revocation?.storageMode ?? "none",
+      },
+    });
+  }
+  const response = NextResponse.json({
+    ok: true,
+    sessionRevoked: Boolean(revocation),
+    secrets: "redacted",
+  });
   response.cookies.set(getAaisSessionCookieName(), "", {
     ...getAaisExpiredCookieOptions(),
     httpOnly: true,
@@ -126,28 +217,63 @@ export async function DELETE() {
   return response;
 }
 
+function readCookie(cookieHeader: string | null, name: string) {
+  if (!cookieHeader) {
+    return null;
+  }
+  const cookie = cookieHeader
+    .split(";")
+    .map((part) => part.trim())
+    .find((part) => part.startsWith(`${name}=`));
+  if (!cookie) {
+    return null;
+  }
+  return decodeURIComponent(cookie.slice(name.length + 1));
+}
+
 function createSessionTokenOrResponse(actor: Parameters<typeof createAaisSessionToken>[0]) {
   try {
     return createAaisSessionToken(actor);
   } catch (error) {
     if (error instanceof AaisSessionConfigurationError) {
-      return NextResponse.json({ error: "AAIS session secret is not configured." }, { status: 503 });
+      return createAaisApiErrorResponse({
+        code: "AAIS_SESSION_SECRET_NOT_CONFIGURED",
+        message: "AAIS session secret is not configured.",
+        status: 503,
+      });
     }
     throw error;
   }
 }
 
 function createRateLimitResponse(retryAfterSeconds: number) {
-  return NextResponse.json(
-    {
-      error: "Too many login attempts. Please retry later.",
+  return createAaisApiErrorResponse({
+    code: "AAIS_LOGIN_RATE_LIMITED",
+    message: "Too many login attempts. Please retry later.",
+    status: 429,
+    extra: {
       retryAfterSeconds,
     },
-    {
-      status: 429,
-      headers: {
-        "retry-after": String(retryAfterSeconds),
-      },
+    headers: {
+      "retry-after": String(retryAfterSeconds),
     },
-  );
+  });
+}
+
+function createRateLimitUnavailableResponse(account: string, cause: unknown) {
+  recordAaisAuditEvent({
+    event: "auth.login.failure",
+    actorId: account,
+    outcome: "failure",
+    metadata: {
+      reason: "rate_limit_unavailable",
+    },
+  });
+  return createAaisApiErrorResponse({
+    code: "AAIS_LOGIN_RATE_LIMIT_UNAVAILABLE",
+    message: "AAIS login protection is temporarily unavailable.",
+    status: 503,
+    route: "/api/auth/app-session",
+    cause,
+  });
 }

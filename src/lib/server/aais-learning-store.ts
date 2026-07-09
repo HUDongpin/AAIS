@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdir, readFile, readdir, rename, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { neon } from "@neondatabase/serverless";
 import { Pool } from "pg";
@@ -20,6 +20,7 @@ import {
   enqueueAaisLrsEvents,
   sendAaisEventsToLrs,
 } from "@/lib/server/aais-lrs-client";
+import type { AaisRecommendationOverrideDecision } from "@/lib/server/aais-recommendations";
 
 export type AaisDatabaseClient = {
   query(sql: string, params?: unknown[]): Promise<{ rows: Array<Record<string, unknown>> }>;
@@ -58,6 +59,32 @@ export function isAaisLearningStorageConfigurationError(
   error: unknown,
 ): error is AaisLearningStorageConfigurationError {
   return error instanceof AaisLearningStorageConfigurationError;
+}
+
+export class AaisSessionWriteConflictError extends Error {
+  constructor() {
+    super("AAIS learner session write conflict.");
+    this.name = "AaisSessionWriteConflictError";
+  }
+}
+
+export function isAaisSessionWriteConflictError(
+  error: unknown,
+): error is AaisSessionWriteConflictError {
+  return error instanceof AaisSessionWriteConflictError;
+}
+
+export class AaisRecommendationOverrideTargetError extends Error {
+  constructor() {
+    super("AAIS recommendation override target was not found.");
+    this.name = "AaisRecommendationOverrideTargetError";
+  }
+}
+
+export function isAaisRecommendationOverrideTargetError(
+  error: unknown,
+): error is AaisRecommendationOverrideTargetError {
+  return error instanceof AaisRecommendationOverrideTargetError;
 }
 
 export type AaisTaskStatus = "locked" | "available" | "active" | "completed";
@@ -125,6 +152,35 @@ type ScaffoldResult = {
   session: AaisLearnerSession;
 };
 
+export type AaisLearnerDataExport = {
+  schemaVersion: 1;
+  exportScope: "learner-data";
+  generatedAt: string;
+  studentId: string;
+  data: {
+    session: AaisLearnerSession | null;
+    events: AaisEvent[];
+  };
+  privacy: {
+    ownerScoped: true;
+    includesRawLearnerText: true;
+    cohortPseudonymization: "not-applied-to-owner-export";
+    secrets: "redacted";
+  };
+  secrets: "redacted";
+};
+
+export type AaisLearnerDataDeletionResult = {
+  studentId: string;
+  deletedAt: string;
+  storageMode: "postgres" | "file";
+  learnerRecordDeleted: boolean;
+  mirroredAnalyticsDeleted: boolean;
+  persistentOutboxDeleted: boolean;
+  accountRetained: true;
+  secrets: "redacted";
+};
+
 export type AaisCohortAnalyticsFilters = {
   phase?: AaisPhase;
   task?: string;
@@ -135,7 +191,13 @@ export type AaisCohortAnalyticsFilters = {
   courseId?: string;
 };
 
+export type AaisCohortLearnerPaginationInput = {
+  limit?: number;
+  offset?: number;
+};
+
 type AaisCohortRiskLevel = "high" | "medium" | "low";
+type AaisCohortFactLayer = "lrs" | "aais_events";
 
 type AaisCohortPriorityReason =
   | "training_incomplete"
@@ -143,6 +205,28 @@ type AaisCohortPriorityReason =
   | "a2_coaching_signals"
   | "high_scaffold_dependency"
   | "no_ai_interaction_after_coaching";
+
+type AaisCohortLearnerSummary = {
+  learnerKey: string;
+  sessionKey: string;
+  updatedAt: string;
+  trainingCompleted: boolean;
+  activePracticeTaskId: string | null;
+  completedPracticeTasks: number;
+  scaffoldRequests: number;
+  coachingSignals: number;
+  aiInteractions: number;
+  aiAcceptanceDecisions: number;
+  reflectionStatus: string;
+  riskLevel: AaisCohortRiskLevel;
+  priorityReasons: AaisCohortPriorityReason[];
+};
+
+const aaisSessionStorageVersion = Symbol("aaisSessionStorageVersion");
+
+type AaisStorageVersionedSession = AaisLearnerSession & {
+  [aaisSessionStorageVersion]?: number;
+};
 
 export type AaisAgentEvidenceCapability = {
   enabled: true;
@@ -219,6 +303,8 @@ const aaisLrsOutboxCoalescingPolicy = {
 const aaisA2CoachingCooldownMs = 10 * 60 * 1000;
 const aaisA2ArtifactRegressionMinimumPreviousCharacters = 80;
 const aaisA2ArtifactRegressionMinimumDropCharacters = 40;
+const defaultAaisCohortLearnerPageLimit = 25;
+const maxAaisCohortLearnerPageLimit = 100;
 
 const taskOrder = [
   ...aaisLearningProgram.training.tasks,
@@ -228,26 +314,9 @@ const taskOrder = [
   phase: task.phase,
 }));
 
-const ensureLearnerSessionsTableSql = `create table if not exists aais_learner_sessions (
-        student_id text primary key,
-        payload jsonb not null,
-        updated_at timestamptz not null default now()
-      )`;
-
-const ensureLrsOutboxTableSql = `create table if not exists aais_lrs_outbox (
-        id text primary key,
-        payload jsonb not null,
-        status text not null default 'pending',
-        attempts integer not null default 0,
-        last_error text,
-        created_at timestamptz not null default now(),
-        updated_at timestamptz not null default now()
-      )`;
-
 export function createAaisLearningStore(input: StoreInput = {}) {
   const rootDir = input.rootDir ?? getDefaultDataDir();
   const database = input.database ?? getConfiguredDatabaseClient();
-  let databaseSchemaReady = false;
 
   async function getOrCreateSession(studentId: string): Promise<AaisLearnerSession> {
     const safeStudentId = requireSafeId(studentId, "student id");
@@ -303,7 +372,23 @@ export function createAaisLearningStore(input: StoreInput = {}) {
         }),
       ],
     };
-    await writeSessionAndMirrorEvents(session, session.events);
+    try {
+      await writeSessionAndMirrorEvents(session, session.events);
+    } catch (error) {
+      if (isAaisSessionWriteConflictError(error)) {
+        recordAaisSessionWriteConflict({
+          studentId: safeStudentId,
+          operation: "session_created",
+          attempt: 0,
+          resolution: "retrying",
+        });
+        const createdByConcurrentRequest = await readSession(safeStudentId);
+        if (createdByConcurrentRequest) {
+          return normalizeSession(createdByConcurrentRequest);
+        }
+      }
+      throw error;
+    }
     return session;
   }
 
@@ -657,6 +742,72 @@ export function createAaisLearningStore(input: StoreInput = {}) {
     };
   }
 
+  async function exportLearnerData(studentId: string): Promise<AaisLearnerDataExport> {
+    const safeStudentId = requireSafeId(studentId, "student id");
+    const session = await readSession(safeStudentId);
+    return {
+      schemaVersion: 1,
+      exportScope: "learner-data",
+      generatedAt: new Date().toISOString(),
+      studentId: safeStudentId,
+      data: {
+        session: session ? normalizeSession(session) : null,
+        events: session?.events ?? [],
+      },
+      privacy: {
+        ownerScoped: true,
+        includesRawLearnerText: true,
+        cohortPseudonymization: "not-applied-to-owner-export",
+        secrets: "redacted",
+      },
+      secrets: "redacted",
+    };
+  }
+
+  async function deleteLearnerData(studentId: string): Promise<AaisLearnerDataDeletionResult> {
+    const safeStudentId = requireSafeId(studentId, "student id");
+    const existing = await readSession(safeStudentId);
+    if (database) {
+      await database.query(
+        "delete from aais_lrs_outbox where payload->>'student_id' = $1",
+        [safeStudentId],
+      );
+      await database.query(
+        "delete from aais_learner_task_state where student_id = $1",
+        [safeStudentId],
+      );
+      await database.query(
+        "delete from aais_events where student_id = $1",
+        [safeStudentId],
+      );
+      await database.query(
+        "delete from aais_learner_sessions where student_id = $1",
+        [safeStudentId],
+      );
+      return {
+        studentId: safeStudentId,
+        deletedAt: new Date().toISOString(),
+        storageMode: "postgres",
+        learnerRecordDeleted: Boolean(existing),
+        mirroredAnalyticsDeleted: true,
+        persistentOutboxDeleted: true,
+        accountRetained: true,
+        secrets: "redacted",
+      };
+    }
+    await rm(getSessionPath(safeStudentId), { force: true });
+    return {
+      studentId: safeStudentId,
+      deletedAt: new Date().toISOString(),
+      storageMode: "file",
+      learnerRecordDeleted: Boolean(existing),
+      mirroredAnalyticsDeleted: true,
+      persistentOutboxDeleted: false,
+      accountRetained: true,
+      secrets: "redacted",
+    };
+  }
+
   async function exportCohortAnalytics(format: "json" | "csv", filters: AaisCohortAnalyticsFilters = {}) {
     const analytics = await getCohortAnalytics(filters);
     const exported = buildAaisCohortAnalyticsExport(analytics);
@@ -679,9 +830,99 @@ export function createAaisLearningStore(input: StoreInput = {}) {
     return summarizeAaisLearningAnalytics(session);
   }
 
-  async function getCohortAnalytics(filters: AaisCohortAnalyticsFilters = {}) {
+  async function getDailyGuideUsage(studentId: string, now = new Date()) {
+    const safeStudentId = requireSafeId(studentId, "student id");
+    const dayRange = getAaisUtcDayRange(now);
+    if (database) {
+      const result = await database.query(
+        `select count(*)::int as count
+         from aais_events
+         where student_id = $1
+           and event = 'ai_prompt_submitted'
+           and event_time >= $2::timestamptz
+           and event_time < $3::timestamptz`,
+        [safeStudentId, dayRange.start, dayRange.end],
+      );
+      return {
+        ...dayRange,
+        used: Number(result.rows[0]?.count ?? 0),
+      };
+    }
+    const session = await readSession(safeStudentId);
+    return {
+      ...dayRange,
+      used: (session?.events ?? []).filter((event) =>
+        event.event === "ai_prompt_submitted"
+        && event.time >= dayRange.start
+        && event.time < dayRange.end
+      ).length,
+    };
+  }
+
+  async function getCohortAnalytics(
+    filters: AaisCohortAnalyticsFilters = {},
+    pagination?: AaisCohortLearnerPaginationInput,
+  ) {
+    if (database) {
+      const rows = await readSqlCohortAnalyticsRows(database, filters);
+      return summarizeAaisSqlCohortAnalytics(rows, filters, pagination);
+    }
     const sessions = await readAllSessions();
-    return summarizeAaisCohortAnalytics(sessions, filters);
+    return summarizeAaisCohortAnalytics(sessions, filters, pagination);
+  }
+
+  async function recordRecommendationOverride(input: {
+    actorId: string;
+    actorRole: "teacher" | "admin";
+    learnerKey: string;
+    sessionKey: string;
+    recommendationId: string;
+    ruleId: string;
+    targetTaskId: string | null;
+    decision: AaisRecommendationOverrideDecision;
+    note?: string;
+  }) {
+    const session = await readSessionByAnalyticsKeys(input.learnerKey, input.sessionKey);
+    if (!session) {
+      throw new AaisRecommendationOverrideTargetError();
+    }
+    const safeRecommendationId = requireSafeId(input.recommendationId, "recommendation id");
+    const safeRuleId = requireSafeId(input.ruleId, "recommendation rule id");
+    const targetTaskId = input.targetTaskId
+      ? requireSafeId(input.targetTaskId, "recommendation target task id")
+      : session.activeTaskId;
+    const targetTask = session.tasks.find((task) => task.taskId === targetTaskId)
+      ?? session.tasks.find((task) => task.taskId === session.activeTaskId)
+      ?? session.tasks[0];
+    const note = typeof input.note === "string" ? input.note : "";
+    const event = createAaisEvent({
+      studentId: session.studentId,
+      sessionId: session.sessionId,
+      phase: targetTask?.phase ?? "practice",
+      task: targetTask?.taskId ?? targetTaskId,
+      agent: "platform",
+      event: "recommendation_override_recorded",
+      detail: {
+        recommendation_id: safeRecommendationId,
+        rule_id: safeRuleId,
+        decision: input.decision,
+        educator_role: input.actorRole,
+        educator_key: createPseudonymousEducatorKey(input.actorId),
+        learner_key: input.learnerKey,
+        session_key: input.sessionKey,
+        note_length: note.trim().length,
+        raw_note: "excluded",
+      },
+    });
+    const updated = touch({
+      ...session,
+      events: [...session.events, event],
+    });
+    await writeSessionAndMirrorEvents(updated, [event]);
+    return {
+      event,
+      session: updated,
+    };
   }
 
   async function saveTaskText(input: {
@@ -691,20 +932,68 @@ export function createAaisLearningStore(input: StoreInput = {}) {
     value: string;
     event: "artifact_saved" | "self_report_saved";
   }) {
-    const session = await getOrCreateSession(input.studentId);
-    const task = requireTask(session, input.taskId);
+    let baseFieldValue: string | null = null;
     const value = requireSafeText(input.value, input.field);
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const session = await getOrCreateSession(input.studentId);
+      const task = requireTask(session, input.taskId);
+      baseFieldValue ??= task[input.field];
+      if (attempt > 0 && task[input.field] !== baseFieldValue && task[input.field] !== value) {
+        recordAaisSessionWriteConflict({
+          studentId: session.studentId,
+          operation: input.event,
+          attempt,
+          resolution: "merge_failed",
+        });
+        throw new AaisSessionWriteConflictError();
+      }
+      const { updated, newEvents } = createTaskTextUpdate({
+        session,
+        task,
+        input,
+        value,
+      });
+      try {
+        await writeSessionAndMirrorEvents(updated, newEvents);
+        return updated;
+      } catch (error) {
+        if (isAaisSessionWriteConflictError(error) && attempt === 0) {
+          recordAaisSessionWriteConflict({
+            studentId: session.studentId,
+            operation: input.event,
+            attempt,
+            resolution: "retrying",
+          });
+          continue;
+        }
+        throw error;
+      }
+    }
+    throw new AaisSessionWriteConflictError();
+  }
+
+  function createTaskTextUpdate(input: {
+    session: AaisLearnerSession;
+    task: AaisTaskRecord;
+    input: {
+      taskId: string;
+      field: "artifactText" | "selfReport";
+      event: "artifact_saved" | "self_report_saved";
+    };
+    value: string;
+  }) {
+    const { session, task, value } = input;
     const previousTask = task;
     const tasks = session.tasks.map((candidate) =>
-      candidate.taskId === input.taskId
+      candidate.taskId === input.input.taskId
         ? {
             ...candidate,
-            [input.field]: value,
+            [input.input.field]: value,
           }
         : candidate,
     );
     const now = new Date();
-    const artifactEditEvent = input.field === "artifactText"
+    const artifactEditEvent = input.input.field === "artifactText"
       ? createAaisEvent({
           studentId: session.studentId,
           sessionId: session.sessionId,
@@ -724,8 +1013,8 @@ export function createAaisLearningStore(input: StoreInput = {}) {
       sessionId: session.sessionId,
       phase: task.phase,
       task: task.taskId,
-      agent: input.field === "artifactText" ? "A3" : "A4",
-      event: input.event,
+      agent: input.input.field === "artifactText" ? "A3" : "A4",
+      event: input.input.event,
       detail: {
         characters: value.length,
       },
@@ -734,10 +1023,10 @@ export function createAaisLearningStore(input: StoreInput = {}) {
     const evidenceEvents = createTaskTextEvidenceEvents({
       session,
       task,
-      event: input.event,
+      event: input.input.event,
       value,
     });
-    const monitoringEvents = input.field === "artifactText"
+    const monitoringEvents = input.input.field === "artifactText"
       ? createArtifactMonitoringEvents({
           session,
           task,
@@ -756,18 +1045,19 @@ export function createAaisLearningStore(input: StoreInput = {}) {
       tasks,
       events: [...session.events, ...newEvents],
     });
-    await writeSessionAndMirrorEvents(updated, newEvents);
-    return updated;
+    return {
+      updated,
+      newEvents,
+    };
   }
 
   async function readSession(studentId: string) {
     if (database) {
-      await ensureDatabaseSchema();
       const result = await database.query(
-        "select payload from aais_learner_sessions where student_id = $1 limit 1",
+        "select payload, version from aais_learner_sessions where student_id = $1 limit 1",
         [requireSafeId(studentId, "student id")],
       );
-      return parseDatabaseSessionPayload(result.rows[0]?.payload);
+      return parseDatabaseSessionPayload(result.rows[0]?.payload, result.rows[0]?.version);
     }
     try {
       const raw = await readFile(getSessionPath(studentId), "utf8");
@@ -782,14 +1072,34 @@ export function createAaisLearningStore(input: StoreInput = {}) {
 
   async function writeSession(session: AaisLearnerSession) {
     if (database) {
-      await ensureDatabaseSchema();
-      await database.query(
-        `insert into aais_learner_sessions (student_id, payload, updated_at)
-         values ($1, $2::jsonb, now())
-         on conflict (student_id)
-         do update set payload = excluded.payload, updated_at = now()`,
-        [session.studentId, JSON.stringify(session)],
+      const expectedVersion = getSessionStorageVersion(session);
+      if (expectedVersion === null) {
+        const insertResult = await database.query(
+          `insert into aais_learner_sessions (student_id, payload, version, updated_at)
+           values ($1, $2::jsonb, 0, now())
+           on conflict (student_id) do nothing
+           returning version`,
+          [session.studentId, JSON.stringify(session)],
+        );
+        const insertedVersion = readDatabaseSessionVersion(insertResult.rows[0]?.version);
+        if (insertedVersion === null) {
+          throw new AaisSessionWriteConflictError();
+        }
+        setSessionStorageVersion(session, insertedVersion);
+        return;
+      }
+      const updateResult = await database.query(
+        `update aais_learner_sessions
+         set payload = $2::jsonb, version = version + 1, updated_at = now()
+         where student_id = $1 and version = $3
+         returning version`,
+        [session.studentId, JSON.stringify(session), expectedVersion],
       );
+      const nextVersion = readDatabaseSessionVersion(updateResult.rows[0]?.version);
+      if (nextVersion === null) {
+        throw new AaisSessionWriteConflictError();
+      }
+      setSessionStorageVersion(session, nextVersion);
       return;
     }
     await mkdir(getSessionsDir(), { recursive: true });
@@ -801,12 +1111,11 @@ export function createAaisLearningStore(input: StoreInput = {}) {
 
   async function readAllSessions() {
     if (database) {
-      await ensureDatabaseSchema();
       const result = await database.query(
-        "select payload from aais_learner_sessions order by updated_at desc",
+        "select payload, version from aais_learner_sessions order by updated_at desc",
       );
       return result.rows
-        .map((row) => parseDatabaseSessionPayload(row.payload))
+        .map((row) => parseDatabaseSessionPayload(row.payload, row.version))
         .filter((session): session is AaisLearnerSession => Boolean(session))
         .map(normalizeSession);
     }
@@ -829,21 +1138,26 @@ export function createAaisLearningStore(input: StoreInput = {}) {
     }
   }
 
-  async function ensureDatabaseSchema() {
-    if (databaseSchemaReady || !database) {
-      return;
-    }
-    await database.query(ensureLearnerSessionsTableSql);
-    await database.query(ensureLrsOutboxTableSql);
-    databaseSchemaReady = true;
+  async function readSessionByAnalyticsKeys(learnerKey: string, sessionKey: string) {
+    const safeLearnerKey = requireSafeAnalyticsKey(learnerKey, "learner key", "learner");
+    const safeSessionKey = requireSafeAnalyticsKey(sessionKey, "session key", "session");
+    const sessions = await readAllSessions();
+    return sessions.find((session) =>
+      createPseudonymousAnalyticsLearnerKey(session.studentId) === safeLearnerKey
+      && createPseudonymousAnalyticsSessionKey(session.sessionId) === safeSessionKey
+    ) ?? null;
   }
 
   async function writeSessionAndMirrorEvents(session: AaisLearnerSession, events: AaisEvent[]) {
     await writeSession(session);
+    if (database) {
+      await writeLearnerTaskStateRows(database, session);
+    }
     if (!events.length) {
       return;
     }
     if (database) {
+      await writeAaisEventRows(database, events);
       await writeLrsOutboxEvents(database, events);
       void flushAaisPersistentLrsOutbox({ database }).catch(() => undefined);
       return;
@@ -862,11 +1176,15 @@ export function createAaisLearningStore(input: StoreInput = {}) {
   return {
     appendGuideExchange,
     completeTask,
+    deleteLearnerData,
     exportCohortAnalytics,
     exportEvents,
+    exportLearnerData,
     getCohortAnalytics,
+    getDailyGuideUsage,
     getAnalytics,
     getOrCreateSession,
+    recordRecommendationOverride,
     recordAiAcceptance,
     requestScaffold,
     saveArtifact,
@@ -1024,6 +1342,7 @@ export function getAaisA2MonitoringCapability(): AaisA2MonitoringCapability {
 export function summarizeAaisCohortAnalytics(
   sessions: AaisLearnerSession[],
   filters: AaisCohortAnalyticsFilters = {},
+  pagination?: AaisCohortLearnerPaginationInput,
 ) {
   const appliedFilters = normalizeCohortAnalyticsFilters(filters);
   const hasFilters = Object.keys(appliedFilters).length > 0;
@@ -1039,7 +1358,7 @@ export function summarizeAaisCohortAnalytics(
       };
     })
     .filter((session) => !hasFilters || session.events.length > 0);
-  const learnerSummaries = normalizedSessions.map((session) => {
+  const learnerSummaries = normalizedSessions.map((session): AaisCohortLearnerSummary => {
     const analytics = summarizeAaisLearningAnalytics(session);
     const learnerSummary = {
       learnerKey: createPseudonymousAnalyticsLearnerKey(session.studentId),
@@ -1059,7 +1378,179 @@ export function summarizeAaisCohortAnalytics(
       ...summarizeCohortLearnerRisk(learnerSummary),
     };
   });
+  return buildAaisCohortAnalyticsSummary(learnerSummaries, appliedFilters, "lrs", pagination);
+}
+
+async function readSqlCohortAnalyticsRows(
+  database: AaisDatabaseClient,
+  filters: AaisCohortAnalyticsFilters = {},
+) {
+  const appliedFilters = normalizeCohortAnalyticsFilters(filters);
+  const params = [
+    appliedFilters.phase ?? null,
+    appliedFilters.task ?? null,
+    appliedFilters.agent ?? null,
+    appliedFilters.event ?? null,
+    appliedFilters.cohort ?? null,
+    appliedFilters.role ?? null,
+    appliedFilters.courseId ?? null,
+  ];
+  const result = await database.query(
+    `with matching_sessions as (
+       select distinct e.student_id, e.session_id
+       from aais_events e
+       where ($1::text is null or e.phase = $1)
+         and ($2::text is null or e.task = $2)
+         and ($3::text is null or e.agent = $3)
+         and ($4::text is null or e.event = $4)
+         and ($5::text is null or e.detail->>'cohort' = $5)
+         and ($6::text is null or e.detail->>'role' = $6)
+         and ($7::text is null or coalesce(e.detail->>'course_id', e.detail->>'courseId') = $7)
+     ),
+     all_session_events as (
+       select e.*
+       from aais_events e
+       inner join matching_sessions m
+         on m.student_id = e.student_id
+        and m.session_id = e.session_id
+     ),
+     filtered_session_events as (
+       select e.*
+       from all_session_events e
+       where ($1::text is null or e.phase = $1)
+         and ($2::text is null or e.task = $2)
+         and ($3::text is null or e.agent = $3)
+         and ($4::text is null or e.event = $4)
+         and ($5::text is null or e.detail->>'cohort' = $5)
+         and ($6::text is null or e.detail->>'role' = $6)
+         and ($7::text is null or coalesce(e.detail->>'course_id', e.detail->>'courseId') = $7)
+     ),
+     status_by_session as (
+       select
+         student_id,
+         session_id,
+         max(event_time) as updated_at,
+         bool_or(phase = 'training' and event = 'task_completed') as training_completed,
+         (
+           array_agg(task order by event_time desc, id desc)
+           filter (
+             where phase = 'practice'
+               and task is not null
+               and task <> ''
+               and event in (
+                 'task_selected',
+                 'task_completed',
+                 'artifact_saved',
+                 'artifact_edited',
+                 'self_report_saved',
+                 'scaffold_request',
+                 'coaching_push',
+                 'monitoring_pause_detected',
+                 'ai_prompt_submitted',
+                 'ai_response_completed',
+                 'ai_acceptance_recorded',
+                 'expert_trace_compared'
+               )
+           )
+         )[1] as active_practice_task_id,
+         count(distinct task) filter (
+           where phase = 'practice'
+             and event = 'task_completed'
+         )::int as completed_practice_tasks
+       from all_session_events
+       group by student_id, session_id
+     ),
+     counts_by_session as (
+       select
+         student_id,
+         session_id,
+         count(*) filter (where event = 'scaffold_request')::int as scaffold_requests,
+         count(*) filter (
+           where event in ('coaching_push', 'monitoring_pause_detected')
+         )::int as coaching_signals,
+         count(*) filter (
+           where event in ('ai_prompt_submitted', 'ai_response_completed')
+         )::int as ai_prompt_response_events,
+         count(distinct coalesce(nullif(detail->>'decision_key', ''), id)) filter (
+           where event = 'ai_acceptance_recorded'
+         )::int as ai_acceptance_decisions,
+         count(*) filter (where event = 'self_report_saved')::int as self_report_count,
+         count(*) filter (where event = 'expert_trace_compared')::int as expert_trace_count
+       from filtered_session_events
+       group by student_id, session_id
+     )
+     select
+       s.student_id,
+       s.session_id,
+       s.updated_at,
+       s.training_completed,
+       s.active_practice_task_id,
+       s.completed_practice_tasks,
+       coalesce(c.scaffold_requests, 0)::int as scaffold_requests,
+       coalesce(c.coaching_signals, 0)::int as coaching_signals,
+       coalesce(c.ai_prompt_response_events, 0)::int as ai_prompt_response_events,
+       coalesce(c.ai_acceptance_decisions, 0)::int as ai_acceptance_decisions,
+       coalesce(c.self_report_count, 0)::int as self_report_count,
+       coalesce(c.expert_trace_count, 0)::int as expert_trace_count
+     from status_by_session s
+     left join counts_by_session c
+       on c.student_id = s.student_id
+      and c.session_id = s.session_id
+     order by s.updated_at desc, s.student_id asc`,
+    params,
+  );
+  return result.rows;
+}
+
+function summarizeAaisSqlCohortAnalytics(
+  rows: Array<Record<string, unknown>>,
+  filters: AaisCohortAnalyticsFilters = {},
+  pagination?: AaisCohortLearnerPaginationInput,
+) {
+  const appliedFilters = normalizeCohortAnalyticsFilters(filters);
+  const learnerSummaries = rows.map((row): AaisCohortLearnerSummary => {
+    const scaffoldRequests = readSqlInteger(row.scaffold_requests);
+    const coachingSignals = readSqlInteger(row.coaching_signals);
+    const aiAcceptanceDecisions = readSqlInteger(row.ai_acceptance_decisions);
+    const aiInteractions = readSqlInteger(row.ai_prompt_response_events) + aiAcceptanceDecisions;
+    const selfReportCount = readSqlInteger(row.self_report_count);
+    const expertTraceCount = readSqlInteger(row.expert_trace_count);
+    const learnerSummary = {
+      learnerKey: createPseudonymousAnalyticsLearnerKey(readSqlText(row.student_id)),
+      sessionKey: createPseudonymousAnalyticsSessionKey(readSqlText(row.session_id)),
+      updatedAt: readSqlTimestamp(row.updated_at),
+      trainingCompleted: readSqlBoolean(row.training_completed),
+      activePracticeTaskId: readNullableSqlText(row.active_practice_task_id),
+      completedPracticeTasks: readSqlInteger(row.completed_practice_tasks),
+      scaffoldRequests,
+      coachingSignals,
+      aiInteractions,
+      aiAcceptanceDecisions,
+      reflectionStatus: selfReportCount > 0 && expertTraceCount > 0
+        ? "evidence_present"
+        : "needs_reflection_evidence",
+    };
+    return {
+      ...learnerSummary,
+      ...summarizeCohortLearnerRisk(learnerSummary),
+    };
+  });
+  return buildAaisCohortAnalyticsSummary(learnerSummaries, appliedFilters, "aais_events", pagination);
+}
+
+function buildAaisCohortAnalyticsSummary(
+  learnerSummaries: AaisCohortLearnerSummary[],
+  appliedFilters: AaisCohortAnalyticsFilters,
+  factLayer: AaisCohortFactLayer,
+  paginationInput?: AaisCohortLearnerPaginationInput,
+) {
   const riskBreakdown = countCohortRiskLevels(learnerSummaries);
+  const pagination = paginationInput
+    ? normalizeAaisCohortLearnerPagination(paginationInput, learnerSummaries.length)
+    : null;
+  const pageLearners = pagination
+    ? learnerSummaries.slice(pagination.offset, pagination.offset + pagination.limit)
+    : learnerSummaries;
   return {
     filters: {
       applied: appliedFilters,
@@ -1082,9 +1573,10 @@ export function summarizeAaisCohortAnalytics(
         riskBreakdown,
       },
     },
-    learners: learnerSummaries,
+    learners: pageLearners,
+    ...(pagination ? { pagination } : {}),
     integrations: {
-      factLayer: "lrs",
+      factLayer,
       joinKeys: ["session_id", "phase", "task", "agent", "event", "cohort", "role", "course_id"],
     },
     privacy: {
@@ -1093,6 +1585,89 @@ export function summarizeAaisCohortAnalytics(
       minimumNecessaryFields: true,
     },
   };
+}
+
+export function normalizeAaisCohortLearnerPagination(
+  input: AaisCohortLearnerPaginationInput = {},
+  totalLearners = 0,
+) {
+  const limit = normalizeAaisCohortPaginationNumber(
+    input.limit,
+    "limit",
+    defaultAaisCohortLearnerPageLimit,
+    1,
+    maxAaisCohortLearnerPageLimit,
+  );
+  const offset = normalizeAaisCohortPaginationNumber(
+    input.offset,
+    "offset",
+    0,
+    0,
+    Number.MAX_SAFE_INTEGER,
+  );
+  const boundedOffset = Math.min(offset, Math.max(0, totalLearners));
+  const returnedLearners = Math.max(0, Math.min(limit, totalLearners - boundedOffset));
+  return {
+    limit,
+    offset: boundedOffset,
+    returnedLearners,
+    totalLearners,
+    hasPreviousPage: boundedOffset > 0,
+    hasNextPage: boundedOffset + returnedLearners < totalLearners,
+  };
+}
+
+function normalizeAaisCohortPaginationNumber(
+  value: number | undefined,
+  label: "limit" | "offset",
+  fallback: number,
+  min: number,
+  max: number,
+) {
+  if (value === undefined) {
+    return fallback;
+  }
+  if (!Number.isInteger(value) || value < min) {
+    throw new Error(`Invalid AAIS cohort analytics ${label}.`);
+  }
+  return Math.min(value, max);
+}
+
+function readSqlInteger(value: unknown) {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+  return 0;
+}
+
+function readSqlText(value: unknown) {
+  if (typeof value !== "string" || !value) {
+    throw new Error("Invalid AAIS SQL analytics row.");
+  }
+  return value;
+}
+
+function readNullableSqlText(value: unknown) {
+  return typeof value === "string" && value ? value : null;
+}
+
+function readSqlBoolean(value: unknown) {
+  return value === true || value === "true";
+}
+
+function readSqlTimestamp(value: unknown) {
+  if (value instanceof Date) {
+    return value.toISOString();
+  }
+  if (typeof value === "string" && value) {
+    const parsed = new Date(value);
+    return Number.isNaN(parsed.getTime()) ? value : parsed.toISOString();
+  }
+  return new Date(0).toISOString();
 }
 
 function buildAaisCohortAnalyticsExport(analytics: ReturnType<typeof summarizeAaisCohortAnalytics>) {
@@ -1310,7 +1885,6 @@ export async function flushAaisPersistentLrsOutbox(input: {
       secrets: "redacted" as const,
     };
   }
-  await database.query(ensureLrsOutboxTableSql);
   const result = await database.query(
     `select id, payload, attempts
      from aais_lrs_outbox
@@ -1380,7 +1954,6 @@ export async function requeueAaisPersistentLrsDeadLetters(input: {
       secrets: "redacted" as const,
     };
   }
-  await database.query(ensureLrsOutboxTableSql);
   const result = await database.query(
     `update aais_lrs_outbox
      set status = 'retry', attempts = 0, last_error = null, updated_at = now()
@@ -1421,7 +1994,6 @@ export async function getAaisPersistentLrsOutboxStatus(input: {
       secrets: "redacted" as const,
     };
   }
-  await database.query(ensureLrsOutboxTableSql);
   const result = await database.query(
     "select status, count(*)::int as count from aais_lrs_outbox group by status",
   );
@@ -1448,7 +2020,6 @@ export async function getAaisPersistentLrsOutboxStatus(input: {
 }
 
 async function writeLrsOutboxEvents(database: AaisDatabaseClient, events: AaisEvent[]) {
-  await database.query(ensureLrsOutboxTableSql);
   for (const event of events) {
     const id = createAaisLrsOutboxId(event);
     const payload = await createOutboxPayload(database, id, event);
@@ -1460,6 +2031,92 @@ async function writeLrsOutboxEvents(database: AaisDatabaseClient, events: AaisEv
       [id, JSON.stringify(payload)],
     );
   }
+}
+
+async function writeAaisEventRows(database: AaisDatabaseClient, events: AaisEvent[]) {
+  for (const event of events) {
+    await database.query(
+      `insert into aais_events (
+         id,
+         student_id,
+         session_id,
+         phase,
+         task,
+         agent,
+         event,
+         event_time,
+         detail
+       )
+       values ($1, $2, $3, $4, $5, $6, $7, $8::timestamptz, $9::jsonb)
+       on conflict do nothing`,
+      [
+        createAaisEventRowId(event),
+        event.student_id,
+        event.session_id,
+        event.phase,
+        event.task,
+        event.agent,
+        event.event,
+        event.time,
+        JSON.stringify(event.detail),
+      ],
+    );
+  }
+}
+
+async function writeLearnerTaskStateRows(database: AaisDatabaseClient, session: AaisLearnerSession) {
+  for (const task of session.tasks) {
+    await database.query(
+      `insert into aais_learner_task_state (
+         student_id,
+         session_id,
+         task,
+         phase,
+         status,
+         artifact_characters,
+         self_report_characters,
+         scaffold_requests,
+         updated_at
+       )
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9::timestamptz)
+       on conflict (student_id, task)
+       do update set
+         session_id = excluded.session_id,
+         phase = excluded.phase,
+         status = excluded.status,
+         artifact_characters = excluded.artifact_characters,
+         self_report_characters = excluded.self_report_characters,
+         scaffold_requests = excluded.scaffold_requests,
+         updated_at = excluded.updated_at`,
+      [
+        session.studentId,
+        session.sessionId,
+        task.taskId,
+        task.phase,
+        task.status,
+        task.artifactText.length,
+        task.selfReport.length,
+        task.scaffoldRequests,
+        session.updatedAt,
+      ],
+    );
+  }
+}
+
+function createAaisEventRowId(event: AaisEvent) {
+  return createHash("sha256")
+    .update(JSON.stringify([
+      event.student_id,
+      event.session_id,
+      event.phase,
+      event.task,
+      event.agent,
+      event.event,
+      event.time,
+      event.detail,
+    ]))
+    .digest("hex")
+    .slice(0, 32);
 }
 
 async function createOutboxPayload(database: AaisDatabaseClient, id: string, event: AaisEvent) {
@@ -1590,8 +2247,40 @@ export async function probeAaisLearningStorage(input: {
     };
   }
   try {
-    await database.query(ensureLearnerSessionsTableSql);
+    const tableCheck = await database.query(
+      `select
+         to_regclass('public.aais_learner_sessions') as learner_sessions_table,
+         to_regclass('public.aais_learner_task_state') as learner_task_state_table,
+         to_regclass('public.aais_lrs_outbox') as lrs_outbox_table,
+         to_regclass('public.aais_login_rate_limits') as login_rate_limits_table,
+         to_regclass('public.aais_events') as events_table,
+         to_regclass('public.aais_users') as users_table,
+         to_regclass('public.aais_user_auth_tokens') as user_auth_tokens_table,
+         to_regclass('public.aais_session_revocations') as session_revocations_table,
+         to_regclass('public.aais_courses') as courses_table,
+         to_regclass('public.aais_course_tasks') as course_tasks_table,
+         to_regclass('public.aais_enrollments') as enrollments_table`,
+    );
     await database.query("select 1 as ok");
+    const row = tableCheck.rows[0];
+    if (
+      row?.learner_sessions_table !== "aais_learner_sessions"
+      || row?.learner_task_state_table !== "aais_learner_task_state"
+      || row?.lrs_outbox_table !== "aais_lrs_outbox"
+      || row?.login_rate_limits_table !== "aais_login_rate_limits"
+      || row?.events_table !== "aais_events"
+      || row?.users_table !== "aais_users"
+      || row?.user_auth_tokens_table !== "aais_user_auth_tokens"
+      || row?.session_revocations_table !== "aais_session_revocations"
+      || row?.courses_table !== "aais_courses"
+      || row?.course_tasks_table !== "aais_course_tasks"
+      || row?.enrollments_table !== "aais_enrollments"
+    ) {
+      return {
+        mode: "postgres",
+        status: "failed",
+      };
+    }
     return {
       mode: "postgres",
       status: "connected",
@@ -1753,14 +2442,18 @@ function buildRawPgDatabaseConfiguration(input: {
   };
 }
 
-function parseDatabaseSessionPayload(payload: unknown) {
+function parseDatabaseSessionPayload(payload: unknown, version?: unknown) {
   if (!payload) {
     return null;
   }
+  const storageVersion = readDatabaseSessionVersion(version);
+  let session: AaisLearnerSession;
   if (typeof payload === "string") {
-    return JSON.parse(payload) as AaisLearnerSession;
+    session = JSON.parse(payload) as AaisLearnerSession;
+  } else {
+    session = payload as AaisLearnerSession;
   }
-  return payload as AaisLearnerSession;
+  return setSessionStorageVersion(session, storageVersion);
 }
 
 function normalizeSession(session: AaisLearnerSession): AaisLearnerSession {
@@ -1794,6 +2487,53 @@ function touch(session: AaisLearnerSession): AaisLearnerSession {
     ...session,
     updatedAt: new Date().toISOString(),
   };
+}
+
+function readDatabaseSessionVersion(value: unknown) {
+  const version = Number(value);
+  return Number.isInteger(version) && version >= 0 ? version : null;
+}
+
+function setSessionStorageVersion<T extends AaisLearnerSession>(
+  session: T,
+  version: number | null,
+) {
+  if (version === null) {
+    return session;
+  }
+  Object.defineProperty(session, aaisSessionStorageVersion, {
+    value: version,
+    enumerable: true,
+    configurable: true,
+    writable: true,
+  });
+  return session;
+}
+
+function getSessionStorageVersion(session: AaisLearnerSession) {
+  const version = (session as AaisStorageVersionedSession)[aaisSessionStorageVersion];
+  return readDatabaseSessionVersion(version);
+}
+
+function recordAaisSessionWriteConflict(input: {
+  studentId: string;
+  operation: string;
+  attempt: number;
+  resolution: "retrying" | "merge_failed";
+}) {
+  console.info(JSON.stringify({
+    event: "aais.session.write_conflict",
+    learnerId: `learner:${createHash("sha256")
+      .update(`aais-session-conflict:${input.studentId}`)
+      .digest("hex")
+      .slice(0, 16)}`,
+    learnerIdRedaction: "sha256-16",
+    operation: input.operation,
+    attempt: input.attempt,
+    resolution: input.resolution,
+    storage: "postgres",
+    secrets: "redacted",
+  }));
 }
 
 function requireTask(session: AaisLearnerSession, taskId: string) {
@@ -2045,6 +2785,13 @@ function requireSafeId(value: string, label: string) {
   return value;
 }
 
+function requireSafeAnalyticsKey(value: string, label: string, prefix: "learner" | "session") {
+  if (!new RegExp(`^${prefix}-[a-f0-9]{12}$`).test(value)) {
+    throw new Error(`Invalid AAIS ${label}.`);
+  }
+  return value;
+}
+
 function requireSafeText(value: string, label: string) {
   if (typeof value !== "string") {
     throw new Error(`Invalid AAIS ${label}.`);
@@ -2053,6 +2800,20 @@ function requireSafeText(value: string, label: string) {
     throw new Error(`AAIS ${label} is too large.`);
   }
   return value;
+}
+
+function getAaisUtcDayRange(now: Date) {
+  const start = new Date(Date.UTC(
+    now.getUTCFullYear(),
+    now.getUTCMonth(),
+    now.getUTCDate(),
+  ));
+  const end = new Date(start);
+  end.setUTCDate(end.getUTCDate() + 1);
+  return {
+    start: start.toISOString(),
+    end: end.toISOString(),
+  };
 }
 
 function hashForId(seed: string) {
@@ -2069,6 +2830,10 @@ function createPseudonymousAnalyticsLearnerKey(studentId: string) {
 
 function createPseudonymousAnalyticsSessionKey(sessionId: string) {
   return `session-${createHash("sha256").update(`aais-analytics-session:${sessionId}`).digest("hex").slice(0, 12)}`;
+}
+
+function createPseudonymousEducatorKey(actorId: string) {
+  return `educator-${createHash("sha256").update(`aais-educator:${actorId}`).digest("hex").slice(0, 12)}`;
 }
 
 function createAiAcceptanceDecisionKey(
