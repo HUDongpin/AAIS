@@ -317,7 +317,9 @@ describe("AAIS LearningPage", () => {
       );
     });
     expect(confirm).toHaveBeenCalledWith("确定要删除当前学习数据吗？此操作会清除你的学习记录，但不会删除账号。");
-    expect(screen.getByRole("status").textContent).toBe("学习数据已删除。");
+    await waitFor(() => {
+      expect(screen.getByRole("status").textContent).toBe("学习数据已删除。");
+    });
     fireEvent.click(screen.getByRole("button", { name: "文档编辑" }));
     expect(screen.getByLabelText("在这里写下任务理解、计划、执行过程或最终产出。").textContent).toBe("");
   });
