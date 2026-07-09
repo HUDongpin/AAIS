@@ -281,7 +281,11 @@ describe("AAIS TeacherDashboardPage", () => {
       );
     });
 
-    fireEvent.click(screen.getByRole("button", { name: "CSV" }));
+    const csvButton = screen.getByRole("button", { name: "CSV" }) as HTMLButtonElement;
+    await waitFor(() => {
+      expect(csvButton.disabled).toBe(false);
+    });
+    fireEvent.click(csvButton);
 
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith(
