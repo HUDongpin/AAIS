@@ -47,12 +47,16 @@ Do not run `vercel deploy --prod` from a laptop. `vercel.json` runs `scripts/gua
 AAIS_SMOKE_BASE_URL=https://www.aais.site \
 AAIS_SMOKE_TRIAL_ACCOUNT=<trial-account> \
 AAIS_SMOKE_TRIAL_PASSWORD=<trial-password> \
-AAIS_SMOKE_BLOCKED_TRIAL_ACCOUNT=Bobie \
-AAIS_SMOKE_BLOCKED_TRIAL_PASSWORD=<old-demo-password> \
+AAIS_SMOKE_BLOCKED_TRIAL_ACCOUNT=retired-demo-account \
+AAIS_SMOKE_BLOCKED_TRIAL_PASSWORD=<retired-demo-password> \
 npm run smoke:prod
 ```
 
 The smoke command checks `/login`, public readiness, optional rejection of a retired demo credential, trial login, and a synthetic artifact write for the smoke learner account. Use a dedicated learner smoke account in staging and production; the report keeps credentials, cookies, retired-demo passwords, and page HTML out of output. Production rejects `teacher` and `admin` trial accounts, so educator access must come from database users or OIDC identities.
+
+Bobie and Phoebe are valid production learner fallbacks while trial login is enabled; never use them as blocked smoke credentials.
+
+Use `retired-demo-account` only for the blocked-credential check and supply its retired password through `AAIS_SMOKE_BLOCKED_TRIAL_PASSWORD`.
 
 ## Staging Load Sanity
 

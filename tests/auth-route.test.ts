@@ -205,7 +205,7 @@ describe("AAIS trial account auth route", () => {
     expect(JSON.stringify(body)).not.toContain("db-password-123");
   });
 
-  it("keeps configured and built-in learner accounts available in production trial auth", async () => {
+  it("keeps a unique configured learner available alongside production fallbacks", async () => {
     vi.stubEnv("NODE_ENV", "production");
     process.env.AAIS_TRIAL_ACCOUNTS_JSON = JSON.stringify([
       {
@@ -227,6 +227,16 @@ describe("AAIS trial account auth route", () => {
       }),
     );
     const builtInLearnerBody = await builtInLearner.json();
+    const builtInPhoebe = await POST(
+      new Request("http://localhost/api/auth/app-session", {
+        method: "POST",
+        body: authBody({
+          account: "Phoebe",
+          password: "12345",
+        }),
+      }),
+    );
+    const builtInPhoebeBody = await builtInPhoebe.json();
     const configuredLearner = await POST(
       new Request("http://localhost/api/auth/app-session", {
         method: "POST",
@@ -245,6 +255,13 @@ describe("AAIS trial account auth route", () => {
       role: "student",
     });
     expect(builtInLearner.headers.get("set-cookie") ?? "").toContain("aais_session=");
+    expect(builtInPhoebe.status).toBe(200);
+    expect(builtInPhoebeBody.appSession.actor).toMatchObject({
+      id: "Phoebe",
+      displayName: "Phoebe",
+      role: "student",
+    });
+    expect(builtInPhoebe.headers.get("set-cookie") ?? "").toContain("aais_session=");
     expect(configuredLearner.status).toBe(200);
     expect(configuredLearnerBody.appSession.actor).toMatchObject({
       id: "student-smoke",
@@ -254,7 +271,7 @@ describe("AAIS trial account auth route", () => {
     expect(configuredLearner.headers.get("set-cookie") ?? "").toContain("aais_session=");
   });
 
-  it("refuses production educator trial accounts so teachers and admins use database or OIDC identities", async () => {
+  it("refuses production teacher trial accounts", async () => {
     vi.stubEnv("NODE_ENV", "production");
     process.env.AAIS_TRIAL_ACCOUNTS_JSON = JSON.stringify([
       {
@@ -284,6 +301,38 @@ describe("AAIS trial account auth route", () => {
     });
     expect(response.headers.get("set-cookie") ?? "").not.toContain("aais_session=");
     expect(JSON.stringify(body)).not.toContain("teacher-secret");
+  });
+
+  it("refuses production admin trial accounts", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    process.env.AAIS_TRIAL_ACCOUNTS_JSON = JSON.stringify([
+      {
+        id: "admin-smoke",
+        displayName: "Admin Smoke",
+        role: "admin",
+        password: createPasswordRecord("admin-secret"),
+      },
+    ]);
+    const { POST } = await import("@/app/api/auth/app-session/route");
+
+    const response = await POST(
+      new Request("http://localhost/api/auth/app-session", {
+        method: "POST",
+        body: authBody({
+          account: "admin-smoke",
+          password: "admin-secret",
+        }),
+      }),
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(503);
+    expect(body.error).toEqual({
+      code: "AAIS_AUTH_NOT_CONFIGURED",
+      message: "AAIS auth is not configured.",
+    });
+    expect(response.headers.get("set-cookie") ?? "").not.toContain("aais_session=");
+    expect(JSON.stringify(body)).not.toContain("admin-secret");
   });
 
   it("rate limits repeated failed login attempts for the same account and client", async () => {
@@ -426,13 +475,13 @@ describe("AAIS trial account auth route", () => {
     expect(JSON.stringify(auditEvents)).not.toContain("wrong");
   });
 
-  it("keeps built-in learner accounts available in production without configured accounts", async () => {
+  it("keeps Bobie and Phoebe available as production learner fallbacks", async () => {
     vi.stubEnv("NODE_ENV", "production");
     delete process.env.AAIS_TRIAL_ACCOUNTS_JSON;
     delete process.env.AAIS_TRIAL_SMOKE_ACCOUNTS_JSON;
     const { POST } = await import("@/app/api/auth/app-session/route");
 
-    const response = await POST(
+    const bobie = await POST(
       new Request("http://localhost/api/auth/app-session", {
         method: "POST",
         body: authBody({
@@ -441,15 +490,91 @@ describe("AAIS trial account auth route", () => {
         }),
       }),
     );
-    const body = await response.json();
+    const bobieBody = await bobie.json();
+    const phoebe = await POST(
+      new Request("http://localhost/api/auth/app-session", {
+        method: "POST",
+        body: authBody({
+          account: "Phoebe",
+          password: "12345",
+        }),
+      }),
+    );
+    const phoebeBody = await phoebe.json();
 
-    expect(response.status).toBe(200);
-    expect(body.appSession.actor).toMatchObject({
+    expect(bobie.status).toBe(200);
+    expect(bobieBody.appSession.actor).toMatchObject({
       id: "Bobie",
       displayName: "Bobie",
       role: "student",
     });
-    expect(response.headers.get("set-cookie") ?? "").toContain("aais_session=");
+    expect(bobie.headers.get("set-cookie") ?? "").toContain("aais_session=");
+    expect(phoebe.status).toBe(200);
+    expect(phoebeBody.appSession.actor).toMatchObject({
+      id: "Phoebe",
+      displayName: "Phoebe",
+      role: "student",
+    });
+    expect(phoebe.headers.get("set-cookie") ?? "").toContain("aais_session=");
+  });
+
+  it("keeps built-in credentials authoritative for duplicate Bobie and Phoebe identifiers", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    process.env.AAIS_TRIAL_ACCOUNTS_JSON = JSON.stringify([
+      {
+        id: "Bobie",
+        displayName: "Configured Bobie",
+        role: "student",
+        password: createPasswordRecord("configured-bobie-secret"),
+      },
+      {
+        id: "Phoebe",
+        displayName: "Configured Phoebe",
+        role: "student",
+        password: createPasswordRecord("configured-phoebe-secret"),
+      },
+    ]);
+    const { POST } = await import("@/app/api/auth/app-session/route");
+
+    const builtInBobie = await POST(new Request("http://localhost/api/auth/app-session", {
+      method: "POST",
+      body: authBody({ account: "Bobie", password: "12345" }),
+    }));
+    const builtInPhoebe = await POST(new Request("http://localhost/api/auth/app-session", {
+      method: "POST",
+      body: authBody({ account: "Phoebe", password: "12345" }),
+    }));
+    const configuredBobie = await POST(new Request("http://localhost/api/auth/app-session", {
+      method: "POST",
+      body: authBody({ account: "Bobie", password: "configured-bobie-secret" }),
+    }));
+    const configuredPhoebe = await POST(new Request("http://localhost/api/auth/app-session", {
+      method: "POST",
+      body: authBody({ account: "Phoebe", password: "configured-phoebe-secret" }),
+    }));
+    const builtInBobieBody = await builtInBobie.json();
+    const builtInPhoebeBody = await builtInPhoebe.json();
+    const configuredBobieBody = await configuredBobie.json();
+    const configuredPhoebeBody = await configuredPhoebe.json();
+
+    expect(builtInBobie.status).toBe(200);
+    expect(builtInBobieBody.appSession.actor).toEqual({
+      id: "Bobie",
+      displayName: "Bobie",
+      role: "student",
+    });
+    expect(builtInPhoebe.status).toBe(200);
+    expect(builtInPhoebeBody.appSession.actor).toEqual({
+      id: "Phoebe",
+      displayName: "Phoebe",
+      role: "student",
+    });
+    expect(configuredBobie.status).toBe(401);
+    expect(configuredPhoebe.status).toBe(401);
+    expect(JSON.stringify([builtInBobieBody, builtInPhoebeBody, configuredBobieBody, configuredPhoebeBody]))
+      .not.toContain("configured-bobie-secret");
+    expect(JSON.stringify([builtInBobieBody, builtInPhoebeBody, configuredBobieBody, configuredPhoebeBody]))
+      .not.toContain("configured-phoebe-secret");
   });
 
   it("refuses trial account login when the trial-login entry is disabled", async () => {

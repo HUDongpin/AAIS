@@ -22,7 +22,7 @@ Use this checklist for staging and production releases.
 - [ ] Dedicated staging database users are seeded or verified with `npm run db:seed-users`, `/admin/users`, or OIDC mapping; no teacher/admin trial accounts are used.
 - [ ] Restored-branch verification passed with `npm run verify:postgres-restore`.
 - [ ] Privacy inventory and retention/processor/consent gates in `docs/privacy-data-inventory.md` are reviewed for any release that touches learner data, auth, LRS, monitoring, or providers.
-- [ ] `npm run smoke:prod` passes against the staging URL using a dedicated smoke account and retired-demo credential rejection.
+- [ ] Production smoke proves Bobie and Phoebe or a dedicated learner can sign in and the distinct `retired-demo-account` credential is rejected without a session cookie.
 - [ ] Before a real cohort pilot, `npm run load:staging -- --approved --target-users 200 --concurrency 200` passes against staging/preview with dedicated student accounts.
 - [ ] Any changed learner/dashboard flow was manually checked once.
 - [ ] Responsive policy reviewed: login and learner cockpit pass the phone-width E2E smoke; teacher/admin operational routes are checked on tablet/desktop.
@@ -34,7 +34,7 @@ Use this checklist for staging and production releases.
 - [ ] For any real cohort, owner has confirmed cohort age/region/institution, legal basis, retention values, consent flow, and Vercel/Neon/LRS/provider DPA plus data-region evidence.
 - [ ] Production migrations, if any, are applied during the release window.
 - [ ] Vercel production deployment is ready from the Git-connected `main` flow; `scripts/guard-vercel-production-deploy.mjs` passes in the Vercel build log.
-- [ ] `npm run smoke:prod` passes against `https://www.aais.site`, including retired-demo credential rejection.
+- [ ] Production smoke proves Bobie and Phoebe or a dedicated learner can sign in and the distinct `retired-demo-account` credential is rejected without a session cookie.
 - [ ] Rollback target is known.
 
 ## After Release

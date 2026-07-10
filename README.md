@@ -12,7 +12,9 @@ cp .env.example .env.local
 npm run dev
 ```
 
-Open `http://localhost:3000/login`. Local development can use built-in learner accounts; production excludes them.
+Open `http://localhost:3000/login`.
+
+Production may use the built-in Bobie and Phoebe learner fallback while trial login is enabled; set `AAIS_TRIAL_LOGIN_ENABLED=false` to disable all trial login. Production teacher and admin trial identities are forbidden and must use database users or OIDC identities.
 
 Local file storage uses `.aais-data/` when no Postgres URL is configured. Production requires Postgres migrations through `npm run db:migrate`; request handlers must not create or alter tables at runtime.
 
