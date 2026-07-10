@@ -221,81 +221,6 @@ jobs:
           const exactKeys = (value, keys) => isObject(value)
             && Object.keys(value).length === keys.length
             && keys.every((key) => hasOwn(value, key));
-          const allowedCriticalPaths = new Set([
-            "id",
-            "name",
-            "projectId",
-            "ownerId",
-            "team",
-            "team.id",
-            "readyState",
-            "status",
-            "target",
-            "url",
-            "alias",
-            "gitSource",
-            "gitSource.repoId",
-            "gitSource.ref",
-            "gitSource.sha",
-            "meta.githubOrg",
-            "meta.githubRepo",
-            "meta.githubCommitRef",
-            "meta.githubCommitSha",
-          ]);
-          const hasCriticalPathSegment = (key) => {
-            const parts = key
-              .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
-              .toLowerCase()
-              .split(/[^a-z0-9]+/)
-              .filter(Boolean);
-            return parts.some((part) => [
-              "id",
-              "identity",
-              "name",
-              "creator",
-              "project",
-              "owner",
-              "team",
-              "target",
-              "production",
-              "environment",
-              "git",
-              "github",
-              "repository",
-              "repo",
-              "source",
-              "ref",
-              "sha",
-              "commit",
-              "branch",
-              "org",
-              "organization",
-              "deployment",
-              "url",
-              "uri",
-              "host",
-              "hostname",
-              "domain",
-              "alias",
-              "state",
-              "status",
-              "ready",
-            ].includes(part));
-          };
-          const containsUnexpectedCriticalPath = (value, parentPath = []) => {
-            if (Array.isArray(value)) {
-              return value.some((item) => containsUnexpectedCriticalPath(item, parentPath));
-            }
-            if (!isObject(value)) {
-              return false;
-            }
-            return Object.entries(value).some(([key, nested]) => {
-              const path = [...parentPath, key];
-              const reviewedPath = path.join(".");
-              return (hasCriticalPathSegment(key) && !allowedCriticalPaths.has(reviewedPath))
-                || containsUnexpectedCriticalPath(nested, path);
-            });
-          };
           const validateDeploymentShape = (deployment) => {
             const topLevelKeys = [
               "id",
@@ -311,12 +236,15 @@ jobs:
               "gitSource",
               "meta",
             ];
-            if (!isObject(deployment)
-              || containsUnexpectedCriticalPath(deployment)
-              || !topLevelKeys.every((key) => hasOwn(deployment, key))
+            if (!exactKeys(deployment, topLevelKeys)
               || !exactKeys(deployment.team, ["id", "slug"])
               || !exactKeys(deployment.gitSource, ["type", "repoId", "ref", "sha"])
-              || !isObject(deployment.meta)) {
+              || !exactKeys(deployment.meta, [
+                "githubOrg",
+                "githubRepo",
+                "githubCommitRef",
+                "githubCommitSha",
+              ])) {
               return false;
             }
             const metaKeys = [

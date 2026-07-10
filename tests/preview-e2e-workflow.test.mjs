@@ -215,6 +215,16 @@ describe("AAIS preview E2E workflow trust gate", () => {
     ["nested deployment alias", (deployment) => {
       deployment.details = { deployment: "contradictory" };
     }],
+    ["nested aliases plural", (deployment) => { deployment.details = { aliases: [] }; }],
+    ["nested commits plural", (deployment) => { deployment.details = { commits: [] }; }],
+    ["nested branches plural", (deployment) => { deployment.details = { branches: [] }; }],
+    ["nested organizations plural", (deployment) => {
+      deployment.details = { organizations: [] };
+    }],
+    ["nested deployments plural", (deployment) => {
+      deployment.details = { deployments: [] };
+    }],
+    ["extra non-reviewed scalar path", (deployment) => { deployment.createdAt = 1; }],
     ["deployment ID LF injection", (deployment) => {
       deployment.id = "dpl_AttestedPreview1\nattested_sha=contradictory";
     }],
@@ -259,7 +269,7 @@ function validVercelDeployment() {
     status: "READY",
     target: null,
     url: "preview.example.vercel.app",
-    alias: ["preview.example.vercel.app"],
+    alias: ["preview.example.vercel.app", "private-response-marker.vercel.app"],
     gitSource: {
       type: "github",
       repoId: 1294583104,
@@ -271,10 +281,7 @@ function validVercelDeployment() {
       githubRepo: "AAIS",
       githubCommitRef: "codex/aais-recovery-compose",
       githubCommitSha: "a".repeat(40),
-      buildSystem: "nextjs",
     },
-    createdAt: 1,
-    diagnostic: "private-response-marker",
   };
 }
 
