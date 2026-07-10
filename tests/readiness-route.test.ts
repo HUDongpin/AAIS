@@ -28,6 +28,7 @@ vi.mock("pg", () => ({
             users_table: databaseProbeMode === "missing_schema" ? null : "aais_users",
             user_auth_tokens_table: databaseProbeMode === "missing_schema" ? null : "aais_user_auth_tokens",
             session_revocations_table: databaseProbeMode === "missing_schema" ? null : "aais_session_revocations",
+            daily_guide_usage_table: databaseProbeMode === "missing_schema" ? null : "aais_ai_guide_daily_usage",
             courses_table: databaseProbeMode === "missing_schema" ? null : "aais_courses",
             course_tasks_table: databaseProbeMode === "missing_schema" ? null : "aais_course_tasks",
             enrollments_table: databaseProbeMode === "missing_schema" ? null : "aais_enrollments",

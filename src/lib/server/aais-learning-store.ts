@@ -776,6 +776,16 @@ export function createAaisLearningStore(input: StoreInput = {}) {
         "delete from aais_learner_task_state where student_id = $1",
         [safeStudentId],
       );
+      try {
+        await database.query(
+          "delete from aais_ai_guide_daily_usage where student_id = $1",
+          [safeStudentId],
+        );
+      } catch (error) {
+        if (!isMissingAaisTableError(error)) {
+          throw error;
+        }
+      }
       await database.query(
         "delete from aais_events where student_id = $1",
         [safeStudentId],
@@ -857,6 +867,58 @@ export function createAaisLearningStore(input: StoreInput = {}) {
         && event.time < dayRange.end
       ).length,
     };
+  }
+
+  async function reserveDailyGuideRequest(input: {
+    studentId: string;
+    limit: number;
+    now?: Date;
+  }): Promise<AaisDailyGuideReservation> {
+    const safeStudentId = requireSafeId(input.studentId, "student id");
+    const now = input.now ?? new Date();
+    const dayRange = getAaisUtcDayRange(now);
+    const limit = Math.max(1, Math.floor(input.limit));
+    if (database) {
+      try {
+        // Atomic reserve-then-run gate: the guarded upsert increments the daily
+        // counter only while it is below the limit, so concurrent requests (even on
+        // separate serverless instances) cannot both slip past the cap.
+        const reserved = await database.query(
+          `insert into aais_ai_guide_daily_usage (student_id, usage_day, used, updated_at)
+           values ($1, $2::date, 1, $3::timestamptz)
+           on conflict (student_id, usage_day)
+           do update set used = aais_ai_guide_daily_usage.used + 1, updated_at = $3::timestamptz
+           where aais_ai_guide_daily_usage.used < $4
+           returning used`,
+          [safeStudentId, dayRange.start, now.toISOString(), limit],
+        );
+        if (reserved.rows.length > 0) {
+          return buildDailyGuideReservation("reserved", limit, Number(reserved.rows[0]?.used) || 1, dayRange.end);
+        }
+        const current = await database.query(
+          `select used
+             from aais_ai_guide_daily_usage
+            where student_id = $1
+              and usage_day = $2::date
+            limit 1`,
+          [safeStudentId, dayRange.start],
+        );
+        return buildDailyGuideReservation("exhausted", limit, Number(current.rows[0]?.used ?? limit) || limit, dayRange.end);
+      } catch (error) {
+        // If migration 0008 has not been applied yet, degrade to best-effort
+        // prompt-event counting rather than failing every guide request.
+        if (!isMissingAaisTableError(error)) {
+          throw error;
+        }
+      }
+    }
+    // File/memory backend (or a database still missing the durable counter table) is
+    // single-process best effort; the increment lands when the exchange is appended.
+    const usage = await getDailyGuideUsage(safeStudentId, now);
+    if (usage.used >= limit) {
+      return buildDailyGuideReservation("exhausted", limit, usage.used, usage.end);
+    }
+    return buildDailyGuideReservation("reserved", limit, usage.used + 1, usage.end);
   }
 
   async function getCohortAnalytics(
@@ -1186,6 +1248,7 @@ export function createAaisLearningStore(input: StoreInput = {}) {
     getOrCreateSession,
     recordRecommendationOverride,
     recordAiAcceptance,
+    reserveDailyGuideRequest,
     requestScaffold,
     saveArtifact,
     saveSelfReport,
@@ -2257,6 +2320,7 @@ export async function probeAaisLearningStorage(input: {
          to_regclass('public.aais_users') as users_table,
          to_regclass('public.aais_user_auth_tokens') as user_auth_tokens_table,
          to_regclass('public.aais_session_revocations') as session_revocations_table,
+         to_regclass('public.aais_ai_guide_daily_usage') as daily_guide_usage_table,
          to_regclass('public.aais_courses') as courses_table,
          to_regclass('public.aais_course_tasks') as course_tasks_table,
          to_regclass('public.aais_enrollments') as enrollments_table`,
@@ -2272,6 +2336,7 @@ export async function probeAaisLearningStorage(input: {
       || row?.users_table !== "aais_users"
       || row?.user_auth_tokens_table !== "aais_user_auth_tokens"
       || row?.session_revocations_table !== "aais_session_revocations"
+      || row?.daily_guide_usage_table !== "aais_ai_guide_daily_usage"
       || row?.courses_table !== "aais_courses"
       || row?.course_tasks_table !== "aais_course_tasks"
       || row?.enrollments_table !== "aais_enrollments"
@@ -2822,6 +2887,37 @@ function getAaisUtcDayRange(now: Date) {
     start: start.toISOString(),
     end: end.toISOString(),
   };
+}
+
+export type AaisDailyGuideReservation = {
+  status: "reserved" | "exhausted";
+  limit: number;
+  used: number;
+  remaining: number;
+  resetsAt: string;
+};
+
+function buildDailyGuideReservation(
+  status: AaisDailyGuideReservation["status"],
+  limit: number,
+  used: number,
+  resetsAt: string,
+): AaisDailyGuideReservation {
+  return {
+    status,
+    limit,
+    used,
+    remaining: Math.max(0, limit - used),
+    resetsAt,
+  };
+}
+
+function isMissingAaisTableError(error: unknown) {
+  if (typeof error !== "object" || error === null || !("code" in error)) {
+    return false;
+  }
+  const code = (error as { code?: unknown }).code;
+  return code === "42P01";
 }
 
 function hashForId(seed: string) {

@@ -52,6 +52,12 @@ describe("AAIS Postgres migrations", () => {
         fileName: "0007_course_catalog.sql",
         checksum: expect.stringMatching(/^[a-f0-9]{64}$/),
       }),
+      expect.objectContaining({
+        version: "0008",
+        name: "ai_guide_daily_usage",
+        fileName: "0008_ai_guide_daily_usage.sql",
+        checksum: expect.stringMatching(/^[a-f0-9]{64}$/),
+      }),
     ]);
     expect(migrations[0].sql).toContain("create table if not exists aais_learner_sessions");
     expect(migrations[0].sql).toContain("create table if not exists aais_lrs_outbox");
@@ -73,6 +79,17 @@ describe("AAIS Postgres migrations", () => {
     expect(migrations[6].sql).toContain("create table if not exists aais_enrollments");
     expect(migrations[6].sql).toContain("Cognitive Apprenticeship: Metacognition Studio");
     expect(migrations[6].sql).toContain("practice_task_3");
+    expect(migrations[7].sql).toContain("create table if not exists aais_ai_guide_daily_usage");
+    expect(migrations[7].sql).toContain("primary key (student_id, usage_day)");
+    expect(migrations[7].sql).toContain("where event = 'ai_prompt_submitted'");
+    expect(migrations[7].sql).toContain("(event_time at time zone 'UTC')::date");
+    expect(migrations[7].sql).toContain("date_trunc('day', now() at time zone 'UTC')");
+    expect(migrations[7].sql).toContain("interval '1 day'");
+    expect(migrations[7].sql).toContain("event_time >= utc_day.starts_at");
+    expect(migrations[7].sql).toContain("event_time < utc_day.ends_at");
+    expect(migrations[7].sql).toContain("group by student_id, (event_time at time zone 'UTC')::date");
+    expect(migrations[7].sql).toContain("on conflict (student_id, usage_day)");
+    expect(migrations[7].sql).toContain("greatest(aais_ai_guide_daily_usage.used, excluded.used)");
   });
 
   it("applies pending migrations and records checksums", async () => {
