@@ -47,6 +47,7 @@ jobs:
             const RECOVERY_REF = "codex/aais-recovery-compose";
             const WORKFLOW_PATH = ".github/workflows/preview-e2e.yml";
             const WORKFLOW_REF = "HUDongpin/AAIS/.github/workflows/preview-e2e.yml@refs/heads/main";
+            const executingWorkflowSha = process.env.GITHUB_WORKFLOW_SHA;
             const VERCEL_APP = {
               login: "vercel[bot]",
               id: 35613825,
@@ -84,7 +85,8 @@ jobs:
 
             if (context.eventName !== EVENT
               || `${context.repo.owner}/${context.repo.repo}` !== REPOSITORY
-              || process.env.GITHUB_WORKFLOW_REF !== WORKFLOW_REF) {
+              || process.env.GITHUB_WORKFLOW_REF !== WORKFLOW_REF
+              || !/^[a-f0-9]{40}$/.test(executingWorkflowSha)) {
               fail();
             }
             const eventDeployment = context.payload.deployment;
@@ -101,6 +103,10 @@ jobs:
               repo: REPO,
               ref: `heads/${DEFAULT_BRANCH}`,
             });
+            if (!/^[a-f0-9]{40}$/.test(mainRef.object.sha)
+              || executingWorkflowSha !== mainRef.object.sha) {
+              fail();
+            }
             const { data: workflow } = await github.rest.actions.getWorkflow({
               owner: OWNER,
               repo: REPO,
@@ -110,7 +116,7 @@ jobs:
               owner: OWNER,
               repo: REPO,
               path: WORKFLOW_PATH,
-              ref: DEFAULT_BRANCH,
+              ref: executingWorkflowSha,
             });
             const { data: deployment } = await github.rest.repos.getDeployment({
               owner: OWNER,
@@ -208,6 +214,89 @@ jobs:
             throw new Error("AAIS_PREVIEW_TRUST_METADATA_RESPONSE");
           };
           const isString = (value) => typeof value === "string" && value.length > 0;
+          const isObject = (value) => value !== null
+            && typeof value === "object"
+            && !Array.isArray(value);
+          const hasOwn = (value, key) => Object.prototype.hasOwnProperty.call(value, key);
+          const exactKeys = (value, keys) => isObject(value)
+            && Object.keys(value).length === keys.length
+            && keys.every((key) => hasOwn(value, key));
+          const isCriticalIdentityKey = (key) => {
+            const parts = key
+              .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
+              .toLowerCase()
+              .split(/[^a-z0-9]+/)
+              .filter(Boolean);
+            return parts.some((part) => [
+              "id",
+              "identity",
+              "name",
+              "creator",
+              "project",
+              "owner",
+              "team",
+              "target",
+              "production",
+              "environment",
+              "git",
+              "github",
+              "repository",
+              "repo",
+              "source",
+              "ref",
+              "sha",
+            ].includes(part));
+          };
+          const validateDeploymentShape = (deployment) => {
+            const topLevelKeys = [
+              "id",
+              "name",
+              "projectId",
+              "ownerId",
+              "team",
+              "readyState",
+              "status",
+              "target",
+              "url",
+              "alias",
+              "gitSource",
+              "meta",
+            ];
+            if (!isObject(deployment)
+              || !topLevelKeys.every((key) => hasOwn(deployment, key))
+              || Object.keys(deployment).some((key) =>
+                !topLevelKeys.includes(key) && isCriticalIdentityKey(key))
+              || !exactKeys(deployment.team, ["id", "slug"])
+              || !exactKeys(deployment.gitSource, ["type", "repoId", "ref", "sha"])
+              || !isObject(deployment.meta)) {
+              return false;
+            }
+            const metaKeys = [
+              "githubOrg",
+              "githubRepo",
+              "githubCommitRef",
+              "githubCommitSha",
+            ];
+            return isString(deployment.id)
+              && isString(deployment.name)
+              && isString(deployment.projectId)
+              && isString(deployment.ownerId)
+              && isString(deployment.team.id)
+              && isString(deployment.team.slug)
+              && isString(deployment.readyState)
+              && isString(deployment.status)
+              && deployment.target === null
+              && isString(deployment.url)
+              && Array.isArray(deployment.alias)
+              && deployment.alias.every(isString)
+              && isString(deployment.gitSource.type)
+              && Number.isSafeInteger(deployment.gitSource.repoId)
+              && isString(deployment.gitSource.ref)
+              && isString(deployment.gitSource.sha)
+              && metaKeys.every((key) => isString(deployment.meta[key]))
+              && !Object.keys(deployment.meta).some((key) =>
+                !metaKeys.includes(key) && isCriticalIdentityKey(key));
+          };
           (async () => {
             const idOrUrl = encodeURIComponent(process.env.VERCEL_HOSTNAME);
             const endpoint = `https://api.vercel.com/v13/deployments/${idOrUrl}?teamId=team_i9xhhYXUeYBOCLcfWBjTqlYG`;
@@ -223,7 +312,7 @@ jobs:
               fail();
             }
             const deployment = JSON.parse(await response.text());
-            if (!isString(deployment.id)
+            if (!validateDeploymentShape(deployment)
               || deployment.id === process.env.GITHUB_DEPLOYMENT_ID
               || deployment.id === process.env.GITHUB_DEPLOYMENT_STATUS_ID
               || deployment.name !== "aais"
@@ -296,6 +385,7 @@ jobs:
       - name: Run Playwright against attested preview
         env:
           AAIS_E2E_BASE_URL: ${{ needs.trust-preview.outputs.vercel_origin }}
+          PLAYWRIGHT_LAST_RUN_OUTPUT_FILE: /dev/null
           AAIS_E2E_STUDENT_ACCOUNT: ${{ secrets.AAIS_E2E_STUDENT_ACCOUNT }}
           AAIS_E2E_STUDENT_PASSWORD: ${{ secrets.AAIS_E2E_STUDENT_PASSWORD }}
           AAIS_E2E_TEACHER_ACCOUNT: ${{ secrets.AAIS_E2E_TEACHER_ACCOUNT }}

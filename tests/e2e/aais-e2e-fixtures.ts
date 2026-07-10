@@ -20,6 +20,18 @@ export async function bootstrapAaisPreviewOrigin(input: {
     throw new Error("AAIS_PREVIEW_TRUST_SECRET");
   }
 
+  let existingCookies;
+  try {
+    existingCookies = await input.context.cookies(trusted.origin);
+  } catch {
+    throw new Error("AAIS_PREVIEW_TRUST_COOKIE");
+  }
+  if (existingCookies.some((cookie) =>
+    cookie.name === "_vercel_jwt"
+      && cookieDomainMatches(cookie.domain, trusted.hostname))) {
+    throw new Error("AAIS_PREVIEW_TRUST_COOKIE");
+  }
+
   const loginUrl = `${trusted.origin}/login`;
   let response;
   try {
@@ -45,7 +57,9 @@ export async function bootstrapAaisPreviewOrigin(input: {
     throw new Error("AAIS_PREVIEW_TRUST_COOKIE");
   }
   const hasOriginCookie = cookies.some((cookie) =>
-    cookie.secure && cookieDomainMatches(cookie.domain, trusted.hostname));
+    cookie.name === "_vercel_jwt"
+      && cookie.secure
+      && cookieDomainMatches(cookie.domain, trusted.hostname));
   if (!hasOriginCookie) {
     throw new Error("AAIS_PREVIEW_TRUST_COOKIE");
   }
@@ -111,5 +125,5 @@ function isExactLoginResponse(value: string, origin: string): boolean {
 
 function cookieDomainMatches(domain: string, hostname: string): boolean {
   const normalized = domain.trim().replace(/^\./, "").toLowerCase();
-  return normalized === hostname || hostname.endsWith(`.${normalized}`);
+  return normalized === hostname;
 }

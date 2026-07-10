@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { spawnSync } from "node:child_process";
 import { describe, expect, it, vi } from "vitest";
 import {
   parseAaisUserSeedJson,
@@ -67,6 +68,36 @@ describe("AAIS user seed parser", () => {
     expect(() => parseUsers([
       seedEntry({ password: "short", passwordEnv: undefined }),
     ])).toThrow("AAIS user seed password does not meet length requirements.");
+  });
+
+  it("redacts malformed JSON from parser and CLI-visible errors", () => {
+    const malformed = '[{"accountId":"PrivateAccount","email":"private@example.test","password":"private-password-123",]';
+
+    expect(() => parseAaisUserSeedJson(malformed))
+      .toThrow(new Error("Invalid AAIS user seed JSON."));
+
+    const result = spawnSync(process.execPath, ["scripts/seed-aais-users.mjs"], {
+      cwd: process.cwd(),
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        AAIS_DATABASE_URL: "postgres://unused:unused@127.0.0.1:1/unused",
+        AAIS_SEED_USERS_JSON: malformed,
+        AAIS_USER_SEED_APPROVED: "true",
+      },
+    });
+
+    expect(result.status).toBe(1);
+    expect(result.stdout).toBe("");
+    expect(result.stderr).toBe("Invalid AAIS user seed JSON.\n");
+    for (const sensitive of [
+      "PrivateAccount",
+      "private@example.test",
+      "private-password-123",
+      malformed,
+    ]) {
+      expect(`${result.stdout}${result.stderr}`).not.toContain(sensitive);
+    }
   });
 });
 
