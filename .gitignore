@@ -3,6 +3,7 @@
 .aais-e2e-data/
 .next/
 .playwright-cli/
+.worktrees/
 node_modules/
 All API Keys.docx
 .vercel
