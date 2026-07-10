@@ -200,6 +200,12 @@ describe("AAIS preview E2E workflow trust gate", () => {
     ["extra project meta field", (deployment) => { deployment.meta.projectId = "contradictory-project"; }],
     ["extra target meta field", (deployment) => { deployment.meta.target = "production"; }],
     ["extra production meta field", (deployment) => { deployment.meta.production = true; }],
+    ["nested critical identity wrapper", (deployment) => {
+      deployment.details = {
+        projectId: "contradictory-project",
+        git: { sha: "b".repeat(40) },
+      };
+    }],
     ["contradictory reviewed project ID", (deployment) => { deployment.projectId = "prj_contradictory"; }],
     ["contradictory reviewed Git SHA", (deployment) => { deployment.gitSource.sha = "b".repeat(40); }],
   ])("rejects Stage-B response with %s using only the fixed error", (_name, mutate) => {

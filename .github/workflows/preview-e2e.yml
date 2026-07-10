@@ -247,6 +247,16 @@ jobs:
               "sha",
             ].includes(part));
           };
+          const containsCriticalIdentityPath = (value) => {
+            if (Array.isArray(value)) {
+              return value.some(containsCriticalIdentityPath);
+            }
+            if (!isObject(value)) {
+              return false;
+            }
+            return Object.entries(value).some(([key, nested]) =>
+              isCriticalIdentityKey(key) || containsCriticalIdentityPath(nested));
+          };
           const validateDeploymentShape = (deployment) => {
             const topLevelKeys = [
               "id",
@@ -265,7 +275,9 @@ jobs:
             if (!isObject(deployment)
               || !topLevelKeys.every((key) => hasOwn(deployment, key))
               || Object.keys(deployment).some((key) =>
-                !topLevelKeys.includes(key) && isCriticalIdentityKey(key))
+                !topLevelKeys.includes(key)
+                  && (isCriticalIdentityKey(key)
+                    || containsCriticalIdentityPath(deployment[key])))
               || !exactKeys(deployment.team, ["id", "slug"])
               || !exactKeys(deployment.gitSource, ["type", "repoId", "ref", "sha"])
               || !isObject(deployment.meta)) {
@@ -295,7 +307,9 @@ jobs:
               && isString(deployment.gitSource.sha)
               && metaKeys.every((key) => isString(deployment.meta[key]))
               && !Object.keys(deployment.meta).some((key) =>
-                !metaKeys.includes(key) && isCriticalIdentityKey(key));
+                !metaKeys.includes(key)
+                  && (isCriticalIdentityKey(key)
+                    || containsCriticalIdentityPath(deployment.meta[key])));
           };
           (async () => {
             const idOrUrl = encodeURIComponent(process.env.VERCEL_HOSTNAME);
