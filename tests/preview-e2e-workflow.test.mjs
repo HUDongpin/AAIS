@@ -196,6 +196,10 @@ describe("AAIS preview E2E workflow trust gate", () => {
     ["extra nested gitSource field", (deployment) => { deployment.gitSource.repoName = "contradictory-repo"; }],
     ["extra GitHub meta field", (deployment) => { deployment.meta.githubProject = "contradictory-project"; }],
     ["extra Git meta field", (deployment) => { deployment.meta.gitCommit = "contradictory-commit"; }],
+    ["extra owner meta field", (deployment) => { deployment.meta.ownerId = "contradictory-owner"; }],
+    ["extra project meta field", (deployment) => { deployment.meta.projectId = "contradictory-project"; }],
+    ["extra target meta field", (deployment) => { deployment.meta.target = "production"; }],
+    ["extra production meta field", (deployment) => { deployment.meta.production = true; }],
     ["contradictory reviewed project ID", (deployment) => { deployment.projectId = "prj_contradictory"; }],
     ["contradictory reviewed Git SHA", (deployment) => { deployment.gitSource.sha = "b".repeat(40); }],
   ])("rejects Stage-B response with %s using only the fixed error", (_name, mutate) => {

@@ -242,6 +242,9 @@ jobs:
               "github",
               "repository",
               "repo",
+              "source",
+              "ref",
+              "sha",
             ].includes(part));
           };
           const validateDeploymentShape = (deployment) => {
@@ -292,7 +295,7 @@ jobs:
               && isString(deployment.gitSource.sha)
               && metaKeys.every((key) => isString(deployment.meta[key]))
               && !Object.keys(deployment.meta).some((key) =>
-                !metaKeys.includes(key) && /git|github/i.test(key));
+                !metaKeys.includes(key) && isCriticalIdentityKey(key));
           };
           (async () => {
             const idOrUrl = encodeURIComponent(process.env.VERCEL_HOSTNAME);
