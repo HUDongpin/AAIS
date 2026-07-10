@@ -2,174 +2,103 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Enforce the per-student daily AI guide limit atomically in Postgres while retaining bounded file/memory and pre-migration fallbacks.
+**Goal:** Enforce the per-student daily AI guide limit atomically in Postgres while retaining sequential, single-process best-effort file/memory behavior and a narrowly scoped pre-migration fallback.
 
-**Architecture:** Reserve usage before the guide runs through a guarded Postgres upsert keyed by student and UTC day. Keep migration `0008`, store behavior, route response, deletion semantics, and tests in one rollback unit.
+**Architecture:** Validate the request first, then reserve usage through a guarded Postgres upsert keyed by student and UTC day before the guide runs. Migration `0008`, readiness, deletion, privacy inventory, route behavior, and regressions remain one rollback unit.
+
+**Reviewed result:** `ad2d5a05114b9f19297fcae4a232cc434c8b2f35` — `fix: reserve durable daily AI guide usage`
 
 **Tech Stack:** TypeScript, Next.js route handlers, PostgreSQL, Vitest, Node.js, Git worktrees.
 
 ---
 
-### Task 1: Create the isolated daily-budget worktree
+## Exact Slice Boundary
 
-**Files:**
+The final slice contains exactly eight paths:
+
 - Create: `migrations/postgres/0008_ai_guide_daily_usage.sql`
-- Modify: `src/lib/server/aais-learning-store.ts`
 - Modify: `src/app/api/learning/ai-guide/route.ts`
-- Test: `tests/aais-backend-store.test.ts`
-- Test: `tests/postgres-migrations.test.mjs`
-- Test existing contract: `tests/aais-api-routes.test.ts`
+- Modify: `src/lib/server/aais-learning-store.ts`
+- Modify: `tests/aais-api-routes.test.ts`
+- Modify: `tests/aais-backend-store.test.ts`
+- Modify: `tests/postgres-migrations.test.mjs`
+- Modify: `tests/readiness-route.test.ts`
+- Modify: `docs/privacy-data-inventory.md`
+
+No other path belongs in this commit.
+
+### Task 1: Create and verify the isolated worktree
 
 - [ ] **Step 1: Create the branch from the approved recovery base**
 
 Run from `/Users/dongpinhu/Desktop/AAIS`:
 
 ```bash
+set -euo pipefail
 git worktree add .worktrees/aais-daily-guide-budget \
-  -b codex/aais-daily-guide-budget 49c920e
+  -b codex/aais-daily-guide-budget 49c920e9cb815fe75a510d57aaf3ec881f822641
 ```
 
-Expected: a clean worktree on `codex/aais-daily-guide-budget`.
+Expected: a clean worktree on `codex/aais-daily-guide-budget` at exact base `49c920e9cb815fe75a510d57aaf3ec881f822641`.
 
-- [ ] **Step 2: Install dependencies**
-
-Run from `/Users/dongpinhu/Desktop/AAIS/.worktrees/aais-daily-guide-budget`:
+- [ ] **Step 2: Install dependencies and confirm the base**
 
 ```bash
+set -euo pipefail
+cd /Users/dongpinhu/Desktop/AAIS/.worktrees/aais-daily-guide-budget
 npm install
+git rev-parse HEAD
 git status --short --branch
 ```
 
-Expected: dependency installation succeeds and Git is clean.
+Expected: `git rev-parse HEAD` prints `49c920e9cb815fe75a510d57aaf3ec881f822641`; installation succeeds; no source path is dirty.
 
-### Task 2: Add the database reservation and migration tests first
+### Task 2: Add failing store, migration, readiness, deletion, and privacy acceptance first
 
 **Files:**
-- Modify: `tests/aais-backend-store.test.ts:10`
-- Modify: `tests/aais-backend-store.test.ts:367`
-- Modify: `tests/aais-backend-store.test.ts:1345`
-- Modify: `tests/postgres-migrations.test.mjs:52`
 
-- [ ] **Step 1: Import the database-client type**
+- Modify: `tests/aais-backend-store.test.ts`
+- Modify: `tests/postgres-migrations.test.mjs`
+- Modify: `tests/readiness-route.test.ts`
+- Modify: `docs/privacy-data-inventory.md`
 
-Add this named type to the existing import from `@/lib/server/aais-learning-store`:
+- [ ] **Step 1: Add durable reservation regressions**
 
-```ts
-type AaisDatabaseClient,
-```
+In `tests/aais-backend-store.test.ts`, add `AaisDatabaseClient` to the existing type imports and add the following exact behavioral cases:
 
-- [ ] **Step 2: Add the atomic reservation test**
+1. `atomically reserves the durable daily guide budget and rejects once exhausted`
+   - learner `S001`, limit `2`: reservations report `used` 1 then 2, followed by `exhausted` at 2;
+   - exhausted attempts do not increment past the cap;
+   - learner `S002` starts at 1 independently;
+   - the SQL contains `where aais_ai_guide_daily_usage.used < $4`.
+2. `degrades to prompt-event counting when the durable usage table is missing`
+   - an insert error with SQLSTATE `42P01` falls back to the current UTC-day `aais_events` count;
+   - the returned reservation is a sequential, single-process best-effort result within the configured limit; it is not atomic.
+3. `propagates undefined-column errors instead of treating them as a missing durable table`
+   - SQLSTATE `42703` rejects with the original error;
+   - no prompt-event fallback is attempted.
+4. `falls back to per-process prompt-event counting when no database is configured`
+   - a pre-exchange reservation is best-effort;
+   - after `appendGuideExchange` persists `ai_prompt_submitted`, the same UTC-day limit is exhausted.
 
-```ts
-it("atomically reserves the durable daily guide budget and rejects once exhausted", async () => {
-  const database = createFakeDatabaseClient();
-  const store = createAaisLearningStore({ database });
+Extend `createFakeDatabaseClient` with an in-memory `dailyGuideUsage` map and handlers for the guarded insert and the exhaustion read. The fake must preserve per-student/per-day isolation and return no row when the counter is already at the limit.
 
-  const first = await store.reserveDailyGuideRequest({ studentId: "S001", limit: 2 });
-  const second = await store.reserveDailyGuideRequest({ studentId: "S001", limit: 2 });
-  const third = await store.reserveDailyGuideRequest({ studentId: "S001", limit: 2 });
+- [ ] **Step 2: Add learner-deletion regressions**
 
-  expect(first).toMatchObject({ status: "reserved", limit: 2, used: 1, remaining: 1 });
-  expect(second).toMatchObject({ status: "reserved", limit: 2, used: 2, remaining: 0 });
-  expect(third).toMatchObject({ status: "exhausted", limit: 2, used: 2, remaining: 0 });
+In `tests/aais-backend-store.test.ts`, add both cases:
 
-  // A different learner has an independent daily counter.
-  const other = await store.reserveDailyGuideRequest({ studentId: "S002", limit: 2 });
-  expect(other).toMatchObject({ status: "reserved", used: 1 });
+1. `continues Postgres learner deletion when the durable usage table is missing`
+   - deleting from `aais_ai_guide_daily_usage` throws SQLSTATE `42P01`;
+   - deletion still reaches `aais_events` and `aais_learner_sessions`.
+2. `propagates non-table errors from durable usage deletion`
+   - deleting from the daily table throws SQLSTATE `42501`;
+   - the original error propagates and later learner rows are not deleted.
 
-  // The guarded upsert only increments while under the limit — the exhausted
-  // attempt must not have advanced the counter past the cap.
-  const usageQueries = database.queries.filter((query) =>
-    /aais_ai_guide_daily_usage/i.test(query.sql),
-  );
-  expect(usageQueries.some((query) => /where aais_ai_guide_daily_usage\.used < \$4/i.test(query.sql))).toBe(
-    true,
-  );
-});
-```
+The acceptance boundary is exact: only undefined-table `42P01` is migration-absence compatibility. Permission, connectivity, undefined-column, and every other database error remain visible.
 
-- [ ] **Step 3: Add missing-table and memory fallback tests**
+- [ ] **Step 3: Add migration `0008` discovery and SQL assertions**
 
-```ts
-it("degrades to prompt-event counting when the durable usage table is missing", async () => {
-  const missingTableError = Object.assign(new Error("relation does not exist"), {
-    code: "42P01",
-  });
-  const database = {
-    async query(sql: string) {
-      if (/^insert into aais_ai_guide_daily_usage/i.test(sql.trim())) {
-        throw missingTableError;
-      }
-      if (/^select count\(\*\)::int as count\s+from aais_events/i.test(sql.trim())) {
-        return { rows: [{ count: 0 }] };
-      }
-      throw new Error(`Unexpected query: ${sql}`);
-    },
-  } as unknown as AaisDatabaseClient;
-  const store = createAaisLearningStore({ database });
-
-  const reservation = await store.reserveDailyGuideRequest({ studentId: "S001", limit: 3 });
-  expect(reservation).toMatchObject({ status: "reserved", limit: 3, used: 1, remaining: 2 });
-});
-
-it("falls back to per-process prompt-event counting when no database is configured", async () => {
-  const store = createAaisLearningStore({ rootDir: tempDir });
-
-  const first = await store.reserveDailyGuideRequest({ studentId: "S001", limit: 1 });
-  expect(first).toMatchObject({ status: "reserved", limit: 1, used: 1, remaining: 0 });
-
-  // Nothing has been persisted yet (the prompt event is written when the exchange
-  // is appended), so a follow-up reservation still sees head-room until an exchange
-  // lands. Simulate a completed exchange, then confirm the cap holds.
-  await store.appendGuideExchange({
-    studentId: "S001",
-    phase: "training",
-    taskId: "training_task_1",
-    question: "问题",
-    answer: "回答",
-    orchestration: { graphId: "g", topologicalOrder: ["A1"], threadId: "t" },
-  });
-
-  const afterExchange = await store.reserveDailyGuideRequest({ studentId: "S001", limit: 1 });
-  expect(afterExchange).toMatchObject({ status: "exhausted", limit: 1, used: 1, remaining: 0 });
-});
-```
-
-- [ ] **Step 4: Extend the fake database with daily usage state**
-
-Add beside the other maps in `createFakeDatabaseClient`:
-
-```ts
-const dailyGuideUsage = new Map<string, number>();
-```
-
-Add before the fake database's final unexpected-query throw:
-
-```ts
-if (/^insert into aais_ai_guide_daily_usage/i.test(sql.trim())) {
-  const key = `${String(params[0])}\0${String(params[1]).slice(0, 10)}`;
-  const limit = Number(params[3]);
-  const existing = dailyGuideUsage.get(key);
-  if (existing === undefined) {
-    dailyGuideUsage.set(key, 1);
-    return { rows: [{ used: 1 }] };
-  }
-  if (existing < limit) {
-    const used = existing + 1;
-    dailyGuideUsage.set(key, used);
-    return { rows: [{ used }] };
-  }
-  return { rows: [] };
-}
-if (/^select used\s+from aais_ai_guide_daily_usage/i.test(sql.trim())) {
-  const used = dailyGuideUsage.get(`${String(params[0])}\0${String(params[1]).slice(0, 10)}`);
-  return { rows: used === undefined ? [] : [{ used }] };
-}
-```
-
-- [ ] **Step 5: Add migration `0008` expectations**
-
-Add this object to the migration metadata assertion:
+In `tests/postgres-migrations.test.mjs`, require migration metadata:
 
 ```js
 expect.objectContaining({
@@ -177,238 +106,213 @@ expect.objectContaining({
   name: "ai_guide_daily_usage",
   fileName: "0008_ai_guide_daily_usage.sql",
   checksum: expect.stringMatching(/^[a-f0-9]{64}$/),
-}),
+})
 ```
 
-Add these SQL assertions after the migration `0007` assertions:
+Require its SQL to contain all of these semantics:
 
-```js
-expect(migrations[7].sql).toContain("create table if not exists aais_ai_guide_daily_usage");
-expect(migrations[7].sql).toContain("primary key (student_id, usage_day)");
+- `create table if not exists aais_ai_guide_daily_usage`;
+- primary key `(student_id, usage_day)`;
+- `where event = 'ai_prompt_submitted'`;
+- current-day bounds from `date_trunc('day', now() at time zone 'UTC')` and the next UTC day;
+- selection and grouping by `(event_time at time zone 'UTC')::date` from `aais_events`;
+- `on conflict (student_id, usage_day)`;
+- `greatest(aais_ai_guide_daily_usage.used, excluded.used)`.
+
+These assertions prove that backfill uses actual event timestamps, covers only the current UTC day, is safe to rerun, and never lowers a counter that already contains live reservations.
+
+- [ ] **Step 4: Make production readiness require the new table**
+
+In the storage-probe fixtures in `tests/aais-backend-store.test.ts`:
+
+- add `dailyGuideUsageTable?: boolean` to `createProbeDatabaseClient`;
+- return `daily_guide_usage_table` as `aais_ai_guide_daily_usage` unless explicitly false;
+- extend the existing required-table test so a false value yields storage status `failed`;
+- assert the probe query includes `to_regclass('public.aais_ai_guide_daily_usage')` and does not create or alter schema.
+
+In `tests/readiness-route.test.ts`, extend the mocked `to_regclass` row:
+
+```ts
+daily_guide_usage_table:
+  databaseProbeMode === "missing_schema" ? null : "aais_ai_guide_daily_usage",
 ```
 
-- [ ] **Step 6: Prove the new tests fail before implementation**
+The existing production readiness fixtures must continue to return `200 ready` when all tables are present and `503 not_ready` with blocked Postgres storage when schema is missing. This is route-level regression coverage for the new required table.
+
+- [ ] **Step 5: Extend the privacy inventory acceptance**
+
+In `docs/privacy-data-inventory.md`, add the daily counter to all relevant sections:
+
+- fields: student id, UTC usage day, reserved-request count, updated timestamp;
+- purpose: concurrent daily guide-limit enforcement and migration-day prompt-event backfill;
+- deletion: learner deletion removes the row;
+- export: no separate export object because it is derived enforcement metadata;
+- retention: current-day operational need exists, but cleanup cadence and final retention remain owner/legal decisions.
+
+No secret, connection string, credential, raw prompt, or private artifact may be added.
+
+- [ ] **Step 6: Prove the tests are red before implementation**
 
 ```bash
+set -euo pipefail
 npx vitest run \
   tests/aais-backend-store.test.ts \
   tests/postgres-migrations.test.mjs \
-  -t "daily guide budget|durable usage table|per-process|Postgres migrations"
+  tests/readiness-route.test.ts \
+  -t "daily guide|durable usage|Postgres migrations|production database migrations|required Postgres schema"
 ```
 
-Expected: failures report missing `reserveDailyGuideRequest` and missing migration `0008`.
+Expected before implementation: failures identify the missing reservation API, missing migration `0008`, and missing required-table probe. A failure caused only by a test typo must be corrected before implementation starts.
 
-### Task 3: Add migration `0008`
+### Task 3: Add request-order regression before route implementation
 
 **Files:**
-- Create: `migrations/postgres/0008_ai_guide_daily_usage.sql`
 
-- [ ] **Step 1: Create the complete migration**
+- Modify: `tests/aais-api-routes.test.ts`
 
-```sql
-create table if not exists aais_ai_guide_daily_usage (
-  student_id text not null,
-  usage_day date not null,
-  used integer not null default 0,
-  updated_at timestamptz not null default now(),
-  primary key (student_id, usage_day)
-);
-```
+- [ ] **Step 1: Add the exact invalid-attachment case**
 
-- [ ] **Step 2: Verify migration discovery**
+Add `does not reserve daily guide budget for an invalid attachment request` and assert:
 
-```bash
-npx vitest run tests/postgres-migrations.test.mjs
-```
+- a signed-in, CSRF-valid request with unsupported `image/png` attachment returns `400`;
+- `reserveDailyGuideRequest` is not called;
+- no `ai.guide.budget.used` audit is emitted;
+- a valid request immediately afterward succeeds with `{ limit: 1, used: 1, remaining: 0 }`;
+- the reservation and used-audit occur exactly once.
 
-Expected: all Postgres migration tests pass and report migration `0008`.
+This pins the ordering contract: learner input, authentication, CSRF, target normalization, attachment normalization, and other fallible request normalization must complete before the durable reservation.
 
-### Task 4: Implement atomic reservation in the learning store
-
-**Files:**
-- Modify: `src/lib/server/aais-learning-store.ts:776`
-- Modify: `src/lib/server/aais-learning-store.ts:859`
-- Modify: `src/lib/server/aais-learning-store.ts:1186`
-- Modify: `src/lib/server/aais-learning-store.ts:2816`
-
-- [ ] **Step 1: Delete durable usage during learner-data deletion**
-
-Insert after deletion from `aais_learner_task_state`:
-
-```ts
-await database.query(
-  "delete from aais_ai_guide_daily_usage where student_id = $1",
-  [safeStudentId],
-);
-```
-
-- [ ] **Step 2: Add the reservation method before `getCohortAnalytics`**
-
-```ts
-async function reserveDailyGuideRequest(input: {
-  studentId: string;
-  limit: number;
-  now?: Date;
-}): Promise<AaisDailyGuideReservation> {
-  const safeStudentId = requireSafeId(input.studentId, "student id");
-  const now = input.now ?? new Date();
-  const dayRange = getAaisUtcDayRange(now);
-  const limit = Math.max(1, Math.floor(input.limit));
-  if (database) {
-    try {
-      // Atomic reserve-then-run gate: the guarded upsert increments the daily
-      // counter only while it is below the limit, so concurrent requests (even on
-      // separate serverless instances) cannot both slip past the cap.
-      const reserved = await database.query(
-        `insert into aais_ai_guide_daily_usage (student_id, usage_day, used, updated_at)
-         values ($1, $2::date, 1, $3::timestamptz)
-         on conflict (student_id, usage_day)
-         do update set used = aais_ai_guide_daily_usage.used + 1, updated_at = $3::timestamptz
-         where aais_ai_guide_daily_usage.used < $4
-         returning used`,
-        [safeStudentId, dayRange.start, now.toISOString(), limit],
-      );
-      if (reserved.rows.length > 0) {
-        return buildDailyGuideReservation("reserved", limit, Number(reserved.rows[0]?.used) || 1, dayRange.end);
-      }
-      const current = await database.query(
-        `select used
-           from aais_ai_guide_daily_usage
-          where student_id = $1
-            and usage_day = $2::date
-          limit 1`,
-        [safeStudentId, dayRange.start],
-      );
-      return buildDailyGuideReservation("exhausted", limit, Number(current.rows[0]?.used ?? limit) || limit, dayRange.end);
-    } catch (error) {
-      // If migration 0008 has not been applied yet, degrade to best-effort
-      // prompt-event counting rather than failing every guide request.
-      if (!isMissingAaisRelationError(error)) {
-        throw error;
-      }
-    }
-  }
-  // File/memory backend (or a database still missing the durable counter table) is
-  // single-process best effort; the increment lands when the exchange is appended.
-  const usage = await getDailyGuideUsage(safeStudentId, now);
-  if (usage.used >= limit) {
-    return buildDailyGuideReservation("exhausted", limit, usage.used, usage.end);
-  }
-  return buildDailyGuideReservation("reserved", limit, usage.used + 1, usage.end);
-}
-```
-
-- [ ] **Step 3: Export the method from the store return object**
-
-Add `reserveDailyGuideRequest,` between `recordAiAcceptance,` and `requestScaffold,`.
-
-- [ ] **Step 4: Add the reservation type and helpers after `getAaisUtcDayRange`**
-
-```ts
-export type AaisDailyGuideReservation = {
-  status: "reserved" | "exhausted";
-  limit: number;
-  used: number;
-  remaining: number;
-  resetsAt: string;
-};
-
-function buildDailyGuideReservation(
-  status: AaisDailyGuideReservation["status"],
-  limit: number,
-  used: number,
-  resetsAt: string,
-): AaisDailyGuideReservation {
-  return {
-    status,
-    limit,
-    used,
-    remaining: Math.max(0, limit - used),
-    resetsAt,
-  };
-}
-
-function isMissingAaisRelationError(error: unknown) {
-  if (typeof error !== "object" || error === null || !("code" in error)) {
-    return false;
-  }
-  const code = (error as { code?: unknown }).code;
-  return code === "42P01" || code === "42703";
-}
-```
-
-- [ ] **Step 5: Run store and migration tests**
+- [ ] **Step 2: Prove the route regression is red**
 
 ```bash
-npx vitest run tests/aais-backend-store.test.ts tests/postgres-migrations.test.mjs
+set -euo pipefail
+npx vitest run tests/aais-api-routes.test.ts \
+  -t "does not reserve daily guide budget for an invalid attachment request"
 ```
 
-Expected: both files pass.
+Expected before the route reorder: the invalid request reaches reservation. Do not weaken the assertion to accept a consumed reservation.
 
-### Task 5: Reserve the budget before running the AI guide
+### Task 4: Implement migration, store behavior, readiness, route ordering, and privacy inventory
 
-**Files:**
-- Modify: `src/app/api/learning/ai-guide/route.ts:57`
-- Test: `tests/aais-api-routes.test.ts:406`
+**Files:** all eight slice paths.
 
-- [ ] **Step 1: Replace the old read-then-finalize budget flow**
+- [ ] **Step 1: Create migration `0008`**
 
-Rename `requireDailyGuideBudget` to `reserveDailyGuideBudget`. Its complete body must be:
+Create `migrations/postgres/0008_ai_guide_daily_usage.sql` with:
 
-```ts
-async function reserveDailyGuideBudget(
-  studentId: string,
-  store: ReturnType<typeof getAaisLearningStore>,
-): Promise<AaisGuideDailyBudget> {
-  const limit = readDailyGuideLimit();
-  const reservation = await store.reserveDailyGuideRequest({ studentId, limit });
-  const budget: AaisGuideDailyBudget = {
-    limit: reservation.limit,
-    used: reservation.used,
-    remaining: reservation.remaining,
-    resetsAt: reservation.resetsAt,
-  };
-  if (reservation.status === "exhausted") {
-    recordGuideBudgetAudit({
-      studentId,
-      event: "ai.guide.budget.exceeded",
-      outcome: "failure",
-      budget,
-    });
-    throw new AaisGuideDailyBudgetError(budget);
-  }
-  return budget;
-}
-```
+1. the `(student_id, usage_day)` primary-key table;
+2. a `utc_day` CTE for the current UTC-day start and exclusive next-day end;
+3. a backfill from `aais_events` for current-day `ai_prompt_submitted` rows grouped by student and the UTC date of `event_time`;
+4. conflict handling that sets `used` to `greatest(existing, excluded)` and updates `updated_at` only when the backfill count is higher.
 
-Call `reserveDailyGuideBudget` at the start of `POST`. Delete `finalizeDailyGuideBudget`. Return and audit the reserved `budget` directly in both JSON and streaming response paths.
+- [ ] **Step 2: Implement the durable reservation and narrow compatibility helper**
 
-- [ ] **Step 2: Run the route contract and complete owning suite**
+In `src/lib/server/aais-learning-store.ts`:
+
+- add `reserveDailyGuideRequest({ studentId, limit, now })`;
+- derive UTC-day boundaries with `getAaisUtcDayRange`;
+- perform the guarded insert/upsert and read the existing count only when no row was reserved;
+- return `{ status, limit, used, remaining, resetsAt }`;
+- use fallback prompt-event counting only when `isMissingAaisTableError` sees `code === "42P01"`;
+- export the method from the store object;
+- delete the learner's daily usage row, tolerating only the same `42P01` case;
+- require `aais_ai_guide_daily_usage` in `probeAaisLearningStorage`.
+
+Do not treat `42703` as a missing-table error. Do not catch the whole learner-deletion sequence.
+
+- [ ] **Step 3: Reorder and simplify the guide route**
+
+In `src/app/api/learning/ai-guide/route.ts`:
+
+- validate and normalize the full request first;
+- determine stream mode before reservation;
+- call `reserveDailyGuideBudget` only after the request is valid;
+- throw the existing redacted `AAIS_GUIDE_DAILY_BUDGET_EXCEEDED` response for exhaustion;
+- remove read-then-finalize behavior;
+- use the reserved budget directly in JSON, streaming, and redacted audit results.
+
+- [ ] **Step 4: Apply readiness and privacy changes**
+
+Update both readiness fixture families and `docs/privacy-data-inventory.md` exactly as pinned in Task 2. These are part of the slice, not follow-up documentation.
+
+### Task 5: Verify the reviewed slice and commit exactly eight paths
+
+- [ ] **Step 1: Run the complete focused slice**
 
 ```bash
+set -euo pipefail
 npx vitest run \
   tests/aais-api-routes.test.ts \
   tests/aais-backend-store.test.ts \
-  tests/postgres-migrations.test.mjs
+  tests/postgres-migrations.test.mjs \
+  tests/readiness-route.test.ts
 npm run type-check
 git diff --check
 ```
 
-Expected: all three files pass, the daily budget response remains `{ limit: 1, used: 1, remaining: 0 }`, TypeScript passes, and diff-check is silent.
+Expected: all four test files pass; TypeScript exits `0`; diff-check is silent. The passing cases include invalid-before-reservation, atomic exhaustion, learner isolation, `42P01`-only fallback, non-`42P01` propagation, missing-table-safe deletion, current-UTC-day non-lowering backfill, readiness failure for a missing counter table, and the existing readiness route contract.
 
-- [ ] **Step 3: Commit the migration and application behavior as one unit**
+- [ ] **Step 2: Audit the exact file boundary and documentation contract**
 
 ```bash
-git add -- \
-  migrations/postgres/0008_ai_guide_daily_usage.sql \
-  src/lib/server/aais-learning-store.ts \
-  src/app/api/learning/ai-guide/route.ts \
-  tests/aais-backend-store.test.ts \
-  tests/postgres-migrations.test.mjs
-git diff --cached --check
-git diff --cached --name-status
-git commit -m "fix: reserve durable daily AI guide usage"
-git status --short --branch
+set -euo pipefail
+diff -u \
+  <(printf '%s\n' \
+    'docs/privacy-data-inventory.md' \
+    'migrations/postgres/0008_ai_guide_daily_usage.sql' \
+    'src/app/api/learning/ai-guide/route.ts' \
+    'src/lib/server/aais-learning-store.ts' \
+    'tests/aais-api-routes.test.ts' \
+    'tests/aais-backend-store.test.ts' \
+    'tests/postgres-migrations.test.mjs' \
+    'tests/readiness-route.test.ts' | LC_ALL=C sort) \
+  <(git diff --name-only | LC_ALL=C sort)
+grep -Fq 'aais_ai_guide_daily_usage' docs/privacy-data-inventory.md
+grep -Fq 'derived enforcement metadata' docs/privacy-data-inventory.md
+grep -Fq 'cleanup cadence' docs/privacy-data-inventory.md
 ```
 
-Expected: exactly five paths are committed and the worktree is clean.
+Expected: `git diff --name-only` prints exactly the eight paths listed at the top of this plan, and the privacy inventory contains storage, deletion/export, and retention coverage without secrets.
+
+- [ ] **Step 3: Run the isolated branch full suite and apply the known-baseline caveat**
+
+```bash
+set -euo pipefail
+npm test
+```
+
+Expected on this isolated branch, which is based on `49c920e9cb815fe75a510d57aaf3ec881f822641`: the only full-suite failures are the two known clock-sensitive cases in `tests/aais-session-revocations.test.ts`. Those failures are fixed by the separate reviewed commit `5e803c669b955abba8a3f6c1c665c5543875a21a`. Any daily-budget failure, any third failure, or any failure in another file blocks the slice.
+
+The compose branch must include `5e803c669b955abba8a3f6c1c665c5543875a21a` and then rerun the full suite to green; this caveat does not authorize publication with failing tests.
+
+- [ ] **Step 4: Stage exactly eight paths and commit**
+
+```bash
+set -euo pipefail
+git add -- \
+  migrations/postgres/0008_ai_guide_daily_usage.sql \
+  src/app/api/learning/ai-guide/route.ts \
+  src/lib/server/aais-learning-store.ts \
+  tests/aais-api-routes.test.ts \
+  tests/aais-backend-store.test.ts \
+  tests/postgres-migrations.test.mjs \
+  tests/readiness-route.test.ts \
+  docs/privacy-data-inventory.md
+git diff --cached --check
+diff -u \
+  <(printf '%s\n' \
+    'docs/privacy-data-inventory.md' \
+    'migrations/postgres/0008_ai_guide_daily_usage.sql' \
+    'src/app/api/learning/ai-guide/route.ts' \
+    'src/lib/server/aais-learning-store.ts' \
+    'tests/aais-api-routes.test.ts' \
+    'tests/aais-backend-store.test.ts' \
+    'tests/postgres-migrations.test.mjs' \
+    'tests/readiness-route.test.ts' | LC_ALL=C sort) \
+  <(git diff --cached --name-only | LC_ALL=C sort)
+git commit -m "fix: reserve durable daily AI guide usage"
+git show --stat --oneline HEAD
+test -z "$(git status --porcelain=v1 -uall)"
+```
+
+Expected: the commit subject is exactly `fix: reserve durable daily AI guide usage`, exactly eight paths are committed, and the worktree is clean. The specification- and quality-approved result is `ad2d5a05114b9f19297fcae4a232cc434c8b2f35`.

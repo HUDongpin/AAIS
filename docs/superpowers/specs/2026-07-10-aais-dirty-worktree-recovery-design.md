@@ -2,218 +2,322 @@
 
 ## 1. Purpose
 
-This design converts the current AAIS root checkout from a mixed dirty integration inventory into reviewable commits, validates the recovered behavior in a clean linked worktree, and establishes a worktree-first operating model for future Codex tasks.
+This design converts the AAIS root checkout and related recovery worktrees into reviewable, provenance-preserving commits, validates the recovered behavior in a clean compose worktree, and closes every temporary worktree without losing unique content.
 
-The design follows the workflow principles in Daniel Mackay's article, [Parallel Vibe Coding: Using Git Worktrees with Claude Code](https://www.dandoescode.com/blog/parallel-vibe-coding-with-git-worktrees): one branch and working directory per task, a clean integration base, no stash-based task isolation, and explicit cleanup after merge.
+The operating model remains one branch and worktree per task, a clean integration source, no stash-based isolation, no history rewriting, and cleanup only after accepted-main equivalence is proven.
 
-## 2. Authoritative Starting State
+## 2. Refreshed Authoritative Snapshot
 
-The assessment baseline is the state observed on 2026-07-10 in `/Users/dongpinhu/Desktop/AAIS`.
+The current recorded rescue snapshot is:
 
-- Remote `origin/main` and the pre-recovery local HEAD pointed to `d20024f3256a970c4ca4a9360211a6b485d9d82d`.
-- The root checkout used branch `codex/aais-enterprise-standard`; no local `main` branch existed.
-- The dirty inventory contained eight modified tracked files and one untracked migration, with no staged, deleted, conflicted, or stashed changes.
-- The tracked diff contained 391 insertions and 35 deletions.
-- Focused validation passed 77 tests in four files.
-- A clean baseline run reproduced two failures in `tests/aais-session-revocations.test.ts`; all other baseline tests passed.
-- The two failures are independent of the dirty inventory. The test creates an eight-hour token at `2026-07-09T12:00:00Z`, which expired at `2026-07-09T20:00:00Z`, but later revocation checks default to the real clock.
-- The repository hygiene check reports both Git dirt and local private artifacts. The private artifacts are already ignored and are not cleanup targets.
+`/Users/dongpinhu/Desktop/AAIS-dirty-worktree-backups/20260710-145253-worktree-recovery-refresh`
 
-Before any staging, the dirty inventory was copied to the external recovery snapshot:
+It was recorded owner-only (`700`) with these facts:
 
-`/Users/dongpinhu/Desktop/AAIS-dirty-worktree-backups/20260710-101016-worktree-recovery`
+- Root checkout: `/Users/dongpinhu/Desktop/AAIS`.
+- Root branch: `codex/aais-enterprise-standard`.
+- Root HEAD: `2fd93838281581a6996f6f7a8a6bca0d8d95e420` (`chore: ignore local worktrees`).
+- Recorded `origin/main`: `42e92a483842a2a601ecbdb10794a90c1f3eba1f`.
+- Root inventory: 11 modified tracked paths plus untracked `migrations/postgres/0008_ai_guide_daily_usage.sql`.
+- Root tracked-versus-HEAD patch SHA-256: `e3c385c8c57ddf582dad07fd9596476e13a3dcd231c1fef4b93979865d2e3211`.
+- Root tracked-versus-recorded-origin patch SHA-256: `bfc1c311ae90c8369d8feaa1bcbe69802b392cd5c7b259dddb23f8b6f8219b6c`.
+- Bobie main-fix2-versus-recorded-origin snapshot patch SHA-256: `57b7f506362620e1c8f21eca9e15ec38482a70a957bcd975052f672e2a92ec74`. This snapshot predates the final quality-review additions in `tests/auth-route.test.ts`; the frozen final commit-versus-base patch SHA-256 is `892d373fe7a71ebf0a216e126511501ec0642c198c14fea12e679b3079a98603`.
+- Bobie prod-fix-versus-recorded-origin patch SHA-256: `fe3bfd7c9d6709660033a1856bd549daec929da14f0aa230a7a4542716663460`.
+- Bobie main-deploy-versus-recorded-origin patch is empty, with SHA-256 `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`.
+- The backed-up migration matches the root migration byte-for-byte and has SHA-256 `5460251a5560635b4b39229b22b360465ccfbb40b60c1812b3df4d9252ca98ce`.
 
-The snapshot contains the binary tracked patch, diff statistics, base commit metadata, and the untracked migration. The tracked patch checksum matches a fresh binary diff, the migration copy matches byte-for-byte, and the snapshot directory is owner-only (`700`).
+These hashes and SHAs are snapshot facts, not assumptions about future live
+state. The historical `42e92a483842a2a601ecbdb10794a90c1f3eba1f`
+value is verified as a commit object and as the `origin_main=` entry in the
+snapshot's `root/base-commit.txt`; it remains the baseline for recorded patch
+hashes and worktree provenance. No executable step may require the current
+mutable `refs/remotes/origin/main` to equal it. Executable integration fetches
+live main, requires the live SHA to descend from the historical baseline,
+recomputes live evidence against that captured SHA, and stops on rescue
+inventory drift, non-fast-forward/unrelated main movement, or evidence mismatch
+before publication or cleanup.
 
-Commit `2fd9383` adds `.worktrees/` to `.gitignore`. It contains no feature files and is the common local recovery base.
+### 2.1 Refreshed Root Inventory
 
-## 3. Goals and Success Criteria
+The 11 tracked root paths are:
 
-The recovery is complete only when all of the following are true:
+1. `src/app/api/learning/ai-guide/route.ts`
+2. `src/app/api/learning/scaffold/route.ts`
+3. `src/lib/server/aais-learning-store.ts`
+4. `src/lib/server/aais-lrs-client.ts`
+5. `src/lib/server/aais-trial-accounts.ts`
+6. `tests/aais-api-routes.test.ts`
+7. `tests/aais-backend-store.test.ts`
+8. `tests/aais-lrs-client.test.ts`
+9. `tests/aais-session-revocations.test.ts`
+10. `tests/auth-route.test.ts`
+11. `tests/postgres-migrations.test.mjs`
 
-1. Every behavior represented by the nine dirty paths exists in committed, reviewable history or is deliberately removed because stronger evidence proves it redundant or incorrect.
-2. The three functional concerns are separated into independent commits with clear rollback boundaries.
-3. The time-sensitive session-revocation baseline failure is fixed in its own test-only commit.
-4. The nine original dirty paths in the clean integration worktree match the approved recovered result, and any deviation from the snapshot is documented and covered by tests.
-5. `npm run ci`, `npm run e2e`, and `git diff --check` pass in the clean integration worktree.
-6. Strict `npm run hygiene:check` passes in the clean integration worktree, where private root-only artifacts are absent.
-7. The root checkout ends on a local `main` branch that tracks the accepted mainline state and has no tracked or untracked source changes.
-8. Owner-approved private and generated paths remain ignored and untouched, including `.env*`, `All API Keys.docx`, `.aais-data`, `.vercel`, `.next`, `output`, and `node_modules`.
-9. No stash is used, and no broad `git add .` operation is used.
-10. Temporary worktrees and their branches are removed only after their commits are integrated and verified.
+The untracked path is `migrations/postgres/0008_ai_guide_daily_usage.sql`.
 
-## 4. Non-Goals
+The first recovery assessment covered eight of the tracked paths plus migration `0008`. The refresh adds three tracked paths:
 
-- Do not change provider credentials, environment values, or private local artifacts.
-- Do not deploy AAIS directly from the dirty root checkout.
-- Do not combine unrelated refactors with the recovery.
-- Do not rewrite existing public history.
-- Do not treat a passing focused test run as proof that the full recovery is complete.
-- Do not delete the external recovery snapshot during this recovery.
+- `tests/aais-session-revocations.test.ts` already matches recorded `origin/main` and contains no unrescued root-only behavior.
+- `src/lib/server/aais-trial-accounts.ts` is unique Bobie behavior rescued by the reviewed Bobie slice.
+- `tests/auth-route.test.ts` is unique Bobie coverage rescued and strengthened by the reviewed Bobie slice.
 
-## 5. Worktree and Branch Topology
+### 2.2 External Worktree Classification
 
-The root checkout remains the immutable rescue source until equivalence is proven. Implementation and validation occur in linked worktrees under the ignored `.worktrees/` directory.
-
-| Purpose | Branch | Worktree role |
+| Worktree | Recorded state | Provenance and cleanup rule |
 | --- | --- | --- |
-| Written design and plan | `codex/aais-worktree-recovery-design` | Holds the approved design and implementation plan |
-| Baseline CI repair | `codex/aais-session-revocation-test` | Makes the session-revocation test clock deterministic |
-| Locked-task protection | `codex/aais-locked-task-guard` | Recovers server-side task-sequencing protection |
-| Durable guide budget | `codex/aais-daily-guide-budget` | Recovers atomic daily usage reservation and migration `0008` |
-| LRS outbox hardening | `codex/aais-lrs-outbox-hardening` | Recovers xAPI mapping coverage and poison-event handling |
-| Combined validation | `codex/aais-recovery-compose` | Integrates all recovery commits and runs full gates |
+| `/private/tmp/aais-bobie-main-deploy-20260710` | Tracked/untracked-clean detached HEAD at `42e92a483842a2a601ecbdb10794a90c1f3eba1f`; ignored `.aais-data` and reproducible artifacts exist | Remove normally only after exact accepted-main proof and private archive verification. |
+| `/private/tmp/aais-bobie-main-fix2-20260710` | Clean attached branch `codex/aais-bobie-production-fallback` at `1d97d16998e95a92ebecb3a69a2ad14c9e0a566c` | Holds the reviewed Bobie source commit; remove only after the exact commit is reachable from accepted main. |
+| `/private/tmp/aais-bobie-prod-fix-20260710` | Detached at `2fd93838281581a6996f6f7a8a6bca0d8d95e420`, with three modified working files | The three files match accepted commit `42e92a483842a2a601ecbdb10794a90c1f3eba1f`; its remaining working-tree comparison to that commit is `.gitignore`. Before normal removal, re-prove every dirty file against the accepted commit, restore those files from the current index only after provenance is safe, and stop if any mismatch appears. |
 
-Each feature branch starts from the same accepted recovery base. A branch may be rebased onto a newer `origin/main` only before its recovery patch is applied and only after the new base passes the same baseline audit.
+Every registered worktree, including the root, five reviewed source/design worktrees, compose, and these three external worktrees, must be inventoried and classified before any removal. No worktree is force-removed.
 
-## 6. Recovery Slices
+Tracked/untracked porcelain is not a complete cleanliness test. A name-only
+review found `.aais-data` in six removal targets and `.vercel` in prod-fix;
+`.gitignore` also covers `.env*` and `All API Keys.docx`. Cleanup inventories
+ignored/untracked top-level names and metadata without printing contents.
+`node_modules`, `.next`, `test-results`, and `tsconfig.tsbuildinfo` are the only
+reproducible allowlist. Every `.aais-data`, `.vercel`, `.env*`, API-key DOCX,
+unknown ignored path, and untracked path is preserved in an owner-only external
+archive with counts, SHA-256, permission/archive verification, and scratch-only
+restore instructions. Root private data is excluded and remains untouched.
 
-### 6.1 Baseline CI Repair
+## 3. Reviewed Recovery Inputs
 
-This is a test-only prerequisite and is not part of the original dirty inventory.
+These exact source commits are frozen recovery inputs:
 
-**File:** `tests/aais-session-revocations.test.ts`
+| Slice | Branch/base | Exact final commit | Exact subject | Reviewed scope |
+| --- | --- | --- | --- | --- |
+| Session baseline | `codex/aais-session-revocation-test`, base `49c920e9cb815fe75a510d57aaf3ec881f822641` | `5e803c669b955abba8a3f6c1c665c5543875a21a` | `test: make session revocation checks time deterministic` | `tests/aais-session-revocations.test.ts` |
+| Locked-task guard | `codex/aais-locked-task-guard`, base `49c920e9cb815fe75a510d57aaf3ec881f822641` | `735011b3e002f6be46ff34f4a13c70834a69cfeb` | `fix: reject mutations against locked learning tasks` | Four locked-task source/test paths |
+| Daily guide budget | `codex/aais-daily-guide-budget`, base `49c920e9cb815fe75a510d57aaf3ec881f822641` | `ad2d5a05114b9f19297fcae4a232cc434c8b2f35` | `fix: reserve durable daily AI guide usage` | Eight daily source/test/readiness/privacy paths |
+| LRS hardening | `codex/aais-lrs-outbox-hardening`, base `49c920e9cb815fe75a510d57aaf3ec881f822641` | `33af4c30100f4c0ea02b765709eb83123e7b10ff` | `fix: harden LRS outbox delivery failures` | Four LRS source/test paths |
+| Bobie production fallback | `codex/aais-bobie-production-fallback`, base `42e92a483842a2a601ecbdb10794a90c1f3eba1f` | `1d97d16998e95a92ebecb3a69a2ad14c9e0a566c` | `fix: preserve production learner trial fallback` | `src/lib/server/aais-trial-accounts.ts`, `tests/auth-route.test.ts` |
 
-The test must pass an explicit fixed `now` to `revokeAaisSessionToken` and `isAaisSessionTokenRevoked`, using a time after issuance and before the token's fixed expiry. Production token or revocation behavior must not change.
+The Bobie slice has recorded specification and quality PASS status. The four earlier slices retain their previously reviewed path and evidence contracts. Fresh reviewers return the synchronized documentation SHA out of band; execution verifies its subject, exact five-path diff, and clean branch before binding it once to immutable annotated tag `aais-recovery-docs-reviewed-20260710`. Composition starts only after all five source tips and that tagged documentation tip are frozen.
 
-The commit is accepted when the isolated test passes repeatedly and the full clean baseline has no remaining failure attributable to the clock.
+## 4. Goals and Success Criteria
 
-### 6.2 Locked-Task Protection
+Recovery is complete only when:
 
-**Source responsibilities:**
+1. The five exact source commits remain reachable through separate `--no-ff` merge commits; no source commit is squashed, rebased, or rewritten.
+2. Fresh reviewers identify the exact approved documentation commit out of band. The operator verifies that literal SHA, exact five-path diff, subject, and clean branch, then creates the immutable annotated tag `aais-recovery-docs-reviewed-20260710`. Compose, evidence, publication, and cleanup resolve that tag and reject branch drift; they never infer approval from the current branch tip.
+3. Every intended behavior in the refreshed root inventory is present on accepted main, with all review-driven deviations documented by slice.
+4. The original daily readiness/privacy additions remain in scope: `tests/readiness-route.test.ts` and `docs/privacy-data-inventory.md`.
+5. The Bobie slice remains exactly two source paths, while compose separately reconciles production-demo documentation and adds the missing policy regressions before release.
+6. Production trial policy is explicit: when trial login is enabled, Bobie and Phoebe remain built-in learner fallbacks in production; a unique configured learner coexists with them; teacher and admin trial identities are each forbidden; invalid configured trial data fails closed; the disable switch rejects every trial login.
+7. Duplicate configured Bobie/Phoebe identifiers have documented precedence. The accepted policy is the current implementation: built-in learner records win and same-id configured entries are ignored.
+8. `README.md`, `OPERATIONS.md`, and `docs/release-checklist.md` no longer claim that Bobie/Phoebe are rejected production credentials. A blocked smoke credential uses a distinct retired identifier. The exact accepted checklist line occurs twice, replacing both staging and production lines, and both exact old lines are absent.
+9. Regression coverage separately proves configured duplicate precedence and production admin-role denial; a teacher-only assertion is not treated as admin coverage.
+10. The equivalence artifact has a machine-readable key/value manifest plus exact-set inventory, worktree-classification, deviation, focused-test, and full-gate sections. It records the refreshed snapshot path, all refreshed hashes, five source SHAs, reviewed docs tag object/commit/tree, policy tip, pre-evidence compose tip, predecessor evidence tip/generation, active publication repository path/branch, live-main SHA, root comparison hashes, actual test counts, and actual gate results. Initial generation is exactly `1`; every later generation is proven from Git to equal its predecessor plus exactly one.
+11. Focused tests, `npm run ci` including production build, `npm run e2e`, strict `npm run hygiene:check`, and `git diff --check` pass on the final compose tree after the last live-main refresh.
+12. The checked-in evidence declares generation-specific final-head and accepted-main tag names tied to the verified exact generation and names the active publication repository. Reviewed-docs and final-head annotated tags are created, verified, and published from the repository that actually contains the sealed head: compose for the initial cycle or the independent acceptance clone after drift. The root repository never creates a tag for a clone-only object. After merge an accepted-main annotated tag binds the actual server result. Every later root-side resolution first fetches the exact remote tag/object; local and remote tag objects plus peeled commits must match exactly without force or overwrite.
+13. Publication creates at most one open PR for the evidence head branch and reuses it after later pushes. The PR number, head branch/SHA, base, and state are exact; PR checks pass; immediately before merge a fresh `origin/main` SHA must still equal the evidence's pinned live-main SHA; the merge uses `--match-head-commit`. These client checks narrow and detect races but are not atomic base protection. The fetched server result must be a two-parent merge whose first parent equals the pinned base, whose second parent equals the pinned PR head exactly, whose tree equals the pinned PR-head tree exactly, and whose OID equals GitHub's reported merge commit.
+14. Root cleanup begins only when mutable `origin/main` equals the generation-bound accepted-main tag exactly, its second parent and tree equal the sealed gate head and tree exactly, refreshed backup verification, no-writer proof, source reachability, policy reconciliation, and full gates on that exact tree are proven. A descendant or merely ancestor-containing second parent is insufficient. Any advance or parent/tree mismatch starts a new exact-main clean-checkout equivalence/full-gate/evidence acceptance cycle; old sealed compose gates cannot authorize the new main.
+15. Root tracked cleanup restores all 11 tracked dirty paths from the root rescue branch's current index/HEAD, not from `origin/main`. For the clean-root switch, archive and final fetch/tag/status checks finish first; writer detection and neutral-cwd whole-root `lsof` are repeated last, followed immediately by the switch to exact accepted `main` with no intervening operation.
+16. The untracked migration is removed only after byte comparison and hash verification against the refreshed backup and accepted-main evidence for the improved migration.
+17. Every worktree is classified before cleanup; dirty external worktrees are made tracked/untracked-clean only after each working file's accepted provenance is proven. Ignored/private cleanliness is never inferred from porcelain.
+18. Every destructive root, prod-fix, worktree, checkout, and branch action runs in an operator-exclusive window with a named sentinel, immediate exact-main/status/hash/byte/archive checks, owner-only preimage, and read-only process/lsof evidence. Private-name manifests are NUL-delimited and consumed by macOS BSD tar with `--null -b 1`, preserving leading-option and embedded-newline names verbatim while keeping streamed archive hashes comparable. Before any whole-target `lsof +D`, the executing shell verifies and enters `/private/tmp`, proves that cwd is outside the target, and stays there while target operations use `git -C` or absolute paths; no arbitrary handle is filtered away to compensate for a self-count. For worktree and independent-checkout deletion, after the last fetch/tag/ref check the same block repeats tracked/untracked status, ignored/untracked names, archive integrity, live-byte equivalence to the owner-only preimage, exact accepted main, and writer/open-handle checks, then immediately performs the normal non-forced removal with no intervening writer, fetch, tag, or ref command. These guards narrow races but are not claimed as magical locks.
+19. Secrets and private artifact contents are omitted. No stash, broad `git add .`, destructive reset, force push, forced worktree removal, or deletion of unpreserved unique/private content is used.
 
-- `src/lib/server/aais-learning-store.ts`: require an unlocked task for completion, scaffolding, AI acceptance, and mutable task fields.
-- `src/app/api/learning/scaffold/route.ts`: translate a locked-task error into the redacted `AAIS_TASK_LOCKED` API response.
+## 5. Non-Goals
 
-**Test responsibilities:**
+- Do not change credentials, environment values, or private local artifacts during recovery.
+- Do not deploy from the dirty root or any unreviewed external worktree.
+- Do not require byte identity between the original rescue inventory and the improved reviewed result.
+- Do not silently accept snapshot, branch-tip, inventory, live-main, test, or PR-head drift.
+- Do not remove the refreshed external snapshot.
 
-- `tests/aais-backend-store.test.ts`: prove every learner mutation rejects locked tasks and leaves task state unchanged.
-- `tests/aais-api-routes.test.ts`: prove `complete-task` cannot bypass sequencing and does not alter the locked task.
+## 6. Recovery Slice Contracts
 
-The existing `select-task` redaction test is not a duplicate. It covers a different mutation and remains intact.
+### 6.1 Session Baseline
+
+Only `tests/aais-session-revocations.test.ts` changes. Fixed times make revocation checks deterministic; production session behavior does not change. The refreshed root copy already matches recorded `origin/main`, but the exact reviewed source commit is still preserved in compose history.
+
+### 6.2 Locked-Task Guard
+
+- `src/lib/server/aais-learning-store.ts` rejects completion, scaffolding, AI acceptance, and mutable task operations against locked tasks.
+- `src/app/api/learning/scaffold/route.ts` returns redacted `AAIS_TASK_LOCKED` behavior.
+- `tests/aais-backend-store.test.ts` and `tests/aais-api-routes.test.ts` prove state remains unchanged and routes cannot bypass sequencing.
 
 ### 6.3 Durable Daily Guide Budget
 
-**Source responsibilities:**
+The reviewed eight paths remain:
 
-- `migrations/postgres/0008_ai_guide_daily_usage.sql`: create a per-student, per-UTC-day usage table.
-- `src/lib/server/aais-learning-store.ts`: atomically reserve a request below the configured limit, report exhaustion, delete usage rows during learner-data deletion, and provide a bounded fallback when the migration is absent.
-- `src/app/api/learning/ai-guide/route.ts`: reserve before running the guide and return the reserved budget consistently for JSON and stream responses.
+- `migrations/postgres/0008_ai_guide_daily_usage.sql`
+- `src/app/api/learning/ai-guide/route.ts`
+- `src/lib/server/aais-learning-store.ts`
+- `tests/aais-api-routes.test.ts`
+- `tests/aais-backend-store.test.ts`
+- `tests/postgres-migrations.test.mjs`
+- `tests/readiness-route.test.ts`
+- `docs/privacy-data-inventory.md`
 
-**Test responsibilities:**
+Required behavior remains:
 
-- `tests/aais-backend-store.test.ts`: cover atomic increments, exhaustion, per-student isolation, missing-table fallback, and memory fallback.
-- `tests/postgres-migrations.test.mjs`: register and inspect migration `0008`.
-- Existing daily-budget API tests remain the route-level contract.
+- atomic Postgres reservation keyed by student and UTC day;
+- fallback only for undefined-table SQLSTATE `42P01`; other database failures propagate;
+- missing-table-safe learner deletion with non-`42P01` propagation;
+- request validation before reservation;
+- current UTC-day idempotent, non-lowering backfill from `aais_events.event_time`;
+- readiness requires the new table;
+- privacy inventory covers the counter;
+- JSON and stream responses use the reserved budget.
 
-The migration and application code form one rollback unit and must never be split across different accepted revisions.
+The file/memory and missing-table fallback is sequential, single-process best-effort. It is not atomic and must not be described as bounded concurrency enforcement.
 
 ### 6.4 LRS Outbox Hardening
 
-**Source responsibilities:**
+The reviewed four paths remain:
 
-- `src/lib/server/aais-lrs-client.ts`: map `recommendation_override_recorded` to an xAPI verb.
-- `src/lib/server/aais-learning-store.ts`: convert statement-build or normalization failures into retry/dead-letter progression instead of an unhandled flush rejection.
+- `src/lib/server/aais-learning-store.ts`
+- `src/lib/server/aais-lrs-client.ts`
+- `tests/aais-backend-store.test.ts`
+- `tests/aais-lrs-client.test.ts`
 
-**Test responsibilities:**
+Required behavior remains per-row runtime parsing, valid/invalid isolation, mixed-batch delivery, `redacted:invalid_event` versus `redacted:delivery_error`, pending valid rows when not configured, database-error propagation, prototype-safe `Object.hasOwn`, strict payload/timestamp/detail validation, exhaustive event mapping, and the explicit standard `completed` verb.
 
-- `tests/aais-lrs-client.test.ts`: require a mapping for every defined AAIS event.
-- `tests/aais-backend-store.test.ts`: prove an unmappable poison event progresses from retry to dead letter without an HTTP call or a stalled flush.
+### 6.5 Bobie Production Learner Fallback
 
-## 7. Extraction and Commit Rules
+The reviewed source slice changes exactly:
 
-The root rescue checkout is the source of truth for the original hunks. Extraction uses explicit pathspecs and patch hunks; it never stages every changed path at once.
+- `src/lib/server/aais-trial-accounts.ts`
+- `tests/auth-route.test.ts`
 
-The commits are created in this order:
+It preserves built-in Bobie and Phoebe learner authentication in production when configured trial accounts are missing, merges built-in learners with valid configured student accounts, rejects invalid configuration, rejects production educator trial configuration, respects `AAIS_TRIAL_LOGIN_ENABLED=false`, and keeps responses redacted.
 
-1. `test: make session revocation checks time deterministic`
-2. `fix: reject mutations against locked learning tasks`
-3. `fix: reserve durable daily AI guide usage`
-4. `fix: harden LRS outbox delivery failures`
+The merge order makes built-in Bobie/Phoebe records authoritative over configured records with the same identifiers. That precedence is intentional for this recovery and must be documented and directly tested in compose. The reviewed test says teachers and admins are refused but exercises only a teacher account; compose must add a separate admin-role denial regression.
 
-The shared files `src/lib/server/aais-learning-store.ts` and `tests/aais-backend-store.test.ts` contain hunks for multiple slices. Their hunks must be assigned by behavior, not copied wholesale into the first commit. The `AaisDatabaseClient` test import belongs to the first slice that requires the typed fake database; later commits reuse it without duplicating the import.
+## 7. Production Trial Policy Reconciliation
 
-After each commit:
+Before release, compose creates one separate policy-regression commit after merging the frozen Bobie slice. Its six independent exact test names are:
 
-- inspect `git show --stat --oneline HEAD`;
-- run `git diff --check HEAD^..HEAD`;
-- run the focused tests for that slice;
-- confirm `git status --short` contains no unintended paths.
+1. `refuses trial account login when the trial-login entry is disabled`
+2. `keeps Bobie and Phoebe available as production learner fallbacks`
+3. `keeps a unique configured learner available alongside production fallbacks`
+4. `keeps built-in credentials authoritative for duplicate Bobie and Phoebe identifiers`
+5. `refuses production teacher trial accounts`
+6. `refuses production admin trial accounts`
 
-If a hunk cannot be assigned unambiguously, extraction stops. The root inventory and external snapshot remain unchanged while the hunk is reviewed.
+The distinct blocked-credential smoke test retains the exact name `optionally proves a known demo credential is rejected without setting a session cookie`. The accepted documentation sentences are exact:
 
-## 8. Integration and Verification Flow
+```text
+Production may use the built-in Bobie and Phoebe learner fallback while trial login is enabled; set `AAIS_TRIAL_LOGIN_ENABLED=false` to disable all trial login. Production teacher and admin trial identities are forbidden and must use database users or OIDC identities.
+Bobie and Phoebe are valid production learner fallbacks while trial login is enabled; never use them as blocked smoke credentials.
+Use `retired-demo-account` only for the blocked-credential check and supply its retired password through `AAIS_SMOKE_BLOCKED_TRIAL_PASSWORD`.
+- [ ] Production smoke proves Bobie and Phoebe or a dedicated learner can sign in and the distinct `retired-demo-account` credential is rejected without a session cookie.
+```
 
-The compose worktree begins at the accepted recovery base and integrates the design/infrastructure commit plus the four recovery commits in dependency order.
+The first line belongs to `README.md`, the next two to `OPERATIONS.md`, and the
+checklist line appears exactly twice in `docs/release-checklist.md`, replacing
+the old Staging and Production smoke lines. This yields the following exact
+edits:
 
-Verification proceeds from narrow to broad:
+- `README.md:15`: replace the statement that production excludes built-in learners with the accepted production learner-fallback policy and trial-login disable control.
+- `OPERATIONS.md:50`: stop using Bobie as the blocked/retired smoke account; use the distinct identifier `retired-demo-account` with an operator-supplied retired password.
+- `docs/release-checklist.md:25` and the production smoke item: require positive Bobie/Phoebe or dedicated learner smoke plus rejection of a distinct retired identifier.
+- `tests/auth-route.test.ts`: establish all six independently named policy cases above.
 
-1. Run the focused test file or test-name pattern for each commit.
-2. Run the combined backend/API/migration/LRS focused suite.
-3. Compare the nine recovered paths against the root rescue inventory. Exact differences are expected only when a documented correction is intentional.
-4. Run `npm run lint`.
-5. Run `npm run type-check`.
-6. Run `npm test`.
-7. Run `npm run build` through `npm run ci`.
-8. Run `npm run e2e`.
-9. Run `npm run hygiene:check` in the clean compose worktree.
-10. Run `git diff --check` and confirm the compose worktree is clean.
+This compose policy commit does not alter the frozen two-path Bobie source commit. It is created exactly once. Late-main refreshes reassert every accepted sentence and test name without replaying the initial contradictory-drift check or creating an empty duplicate commit.
 
-The original binary patch and migration copy remain available until all gates pass and the accepted commits are present in the intended mainline history.
+## 8. Evidence Scope
 
-## 9. Root Checkout Closure
+The checked-in artifact is:
 
-Root cleanup happens last.
+`docs/superpowers/recovery/2026-07-10-aais-dirty-inventory-equivalence.md`
 
-Before removing any root-only dirty state:
+It uses exact `key=value` lines and delimited sorted-set sections. It covers:
 
-1. prove the accepted integration contains the recovered nine-path behavior;
-2. prove the external snapshot is still readable and checksum-valid;
-3. record the accepted commit SHAs;
-4. confirm no agent or process is still writing to the root checkout.
+- the 11 tracked root paths and untracked migration from the refreshed inventory;
+- the original four-slice reviewed path contracts;
+- `tests/readiness-route.test.ts` and `docs/privacy-data-inventory.md`;
+- the two Bobie source paths;
+- `README.md`, `OPERATIONS.md`, and `docs/release-checklist.md` policy reconciliation;
+- all five exact source commits plus the reviewed docs tag name, tag object, commit, and tree;
+- the refreshed snapshot directory, mode, five recorded patch hashes, migration hash, and final Bobie commit-versus-base patch hash;
+- all registered worktrees and their unique/duplicate/dirty provenance;
+- every intentional deviation from root rescue content;
+- live `origin/main` before publication and before cleanup;
+- predecessor evidence tip and generation, with first generation fixed to `1`
+  from predecessor `NONE`/`0` and every later generation proven as exact `+1`;
+- actual focused/full Vitest totals, Playwright totals, and each gate status captured from machine-readable output;
+- a pre-evidence compose tip and generation-specific final-head binding tag. Because a commit cannot contain its own SHA without circularity, the annotated seal tag created after the evidence commit is the immutable actual-final-head binding;
+- generation-specific accepted-main binding tag, publication branch, and
+  optional independent acceptance-checkout path;
+- explicit conclusions that no rescued behavior was lost and secret values were omitted.
 
-After those proofs, the root checkout is aligned to the accepted mainline and a local `main` branch is created or updated to track `origin/main`. The final root checks are:
+Evidence assertions parse each key exactly once and compare it with live Git/test values. Before a late evidence edit, the workflow captures the old generation from `git show HEAD:<evidence-path>`; both before and after the evidence commit it proves the new integer is exactly old plus one. Inventory, worktree, deviation, and test-file sections are compared as exact sorted sets. Cleanup re-runs the same structured gate capture and revalidates the pinned prepublication main/root hashes, docs tag, policy tip, final seal tag, inventories, and counts; PASS text alone is never sufficient. Multi-command shell blocks use `set -euo pipefail`, avoid zsh's reserved `path` variable, and stop on mismatch.
 
-- `git branch --show-current` returns `main`;
-- `git rev-list --left-right --count main...origin/main` returns `0 0` after the accepted changes reach the remote mainline;
-- `git status --porcelain=v1 -uall` returns no source paths;
-- `git worktree list --porcelain` contains only worktrees that are intentionally retained.
+## 9. Integration, Publication, and Root Closure
 
-Root-local private artifacts may remain present and ignored. Developer-root hygiene may therefore use `npm run hygiene:check -- --allow-local-private-artifacts`, while release evidence must come from the strict clean compose or release worktree.
+Compose begins only after all five slice tips and the reviewer-supplied docs SHA are frozen, with the docs SHA bound to the annotated reviewed-docs tag. It merges each source commit with `--no-ff`, preserves shared-file behavior during conflict resolution, commits Bobie policy/test reconciliation once, fetches and integrates live `origin/main`, then repeats equivalence and every gate.
 
-## 10. Ongoing Worktree Policy
+Before initial equivalence and on every repeated Task 5 pass, live main is
+fetched and captured again. It must descend from the snapshot-time main and be
+an ancestor of compose before comparisons are recorded. A legitimate forward
+advance redirects through the idempotent live-main integration and restarts all
+Task 5 comparisons; it is not rejected merely because it differs from the
+historical snapshot SHA. A backward, rewritten, or unrelated ref stops.
 
-After recovery, `/Users/dongpinhu/Desktop/AAIS` is the clean integration and review checkout. Codex implementation tasks use a linked worktree and a unique `codex/` branch.
+Immediately before publication, live main is fetched again. Any forward
+advance from the evidence-pinned main is merged into compose through an
+idempotent refresh flow that reasserts the already-accepted policy, captures
+the predecessor evidence generation, recomputes dynamic evidence, proves the
+next generation is exactly predecessor plus one, and reruns gates without
+replaying the initial drift check or making another policy commit. A
+generation-specific annotated seal tag pins the resulting actual head in the
+active publication repository recorded by evidence. Initial compose and a
+later independent acceptance clone are separate object stores, so every
+evidence/tagging step derives and verifies that repository explicitly; final
+tagging and push never delegate a clone-only head to the root object store.
 
-The lifecycle for every task is:
+Publication queries all open PRs for the evidence-pinned head branch, fails on more than one or an unexpected base/head/state, reuses the exact main-targeting PR when present, and calls `gh pr create` only when none exists. Each later evidence head is pushed to that branch, so the existing PR updates and checks rerun. Reviewed-docs and final-head annotated tags are published with exact remote object/peeled verification before mutable branches can be deleted. After every `gh pr checks --watch`, the workflow fetches `origin/main` immediately before merge and compares its exact SHA with the evidence's `reviewed_live_main_sha`. A difference returns to the idempotent late-main integration/evidence/gate/push loop and reuses the PR again.
 
-1. update and verify the clean main base;
-2. create one worktree and one branch for the task;
-3. install dependencies within that worktree;
-4. verify the baseline before editing;
-5. implement and test only the assigned scope;
-6. push and open a reviewable PR when external publication is authorized;
-7. merge only after required gates pass;
-8. remove the worktree and delete the merged branch;
-9. run `git worktree prune` and confirm the registry is accurate.
+The pre-merge fetch and client SHA comparison narrow and detect races but are
+not atomic base protection; a server-side advance remains possible. After the
+server merge, the actual commit must have the exact pinned first parent, the
+exact sealed head as its second parent, the exact sealed-head tree, and the OID
+reported by GitHub. Only that proven result receives and publishes the
+generation-specific accepted-main tag. If base, parent, tree, or OID differs,
+cleanup remains blocked: an independent clean checkout at exact actual main
+reruns root equivalence and all gates on that exact tree, increments structured
+evidence, publishes an evidence-only acceptance PR, and creates a new
+accepted-main tag only after the same exact post-merge checks pass. This repeats
+until mutable main equals the exact newly tested tag.
 
-Stashes are not used for task isolation. The same branch is never checked out in multiple worktrees. Production release evidence is generated only from a clean, reviewed source.
+Root cleanup never restores tracked files directly from improved `origin/main`. After accepted main contains every rescued behavior and evidence is complete, the 11 tracked dirty paths are restored from the root's current rescue index/HEAD. Status must then contain only the backed-up untracked migration. After migration comparison/hash and accepted-main checks, that untracked copy is removed. Only a clean `codex/aais-enterprise-standard` root may create local tracking `main`, which updates the index/worktree to accepted main.
 
-## 11. Failure Handling and Rollback
+## 10. Worktree Cleanup and Failure Policy
 
-- A patch-application conflict stops that slice; no cleanup is attempted in the root.
-- A focused test failure keeps the slice unaccepted and prevents composition.
-- A compose-only failure is treated as an integration problem and is fixed in the owning slice whenever possible.
-- A full-gate failure unrelated to the recovered paths is isolated into its own prerequisite commit, as with the session-revocation test.
-- A failed PR or rejected review leaves the root rescue state and external snapshot intact.
-- Worktrees are never force-removed while they contain uncommitted changes.
-- No branch is deleted until its accepted commit is reachable from the intended mainline.
+Before removing any worktree or independent acceptance checkout:
 
-## 12. Ownership
+1. fetch and require current main equals the accepted-main tag exactly;
+2. verify the refreshed snapshot, preimage archives, and exact worktree inventory;
+3. prove all five source commits, docs tip, policy reconciliation, and evidence commits are reachable;
+4. verify reviewed-docs/final/accepted remote annotated tag objects and peeled commits;
+5. enter the named operator-exclusive window, move the executing shell to the
+   verified neutral directory outside every target, and prove no writer/open
+   handle without filtering away the shell or arbitrary processes;
+6. prove exact tracked/untracked status and accepted provenance for every dirty file;
+7. re-inventory ignored names with NUL-delimited manifests, compare the
+   private/unknown archive preimage using the verified BSD-tar
+   `--null -b 1` contract, and preserve root private state untouched;
+8. after the last fetch/tag/ref check, repeat exact main, tracked/untracked
+   status, ignored/untracked name inventory, archive integrity, and live-byte
+   equivalence to the owner-only preimage, then repeat writer/open-handle checks
+   and immediately perform normal non-forced removal without an intervening
+   writer, fetch, tag, or ref command.
 
-- S07 owns the AI guide route behavior.
-- S12 owns backend storage, API error handling, migration, and LRS delivery behavior.
-- S11 owns focused and full verification evidence.
-- S22 owns clean-source integration, worktree closure, and release-readiness evidence.
+For `/private/tmp/aais-bobie-prod-fix-20260710`, the three dirty working files are compared byte-for-byte with accepted commit `42e92a483842a2a601ecbdb10794a90c1f3eba1f`. Only after exact accepted-main, private archive, last-moment preimage, status/hash, and writer checks may those files be restored from the worktree's current index to make its tracked/untracked state clean. Ignored `.aais-data` and `.vercel` remain until normal removal and are never inferred clean from porcelain. Any mismatch preserves the worktree and stops cleanup.
 
-Cross-owner files are split by behavior and validated in the compose worktree before acceptance.
+Merge shape, exact accepted-main, evidence, inventory, snapshot, archive,
+remote-tag, gate, PR-head, or provenance mismatch is a hard stop. No cleanup
+step may convert ignored/private or unknown content into an assumed duplicate.
+
+## 11. Ownership
+
+- S07 owns AI guide behavior.
+- S12 owns backend storage, auth, API error handling, migrations, and LRS delivery.
+- S11 owns focused/full verification and policy regression evidence.
+- S22 owns live-main refresh, worktree provenance, publication, root closure, and release-readiness evidence.
+
+Cross-owner files are validated together in compose before release.
