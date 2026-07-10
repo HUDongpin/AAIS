@@ -200,6 +200,37 @@ describe("AAIS preview E2E workflow trust gate", () => {
     ["extra project meta field", (deployment) => { deployment.meta.projectId = "contradictory-project"; }],
     ["extra target meta field", (deployment) => { deployment.meta.target = "production"; }],
     ["extra production meta field", (deployment) => { deployment.meta.production = true; }],
+    ["nested critical identity wrapper", (deployment) => {
+      deployment.details = {
+        projectId: "contradictory-project",
+        git: { sha: "b".repeat(40) },
+      };
+    }],
+    ["nested commit alias", (deployment) => { deployment.details = { commit: "contradictory" }; }],
+    ["nested branch alias", (deployment) => { deployment.details = { branch: "production" }; }],
+    ["nested org alias", (deployment) => { deployment.details = { org: "contradictory" }; }],
+    ["nested organization alias", (deployment) => {
+      deployment.details = { organization: "contradictory" };
+    }],
+    ["nested deployment alias", (deployment) => {
+      deployment.details = { deployment: "contradictory" };
+    }],
+    ["nested aliases plural", (deployment) => { deployment.details = { aliases: [] }; }],
+    ["nested commits plural", (deployment) => { deployment.details = { commits: [] }; }],
+    ["nested branches plural", (deployment) => { deployment.details = { branches: [] }; }],
+    ["nested organizations plural", (deployment) => {
+      deployment.details = { organizations: [] };
+    }],
+    ["nested deployments plural", (deployment) => {
+      deployment.details = { deployments: [] };
+    }],
+    ["extra non-reviewed scalar path", (deployment) => { deployment.createdAt = 1; }],
+    ["deployment ID LF injection", (deployment) => {
+      deployment.id = "dpl_AttestedPreview1\nattested_sha=contradictory";
+    }],
+    ["deployment ID CR injection", (deployment) => {
+      deployment.id = "dpl_AttestedPreview1\rattested_sha=contradictory";
+    }],
     ["contradictory reviewed project ID", (deployment) => { deployment.projectId = "prj_contradictory"; }],
     ["contradictory reviewed Git SHA", (deployment) => { deployment.gitSource.sha = "b".repeat(40); }],
   ])("rejects Stage-B response with %s using only the fixed error", (_name, mutate) => {
@@ -226,7 +257,7 @@ function stepBlock(startName, endName) {
 
 function validVercelDeployment() {
   return {
-    id: "dpl_attested_preview",
+    id: "dpl_AttestedPreview1",
     name: "aais",
     projectId: "prj_sKF9lhawVQyjxnv3jLyZvQH95Z1c",
     ownerId: "team_i9xhhYXUeYBOCLcfWBjTqlYG",
@@ -238,7 +269,7 @@ function validVercelDeployment() {
     status: "READY",
     target: null,
     url: "preview.example.vercel.app",
-    alias: ["preview.example.vercel.app"],
+    alias: ["preview.example.vercel.app", "private-response-marker.vercel.app"],
     gitSource: {
       type: "github",
       repoId: 1294583104,
@@ -250,10 +281,7 @@ function validVercelDeployment() {
       githubRepo: "AAIS",
       githubCommitRef: "codex/aais-recovery-compose",
       githubCommitSha: "a".repeat(40),
-      buildSystem: "nextjs",
     },
-    createdAt: 1,
-    diagnostic: "private-response-marker",
   };
 }
 
