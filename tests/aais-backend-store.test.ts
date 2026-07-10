@@ -10,6 +10,7 @@ import {
   getAaisDatabaseConfiguration,
   probeAaisLearningStorage,
   requeueAaisPersistentLrsDeadLetters,
+  type AaisDatabaseClient,
 } from "@/lib/server/aais-learning-store";
 import * as lrsClient from "@/lib/server/aais-lrs-client";
 import type { AaisEvent } from "@/data/aais";
@@ -303,6 +304,17 @@ describe("AAIS backend learning store", () => {
       userAuthTokensTable: true,
       sessionRevocationsTable: true,
     });
+    const missingDailyGuideUsageDatabase = createProbeDatabaseClient({
+      learnerSessionsTable: true,
+      learnerTaskStateTable: true,
+      lrsOutboxTable: true,
+      loginRateLimitsTable: true,
+      eventsTable: true,
+      usersTable: true,
+      userAuthTokensTable: true,
+      sessionRevocationsTable: true,
+      dailyGuideUsageTable: false,
+    });
     const missingTaskStateDatabase = createProbeDatabaseClient({
       learnerSessionsTable: true,
       learnerTaskStateTable: false,
@@ -347,6 +359,10 @@ describe("AAIS backend learning store", () => {
       mode: "postgres",
       status: "failed",
     });
+    await expect(probeAaisLearningStorage({ database: missingDailyGuideUsageDatabase })).resolves.toEqual({
+      mode: "postgres",
+      status: "failed",
+    });
     await expect(probeAaisLearningStorage({ database: missingTaskStateDatabase })).resolves.toEqual({
       mode: "postgres",
       status: "failed",
@@ -362,9 +378,149 @@ describe("AAIS backend learning store", () => {
     expect(migratedDatabase.queries.map((query) => query.sql).join("\n")).not.toMatch(/create table|alter table/i);
     expect(missingRateLimitDatabase.queries.map((query) => query.sql).join("\n")).not.toMatch(/create table|alter table/i);
     expect(missingEventsDatabase.queries.map((query) => query.sql).join("\n")).not.toMatch(/create table|alter table/i);
+    expect(migratedDatabase.queries.map((query) => query.sql).join("\n")).toContain(
+      "to_regclass('public.aais_ai_guide_daily_usage')",
+    );
+    expect(missingDailyGuideUsageDatabase.queries.map((query) => query.sql).join("\n")).not.toMatch(/create table|alter table/i);
     expect(missingTaskStateDatabase.queries.map((query) => query.sql).join("\n")).not.toMatch(/create table|alter table/i);
     expect(missingCatalogDatabase.queries.map((query) => query.sql).join("\n")).not.toMatch(/create table|alter table/i);
     expect(missingUsersDatabase.queries.map((query) => query.sql).join("\n")).not.toMatch(/create table|alter table/i);
+  });
+
+  it("atomically reserves the durable daily guide budget and rejects once exhausted", async () => {
+    const database = createFakeDatabaseClient();
+    const store = createAaisLearningStore({ database });
+
+    const first = await store.reserveDailyGuideRequest({ studentId: "S001", limit: 2 });
+    const second = await store.reserveDailyGuideRequest({ studentId: "S001", limit: 2 });
+    const third = await store.reserveDailyGuideRequest({ studentId: "S001", limit: 2 });
+
+    expect(first).toMatchObject({ status: "reserved", limit: 2, used: 1, remaining: 1 });
+    expect(second).toMatchObject({ status: "reserved", limit: 2, used: 2, remaining: 0 });
+    expect(third).toMatchObject({ status: "exhausted", limit: 2, used: 2, remaining: 0 });
+
+    // A different learner has an independent daily counter.
+    const other = await store.reserveDailyGuideRequest({ studentId: "S002", limit: 2 });
+    expect(other).toMatchObject({ status: "reserved", used: 1 });
+
+    // The guarded upsert only increments while under the limit — the exhausted
+    // attempt must not have advanced the counter past the cap.
+    const usageQueries = database.queries.filter((query) =>
+      /aais_ai_guide_daily_usage/i.test(query.sql),
+    );
+    expect(usageQueries.some((query) => /where aais_ai_guide_daily_usage\.used < \$4/i.test(query.sql))).toBe(
+      true,
+    );
+  });
+
+  it("degrades to prompt-event counting when the durable usage table is missing", async () => {
+    const missingTableError = Object.assign(new Error("relation does not exist"), {
+      code: "42P01",
+    });
+    const database = {
+      async query(sql: string) {
+        if (/^insert into aais_ai_guide_daily_usage/i.test(sql.trim())) {
+          throw missingTableError;
+        }
+        if (/^select count\(\*\)::int as count\s+from aais_events/i.test(sql.trim())) {
+          return { rows: [{ count: 0 }] };
+        }
+        throw new Error(`Unexpected query: ${sql}`);
+      },
+    } as unknown as AaisDatabaseClient;
+    const store = createAaisLearningStore({ database });
+
+    const reservation = await store.reserveDailyGuideRequest({ studentId: "S001", limit: 3 });
+    expect(reservation).toMatchObject({ status: "reserved", limit: 3, used: 1, remaining: 2 });
+  });
+
+  it("propagates undefined-column errors instead of treating them as a missing durable table", async () => {
+    const undefinedColumnError = Object.assign(new Error("column does not exist"), {
+      code: "42703",
+    });
+    const database = {
+      async query(sql: string) {
+        if (/^insert into aais_ai_guide_daily_usage/i.test(sql.trim())) {
+          throw undefinedColumnError;
+        }
+        throw new Error(`Unexpected query: ${sql}`);
+      },
+    } as unknown as AaisDatabaseClient;
+    const store = createAaisLearningStore({ database });
+
+    await expect(
+      store.reserveDailyGuideRequest({ studentId: "S001", limit: 3 }),
+    ).rejects.toBe(undefinedColumnError);
+  });
+
+  it("continues Postgres learner deletion when the durable usage table is missing", async () => {
+    const missingTableError = Object.assign(new Error("relation does not exist"), {
+      code: "42P01",
+    });
+    const queries: string[] = [];
+    const database = {
+      async query(sql: string) {
+        queries.push(sql.trim());
+        if (/^select payload/i.test(sql.trim())) return { rows: [] };
+        if (/^delete from aais_ai_guide_daily_usage/i.test(sql.trim())) {
+          throw missingTableError;
+        }
+        if (/^delete from /i.test(sql.trim())) return { rows: [] };
+        throw new Error(`Unexpected query: ${sql}`);
+      },
+    } as unknown as AaisDatabaseClient;
+    const store = createAaisLearningStore({ database });
+
+    await expect(store.deleteLearnerData("S001")).resolves.toMatchObject({
+      studentId: "S001",
+      storageMode: "postgres",
+    });
+    expect(queries.some((sql) => /^delete from aais_events/i.test(sql))).toBe(true);
+    expect(queries.some((sql) => /^delete from aais_learner_sessions/i.test(sql))).toBe(true);
+  });
+
+  it("propagates non-table errors from durable usage deletion", async () => {
+    const permissionError = Object.assign(new Error("permission denied"), {
+      code: "42501",
+    });
+    const queries: string[] = [];
+    const database = {
+      async query(sql: string) {
+        queries.push(sql.trim());
+        if (/^select payload/i.test(sql.trim())) return { rows: [] };
+        if (/^delete from aais_ai_guide_daily_usage/i.test(sql.trim())) {
+          throw permissionError;
+        }
+        if (/^delete from /i.test(sql.trim())) return { rows: [] };
+        throw new Error(`Unexpected query: ${sql}`);
+      },
+    } as unknown as AaisDatabaseClient;
+    const store = createAaisLearningStore({ database });
+
+    await expect(store.deleteLearnerData("S001")).rejects.toBe(permissionError);
+    expect(queries.some((sql) => /^delete from aais_events/i.test(sql))).toBe(false);
+  });
+
+  it("falls back to per-process prompt-event counting when no database is configured", async () => {
+    const store = createAaisLearningStore({ rootDir: tempDir });
+
+    const first = await store.reserveDailyGuideRequest({ studentId: "S001", limit: 1 });
+    expect(first).toMatchObject({ status: "reserved", limit: 1, used: 1, remaining: 0 });
+
+    // Nothing has been persisted yet (the prompt event is written when the exchange
+    // is appended), so a follow-up reservation still sees head-room until an exchange
+    // lands. Simulate a completed exchange, then confirm the cap holds.
+    await store.appendGuideExchange({
+      studentId: "S001",
+      phase: "training",
+      taskId: "training_task_1",
+      question: "问题",
+      answer: "回答",
+      orchestration: { graphId: "g", topologicalOrder: ["A1"], threadId: "t" },
+    });
+
+    const afterExchange = await store.reserveDailyGuideRequest({ studentId: "S001", limit: 1 });
+    expect(afterExchange).toMatchObject({ status: "exhausted", limit: 1, used: 1, remaining: 0 });
   });
 
   it("handles concurrent first-session creation without returning a write conflict", async () => {
@@ -1345,6 +1501,7 @@ function createFakeDatabaseClient() {
   }>();
   const events = new Map<string, FakeAaisEventRow>();
   const taskState = new Map<string, FakeLearnerTaskStateRow>();
+  const dailyGuideUsage = new Map<string, number>();
   const queries: Array<{ sql: string; params: unknown[] }> = [];
 
   return {
@@ -1519,6 +1676,25 @@ function createFakeDatabaseClient() {
         this.outboxRows = Array.from(outbox.values());
         return { rows: [] };
       }
+      if (/^insert into aais_ai_guide_daily_usage/i.test(sql.trim())) {
+        const key = `${String(params[0])}\0${String(params[1]).slice(0, 10)}`;
+        const limit = Number(params[3]);
+        const existing = dailyGuideUsage.get(key);
+        if (existing === undefined) {
+          dailyGuideUsage.set(key, 1);
+          return { rows: [{ used: 1 }] };
+        }
+        if (existing < limit) {
+          const used = existing + 1;
+          dailyGuideUsage.set(key, used);
+          return { rows: [{ used }] };
+        }
+        return { rows: [] };
+      }
+      if (/^select used\s+from aais_ai_guide_daily_usage/i.test(sql.trim())) {
+        const used = dailyGuideUsage.get(`${String(params[0])}\0${String(params[1]).slice(0, 10)}`);
+        return { rows: used === undefined ? [] : [{ used }] };
+      }
       throw new Error(`Unexpected query: ${sql}`);
     },
   };
@@ -1533,6 +1709,7 @@ function createProbeDatabaseClient(input: {
   usersTable: boolean;
   userAuthTokensTable: boolean;
   sessionRevocationsTable: boolean;
+  dailyGuideUsageTable?: boolean;
   coursesTable?: boolean;
   courseTasksTable?: boolean;
   enrollmentsTable?: boolean;
@@ -1553,6 +1730,7 @@ function createProbeDatabaseClient(input: {
             users_table: input.usersTable ? "aais_users" : null,
             user_auth_tokens_table: input.userAuthTokensTable ? "aais_user_auth_tokens" : null,
             session_revocations_table: input.sessionRevocationsTable ? "aais_session_revocations" : null,
+            daily_guide_usage_table: input.dailyGuideUsageTable === false ? null : "aais_ai_guide_daily_usage",
             courses_table: input.coursesTable === false ? null : "aais_courses",
             course_tasks_table: input.courseTasksTable === false ? null : "aais_course_tasks",
             enrollments_table: input.enrollmentsTable === false ? null : "aais_enrollments",

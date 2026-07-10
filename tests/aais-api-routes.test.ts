@@ -19,6 +19,7 @@ afterEach(async () => {
   delete process.env.AAIS_SESSION_SECRET;
   vi.unstubAllEnvs();
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
   vi.doUnmock("@/lib/ai/orchestration/aais-learning-guide-graph");
   await rm(tempDir, { force: true, recursive: true });
 });
@@ -486,6 +487,79 @@ describe("AAIS learning API routes", () => {
     expect(JSON.stringify(auditEvents)).not.toContain("我今天第二次请求导学");
     expect(JSON.stringify(secondBody)).not.toContain("我今天第二次请求导学");
     expect(JSON.stringify(secondBody)).not.toContain("test-session-secret");
+  });
+
+  it("does not reserve daily guide budget for an invalid attachment request", async () => {
+    vi.stubEnv("AAIS_AI_DAILY_GUIDE_LIMIT", "1");
+    vi.stubEnv("AAIS_AI_PROVIDER", "");
+    vi.stubEnv("AAIS_AI_ENDPOINT", "");
+    vi.stubEnv("AAIS_AI_API_KEY", "");
+    vi.stubEnv("AAIS_AI_MODEL", "");
+    vi.stubEnv("AAIS_AI_FALLBACK_ENDPOINT", "");
+    vi.stubEnv("AAIS_AI_FALLBACK_API_KEY", "");
+    vi.stubEnv("AAIS_AI_FALLBACK_MODEL", "");
+    vi.resetModules();
+    const storeModule = await import("@/lib/server/aais-learning-store");
+    const store = storeModule.getAaisLearningStore();
+    const reserveBudget = vi.spyOn(store, "reserveDailyGuideRequest");
+    const info = vi.spyOn(console, "info").mockImplementation(() => undefined);
+    const guideRoute = await import("@/app/api/learning/ai-guide/route");
+    const cookie = createAuthedCookie("S001");
+    const csrf = createAaisCsrfToken("S001");
+
+    const invalidResponse = await guideRoute.POST(
+      new Request("http://localhost/api/learning/ai-guide", {
+        method: "POST",
+        headers: {
+          cookie,
+          "x-aais-csrf": csrf,
+        },
+        body: JSON.stringify({
+          phase: "training",
+          taskId: "training_task_1",
+          learnerInput: "请看不支持的文件。",
+          workspaceState: {
+            currentStep: "guide",
+            attachments: [{
+              name: "image.png",
+              mediaType: "image/png",
+              sizeBytes: 1200,
+              extractedText: "not allowed",
+            }],
+          },
+        }),
+      }),
+    );
+
+    expect(invalidResponse.status).toBe(400);
+    expect(reserveBudget).not.toHaveBeenCalled();
+    expect(info.mock.calls.map((call) => JSON.parse(String(call[0]))).filter((event) =>
+      event.event === "ai.guide.budget.used"
+    )).toHaveLength(0);
+
+    const validResponse = await guideRoute.POST(
+      new Request("http://localhost/api/learning/ai-guide", {
+        method: "POST",
+        headers: {
+          cookie,
+          "x-aais-csrf": csrf,
+        },
+        body: JSON.stringify({
+          phase: "training",
+          taskId: "training_task_1",
+          learnerInput: "现在给我一个有效建议。",
+          workspaceState: { currentStep: "guide" },
+        }),
+      }),
+    );
+    const validBody = await validResponse.json();
+
+    expect(validResponse.status).toBe(200);
+    expect(validBody.budget).toMatchObject({ limit: 1, used: 1, remaining: 0 });
+    expect(reserveBudget).toHaveBeenCalledTimes(1);
+    expect(info.mock.calls.map((call) => JSON.parse(String(call[0]))).filter((event) =>
+      event.event === "ai.guide.budget.used"
+    )).toHaveLength(1);
   });
 
   it("accepts sanitized guide attachments without persisting uploaded raw text", async () => {
