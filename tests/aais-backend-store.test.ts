@@ -11,7 +11,6 @@ import {
   getAaisDatabaseConfiguration,
   probeAaisLearningStorage,
   requeueAaisPersistentLrsDeadLetters,
-  type AaisDatabaseClient,
 } from "@/lib/server/aais-learning-store";
 import * as lrsClient from "@/lib/server/aais-lrs-client";
 import type { AaisEvent } from "@/data/aais";
