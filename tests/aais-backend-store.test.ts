@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  type AaisDatabaseClient,
   isAaisSessionWriteConflictError,
   createAaisLearningStore,
   flushAaisPersistentLrsOutbox,
@@ -659,6 +660,264 @@ describe("AAIS backend learning store", () => {
     const postedStatements = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
     expect(postedStatements).toHaveLength(database.outboxRows.length);
     expect(JSON.stringify(result)).not.toContain("test-password");
+  });
+
+  it("dead-letters an unmappable outbox event instead of stalling every flush", async () => {
+    // An event with no xAPI verb mapping makes buildAaisXapiStatement throw. The
+    // persistent flush must treat that as a delivery failure (retry -> dead_letter),
+    // not let the throw stall the whole outbox forever.
+    const row: DeliveryOutboxTestRow = {
+      id: "outbox-poison", status: "pending", attempts: 0,
+      payload: {
+        student_id: "S001", session_id: "session-poison", phase: "practice",
+        task: "practice_task_1", agent: "platform", event: "totally_unmapped_event",
+        time: "2026-07-10T00:00:00.000Z", detail: {},
+      },
+      lastError: null,
+    };
+    let fetchCalled = false;
+    const database = createDeliveryOutboxTestDatabase([row]);
+    const fetchImpl = (async () => { fetchCalled = true; return new Response(null, { status: 204 }); }) as unknown as typeof fetch;
+    const flushOnce = () => flushAaisPersistentLrsOutbox({
+      database,
+      config: { endpoint: "https://lrs.example.test/xapi", username: "u", password: "p" },
+      fetchImpl,
+      maxAttempts: 3,
+    });
+    const first = await flushOnce();
+    expect(first).toMatchObject({ status: "partial", failed: 1 });
+    expect(row).toMatchObject({ status: "retry", attempts: 1, lastError: "redacted:invalid_event" });
+    await flushOnce(); await flushOnce();
+    expect(row).toMatchObject({ status: "dead_letter", attempts: 3, lastError: "redacted:invalid_event" });
+    expect(fetchCalled).toBe(false);
+  });
+
+  it("isolates a prototype-named event from valid rows in the same outbox batch", async () => {
+    const valid: DeliveryOutboxTestRow = {
+      id: "outbox-valid", status: "pending", attempts: 0,
+      payload: {
+        student_id: "S001", session_id: "session-mixed", phase: "practice",
+        task: "practice_task_1", agent: "A1", event: "scaffold_request",
+        time: "2026-07-10T00:00:00.000Z", detail: {},
+      },
+      lastError: null,
+    };
+    const poison: DeliveryOutboxTestRow = {
+      id: "outbox-poison", status: "pending", attempts: 0,
+      payload: {
+        student_id: "S001", session_id: "session-mixed", phase: "practice",
+        task: "practice_task_1", agent: "platform", event: "constructor",
+        time: "2026-07-10T00:00:01.000Z", detail: {},
+      },
+      lastError: null,
+    };
+    const database = createDeliveryOutboxTestDatabase([valid, poison]);
+    const fetchImpl = vi.fn<typeof fetch>(async () => new Response(null, { status: 204 }));
+
+    const result = await flushAaisPersistentLrsOutbox({
+      database,
+      config: { endpoint: "https://lrs.example.test/xapi", username: "u", password: "p" },
+      fetchImpl,
+      maxAttempts: 1,
+    });
+
+    expect(result).toMatchObject({ status: "partial", sent: 1, failed: 1, batches: 1 });
+    expect(valid).toMatchObject({ status: "sent", attempts: 0, lastError: null });
+    expect(poison).toMatchObject({
+      status: "dead_letter",
+      attempts: 1,
+      lastError: "redacted:invalid_event",
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    const statements = JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body));
+    expect(statements).toHaveLength(1);
+    expect(statements[0]?.object.definition.name["en-US"]).toBe("AAIS scaffold_request");
+  });
+
+  it.each(createMalformedOutboxPayloadCases())(
+    "isolates malformed outbox payload: %s",
+    async (_caseName, malformedPayload) => {
+      const valid: DeliveryOutboxTestRow = {
+        id: "outbox-valid", status: "pending", attempts: 0,
+        payload: createValidDeliveryOutboxPayload(),
+        lastError: null,
+      };
+      const malformed: DeliveryOutboxTestRow = {
+        id: "outbox-malformed", status: "pending", attempts: 0,
+        payload: malformedPayload,
+        lastError: null,
+      };
+      const database = createDeliveryOutboxTestDatabase([valid, malformed]);
+      const fetchImpl = vi.fn<typeof fetch>(async () => new Response(null, { status: 204 }));
+
+      const result = await flushAaisPersistentLrsOutbox({
+        database,
+        config: { endpoint: "https://lrs.example.test/xapi", username: "u", password: "p" },
+        fetchImpl,
+        maxAttempts: 1,
+      });
+
+      expect(result).toMatchObject({ status: "partial", sent: 1, failed: 1, batches: 1 });
+      expect(valid).toMatchObject({ status: "sent", attempts: 0, lastError: null });
+      expect(malformed).toMatchObject({
+        status: "dead_letter",
+        attempts: 1,
+        lastError: "redacted:invalid_event",
+      });
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+      const statements = JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body));
+      expect(statements).toHaveLength(1);
+      expect(statements[0]?.object.definition.name["en-US"]).toBe("AAIS scaffold_request");
+    },
+  );
+
+  it("keeps valid rows pending when an LRS is not configured after invalid-row preflight", async () => {
+    vi.stubEnv("LRS_ENDPOINT", "");
+    vi.stubEnv("LRS_USERNAME", "");
+    vi.stubEnv("LRS_PASSWORD", "");
+    const valid: DeliveryOutboxTestRow = {
+      id: "outbox-valid", status: "pending", attempts: 0,
+      payload: {
+        student_id: "S001", session_id: "session-not-configured", phase: "practice",
+        task: "practice_task_1", agent: "A1", event: "scaffold_request",
+        time: "2026-07-10T00:00:00.000Z", detail: {},
+      },
+      lastError: null,
+    };
+    const poison: DeliveryOutboxTestRow = {
+      id: "outbox-poison", status: "pending", attempts: 0,
+      payload: {
+        student_id: "S001", session_id: "session-not-configured", phase: "practice",
+        task: "practice_task_1", agent: "platform", event: "totally_unmapped_event",
+        time: "2026-07-10T00:00:01.000Z", detail: {},
+      },
+      lastError: null,
+    };
+    const database = createDeliveryOutboxTestDatabase([valid, poison]);
+    const fetchImpl = vi.fn<typeof fetch>();
+
+    const result = await flushAaisPersistentLrsOutbox({
+      database,
+      config: null,
+      fetchImpl,
+      maxAttempts: 1,
+    });
+
+    expect(result).toMatchObject({ status: "not_configured", sent: 0, failed: 1, batches: 1 });
+    expect(valid).toMatchObject({ status: "pending", attempts: 0, lastError: null });
+    expect(poison).toMatchObject({
+      status: "dead_letter",
+      attempts: 1,
+      lastError: "redacted:invalid_event",
+    });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("uses a redacted delivery error category for transport failures", async () => {
+    const row: DeliveryOutboxTestRow = {
+      id: "outbox-transport", status: "pending", attempts: 0,
+      payload: {
+        student_id: "S001", session_id: "session-transport", phase: "practice",
+        task: "practice_task_1", agent: "A1", event: "scaffold_request",
+        time: "2026-07-10T00:00:00.000Z", detail: {},
+      },
+      lastError: null,
+    };
+    const database = createDeliveryOutboxTestDatabase([row]);
+
+    const result = await flushAaisPersistentLrsOutbox({
+      database,
+      config: { endpoint: "https://lrs.example.test/xapi", username: "u", password: "p" },
+      fetchImpl: vi.fn<typeof fetch>(async () => new Response(null, { status: 503 })),
+      maxAttempts: 1,
+    });
+
+    expect(result).toMatchObject({ status: "partial", sent: 0, failed: 1, batches: 1 });
+    expect(row).toMatchObject({
+      status: "dead_letter",
+      attempts: 1,
+      lastError: "redacted:delivery_error",
+    });
+    expect(JSON.stringify(row)).not.toContain("https://lrs.example.test");
+    expect(JSON.stringify(row)).not.toContain('"u"');
+    expect(JSON.stringify(row)).not.toContain('"p"');
+  });
+
+  it("preserves invalid-row classification when the validated batch gets an LRS 400", async () => {
+    const valid: DeliveryOutboxTestRow = {
+      id: "outbox-valid", status: "pending", attempts: 0,
+      payload: createValidDeliveryOutboxPayload(),
+      lastError: null,
+    };
+    const invalid: DeliveryOutboxTestRow = {
+      id: "outbox-invalid", status: "pending", attempts: 0,
+      payload: {
+        ...createValidDeliveryOutboxPayload(),
+        event: "constructor",
+      },
+      lastError: null,
+    };
+    const database = createDeliveryOutboxTestDatabase([valid, invalid]);
+    const fetchImpl = vi.fn<typeof fetch>(async () => new Response(null, { status: 400 }));
+
+    const result = await flushAaisPersistentLrsOutbox({
+      database,
+      config: { endpoint: "https://lrs.example.test/xapi", username: "u", password: "p" },
+      fetchImpl,
+      maxAttempts: 1,
+    });
+
+    expect(result).toMatchObject({ status: "partial", sent: 0, failed: 2, batches: 1 });
+    expect(valid).toMatchObject({
+      status: "dead_letter",
+      attempts: 1,
+      lastError: "redacted:delivery_error",
+    });
+    expect(invalid).toMatchObject({
+      status: "dead_letter",
+      attempts: 1,
+      lastError: "redacted:invalid_event",
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    const statements = JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body));
+    expect(statements).toHaveLength(1);
+    expect(statements[0]?.object.definition.name["en-US"]).toBe("AAIS scaffold_request");
+  });
+
+  it("isolates poison rows from valid events across separate outbox chunks", async () => {
+    const valid: DeliveryOutboxTestRow = {
+      id: "outbox-valid", status: "pending", attempts: 0,
+      payload: {
+        student_id: "S001", session_id: "session-chunks", phase: "practice",
+        task: "practice_task_1", agent: "A1", event: "scaffold_request",
+        time: "2026-07-10T00:00:00.000Z", detail: {},
+      },
+      lastError: null,
+    };
+    const poison: DeliveryOutboxTestRow = {
+      id: "outbox-poison", status: "pending", attempts: 0,
+      payload: {
+        student_id: "S001", session_id: "session-chunks", phase: "practice",
+        task: "practice_task_1", agent: "platform", event: "totally_unmapped_event",
+        time: "2026-07-10T00:00:01.000Z", detail: {},
+      },
+      lastError: null,
+    };
+    const database = createDeliveryOutboxTestDatabase([poison, valid]);
+    const fetchImpl = vi.fn<typeof fetch>(async () => new Response(null, { status: 204 }));
+
+    const result = await flushAaisPersistentLrsOutbox({
+      database,
+      config: { endpoint: "https://lrs.example.test/xapi", username: "u", password: "p" },
+      fetchImpl,
+      maxAttempts: 1,
+      maxBatchSize: 1,
+    });
+
+    expect(result).toMatchObject({ status: "partial", sent: 1, failed: 1, batches: 2 });
+    expect(valid.status).toBe("sent");
+    expect(poison.status).toBe("dead_letter");
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
   it("summarizes persistent LRS outbox status without exposing payloads", async () => {
@@ -1516,6 +1775,81 @@ function readFakeDetailText(detail: Record<string, unknown>, key: string) {
   return typeof value === "string" && value ? value : null;
 }
 
+type DeliveryOutboxTestRow = {
+  id: string;
+  status: "pending" | "retry" | "sent" | "dead_letter";
+  attempts: number;
+  payload: unknown;
+  lastError: string | null;
+};
+
+function createValidDeliveryOutboxPayload() {
+  return {
+    student_id: "S001",
+    session_id: "session-runtime-validation",
+    phase: "practice",
+    task: "practice_task_1",
+    agent: "A1",
+    event: "scaffold_request",
+    time: "2026-07-10T00:00:00.000Z",
+    detail: {},
+  };
+}
+
+function createMalformedOutboxPayloadCases(): Array<[string, unknown]> {
+  const missingStudentId = createValidDeliveryOutboxPayload();
+  delete (missingStudentId as Partial<typeof missingStudentId>).student_id;
+  return [
+    ["missing student_id", missingStudentId],
+    ["blank session_id", { ...createValidDeliveryOutboxPayload(), session_id: "  " }],
+    ["non-string task", { ...createValidDeliveryOutboxPayload(), task: 42 }],
+    ["blank time", { ...createValidDeliveryOutboxPayload(), time: "" }],
+    ["invalid phase", { ...createValidDeliveryOutboxPayload(), phase: "review" }],
+    ["invalid agent", { ...createValidDeliveryOutboxPayload(), agent: "A5" }],
+    ["non-ISO time", { ...createValidDeliveryOutboxPayload(), time: "July 10, 2026" }],
+    ["invalid calendar time", { ...createValidDeliveryOutboxPayload(), time: "2026-02-30T00:00:00.000Z" }],
+    ["array detail", { ...createValidDeliveryOutboxPayload(), detail: [] }],
+    ["null detail", { ...createValidDeliveryOutboxPayload(), detail: null }],
+    ["array payload", []],
+    ["null payload", null],
+    ["invalid JSON", "{not-json"],
+  ];
+}
+
+function createDeliveryOutboxTestDatabase(rows: DeliveryOutboxTestRow[]) {
+  return {
+    async query(sql: string, params: unknown[] = []) {
+      const trimmed = sql.trim();
+      if (/^select id, payload, attempts/i.test(trimmed)) {
+        return {
+          rows: rows
+            .filter((row) => row.status === "pending" || row.status === "retry")
+            .map((row) => ({ id: row.id, payload: row.payload, attempts: row.attempts })),
+        };
+      }
+      if (/^update aais_lrs_outbox set status = 'sent'/i.test(trimmed)) {
+        const row = rows.find((candidate) => candidate.id === String(params[0]));
+        if (row) {
+          row.status = "sent";
+        }
+        return { rows: [] };
+      }
+      if (/^update aais_lrs_outbox set status = \$1/i.test(trimmed)) {
+        const row = rows.find((candidate) => candidate.id === String(params[params.length - 1]));
+        if (row) {
+          row.status = String(params[0]) as DeliveryOutboxTestRow["status"];
+          row.attempts = Number(params[1]);
+          row.lastError = params.length >= 4
+            ? String(params[2])
+            : trimmed.match(/last_error = '([^']+)'/i)?.[1] ?? null;
+        }
+        return { rows: [] };
+      }
+      throw new Error(`Unexpected query: ${sql}`);
+    },
+  } as unknown as AaisDatabaseClient;
+}
+
 function createFakeDatabaseClient() {
   const sessions = new Map<string, {
     payload: unknown;
@@ -1696,7 +2030,7 @@ function createFakeDatabaseClient() {
         return { rows: rows.map((row) => ({ id: row.id })) };
       }
       if (/^update aais_lrs_outbox set status =/i.test(sql.trim())) {
-        const row = outbox.get(String(params[2]));
+        const row = outbox.get(String(params[params.length - 1]));
         if (row) {
           row.status = String(params[0]);
           row.attempts = Number(params[1]);

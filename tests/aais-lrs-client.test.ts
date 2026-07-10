@@ -5,7 +5,7 @@ import {
   sendAaisEventsToLrs,
 } from "@/lib/server/aais-lrs-client";
 import * as lrsClient from "@/lib/server/aais-lrs-client";
-import type { AaisEvent } from "@/data/aais";
+import { aaisEventDefinitions, type AaisEvent } from "@/data/aais";
 
 const testConfig = {
   endpoint: "https://lrs.example.test/xapi",
@@ -28,6 +28,51 @@ const scaffoldEvent: AaisEvent = {
 };
 
 describe("AAIS LRS xAPI client", () => {
+  it("has an xAPI verb mapping for every defined AAIS event", () => {
+    // Any event that reaches the LRS outbox must build a statement without
+    // throwing; a missing verb mapping would permanently stall the persistent
+    // outbox flush. Guard the whole class, not just one event.
+    for (const [eventName, definition] of Object.entries(aaisEventDefinitions)) {
+      const event: AaisEvent = {
+        student_id: "S001",
+        session_id: "session-coverage",
+        phase: "practice",
+        task: "practice_task_1",
+        agent: definition.agent,
+        event: eventName as AaisEvent["event"],
+        time: "2026-07-10T00:00:00.000Z",
+        detail: {},
+      };
+      expect(() => buildAaisXapiStatement(event), `event ${eventName} must map to an xAPI verb`).not.toThrow();
+    }
+  });
+
+  it("maps recommendation overrides to the standard completed xAPI verb", () => {
+    const statement = buildAaisXapiStatement({
+      ...scaffoldEvent,
+      agent: "platform",
+      event: "recommendation_override_recorded",
+    });
+
+    expect(statement.verb).toEqual({
+      id: "http://adlnet.gov/expapi/verbs/completed",
+      display: {
+        "en-US": "completed",
+      },
+    });
+  });
+
+  it("rejects prototype property names as unmapped xAPI events", () => {
+    for (const eventName of ["constructor", "toString", "__proto__"]) {
+      expect(() => buildAaisXapiStatement({
+        ...scaffoldEvent,
+        event: eventName,
+      } as unknown as AaisEvent), `prototype key ${eventName} must be rejected`).toThrow(
+        `AAIS event ${eventName} has no xAPI verb mapping.`,
+      );
+    }
+  });
+
   it("builds analysis-ready xAPI statements from AAIS events", () => {
     const statement = buildAaisXapiStatement(scaffoldEvent);
 
