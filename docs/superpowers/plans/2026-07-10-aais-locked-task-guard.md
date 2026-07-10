@@ -162,7 +162,7 @@ Apply these exact substitutions in `createAaisLearningStore`:
 +const task = requireUnlockedTask(session, taskId);
 ```
 
-The `task` substitution applies in `requestScaffold`, `recordAiAcceptance`, and `updateTaskField`. Do not change the read-only `requireTask` call inside `selectTask`; that function already performs its own locked-state check.
+The `task` substitution applies in `requestScaffold`, `recordAiAcceptance`, and the inner loop of `saveTaskText`. Do not change the read-only `requireTask` call inside `selectTask`; that function already performs its own locked-state check.
 
 - [ ] **Step 2: Add the shared helper immediately after `requireTask`**
 
