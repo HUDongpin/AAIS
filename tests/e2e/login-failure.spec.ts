@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./aais-e2e-fixtures";
 import { getAaisE2eStudentAccount } from "./aais-e2e-helpers";
 
 test("bad trial password stays on login and shows safe copy", async ({ page }) => {

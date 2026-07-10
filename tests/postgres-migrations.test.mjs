@@ -58,6 +58,12 @@ describe("AAIS Postgres migrations", () => {
         fileName: "0008_ai_guide_daily_usage.sql",
         checksum: expect.stringMatching(/^[a-f0-9]{64}$/),
       }),
+      expect.objectContaining({
+        version: "0009",
+        name: "user_account_id_casefold_unique",
+        fileName: "0009_user_account_id_casefold_unique.sql",
+        checksum: expect.stringMatching(/^[a-f0-9]{64}$/),
+      }),
     ]);
     expect(migrations[0].sql).toContain("create table if not exists aais_learner_sessions");
     expect(migrations[0].sql).toContain("create table if not exists aais_lrs_outbox");
@@ -90,6 +96,69 @@ describe("AAIS Postgres migrations", () => {
     expect(migrations[7].sql).toContain("group by student_id, (event_time at time zone 'UTC')::date");
     expect(migrations[7].sql).toContain("on conflict (student_id, usage_day)");
     expect(migrations[7].sql).toContain("greatest(aais_ai_guide_daily_usage.used, excluded.used)");
+    expect(normalizeSql(migrations[8].sql)).toBe(
+      "create unique index aais_users_id_casefold_unique_idx on aais_users (lower(id));",
+    );
+    expect(migrations[8].sql.toLowerCase()).not.toContain("if not exists");
+  });
+
+  it("applies the case-fold index after 0008 and records it in the migration ledger", async () => {
+    const database = new FakeMigrationDatabase({
+      "0008": "checksum-0008",
+    });
+    const migrations = [
+      createMigration("0008", "ai_guide_daily_usage", "select 8;"),
+      createMigration(
+        "0009",
+        "user_account_id_casefold_unique",
+        "create unique index aais_users_id_casefold_unique_idx on aais_users (lower(id));",
+      ),
+    ];
+
+    const report = await runAaisPostgresMigrations({ database, migrations });
+
+    expect(report).toMatchObject({ applied: 1, skipped: 1 });
+    expect(report.migrations.map(({ version, status }) => ({ version, status }))).toEqual([
+      { version: "0008", status: "skipped" },
+      { version: "0009", status: "applied" },
+    ]);
+    expect(database.applied.get("0009")).toBe("checksum-0009");
+  });
+
+  it("rolls back without recording 0009 when existing IDs collide case-insensitively", async () => {
+    const database = new CasefoldIndexMigrationDatabase({ existingIds: ["Phoebe", "phoebe"] });
+    const migration = createMigration(
+      "0009",
+      "user_account_id_casefold_unique",
+      "create unique index aais_users_id_casefold_unique_idx on aais_users (lower(id));",
+    );
+
+    await expect(runAaisPostgresMigrations({ database, migrations: [migration] }))
+      .rejects.toThrow("duplicate key value violates unique constraint");
+
+    expect(database.queries.map(({ sql }) => normalizeSql(sql))).toEqual([
+      expect.stringContaining("create table if not exists aais_schema_migrations"),
+      "select version, checksum from aais_schema_migrations order by version",
+      "begin",
+      "create unique index aais_users_id_casefold_unique_idx on aais_users (lower(id));",
+      "rollback",
+    ]);
+    expect(database.applied.has("0009")).toBe(false);
+  });
+
+  it("uses the installed lower(id) index as the final guard against a non-cooperating writer", async () => {
+    const database = new CasefoldIndexMigrationDatabase({ existingIds: ["Phoebe"] });
+    const migration = createMigration(
+      "0009",
+      "user_account_id_casefold_unique",
+      "create unique index aais_users_id_casefold_unique_idx on aais_users (lower(id));",
+    );
+
+    await runAaisPostgresMigrations({ database, migrations: [migration] });
+
+    expect(() => database.nonCooperatingInsert("pHOEBe"))
+      .toThrow("aais_users_id_casefold_unique_idx");
+    expect(() => database.nonCooperatingInsert("Bobie")).not.toThrow();
   });
 
   it("applies pending migrations and records checksums", async () => {
@@ -204,6 +273,10 @@ function createMigration(version, name, sql) {
   };
 }
 
+function normalizeSql(sql) {
+  return String(sql).trim().replace(/\s+/g, " ").toLowerCase();
+}
+
 class FakeMigrationDatabase {
   constructor(applied = {}) {
     this.applied = new Map(Object.entries(applied));
@@ -237,5 +310,35 @@ class FakeTransactionMigrationDatabase extends FakeMigrationDatabase {
       await this.query(query.sql, query.params);
     }
     return queries.map(() => ({ rows: [] }));
+  }
+}
+
+class CasefoldIndexMigrationDatabase extends FakeMigrationDatabase {
+  constructor({ existingIds }) {
+    super();
+    this.existingIds = [...existingIds];
+    this.casefoldIndexInstalled = false;
+  }
+
+  async query(sql, params = []) {
+    const normalized = normalizeSql(sql);
+    if (normalized === "create unique index aais_users_id_casefold_unique_idx on aais_users (lower(id));") {
+      this.queries.push({ sql, params });
+      const folded = this.existingIds.map((id) => id.toLowerCase());
+      if (new Set(folded).size !== folded.length) {
+        throw new Error("duplicate key value violates unique constraint");
+      }
+      this.casefoldIndexInstalled = true;
+      return { rows: [] };
+    }
+    return super.query(sql, params);
+  }
+
+  nonCooperatingInsert(id) {
+    if (this.casefoldIndexInstalled
+      && this.existingIds.some((existing) => existing.toLowerCase() === id.toLowerCase())) {
+      throw new Error("duplicate key value violates unique constraint aais_users_id_casefold_unique_idx");
+    }
+    this.existingIds.push(id);
   }
 }

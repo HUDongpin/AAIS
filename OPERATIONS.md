@@ -75,14 +75,27 @@ The credentials file is local/ignored and should contain staging-only learners a
 
 ## Preview E2E
 
-When Vercel creates a successful `Preview` deployment, GitHub Actions runs `.github/workflows/preview-e2e.yml` against the deployment URL. The workflow requires these GitHub Actions secrets, which must match non-production accounts configured in the Vercel Preview environment:
+The recovery Preview environment is limited to Git branch `codex/aais-recovery-compose`. Every sensitive Vercel Preview value must use that exact branch scope; project-wide Preview values are not permitted. The workflow in `.github/workflows/preview-e2e.yml` uses three fail-closed stages:
+
+1. Stage A uses only the read-only `GITHUB_TOKEN`. Before checkout, it binds the successful `deployment_status` event to the reviewed default-`main` workflow, Vercel App identity, repository `HUDongpin/AAIS`, PR `#5`, the recovery branch, the current PR SHA, and one normalized public HTTPS `.vercel.app` origin. An empty GitHub deployment payload is acceptable because it is not treated as Vercel project evidence.
+2. Stage B runs before checkout and receives only the step-scoped `VERCEL_E2E_METADATA_TOKEN`. It queries the Vercel deployment by the normalized Stage-A hostname, validates the allowlisted deployment projection against the real `aais` project/team/repository/ref/SHA, requires `target` to be JSON `null` and both state fields to be `READY`, and emits only redacted identifiers and status. The GitHub deployment IDs are never used as the Vercel lookup key.
+3. Stage C checks out the exact attested SHA, verifies the normalized Git origin, installs dependencies without secrets, and exposes the five application/E2E secrets only to the Playwright step. External Playwright uses one worker and retains no trace, video, screenshot, HAR, storage state, attachment, HTML/blob/JUnit report, or result file.
+
+The five application/E2E GitHub Actions secrets must match synthetic, database-backed accounts and the automation bypass configured only for the exact Vercel Preview branch:
 
 - `AAIS_E2E_STUDENT_ACCOUNT`
 - `AAIS_E2E_STUDENT_PASSWORD`
 - `AAIS_E2E_TEACHER_ACCOUNT`
 - `AAIS_E2E_TEACHER_PASSWORD`
+- `VERCEL_AUTOMATION_BYPASS_SECRET`
 
-The deployed run sets `AAIS_E2E_BASE_URL`, so Playwright skips the local dev server and signs in through `/login`. Do not reuse production learner or teacher credentials for preview E2E.
+The recovery-only `VERCEL_E2E_METADATA_TOKEN` is a separate sixth secret. It must not reach checkout, package commands, Playwright, or the application. Revoke the dedicated token and remove only that GitHub secret immediately after accepted-main proof, before root closure.
+
+The deployed run sets the attested `AAIS_E2E_BASE_URL`, so Playwright skips the local dev server. Its automatic fixture sends the automation bypass once to same-origin `/login`, verifies the in-memory origin cookie, and never persists bypass material. Do not reuse production learner, teacher, database, or bypass credentials.
+
+The isolated Neon Preview project contains synthetic E2E data only. Record its creation time, owner, purpose, deletion procedure, and a retention review due no later than 30 days after creation. Rotate the two independent Preview passwords and the automation bypass no later than 90 days after creation and immediately after suspected exposure; update the database/provider and GitHub stores without logging values, rerun the full Preview E2E suite, then revoke the old values.
+
+Retirement order is mandatory: disable the Preview workflow or its branch scope; remove the exact branch-scoped Vercel Preview environment record IDs; prove that no same-name project-wide Preview entry exists; revoke the automation bypass; remove the corresponding GitHub secrets; verify that no deployment depends on the database; then, after a fresh owner decision, delete only the exact isolated Neon project ID. Never include a production project in the retirement set.
 
 ## Migrations
 
@@ -110,7 +123,7 @@ Do not configure production teacher/admin access through `AAIS_TRIAL_ACCOUNTS_JS
 
 Admin-created users are enrolled into `AAIS_DEFAULT_COURSE_ID` and `AAIS_DEFAULT_COHORT` when invited. Defaults are `cognitive-apprenticeship` and `default`; set explicit staging/pilot values before inviting real class accounts. Disabling a user marks that course enrollment as `withdrawn` while preserving the account record for audit/lifecycle management.
 
-Staging and preview smoke users may be bootstrapped with `npm run db:seed-users -- --approved --output ./aais-user-seed-report.json`. Configure `AAIS_SEED_USERS_JSON` with one entry per user and prefer `passwordEnv` references so raw passwords live only in ignored local env files, Vercel environment variables, or the password manager. The seed report hashes email addresses and omits raw passwords, cookies, database URLs, and setup links.
+Staging and preview smoke users may be bootstrapped with `npm run db:seed-users -- --approved --output ./aais-user-seed-report.json`. Configure `AAIS_SEED_USERS_JSON` with one entry per user and prefer `passwordEnv` references so raw passwords live only in ignored local env files, Vercel environment variables, or the password manager. The seed report contains only count, role, status, and enrollment data; it omits account IDs, emails, passwords, URLs, and hashes of those values.
 
 ## Teacher Recommendations
 

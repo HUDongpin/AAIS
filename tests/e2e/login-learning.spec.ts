@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./aais-e2e-fixtures";
 import { loginWithAaisE2eStudent } from "./aais-e2e-helpers";
 
 test("student can sign in and open the AAIS learning cockpit", async ({ page }) => {

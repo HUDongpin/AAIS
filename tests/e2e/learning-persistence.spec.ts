@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./aais-e2e-fixtures";
 import { authenticateAaisE2eActor } from "./aais-e2e-helpers";
 
 test("student artifact edit persists after reload", async ({ page }) => {
