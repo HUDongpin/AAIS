@@ -2,6 +2,7 @@ import { defineConfig, devices } from "@playwright/test";
 
 const port = Number(process.env.AAIS_E2E_PORT ?? 3000);
 const baseURL = process.env.AAIS_E2E_BASE_URL ?? `http://127.0.0.1:${port}`;
+const isExternalPreview = Boolean(process.env.AAIS_E2E_BASE_URL);
 const e2eSmokeAccountsJson = JSON.stringify([
   {
     id: "teacher-e2e",
@@ -21,11 +22,17 @@ export default defineConfig({
   expect: {
     timeout: 10_000,
   },
-  fullyParallel: true,
+  fullyParallel: !isExternalPreview,
+  workers: isExternalPreview ? 1 : undefined,
   reporter: [["list"]],
+  preserveOutput: isExternalPreview ? "never" : undefined,
   use: {
     baseURL,
-    trace: "on-first-retry",
+    trace: isExternalPreview ? "off" : "on-first-retry",
+    ...(isExternalPreview ? {
+      screenshot: "off" as const,
+      video: "off" as const,
+    } : {}),
   },
   webServer: process.env.AAIS_E2E_BASE_URL
     ? undefined
