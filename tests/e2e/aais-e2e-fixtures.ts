@@ -20,6 +20,18 @@ export async function bootstrapAaisPreviewOrigin(input: {
     throw new Error("AAIS_PREVIEW_TRUST_SECRET");
   }
 
+  let existingCookies;
+  try {
+    existingCookies = await input.context.cookies(trusted.origin);
+  } catch {
+    throw new Error("AAIS_PREVIEW_TRUST_COOKIE");
+  }
+  if (existingCookies.some((cookie) =>
+    cookie.name === "_vercel_jwt"
+      && cookieDomainMatches(cookie.domain, trusted.hostname))) {
+    throw new Error("AAIS_PREVIEW_TRUST_COOKIE");
+  }
+
   const loginUrl = `${trusted.origin}/login`;
   let response;
   try {

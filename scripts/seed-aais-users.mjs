@@ -14,7 +14,12 @@ export function parseAaisUserSeedJson(raw, env = process.env) {
   if (!text) {
     throw new Error("AAIS_SEED_USERS_JSON is required for user seeding.");
   }
-  const parsed = JSON.parse(text);
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    throw new Error("Invalid AAIS user seed JSON.");
+  }
   if (!Array.isArray(parsed) || parsed.length === 0) {
     throw new Error("AAIS user seed payload must be a non-empty array.");
   }

@@ -182,6 +182,31 @@ describe("AAIS Preview Playwright trust boundary", () => {
     })).rejects.toThrowError(new Error("AAIS_PREVIEW_TRUST_COOKIE"));
   });
 
+  it("rejects a pre-existing exact-host Vercel bypass cookie before sending the guarded request", async () => {
+    const bootstrap = await loadBootstrap();
+    expect(bootstrap).toBeTypeOf("function");
+    const exactCookie = {
+      name: "_vercel_jwt",
+      domain: "preview.example.vercel.app",
+      secure: true,
+    };
+    const context = trustedContext({
+      cookiesBefore: [exactCookie],
+      cookiesAfter: [exactCookie],
+      response: fakeResponse({
+        status: 200,
+        url: "https://preview.example.vercel.app/login",
+      }),
+    });
+
+    await expect(bootstrap?.({
+      context,
+      baseURL: "https://preview.example.vercel.app",
+      bypass: "opaque",
+    })).rejects.toThrowError(new Error("AAIS_PREVIEW_TRUST_COOKIE"));
+    expect(context.request.get).not.toHaveBeenCalled();
+  });
+
   it("rejects an unrelated pre-existing secure cookie on the exact host", async () => {
     const bootstrap = await loadBootstrap();
     expect(bootstrap).toBeTypeOf("function");
@@ -296,23 +321,29 @@ class FakeContext {
     response?: ReturnType<typeof fakeResponse>;
     requestError?: Error;
     cookies?: Array<{ name: string; domain: string; secure: boolean }>;
+    cookiesBefore?: Array<{ name: string; domain: string; secure: boolean }>;
+    cookiesAfter?: Array<{ name: string; domain: string; secure: boolean }>;
   } = {}) {
+    let requestCompleted = false;
     this.request = {
       get: vi.fn(async () => {
         if (input.requestError) {
           throw input.requestError;
         }
+        requestCompleted = true;
         return input.response ?? fakeResponse({
           status: 200,
           url: "https://aais-git-recovery.example.vercel.app/login",
         });
       }),
     };
-    this.cookies = vi.fn(async () => input.cookies ?? [{
-      name: "_vercel_jwt",
-      domain: "aais-git-recovery.example.vercel.app",
-      secure: true,
-    }]);
+    this.cookies = vi.fn(async () => requestCompleted
+      ? input.cookiesAfter ?? input.cookies ?? [{
+          name: "_vercel_jwt",
+          domain: "aais-git-recovery.example.vercel.app",
+          secure: true,
+        }]
+      : input.cookiesBefore ?? []);
   }
 }
 

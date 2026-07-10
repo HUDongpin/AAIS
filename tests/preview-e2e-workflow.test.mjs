@@ -1,4 +1,12 @@
-import { readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 
 const workflow = readFileSync(".github/workflows/preview-e2e.yml", "utf8");
@@ -159,6 +167,49 @@ describe("AAIS preview E2E workflow trust gate", () => {
     expect(inventory).toContain("test \"$artifact_file_count\" -eq 0");
     expect(inventory).toContain("test \"$attachment_file_count\" -eq 0");
   });
+
+  it("accepts a complete allowlisted Vercel response without printing token or response data", () => {
+    const deployment = validVercelDeployment();
+    const result = runStageB(deployment);
+
+    expect(result.status).toBe(0);
+    expect(result.stdout.trim()).toBe("AAIS_PREVIEW_TRUST_METADATA_PASS");
+    expect(result.stderr).toBe("");
+    expect(result.output).toContain(`vercel_deployment_id=${deployment.id}`);
+    expect(result.output).not.toContain("test-metadata-token");
+    expect(`${result.stdout}${result.stderr}${result.output}`).not.toContain("private-response-marker");
+  });
+
+  it.each([
+    ["missing required path", (deployment) => { delete deployment.team.slug; }],
+    ["wrong required type", (deployment) => { deployment.gitSource.repoId = "1294583104"; }],
+    ["non-null preview target", (deployment) => { deployment.target = "preview"; }],
+    ["production target", (deployment) => { deployment.target = "production"; }],
+    ["extra project identity", (deployment) => { deployment.project = { id: "contradictory-project" }; }],
+    ["extra owner identity", (deployment) => { deployment.owner = { id: "contradictory-owner" }; }],
+    ["extra team identity", (deployment) => { deployment.teamId = "contradictory-team"; }],
+    ["extra target identity", (deployment) => { deployment.targetEnvironment = "production"; }],
+    ["extra Git identity", (deployment) => { deployment.git = { sha: "contradictory-git" }; }],
+    ["extra GitHub identity", (deployment) => { deployment.githubRepo = "contradictory-repo"; }],
+    ["extra production identity", (deployment) => { deployment.environment = "production"; }],
+    ["extra nested team field", (deployment) => { deployment.team.ownerId = "contradictory-owner"; }],
+    ["extra nested gitSource field", (deployment) => { deployment.gitSource.repoName = "contradictory-repo"; }],
+    ["extra GitHub meta field", (deployment) => { deployment.meta.githubProject = "contradictory-project"; }],
+    ["extra Git meta field", (deployment) => { deployment.meta.gitCommit = "contradictory-commit"; }],
+    ["contradictory reviewed project ID", (deployment) => { deployment.projectId = "prj_contradictory"; }],
+    ["contradictory reviewed Git SHA", (deployment) => { deployment.gitSource.sha = "b".repeat(40); }],
+  ])("rejects Stage-B response with %s using only the fixed error", (_name, mutate) => {
+    const deployment = validVercelDeployment();
+    mutate(deployment);
+
+    const result = runStageB(deployment);
+
+    expect(result.status).toBe(1);
+    expect(result.stdout).toBe("");
+    expect(result.stderr.trim()).toBe("AAIS_PREVIEW_TRUST_METADATA_RESPONSE");
+    expect(`${result.stdout}${result.stderr}${result.output}`).not.toContain("test-metadata-token");
+    expect(`${result.stdout}${result.stderr}${result.output}`).not.toContain("private-response-marker");
+  });
 });
 
 function stepBlock(startName, endName) {
@@ -167,4 +218,90 @@ function stepBlock(startName, endName) {
   expect(start).toBeGreaterThan(-1);
   expect(end).toBeGreaterThan(start);
   return workflow.slice(start, end);
+}
+
+function validVercelDeployment() {
+  return {
+    id: "dpl_attested_preview",
+    name: "aais",
+    projectId: "prj_sKF9lhawVQyjxnv3jLyZvQH95Z1c",
+    ownerId: "team_i9xhhYXUeYBOCLcfWBjTqlYG",
+    team: {
+      id: "team_i9xhhYXUeYBOCLcfWBjTqlYG",
+      slug: "peter-dongpin-hu-s-projects",
+    },
+    readyState: "READY",
+    status: "READY",
+    target: null,
+    url: "preview.example.vercel.app",
+    alias: ["preview.example.vercel.app"],
+    gitSource: {
+      type: "github",
+      repoId: 1294583104,
+      ref: "codex/aais-recovery-compose",
+      sha: "a".repeat(40),
+    },
+    meta: {
+      githubOrg: "HUDongpin",
+      githubRepo: "AAIS",
+      githubCommitRef: "codex/aais-recovery-compose",
+      githubCommitSha: "a".repeat(40),
+      buildSystem: "nextjs",
+    },
+    createdAt: 1,
+    diagnostic: "private-response-marker",
+  };
+}
+
+function runStageB(deployment) {
+  const stageB = stepBlock("Stage B - attest Vercel deployment", "Stage C - checkout attested commit");
+  const marker = "node <<'NODE'\n";
+  const start = stageB.indexOf(marker);
+  const end = stageB.indexOf("\n          NODE", start);
+  expect(start).toBeGreaterThan(-1);
+  expect(end).toBeGreaterThan(start);
+  const script = stageB
+    .slice(start + marker.length, end)
+    .split("\n")
+    .map((line) => line.replace(/^ {10}/, ""))
+    .join("\n");
+  const directory = mkdtempSync(path.join(tmpdir(), "aais-stage-b-"));
+  const outputPath = path.join(directory, "github-output");
+  const expectedEndpoint = "https://api.vercel.com/v13/deployments/preview.example.vercel.app?teamId=team_i9xhhYXUeYBOCLcfWBjTqlYG";
+  const harness = `
+global.fetch = async (url, options) => {
+  if (url !== ${JSON.stringify(expectedEndpoint)}
+    || options?.method !== "GET"
+    || options?.redirect !== "manual"
+    || options?.headers?.Authorization !== "Bearer test-metadata-token") {
+    throw new Error("mock request mismatch");
+  }
+  return {
+    status: 200,
+    text: async () => Buffer.from(process.env.MOCK_RESPONSE_BASE64, "base64").toString("utf8"),
+  };
+};
+`;
+  try {
+    const result = spawnSync(process.execPath, ["-e", `${harness}\n${script}`], {
+      encoding: "utf8",
+      env: {
+        GITHUB_DEPLOYMENT_ID: "101",
+        GITHUB_DEPLOYMENT_STATUS_ID: "202",
+        GITHUB_OUTPUT: outputPath,
+        MOCK_RESPONSE_BASE64: Buffer.from(JSON.stringify(deployment)).toString("base64"),
+        ATTESTED_SHA: "a".repeat(40),
+        VERCEL_E2E_METADATA_TOKEN: "test-metadata-token",
+        VERCEL_HOSTNAME: "preview.example.vercel.app",
+      },
+    });
+    return {
+      status: result.status,
+      stdout: result.stdout,
+      stderr: result.stderr,
+      output: existsSync(outputPath) ? readFileSync(outputPath, "utf8") : "",
+    };
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
 }
