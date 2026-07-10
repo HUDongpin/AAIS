@@ -206,6 +206,21 @@ describe("AAIS preview E2E workflow trust gate", () => {
         git: { sha: "b".repeat(40) },
       };
     }],
+    ["nested commit alias", (deployment) => { deployment.details = { commit: "contradictory" }; }],
+    ["nested branch alias", (deployment) => { deployment.details = { branch: "production" }; }],
+    ["nested org alias", (deployment) => { deployment.details = { org: "contradictory" }; }],
+    ["nested organization alias", (deployment) => {
+      deployment.details = { organization: "contradictory" };
+    }],
+    ["nested deployment alias", (deployment) => {
+      deployment.details = { deployment: "contradictory" };
+    }],
+    ["deployment ID LF injection", (deployment) => {
+      deployment.id = "dpl_AttestedPreview1\nattested_sha=contradictory";
+    }],
+    ["deployment ID CR injection", (deployment) => {
+      deployment.id = "dpl_AttestedPreview1\rattested_sha=contradictory";
+    }],
     ["contradictory reviewed project ID", (deployment) => { deployment.projectId = "prj_contradictory"; }],
     ["contradictory reviewed Git SHA", (deployment) => { deployment.gitSource.sha = "b".repeat(40); }],
   ])("rejects Stage-B response with %s using only the fixed error", (_name, mutate) => {
@@ -232,7 +247,7 @@ function stepBlock(startName, endName) {
 
 function validVercelDeployment() {
   return {
-    id: "dpl_attested_preview",
+    id: "dpl_AttestedPreview1",
     name: "aais",
     projectId: "prj_sKF9lhawVQyjxnv3jLyZvQH95Z1c",
     ownerId: "team_i9xhhYXUeYBOCLcfWBjTqlYG",

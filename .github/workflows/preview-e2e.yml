@@ -221,7 +221,28 @@ jobs:
           const exactKeys = (value, keys) => isObject(value)
             && Object.keys(value).length === keys.length
             && keys.every((key) => hasOwn(value, key));
-          const isCriticalIdentityKey = (key) => {
+          const allowedCriticalPaths = new Set([
+            "id",
+            "name",
+            "projectId",
+            "ownerId",
+            "team",
+            "team.id",
+            "readyState",
+            "status",
+            "target",
+            "url",
+            "alias",
+            "gitSource",
+            "gitSource.repoId",
+            "gitSource.ref",
+            "gitSource.sha",
+            "meta.githubOrg",
+            "meta.githubRepo",
+            "meta.githubCommitRef",
+            "meta.githubCommitSha",
+          ]);
+          const hasCriticalPathSegment = (key) => {
             const parts = key
               .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
               .toLowerCase()
@@ -245,17 +266,35 @@ jobs:
               "source",
               "ref",
               "sha",
+              "commit",
+              "branch",
+              "org",
+              "organization",
+              "deployment",
+              "url",
+              "uri",
+              "host",
+              "hostname",
+              "domain",
+              "alias",
+              "state",
+              "status",
+              "ready",
             ].includes(part));
           };
-          const containsCriticalIdentityPath = (value) => {
+          const containsUnexpectedCriticalPath = (value, parentPath = []) => {
             if (Array.isArray(value)) {
-              return value.some(containsCriticalIdentityPath);
+              return value.some((item) => containsUnexpectedCriticalPath(item, parentPath));
             }
             if (!isObject(value)) {
               return false;
             }
-            return Object.entries(value).some(([key, nested]) =>
-              isCriticalIdentityKey(key) || containsCriticalIdentityPath(nested));
+            return Object.entries(value).some(([key, nested]) => {
+              const path = [...parentPath, key];
+              const reviewedPath = path.join(".");
+              return (hasCriticalPathSegment(key) && !allowedCriticalPaths.has(reviewedPath))
+                || containsUnexpectedCriticalPath(nested, path);
+            });
           };
           const validateDeploymentShape = (deployment) => {
             const topLevelKeys = [
@@ -273,11 +312,8 @@ jobs:
               "meta",
             ];
             if (!isObject(deployment)
+              || containsUnexpectedCriticalPath(deployment)
               || !topLevelKeys.every((key) => hasOwn(deployment, key))
-              || Object.keys(deployment).some((key) =>
-                !topLevelKeys.includes(key)
-                  && (isCriticalIdentityKey(key)
-                    || containsCriticalIdentityPath(deployment[key])))
               || !exactKeys(deployment.team, ["id", "slug"])
               || !exactKeys(deployment.gitSource, ["type", "repoId", "ref", "sha"])
               || !isObject(deployment.meta)) {
@@ -290,6 +326,7 @@ jobs:
               "githubCommitSha",
             ];
             return isString(deployment.id)
+              && /^dpl_[A-Za-z0-9]+$/.test(deployment.id)
               && isString(deployment.name)
               && isString(deployment.projectId)
               && isString(deployment.ownerId)
@@ -305,11 +342,7 @@ jobs:
               && Number.isSafeInteger(deployment.gitSource.repoId)
               && isString(deployment.gitSource.ref)
               && isString(deployment.gitSource.sha)
-              && metaKeys.every((key) => isString(deployment.meta[key]))
-              && !Object.keys(deployment.meta).some((key) =>
-                !metaKeys.includes(key)
-                  && (isCriticalIdentityKey(key)
-                    || containsCriticalIdentityPath(deployment.meta[key])));
+              && metaKeys.every((key) => isString(deployment.meta[key]));
           };
           (async () => {
             const idOrUrl = encodeURIComponent(process.env.VERCEL_HOSTNAME);
