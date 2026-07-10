@@ -114,16 +114,11 @@ export function isAaisTrialLoginEnabled() {
 }
 
 function readTrialAccounts() {
-  const configuredAccounts = readConfiguredTrialAccounts();
-  if (configuredAccounts) {
-    return mergeConfiguredAccountsWithBuiltInLearners(configuredAccounts);
+  const configuredLookup = readConfiguredTrialAccountLookup();
+  if (configuredLookup.status === "configured") {
+    return mergeConfiguredAccountsWithBuiltInLearners(configuredLookup.accounts);
   }
-  return isProductionRuntime() ? null : builtInLearnerTrialAccounts;
-}
-
-function readConfiguredTrialAccounts() {
-  const result = readConfiguredTrialAccountLookup();
-  return result.accounts;
+  return configuredLookup.status === "invalid" ? null : builtInLearnerTrialAccounts;
 }
 
 function readConfiguredTrialAccountLookup(): ConfiguredTrialAccountLookup {
