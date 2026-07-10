@@ -372,7 +372,7 @@ async function reserveDailyGuideBudget(
     recordGuideBudgetAudit({
       studentId,
       event: "ai.guide.budget.exceeded",
-      outcome: "rejected",
+      outcome: "failure",
       budget,
     });
     throw new AaisGuideDailyBudgetError(budget);
