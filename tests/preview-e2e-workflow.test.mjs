@@ -57,6 +57,21 @@ describe("AAIS preview E2E workflow trust gate", () => {
     expect(stageA).toContain("VERCEL_HOSTNAME");
   });
 
+  it("binds the executing workflow SHA to current main and fetches the workflow blob immutably", () => {
+    const stageA = stepBlock("Stage A - attest GitHub deployment", "Stage B - attest Vercel deployment");
+
+    expect(stageA).toContain("const executingWorkflowSha = process.env.GITHUB_WORKFLOW_SHA;");
+    expect(stageA).toContain("!/^[a-f0-9]{40}$/.test(executingWorkflowSha)");
+    expect(stageA).toContain("executingWorkflowSha !== mainRef.object.sha");
+    expect(stageA).toContain("ref: executingWorkflowSha");
+    expect(stageA).not.toContain("ref: DEFAULT_BRANCH");
+
+    const staleWorkflowGuard = stageA.indexOf("executingWorkflowSha !== mainRef.object.sha");
+    const immutableWorkflowFetch = stageA.indexOf("ref: executingWorkflowSha");
+    expect(staleWorkflowGuard).toBeGreaterThan(-1);
+    expect(immutableWorkflowFetch).toBeGreaterThan(staleWorkflowGuard);
+  });
+
   it("uses only the normalized Stage-A hostname as the Vercel idOrUrl", () => {
     const stageB = stepBlock("Stage B - attest Vercel deployment", "Stage C - checkout attested commit");
 

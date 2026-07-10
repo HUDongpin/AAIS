@@ -182,6 +182,73 @@ describe("AAIS Preview Playwright trust boundary", () => {
     })).rejects.toThrowError(new Error("AAIS_PREVIEW_TRUST_COOKIE"));
   });
 
+  it("rejects an unrelated pre-existing secure cookie on the exact host", async () => {
+    const bootstrap = await loadBootstrap();
+    expect(bootstrap).toBeTypeOf("function");
+    const context = trustedContext({
+      cookies: [{
+        name: "aais_session",
+        domain: "preview.example.vercel.app",
+        secure: true,
+      }],
+      response: fakeResponse({
+        status: 200,
+        url: "https://preview.example.vercel.app/login",
+      }),
+    });
+
+    await expect(bootstrap?.({
+      context,
+      baseURL: "https://preview.example.vercel.app",
+      bypass: "opaque",
+    })).rejects.toThrowError(new Error("AAIS_PREVIEW_TRUST_COOKIE"));
+  });
+
+  it("rejects a Vercel bypass cookie scoped to the broader parent domain", async () => {
+    const bootstrap = await loadBootstrap();
+    expect(bootstrap).toBeTypeOf("function");
+    const context = trustedContext({
+      cookies: [{
+        name: "_vercel_jwt",
+        domain: ".vercel.app",
+        secure: true,
+      }],
+      response: fakeResponse({
+        status: 200,
+        url: "https://preview.example.vercel.app/login",
+      }),
+    });
+
+    await expect(bootstrap?.({
+      context,
+      baseURL: "https://preview.example.vercel.app",
+      bypass: "opaque",
+    })).rejects.toThrowError(new Error("AAIS_PREVIEW_TRUST_COOKIE"));
+  });
+
+  it("accepts only the exact secure Vercel bypass cookie for the trusted host", async () => {
+    const bootstrap = await loadBootstrap();
+    expect(bootstrap).toBeTypeOf("function");
+    const context = trustedContext({
+      cookies: [{
+        name: "_vercel_jwt",
+        domain: ".preview.example.vercel.app",
+        secure: true,
+      }],
+      response: fakeResponse({
+        status: 200,
+        url: "https://preview.example.vercel.app/login",
+      }),
+    });
+
+    await expect(bootstrap?.({
+      context,
+      baseURL: "https://preview.example.vercel.app",
+      bypass: "opaque",
+    })).resolves.toBeUndefined();
+    expect(context.request.get).toHaveBeenCalledTimes(1);
+  });
+
   it("does not persist or attach bypass material", () => {
     const source = readFileSync("tests/e2e/aais-e2e-fixtures.ts", "utf8");
     expect(source).not.toContain("storageState(");
@@ -242,7 +309,7 @@ class FakeContext {
       }),
     };
     this.cookies = vi.fn(async () => input.cookies ?? [{
-      name: "__vercel_bypass",
+      name: "_vercel_jwt",
       domain: "aais-git-recovery.example.vercel.app",
       secure: true,
     }]);

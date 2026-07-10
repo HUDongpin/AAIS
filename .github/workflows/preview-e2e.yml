@@ -47,6 +47,7 @@ jobs:
             const RECOVERY_REF = "codex/aais-recovery-compose";
             const WORKFLOW_PATH = ".github/workflows/preview-e2e.yml";
             const WORKFLOW_REF = "HUDongpin/AAIS/.github/workflows/preview-e2e.yml@refs/heads/main";
+            const executingWorkflowSha = process.env.GITHUB_WORKFLOW_SHA;
             const VERCEL_APP = {
               login: "vercel[bot]",
               id: 35613825,
@@ -84,7 +85,8 @@ jobs:
 
             if (context.eventName !== EVENT
               || `${context.repo.owner}/${context.repo.repo}` !== REPOSITORY
-              || process.env.GITHUB_WORKFLOW_REF !== WORKFLOW_REF) {
+              || process.env.GITHUB_WORKFLOW_REF !== WORKFLOW_REF
+              || !/^[a-f0-9]{40}$/.test(executingWorkflowSha)) {
               fail();
             }
             const eventDeployment = context.payload.deployment;
@@ -101,6 +103,10 @@ jobs:
               repo: REPO,
               ref: `heads/${DEFAULT_BRANCH}`,
             });
+            if (!/^[a-f0-9]{40}$/.test(mainRef.object.sha)
+              || executingWorkflowSha !== mainRef.object.sha) {
+              fail();
+            }
             const { data: workflow } = await github.rest.actions.getWorkflow({
               owner: OWNER,
               repo: REPO,
@@ -110,7 +116,7 @@ jobs:
               owner: OWNER,
               repo: REPO,
               path: WORKFLOW_PATH,
-              ref: DEFAULT_BRANCH,
+              ref: executingWorkflowSha,
             });
             const { data: deployment } = await github.rest.repos.getDeployment({
               owner: OWNER,
