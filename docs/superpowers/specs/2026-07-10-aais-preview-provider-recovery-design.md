@@ -8,20 +8,21 @@ keeps Vercel SSO protection enabled while granting GitHub Actions a narrowly
 held automation bypass, seeds database-backed Preview identities, and then
 returns control to the existing generation-bound integration and cleanup
 process. A separate fail-closed slice may delete the accidental Vercel project
-only after its newly discovered bypass resource and expanded authority are
-resolved.
+only after its newly discovered bypass resource, exact authority, and reviewed
+preflight are bound together.
 
 The owner has authorized the provider revision, creation of an isolated Preview
 database, and replacement of the supplied short Preview passwords with
-independently generated strong Preview-only credentials. The earlier deletion
-approval was based on the now-false premise that the accidental project was
-empty. It does not authorize revocation/deletion of the newly discovered
-resource. Expanded owner authorization to delete the formerly nonempty exact
-project and revoke its compromised bypass is required before that irreversible
-slice. As of this revision, that expanded authorization is absent, so deletion
-is a hard stop. This document is the design artifact only. It does not itself
-authorize billing, claim written-spec or reviewer approval, or perform any local
-code, provider, deployment, pull-request, or cleanup change.
+independently generated strong Preview-only credentials. In this thread the
+owner then explicitly approved: `书面规范通过，并授权原子删除含已暴露 bypass 的误建项目`.
+That expanded authority covers only atomic deletion of exact accidental project
+`aais-recovery-compose` (`prj_ABvmKlKMRDeUT6h8Ndq6Lfc7Jvai`) and the resulting
+revocation of its one exposed project-owned bypass. It does not authorize a
+separate bypass-value operation, deletion of `aais`, billing, or any broader
+provider change. Deletion remains gated by exact metadata-only preflight,
+fresh specification review, fresh quality/security review, and reviewed
+postconditions. This document records authority and design; it does not itself
+perform any local code, provider, deployment, pull-request, or cleanup change.
 
 The account identifiers and roles remain exactly:
 
@@ -338,39 +339,63 @@ The pre-check fails unless one internally consistent evidence chain proves:
   contain no credentials/query/fragment, and have a hostname ending exactly on
   the `.vercel.app` label boundary.
 
-Stage A emits only the validated repository, PR/ref/SHA, GitHub deployment and
-status IDs, normalized origin/hostname, workflow ID/path/blob, and current main
-SHA as non-secret in-memory/job outputs. It emits no event body or response body.
-A default-main tip or workflow-blob change invalidates every earlier PASS and
-requires bootstrap re-review before Stage B.
+Stage A emits only `GITHUB_DEPLOYMENT_ID`,
+`GITHUB_DEPLOYMENT_STATUS_ID`, the normalized Vercel URL/hostname, the exact PR
+head SHA, validated repository/PR/ref, workflow ID/path/blob, and current main
+SHA as non-secret in-memory/job outputs. The two GitHub IDs remain GitHub
+identifiers and are never used as Vercel `idOrUrl`. Stage A emits no event body
+or response body. A default-main tip or workflow-blob change invalidates every
+earlier PASS and requires bootstrap re-review before Stage B.
 
 #### Stage B: pre-checkout Vercel project attestation
 
 GitHub's deployment payload cannot prove the Vercel project. A second step in
 the same trusted default-branch job therefore receives the separate repository
-secret `VERCEL_E2E_METADATA_TOKEN` as step-level environment only. Fixed inline
-Node code from the reviewed workflow reads the token from its environment,
-queries the current official authenticated Vercel deployment-metadata endpoint
-at exact API origin `https://api.vercel.com` by the exact Stage-A hostname, with
-redirects disabled, parses an allowlist of fields in memory, and prints only a
-fixed PASS/failure code. The token is never placed in a command argument, shell
-trace, URL, job environment, output, cache, file, log, artifact, checkout,
-package command, Playwright process, or application process. Raw API responses
-and headers are never printed or persisted.
+secret `VERCEL_E2E_METADATA_TOKEN` as step-level environment only. The official
+request is exactly `GET https://api.vercel.com/v13/deployments/{idOrUrl}?teamId=team_i9xhhYXUeYBOCLcfWBjTqlYG`, or the byte-equivalent URL-encoded form where
+`idOrUrl` is the exact normalized Vercel hostname from Stage A. It is never
+`GITHUB_DEPLOYMENT_ID` or `GITHUB_DEPLOYMENT_STATUS_ID`. The bearer token is
+read only from that step's environment and placed only in the in-memory
+`Authorization` header; it is never a CLI flag, command argument, URL, shell
+trace, output, cache, file, log, artifact, checkout, package command,
+Playwright process, or application process. Redirects are disabled. Fixed
+reviewed code parses the response in memory and prints only a fixed PASS/failure
+code. Operator diagnostics use `jq` only to construct the reviewed allowlist;
+raw response bodies and headers are never printed or persisted.
+
+The exact allowed response paths are:
+
+- `.id`, `.name`, `.projectId`, `.ownerId`;
+- `.team.id`, `.team.slug`;
+- `.readyState`, `.status`, `.target`, `.url`, `.alias[]`;
+- `.gitSource.type`, `.gitSource.repoId`, `.gitSource.ref`, `.gitSource.sha`;
+- `.meta.githubOrg`, `.meta.githubRepo`, `.meta.githubCommitRef`,
+  `.meta.githubCommitSha`.
+
+Missing critical paths, additional unreviewed identity/Git/target paths,
+differently typed values, or schema drift fail before checkout. A `jq`
+diagnostic may emit only this allowlisted projection or a boolean predicate;
+it may not emit the original object.
 
 Stage B fails unless one response atomically proves:
 
-- project ID `prj_sKF9lhawVQyjxnv3jLyZvQH95Z1c`, project name `aais`, and
-  owner/team ID `team_i9xhhYXUeYBOCLcfWBjTqlYG`;
-- Vercel `target=null` as the current official non-production Preview
-  representation, `readyState=READY`, a nonempty exact Vercel deployment ID,
-  and response URL/alias equal to the Stage-A hostname; any changed Preview
-  representation requires preflight schema review rather than guessing;
-- Git source repository `HUDongpin/AAIS`, ref
-  `codex/aais-recovery-compose`, and full SHA equal to Stage A and current PR
-  `#5` head;
-- the Stage-A GitHub deployment/status IDs, Vercel deployment ID, origin, and
-  provider observation timestamp are combined into one redacted attestation.
+- `.projectId=prj_sKF9lhawVQyjxnv3jLyZvQH95Z1c`, `.name=aais`,
+  `.ownerId=team_i9xhhYXUeYBOCLcfWBjTqlYG`,
+  `.team.id=team_i9xhhYXUeYBOCLcfWBjTqlYG`, and
+  `.team.slug=peter-dongpin-hu-s-projects`;
+- `.target` is JSON `null`, never string `"preview"`; `.readyState=READY` and
+  `.status=READY`; returned `.id` becomes `VERCEL_DEPLOYMENT_ID`; and `.url` or
+  an exact `.alias[]` member equals the Stage-A hostname. Production or any
+  unexpected non-null target fails;
+- `.gitSource.type=github`, `.gitSource.repoId=1294583104`,
+  `.gitSource.ref=codex/aais-recovery-compose`, and `.gitSource.sha` equals the
+  dynamic Stage-A/current-PR full SHA;
+- `.meta.githubOrg=HUDongpin`, `.meta.githubRepo=AAIS`,
+  `.meta.githubCommitRef=codex/aais-recovery-compose`, and
+  `.meta.githubCommitSha` equals that same dynamic full SHA;
+- `GITHUB_DEPLOYMENT_ID`, `GITHUB_DEPLOYMENT_STATUS_ID`, returned
+  `VERCEL_DEPLOYMENT_ID`, origin, PR head SHA, and provider observation
+  timestamp remain distinct and are combined into one redacted attestation.
 
 Missing or differently named provider fields, API/schema drift, redirects,
 multiple deployments for the hostname, non-Preview state, or any mismatch fails
@@ -683,11 +708,11 @@ after any suspected token exposure.
 
 The project `aais-recovery-compose`, exact project ID
 `prj_ABvmKlKMRDeUT6h8Ndq6Lfc7Jvai`, currently has one compromised Automation
-Bypass resource. The prior empty-project authorization is invalidated. No
-deletion preflight may advance to execution until the owner explicitly
-authorizes deletion of this formerly nonempty exact project and revocation of
-that resource. Authorization must name both the project and the revocation
-effect; generic permission to continue provider work is insufficient.
+Bypass resource. The prior empty-project authorization was invalidated, and the
+owner has now supplied the exact expanded authority quoted in section 1. That
+authority names atomic deletion of the accidental project and the revocation
+effect on its exposed bypass; it authorizes nothing broader. Execution must
+bind this thread authority to the exact project and reviewed live preflight.
 
 ### 8.1 Metadata-only dual-reviewed preflight
 
@@ -764,7 +789,9 @@ names, status, rollback owner, and next rotation/lifecycle date.
 
 It includes, without secret values:
 
-- PR number, branch, sealed generation-1 SHA, base SHA, deployment/run/job IDs;
+- PR number, branch, sealed generation-1 SHA, base SHA,
+  `GITHUB_DEPLOYMENT_ID`, `GITHUB_DEPLOYMENT_STATUS_ID`,
+  `VERCEL_DEPLOYMENT_ID`, run ID, and job ID as distinct fields;
 - real and accidental Vercel project names/IDs;
 - pre/post SSO mode and real/accidental protection-bypass counts/presence/type,
   with no bypass resource identifier;
@@ -882,7 +909,8 @@ mutation may occur from the isolated code branch. The executable order is:
 11. A fresh accidental-deletion-preflight implementer performs section 8.1 and
    local preimage preparation. Fresh spec and quality/security reviewers must
    pass exact live counts, atomic-revocation semantics, redaction, and expanded
-   owner authority. Without that new authority, execution stops here.
+   owner authority. If the exact thread authority cannot be bound to this
+   project/revocation effect, execution stops here.
 12. A different fresh deletion-execution implementer deletes the entire exact
    accidental project in one operation and records postconditions. Fresh
    post-deletion spec and quality/security reviewers independently prove
@@ -1095,10 +1123,10 @@ drift stops before merge and root cleanup.
 - Deployment or E2E failure: keep PR `#5` open, root 11+1 untouched, and every
   recovery worktree preserved. Provider checks may continue; merge and cleanup
   may not.
-- Accidental-project ambiguity or absent expanded authorization: do not delete
-  or separately rotate anything. Record count-only metadata and return for an
-  owner dashboard/provider decision. Never query, replay, or pass the
-  compromised value.
+- Accidental-project ambiguity or failure to bind the recorded expanded
+  authorization: do not delete or separately rotate anything. Record
+  count-only metadata and return for an owner dashboard/provider decision.
+  Never query, replay, or pass the compromised value.
 - Unexpected production change: stop all mutations, revoke Preview bypass if
   needed, preserve redacted evidence, and restore only exact provider records
   changed by this task after a reviewed rollback decision.
