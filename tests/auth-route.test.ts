@@ -205,7 +205,7 @@ describe("AAIS trial account auth route", () => {
     expect(JSON.stringify(body)).not.toContain("db-password-123");
   });
 
-  it("does not merge built-in learner demo accounts into production trial auth", async () => {
+  it("keeps configured and built-in learner accounts available in production trial auth", async () => {
     vi.stubEnv("NODE_ENV", "production");
     process.env.AAIS_TRIAL_ACCOUNTS_JSON = JSON.stringify([
       {
@@ -217,7 +217,7 @@ describe("AAIS trial account auth route", () => {
     ]);
     const { POST } = await import("@/app/api/auth/app-session/route");
 
-    const response = await POST(
+    const builtInLearner = await POST(
       new Request("http://localhost/api/auth/app-session", {
         method: "POST",
         body: authBody({
@@ -226,14 +226,32 @@ describe("AAIS trial account auth route", () => {
         }),
       }),
     );
-    const body = await response.json();
+    const builtInLearnerBody = await builtInLearner.json();
+    const configuredLearner = await POST(
+      new Request("http://localhost/api/auth/app-session", {
+        method: "POST",
+        body: authBody({
+          account: "student-smoke",
+          password: "student-secret",
+        }),
+      }),
+    );
+    const configuredLearnerBody = await configuredLearner.json();
 
-    expect(response.status).toBe(401);
-    expect(body.error).toEqual({
-      code: "AAIS_INVALID_CREDENTIALS",
-      message: "Invalid AAIS trial account or password.",
+    expect(builtInLearner.status).toBe(200);
+    expect(builtInLearnerBody.appSession.actor).toMatchObject({
+      id: "Bobie",
+      displayName: "Bobie",
+      role: "student",
     });
-    expect(response.headers.get("set-cookie") ?? "").not.toContain("aais_session=");
+    expect(builtInLearner.headers.get("set-cookie") ?? "").toContain("aais_session=");
+    expect(configuredLearner.status).toBe(200);
+    expect(configuredLearnerBody.appSession.actor).toMatchObject({
+      id: "student-smoke",
+      displayName: "Student Smoke",
+      role: "student",
+    });
+    expect(configuredLearner.headers.get("set-cookie") ?? "").toContain("aais_session=");
   });
 
   it("refuses production educator trial accounts so teachers and admins use database or OIDC identities", async () => {
@@ -408,9 +426,10 @@ describe("AAIS trial account auth route", () => {
     expect(JSON.stringify(auditEvents)).not.toContain("wrong");
   });
 
-  it("does not fall back to demo passwords in production without configured accounts", async () => {
+  it("keeps built-in learner accounts available in production without configured accounts", async () => {
     vi.stubEnv("NODE_ENV", "production");
     delete process.env.AAIS_TRIAL_ACCOUNTS_JSON;
+    delete process.env.AAIS_TRIAL_SMOKE_ACCOUNTS_JSON;
     const { POST } = await import("@/app/api/auth/app-session/route");
 
     const response = await POST(
@@ -422,8 +441,15 @@ describe("AAIS trial account auth route", () => {
         }),
       }),
     );
+    const body = await response.json();
 
-    expect(response.status).toBe(503);
+    expect(response.status).toBe(200);
+    expect(body.appSession.actor).toMatchObject({
+      id: "Bobie",
+      displayName: "Bobie",
+      role: "student",
+    });
+    expect(response.headers.get("set-cookie") ?? "").toContain("aais_session=");
   });
 
   it("refuses trial account login when the trial-login entry is disabled", async () => {

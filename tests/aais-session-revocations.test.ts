@@ -16,16 +16,16 @@ describe("AAIS session revocations", () => {
 
     await expect(isAaisSessionTokenRevoked({
       tokenHash: verified.tokenHash,
-      database: null,
       now,
+      database: null,
     })).resolves.toBe(false);
 
     await expect(revokeAaisSessionToken({
       tokenHash: verified.tokenHash,
       actorId: verified.actor.id,
       expiresAt: verified.expiresAt,
-      database: null,
       now,
+      database: null,
     })).resolves.toMatchObject({
       status: "revoked",
       storageMode: "memory",
@@ -34,8 +34,8 @@ describe("AAIS session revocations", () => {
 
     await expect(isAaisSessionTokenRevoked({
       tokenHash: verified.tokenHash,
-      database: null,
       now,
+      database: null,
     })).resolves.toBe(true);
   });
 
@@ -45,21 +45,21 @@ describe("AAIS session revocations", () => {
 
     await expect(isAaisSessionTokenRevoked({
       tokenHash: verified.tokenHash,
-      database,
       now,
+      database,
     })).resolves.toBe(false);
     await revokeAaisSessionToken({
       tokenHash: verified.tokenHash,
       actorId: verified.actor.id,
       expiresAt: verified.expiresAt,
-      database,
       now,
+      database,
     });
 
     await expect(isAaisSessionTokenRevoked({
       tokenHash: verified.tokenHash,
-      database,
       now,
+      database,
     })).resolves.toBe(true);
     expect(database.rows.get(verified.tokenHash)).toMatchObject({
       actor_key: expect.stringMatching(/^actor-[a-f0-9]{16}$/),
