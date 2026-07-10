@@ -205,7 +205,7 @@ describe("AAIS trial account auth route", () => {
     expect(JSON.stringify(body)).not.toContain("db-password-123");
   });
 
-  it("does not merge built-in learner demo accounts into production trial auth", async () => {
+  it("keeps built-in learner accounts available in production trial auth", async () => {
     vi.stubEnv("NODE_ENV", "production");
     process.env.AAIS_TRIAL_ACCOUNTS_JSON = JSON.stringify([
       {
@@ -228,12 +228,13 @@ describe("AAIS trial account auth route", () => {
     );
     const body = await response.json();
 
-    expect(response.status).toBe(401);
-    expect(body.error).toEqual({
-      code: "AAIS_INVALID_CREDENTIALS",
-      message: "Invalid AAIS trial account or password.",
+    expect(response.status).toBe(200);
+    expect(body.appSession.actor).toMatchObject({
+      id: "Bobie",
+      displayName: "Bobie",
+      role: "student",
     });
-    expect(response.headers.get("set-cookie") ?? "").not.toContain("aais_session=");
+    expect(response.headers.get("set-cookie") ?? "").toContain("aais_session=");
   });
 
   it("refuses production educator trial accounts so teachers and admins use database or OIDC identities", async () => {

@@ -116,9 +116,6 @@ export function isAaisTrialLoginEnabled() {
 function readTrialAccounts() {
   const configuredAccounts = readConfiguredTrialAccounts();
   if (configuredAccounts) {
-    if (isProductionRuntime()) {
-      return configuredAccounts;
-    }
     return mergeConfiguredAccountsWithBuiltInLearners(configuredAccounts);
   }
   return isProductionRuntime() ? null : builtInLearnerTrialAccounts;
