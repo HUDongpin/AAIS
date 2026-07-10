@@ -94,7 +94,7 @@ const xapiVersion = "1.0.3";
 const aaisBaseUrl = "https://www.aais.site";
 const aaisXapiBase = `${aaisBaseUrl}/xapi`;
 
-const eventVerbMap: Record<string, AaisXapiVerb> = {
+const eventVerbMap = {
   ai_acceptance_recorded: "completed",
   ai_prompt_submitted: "requested",
   ai_response_completed: "generated",
@@ -106,6 +106,7 @@ const eventVerbMap: Record<string, AaisXapiVerb> = {
   expert_trace_compared: "experienced",
   monitoring_pause_detected: "experienced",
   planning_submitted: "generated",
+  recommendation_override_recorded: "completed",
   scaffold_request: "requested",
   scaffold_self_check_started: "attempted",
   self_report_saved: "generated",
@@ -116,7 +117,7 @@ const eventVerbMap: Record<string, AaisXapiVerb> = {
   task_released: "initialized",
   task_selected: "attempted",
   understanding_check_completed: "completed",
-};
+} satisfies Record<AaisEvent["event"], AaisXapiVerb>;
 
 const verbIdMap: Record<AaisXapiVerb, string> = {
   attempted: "http://adlnet.gov/expapi/verbs/attempted",
@@ -137,7 +138,7 @@ export function getLrsConfigurationStatus() {
 
 export function buildAaisXapiStatement(event: AaisEvent): XapiStatement {
   const verb = requireMappedVerb(event.event);
-  const eventDefinition = aaisEventDefinitions[event.event];
+  const eventDefinition = requireEventDefinition(event.event);
   const agentContract = getAgentContract(event.agent);
   const actorName = createPseudonymousLearnerId(event.student_id);
   const sessionKey = createPseudonymousSessionId(event.session_id);
@@ -473,12 +474,18 @@ function getAaisEnterpriseIntegrationMetadata() {
   };
 }
 
-function requireMappedVerb(eventName: string) {
-  const verb = eventVerbMap[eventName];
-  if (!verb) {
+function requireMappedVerb(eventName: AaisEvent["event"]) {
+  if (!Object.hasOwn(eventVerbMap, eventName)) {
     throw new Error(`AAIS event ${eventName} has no xAPI verb mapping.`);
   }
-  return verb;
+  return eventVerbMap[eventName];
+}
+
+function requireEventDefinition(eventName: AaisEvent["event"]) {
+  if (!Object.hasOwn(aaisEventDefinitions, eventName)) {
+    throw new Error(`AAIS event ${eventName} has no event definition.`);
+  }
+  return aaisEventDefinitions[eventName];
 }
 
 function createDeterministicStatementId(event: AaisEvent) {

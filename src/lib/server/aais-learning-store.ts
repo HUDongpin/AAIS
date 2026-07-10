@@ -17,6 +17,7 @@ import {
   type AaisPhase,
 } from "@/data/aais";
 import {
+  buildAaisXapiStatement,
   enqueueAaisLrsEvents,
   sendAaisEventsToLrs,
 } from "@/lib/server/aais-lrs-client";
@@ -1897,24 +1898,56 @@ export async function flushAaisPersistentLrsOutbox(input: {
   let failed = 0;
   let batches = 0;
   for (const batch of chunkOutboxRows(result.rows, input.maxBatchSize ?? 50)) {
-    const events = batch.map((row) => normalizeOutboxPayload(row.payload));
-    const delivery = await sendAaisEventsToLrs(events, {
-      config: input.config,
-      fetchImpl: input.fetchImpl,
-      maxBatchSize: events.length,
-    });
+    batches += 1;
+    const validRows: Array<{ row: (typeof batch)[number]; event: AaisEvent }> = [];
+    const invalidRows: typeof batch = [];
+    for (const row of batch) {
+      try {
+        const event = normalizeOutboxPayload(row.payload);
+        buildAaisXapiStatement(event);
+        validRows.push({ row, event });
+      } catch {
+        invalidRows.push(row);
+      }
+    }
+    if (invalidRows.length) {
+      failed += invalidRows.length;
+      await advanceAaisLrsOutboxFailures(
+        database,
+        invalidRows,
+        input.maxAttempts ?? 3,
+        "redacted:invalid_event",
+      );
+    }
+    if (!validRows.length) {
+      continue;
+    }
+
+    let delivery: Awaited<ReturnType<typeof sendAaisEventsToLrs>> | { status: "error"; sent: number };
+    try {
+      const events = validRows.map(({ event }) => event);
+      delivery = await sendAaisEventsToLrs(events, {
+        config: input.config,
+        fetchImpl: input.fetchImpl,
+        maxBatchSize: events.length,
+      });
+    } catch {
+      // A transport or send-boundary exception must not reject the flush. Advance
+      // only the validated rows toward retry/dead-letter as a delivery failure.
+      delivery = { status: "error", sent: 0 };
+    }
     if (delivery.status === "not_configured") {
       return {
         status: "not_configured" as const,
         sent,
+        failed,
         batches,
         secrets: "redacted" as const,
       };
     }
     if (delivery.status === "sent") {
-      batches += 1;
-      sent += batch.length;
-      await Promise.all(batch.map((row) =>
+      sent += validRows.length;
+      await Promise.all(validRows.map(({ row }) =>
         database.query(
           "update aais_lrs_outbox set status = 'sent', updated_at = now() where id = $1",
           [row.id],
@@ -1922,16 +1955,13 @@ export async function flushAaisPersistentLrsOutbox(input: {
       ));
       continue;
     }
-    batches += 1;
-    failed += batch.length;
-    await Promise.all(batch.map((row) => {
-      const attempts = Number(row.attempts ?? 0) + 1;
-      const status = attempts >= (input.maxAttempts ?? 3) ? "dead_letter" : "retry";
-      return database.query(
-        "update aais_lrs_outbox set status = $1, attempts = $2, last_error = 'redacted', updated_at = now() where id = $3",
-        [status, attempts, row.id],
-      );
-    }));
+    failed += validRows.length;
+    await advanceAaisLrsOutboxFailures(
+      database,
+      validRows.map(({ row }) => row),
+      input.maxAttempts ?? 3,
+      "redacted:delivery_error",
+    );
   }
   return {
     status: failed ? "partial" as const : "sent" as const,
@@ -1940,6 +1970,22 @@ export async function flushAaisPersistentLrsOutbox(input: {
     batches,
     secrets: "redacted" as const,
   };
+}
+
+async function advanceAaisLrsOutboxFailures(
+  database: AaisDatabaseClient,
+  rows: Array<Record<string, unknown>>,
+  maxAttempts: number,
+  lastError: "redacted:invalid_event" | "redacted:delivery_error",
+) {
+  await Promise.all(rows.map((row) => {
+    const attempts = Number(row.attempts ?? 0) + 1;
+    const status = attempts >= maxAttempts ? "dead_letter" : "retry";
+    return database.query(
+      "update aais_lrs_outbox set status = $1, attempts = $2, last_error = $3, updated_at = now() where id = $4",
+      [status, attempts, lastError, row.id],
+    );
+  }));
 }
 
 export async function requeueAaisPersistentLrsDeadLetters(input: {
@@ -2190,13 +2236,91 @@ function normalizeOutboxPayload(value: unknown): AaisEvent {
 }
 
 function normalizeNullableOutboxPayload(value: unknown): AaisEvent | null {
-  if (!value) {
+  let parsed: unknown = value;
+  if (typeof value === "string") {
+    try {
+      parsed = JSON.parse(value);
+    } catch {
+      return null;
+    }
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
     return null;
   }
-  if (typeof value === "string") {
-    return JSON.parse(value) as AaisEvent;
+  const record = Object.fromEntries(Object.entries(parsed));
+  const studentId = readOwnNonEmptyString(record, "student_id");
+  const sessionId = readOwnNonEmptyString(record, "session_id");
+  const phase = readOwnNonEmptyString(record, "phase");
+  const task = readOwnNonEmptyString(record, "task");
+  const agent = readOwnNonEmptyString(record, "agent");
+  const event = readOwnNonEmptyString(record, "event");
+  const time = readOwnNonEmptyString(record, "time");
+  const detail = Object.hasOwn(record, "detail") ? record.detail : null;
+  if (
+    !studentId
+    || !sessionId
+    || !phase
+    || !isAaisPhase(phase)
+    || !task
+    || !agent
+    || !isAaisAnalyticsAgent(agent)
+    || !event
+    || !isAaisEventName(event)
+    || !time
+    || !isParseableIsoTimestamp(time)
+    || !detail
+    || typeof detail !== "object"
+    || Array.isArray(detail)
+  ) {
+    return null;
   }
-  return value as AaisEvent;
+  return {
+    student_id: studentId,
+    session_id: sessionId,
+    phase,
+    task,
+    agent,
+    event,
+    time,
+    detail: Object.fromEntries(Object.entries(detail)),
+  };
+}
+
+function readOwnNonEmptyString(record: Record<string, unknown>, key: string) {
+  if (!Object.hasOwn(record, key)) {
+    return null;
+  }
+  const value = record[key];
+  return typeof value === "string" && value.trim() ? value : null;
+}
+
+function isAaisPhase(value: string): value is AaisPhase {
+  return value === "training" || value === "practice";
+}
+
+function isAaisEventName(value: string): value is AaisEventName {
+  return Object.hasOwn(aaisEventDefinitions, value);
+}
+
+function isParseableIsoTimestamp(value: string) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.exec(value);
+  if (!match) {
+    return false;
+  }
+  const [year, month, day, hour, minute, second] = match.slice(1, 7).map(Number);
+  const leapYear = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+  const daysInMonth = [31, leapYear ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month - 1] ?? 0;
+  return month >= 1
+    && month <= 12
+    && day >= 1
+    && day <= daysInMonth
+    && hour >= 0
+    && hour <= 23
+    && minute >= 0
+    && minute <= 59
+    && second >= 0
+    && second <= 59
+    && Number.isFinite(Date.parse(value));
 }
 
 function chunkOutboxRows<T>(rows: T[], batchSize: number) {
