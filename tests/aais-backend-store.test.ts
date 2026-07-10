@@ -95,6 +95,34 @@ describe("AAIS backend learning store", () => {
     expect(practiceTwo.activeTaskId).toBe("practice_task_2");
   });
 
+  it("rejects every learner mutation targeting a locked task", async () => {
+    const store = createAaisLearningStore({ rootDir: tempDir });
+    await store.getOrCreateSession("S001");
+
+    // A brand-new learner has only training_task_1 active; every practice task is
+    // locked until its prerequisite is completed. None of these mutations may act on
+    // a locked task, otherwise sequencing (and cohort analytics) can be bypassed.
+    await expect(store.completeTask("S001", "practice_task_2")).rejects.toThrow(
+      "Task practice_task_2 is locked",
+    );
+    await expect(store.saveArtifact("S001", "practice_task_2", "x")).rejects.toThrow(
+      "Task practice_task_2 is locked",
+    );
+    await expect(store.saveSelfReport("S001", "practice_task_2", "x")).rejects.toThrow(
+      "Task practice_task_2 is locked",
+    );
+    await expect(store.requestScaffold("S001", "practice_task_2", "stage-checklist")).rejects.toThrow(
+      "Task practice_task_2 is locked",
+    );
+    await expect(store.recordAiAcceptance("S001", "practice_task_2", { accepted: true })).rejects.toThrow(
+      "Task practice_task_2 is locked",
+    );
+
+    const session = await store.getOrCreateSession("S001");
+    expect(session.tasks.find((task) => task.taskId === "practice_task_2")?.status).toBe("locked");
+    expect(session.tasks.filter((task) => task.status === "completed")).toHaveLength(0);
+  });
+
   it("persists artifacts, self reports, scaffold counts, and exportable events", async () => {
     const store = createAaisLearningStore({ rootDir: tempDir });
     await store.completeTask("S001", "training_task_1");

@@ -466,7 +466,7 @@ export function createAaisLearningStore(input: StoreInput = {}) {
 
   async function completeTask(studentId: string, taskId: string) {
     const session = await getOrCreateSession(studentId);
-    const completed = requireTask(session, taskId);
+    const completed = requireUnlockedTask(session, taskId);
     const nextTaskId = getNextTaskId(taskId);
     const tasks = session.tasks.map((task) => {
       if (task.taskId === taskId) {
@@ -533,7 +533,7 @@ export function createAaisLearningStore(input: StoreInput = {}) {
     toolId: string,
   ): Promise<ScaffoldResult> {
     const session = await getOrCreateSession(studentId);
-    const task = requireTask(session, taskId);
+    const task = requireUnlockedTask(session, taskId);
     if (task.phase !== "practice") {
       throw new Error("A1 scaffolding is only available in practice tasks");
     }
@@ -615,7 +615,7 @@ export function createAaisLearningStore(input: StoreInput = {}) {
     },
   ) {
     const session = await getOrCreateSession(studentId);
-    const task = requireTask(session, taskId);
+    const task = requireUnlockedTask(session, taskId);
     const reason = requireSafeText(input.reason ?? "", "AI acceptance reason");
     const decisionKey = input.messageId
       ? createAiAcceptanceDecisionKey(session, task, requireSafeId(input.messageId, "AI message id"))
@@ -936,7 +936,7 @@ export function createAaisLearningStore(input: StoreInput = {}) {
     const value = requireSafeText(input.value, input.field);
     for (let attempt = 0; attempt < 2; attempt += 1) {
       const session = await getOrCreateSession(input.studentId);
-      const task = requireTask(session, input.taskId);
+      const task = requireUnlockedTask(session, input.taskId);
       baseFieldValue ??= task[input.field];
       if (attempt > 0 && task[input.field] !== baseFieldValue && task[input.field] !== value) {
         recordAaisSessionWriteConflict({
@@ -2541,6 +2541,14 @@ function requireTask(session: AaisLearnerSession, taskId: string) {
   const task = session.tasks.find((candidate) => candidate.taskId === safeTaskId);
   if (!task) {
     throw new Error(`Unknown task ${taskId}`);
+  }
+  return task;
+}
+
+function requireUnlockedTask(session: AaisLearnerSession, taskId: string) {
+  const task = requireTask(session, taskId);
+  if (task.status === "locked") {
+    throw new Error(`Task ${taskId} is locked`);
   }
   return task;
 }
