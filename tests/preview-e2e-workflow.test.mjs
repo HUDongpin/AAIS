@@ -130,6 +130,7 @@ describe("AAIS preview E2E workflow trust gate", () => {
       expect(playwright).toContain(`${name}: \${{ secrets.${name} }}`);
       expect(workflow.match(new RegExp(`secrets\\.${name}`, "g"))).toHaveLength(1);
     }
+    expect(playwright).toContain("PLAYWRIGHT_LAST_RUN_OUTPUT_FILE: /dev/null");
     expect(playwright).toContain("npm run e2e");
     expect(playwright).not.toContain("VERCEL_E2E_METADATA_TOKEN");
     expect(workflow).not.toMatch(/^    env:\n(?:^      .+\n)*?^      (?:AAIS_E2E_|VERCEL_AUTOMATION_BYPASS_SECRET)/m);

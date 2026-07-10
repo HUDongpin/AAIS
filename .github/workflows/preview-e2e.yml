@@ -296,6 +296,7 @@ jobs:
       - name: Run Playwright against attested preview
         env:
           AAIS_E2E_BASE_URL: ${{ needs.trust-preview.outputs.vercel_origin }}
+          PLAYWRIGHT_LAST_RUN_OUTPUT_FILE: /dev/null
           AAIS_E2E_STUDENT_ACCOUNT: ${{ secrets.AAIS_E2E_STUDENT_ACCOUNT }}
           AAIS_E2E_STUDENT_PASSWORD: ${{ secrets.AAIS_E2E_STUDENT_PASSWORD }}
           AAIS_E2E_TEACHER_ACCOUNT: ${{ secrets.AAIS_E2E_TEACHER_ACCOUNT }}
