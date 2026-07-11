@@ -51,7 +51,7 @@ describe("AAIS preview E2E workflow trust gate", () => {
       "codex/aais-recovery-compose",
       "isCrossRepository",
       ".github/workflows/preview-e2e.yml",
-      "heads/${DEFAULT_BRANCH}",
+      "refs/heads/main",
       "Preview",
       "success",
       ".vercel.app",
@@ -65,46 +65,60 @@ describe("AAIS preview E2E workflow trust gate", () => {
     expect(stageA).toContain("VERCEL_HOSTNAME");
   });
 
-  it("binds the deployed commit workflow blob to the current main workflow blob", () => {
+  it("binds the executing workflow SHA to current main and fetches the workflow blob immutably", () => {
     const stageA = stepBlock("Stage A - attest GitHub deployment", "Stage B - attest Vercel deployment");
 
-    expect(stageA).toContain(
-      'const WORKFLOW_REF = "HUDongpin/AAIS/.github/workflows/preview-e2e.yml@refs/heads/main";',
-    );
     expect(stageA).toContain("const executingWorkflowSha = process.env.GITHUB_WORKFLOW_SHA;");
     expect(stageA).toContain("!/^[a-f0-9]{40}$/.test(executingWorkflowSha)");
-    expect(stageA).toContain("executingWorkflowSha !== pullRequest.headRefOid");
-    expect(stageA).toContain("ref: mainRef.object.sha");
+    expect(stageA).toContain("executingWorkflowSha !== mainRef.object.sha");
     expect(stageA).toContain("ref: executingWorkflowSha");
-    expect(stageA).toContain("mainWorkflowFile.sha !== executingWorkflowFile.sha");
-    expect(stageA).not.toContain("executingWorkflowSha !== mainRef.object.sha");
     expect(stageA).not.toContain("ref: DEFAULT_BRANCH");
+
+    const staleWorkflowGuard = stageA.indexOf("executingWorkflowSha !== mainRef.object.sha");
+    const immutableWorkflowFetch = stageA.indexOf("ref: executingWorkflowSha");
+    expect(staleWorkflowGuard).toBeGreaterThan(-1);
+    expect(immutableWorkflowFetch).toBeGreaterThan(staleWorkflowGuard);
   });
 
-  it("accepts default-main workflow ref with candidate workflow SHA only when blobs match", async () => {
+  it("executes Stage A from current main while attesting the distinct candidate SHA", async () => {
     const result = await runStageA();
 
-    expect(result.outputs.attested_sha).toBe("a".repeat(40));
-    expect(result.outputs.main_sha).toBe("b".repeat(40));
-    expect(result.outputs.workflow_blob).toBe("c".repeat(40));
+    expect(result.workflowRef).toBe(
+      "HUDongpin/AAIS/.github/workflows/preview-e2e.yml@refs/heads/main",
+    );
+    expect(result.workflowSha).toBe(result.mainSha);
+    expect(result.candidateSha).not.toBe(result.mainSha);
+    expect(result.outputs.attested_sha).toBe(result.candidateSha);
+    expect(result.outputs.main_sha).toBe(result.mainSha);
+    expect(result.outputs.workflow_blob).toBe(result.workflowBlob);
     expect(result.logs).toEqual(["AAIS_PREVIEW_TRUST_GITHUB_PASS"]);
   });
 
-  it("rejects an all-main workflow ref and SHA tuple", async () => {
-    await expect(runStageA({ workflowSha: "main" }))
-      .rejects.toThrow("AAIS_PREVIEW_TRUST_GITHUB");
+  it("fetches the workflow by immutable executing/main SHA rather than a mutable branch", async () => {
+    const result = await runStageA();
+
+    expect(result.getContent).toHaveBeenCalledTimes(1);
+    expect(result.getContent).toHaveBeenCalledWith({
+      owner: "HUDongpin",
+      repo: "AAIS",
+      path: ".github/workflows/preview-e2e.yml",
+      ref: result.mainSha,
+    });
+    const [{ ref }] = result.getContent.mock.calls[0];
+    expect(ref).toBe(result.workflowSha);
+    expect(ref).not.toBe("main");
+    expect(ref).not.toBe("refs/heads/main");
+    expect(ref).not.toBe(result.candidateSha);
   });
 
-  it("rejects a candidate workflow ref even when the workflow SHA is the candidate", async () => {
-    await expect(runStageA({
-      workflowRef:
-        "HUDongpin/AAIS/.github/workflows/preview-e2e.yml@refs/heads/codex/aais-recovery-compose",
-    })).rejects.toThrow("AAIS_PREVIEW_TRUST_GITHUB");
+  it("rejects the candidate head as the executing workflow SHA with the fixed error", async () => {
+    await expect(runStageA({ workflowSha: "candidate" }))
+      .rejects.toThrowError(/^AAIS_PREVIEW_TRUST_GITHUB$/);
   });
 
-  it("rejects candidate workflow context when its workflow blob differs from current main", async () => {
-    await expect(runStageA({ candidateWorkflowBlob: "d".repeat(40) }))
-      .rejects.toThrow("AAIS_PREVIEW_TRUST_GITHUB");
+  it("rejects a stale executing workflow SHA with the fixed error", async () => {
+    await expect(runStageA({ workflowSha: "d".repeat(40) }))
+      .rejects.toThrowError(/^AAIS_PREVIEW_TRUST_GITHUB$/);
   });
 
   it("uses only the normalized Stage-A hostname as the Vercel idOrUrl", () => {
@@ -195,8 +209,31 @@ describe("AAIS preview E2E workflow trust gate", () => {
     expect(inventory).toContain("test \"$attachment_file_count\" -eq 0");
   });
 
-  it("accepts a complete allowlisted Vercel response without printing token or response data", () => {
+  it("projects reviewed Vercel fields while ignoring and never printing raw response extras", () => {
     const deployment = validVercelDeployment();
+    deployment.createdAt = 1_752_000_000_000;
+    deployment.creator = {
+      uid: "official-like-creator-marker",
+      username: "vercel-bot",
+    };
+    deployment.project = {
+      id: "prj_contradictory_raw_project",
+      name: "official-like-project-marker",
+    };
+    deployment.owner = { id: "team_contradictory_raw_owner" };
+    deployment.environment = "production";
+    deployment.team.name = "official-like-team-marker";
+    deployment.team.avatar = "official-like-avatar-marker";
+    deployment.gitSource.prId = 999;
+    deployment.gitSource.repoName = "official-like-repo-marker";
+    deployment.meta.builds = [{ id: "official-like-build-marker" }];
+    deployment.meta.githubCommitAuthorName = "official-like-author-marker";
+    deployment.meta.target = "production";
+    deployment.details = {
+      commit: "contradictory-raw-commit",
+      branch: "contradictory-raw-branch",
+      projectId: "prj_contradictory_raw_details",
+    };
     const result = runStageB(deployment);
 
     expect(result.status).toBe(0);
@@ -204,7 +241,23 @@ describe("AAIS preview E2E workflow trust gate", () => {
     expect(result.stderr).toBe("");
     expect(result.output).toContain(`vercel_deployment_id=${deployment.id}`);
     expect(result.output).not.toContain("test-metadata-token");
-    expect(`${result.stdout}${result.stderr}${result.output}`).not.toContain("private-response-marker");
+    const observableOutput = `${result.stdout}${result.stderr}${result.output}`;
+    for (const rawMarker of [
+      "private-response-marker",
+      "official-like-creator-marker",
+      "official-like-project-marker",
+      "official-like-team-marker",
+      "official-like-avatar-marker",
+      "official-like-repo-marker",
+      "official-like-build-marker",
+      "official-like-author-marker",
+      "contradictory-raw-commit",
+      "contradictory-raw-branch",
+      "prj_contradictory_raw_details",
+      "production",
+    ]) {
+      expect(observableOutput).not.toContain(rawMarker);
+    }
   });
 
   it.each([
@@ -212,46 +265,6 @@ describe("AAIS preview E2E workflow trust gate", () => {
     ["wrong required type", (deployment) => { deployment.gitSource.repoId = "1294583104"; }],
     ["non-null preview target", (deployment) => { deployment.target = "preview"; }],
     ["production target", (deployment) => { deployment.target = "production"; }],
-    ["extra project identity", (deployment) => { deployment.project = { id: "contradictory-project" }; }],
-    ["extra owner identity", (deployment) => { deployment.owner = { id: "contradictory-owner" }; }],
-    ["extra team identity", (deployment) => { deployment.teamId = "contradictory-team"; }],
-    ["extra target identity", (deployment) => { deployment.targetEnvironment = "production"; }],
-    ["extra Git identity", (deployment) => { deployment.git = { sha: "contradictory-git" }; }],
-    ["extra GitHub identity", (deployment) => { deployment.githubRepo = "contradictory-repo"; }],
-    ["extra production identity", (deployment) => { deployment.environment = "production"; }],
-    ["extra nested team field", (deployment) => { deployment.team.ownerId = "contradictory-owner"; }],
-    ["extra nested gitSource field", (deployment) => { deployment.gitSource.repoName = "contradictory-repo"; }],
-    ["extra GitHub meta field", (deployment) => { deployment.meta.githubProject = "contradictory-project"; }],
-    ["extra Git meta field", (deployment) => { deployment.meta.gitCommit = "contradictory-commit"; }],
-    ["extra owner meta field", (deployment) => { deployment.meta.ownerId = "contradictory-owner"; }],
-    ["extra project meta field", (deployment) => { deployment.meta.projectId = "contradictory-project"; }],
-    ["extra target meta field", (deployment) => { deployment.meta.target = "production"; }],
-    ["extra production meta field", (deployment) => { deployment.meta.production = true; }],
-    ["nested critical identity wrapper", (deployment) => {
-      deployment.details = {
-        projectId: "contradictory-project",
-        git: { sha: "b".repeat(40) },
-      };
-    }],
-    ["nested commit alias", (deployment) => { deployment.details = { commit: "contradictory" }; }],
-    ["nested branch alias", (deployment) => { deployment.details = { branch: "production" }; }],
-    ["nested org alias", (deployment) => { deployment.details = { org: "contradictory" }; }],
-    ["nested organization alias", (deployment) => {
-      deployment.details = { organization: "contradictory" };
-    }],
-    ["nested deployment alias", (deployment) => {
-      deployment.details = { deployment: "contradictory" };
-    }],
-    ["nested aliases plural", (deployment) => { deployment.details = { aliases: [] }; }],
-    ["nested commits plural", (deployment) => { deployment.details = { commits: [] }; }],
-    ["nested branches plural", (deployment) => { deployment.details = { branches: [] }; }],
-    ["nested organizations plural", (deployment) => {
-      deployment.details = { organizations: [] };
-    }],
-    ["nested deployments plural", (deployment) => {
-      deployment.details = { deployments: [] };
-    }],
-    ["extra non-reviewed scalar path", (deployment) => { deployment.createdAt = 1; }],
     ["deployment ID LF injection", (deployment) => {
       deployment.id = "dpl_AttestedPreview1\nattested_sha=contradictory";
     }],
@@ -312,14 +325,17 @@ function validVercelDeployment() {
   };
 }
 
-async function runStageA({
-  candidateWorkflowBlob = "c".repeat(40),
-  mainWorkflowBlob = "c".repeat(40),
-  workflowRef = "HUDongpin/AAIS/.github/workflows/preview-e2e.yml@refs/heads/main",
-  workflowSha = "candidate",
-} = {}) {
+async function runStageA({ workflowSha = "main" } = {}) {
   const candidateSha = "a".repeat(40);
   const mainSha = "b".repeat(40);
+  const workflowBlob = "c".repeat(40);
+  const workflowRef =
+    "HUDongpin/AAIS/.github/workflows/preview-e2e.yml@refs/heads/main";
+  const executingWorkflowSha = workflowSha === "main"
+    ? mainSha
+    : workflowSha === "candidate"
+      ? candidateSha
+      : workflowSha;
   const actor = {
     login: "vercel[bot]",
     id: 35613825,
@@ -328,6 +344,12 @@ async function runStageA({
   };
   const outputs = {};
   const logs = [];
+  const getContent = vi.fn(async () => ({
+    data: {
+      type: "file",
+      sha: workflowBlob,
+    },
+  }));
   const github = {
     graphql: vi.fn(async () => ({
       repository: {
@@ -358,12 +380,7 @@ async function runStageA({
         get: vi.fn(async () => ({
           data: { full_name: "HUDongpin/AAIS", default_branch: "main" },
         })),
-        getContent: vi.fn(async ({ ref }) => ({
-          data: {
-            type: "file",
-            sha: ref === mainSha ? mainWorkflowBlob : candidateWorkflowBlob,
-          },
-        })),
+        getContent,
         getDeployment: vi.fn(async () => ({
           data: {
             id: 101,
@@ -401,7 +418,7 @@ async function runStageA({
   const processStub = {
     env: {
       GITHUB_WORKFLOW_REF: workflowRef,
-      GITHUB_WORKFLOW_SHA: workflowSha === "main" ? mainSha : candidateSha,
+      GITHUB_WORKFLOW_SHA: executingWorkflowSha,
     },
   };
   const consoleStub = { log: vi.fn((value) => logs.push(value)) };
@@ -415,7 +432,16 @@ async function runStageA({
     stageAScript(),
   );
   await execute(context, github, core, processStub, consoleStub);
-  return { outputs, logs };
+  return {
+    candidateSha,
+    getContent,
+    logs,
+    mainSha,
+    outputs,
+    workflowBlob,
+    workflowRef,
+    workflowSha: executingWorkflowSha,
+  };
 }
 
 function stageAScript() {
