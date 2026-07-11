@@ -186,7 +186,7 @@ describe("AAIS TeacherDashboardPage", () => {
 
     expect(await screen.findByRole("heading", { name: "教师看板" })).toBeTruthy();
     expect(screen.getByText("推荐跟进")).toBeTruthy();
-    expect(screen.getByText("已暂停")).toBeTruthy();
+    expect(await screen.findByText("已暂停")).toBeTruthy();
     expect(screen.getByText("规则推荐已暂停。")).toBeTruthy();
     expect(screen.queryByText("暂无需要立即跟进的规则建议。")).toBeNull();
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
