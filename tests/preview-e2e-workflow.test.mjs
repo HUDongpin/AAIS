@@ -168,8 +168,31 @@ describe("AAIS preview E2E workflow trust gate", () => {
     expect(inventory).toContain("test \"$attachment_file_count\" -eq 0");
   });
 
-  it("accepts a complete allowlisted Vercel response without printing token or response data", () => {
+  it("projects reviewed Vercel fields while ignoring and never printing raw response extras", () => {
     const deployment = validVercelDeployment();
+    deployment.createdAt = 1_752_000_000_000;
+    deployment.creator = {
+      uid: "official-like-creator-marker",
+      username: "vercel-bot",
+    };
+    deployment.project = {
+      id: "prj_contradictory_raw_project",
+      name: "official-like-project-marker",
+    };
+    deployment.owner = { id: "team_contradictory_raw_owner" };
+    deployment.environment = "production";
+    deployment.team.name = "official-like-team-marker";
+    deployment.team.avatar = "official-like-avatar-marker";
+    deployment.gitSource.prId = 999;
+    deployment.gitSource.repoName = "official-like-repo-marker";
+    deployment.meta.builds = [{ id: "official-like-build-marker" }];
+    deployment.meta.githubCommitAuthorName = "official-like-author-marker";
+    deployment.meta.target = "production";
+    deployment.details = {
+      commit: "contradictory-raw-commit",
+      branch: "contradictory-raw-branch",
+      projectId: "prj_contradictory_raw_details",
+    };
     const result = runStageB(deployment);
 
     expect(result.status).toBe(0);
@@ -177,7 +200,23 @@ describe("AAIS preview E2E workflow trust gate", () => {
     expect(result.stderr).toBe("");
     expect(result.output).toContain(`vercel_deployment_id=${deployment.id}`);
     expect(result.output).not.toContain("test-metadata-token");
-    expect(`${result.stdout}${result.stderr}${result.output}`).not.toContain("private-response-marker");
+    const observableOutput = `${result.stdout}${result.stderr}${result.output}`;
+    for (const rawMarker of [
+      "private-response-marker",
+      "official-like-creator-marker",
+      "official-like-project-marker",
+      "official-like-team-marker",
+      "official-like-avatar-marker",
+      "official-like-repo-marker",
+      "official-like-build-marker",
+      "official-like-author-marker",
+      "contradictory-raw-commit",
+      "contradictory-raw-branch",
+      "prj_contradictory_raw_details",
+      "production",
+    ]) {
+      expect(observableOutput).not.toContain(rawMarker);
+    }
   });
 
   it.each([
@@ -185,46 +224,6 @@ describe("AAIS preview E2E workflow trust gate", () => {
     ["wrong required type", (deployment) => { deployment.gitSource.repoId = "1294583104"; }],
     ["non-null preview target", (deployment) => { deployment.target = "preview"; }],
     ["production target", (deployment) => { deployment.target = "production"; }],
-    ["extra project identity", (deployment) => { deployment.project = { id: "contradictory-project" }; }],
-    ["extra owner identity", (deployment) => { deployment.owner = { id: "contradictory-owner" }; }],
-    ["extra team identity", (deployment) => { deployment.teamId = "contradictory-team"; }],
-    ["extra target identity", (deployment) => { deployment.targetEnvironment = "production"; }],
-    ["extra Git identity", (deployment) => { deployment.git = { sha: "contradictory-git" }; }],
-    ["extra GitHub identity", (deployment) => { deployment.githubRepo = "contradictory-repo"; }],
-    ["extra production identity", (deployment) => { deployment.environment = "production"; }],
-    ["extra nested team field", (deployment) => { deployment.team.ownerId = "contradictory-owner"; }],
-    ["extra nested gitSource field", (deployment) => { deployment.gitSource.repoName = "contradictory-repo"; }],
-    ["extra GitHub meta field", (deployment) => { deployment.meta.githubProject = "contradictory-project"; }],
-    ["extra Git meta field", (deployment) => { deployment.meta.gitCommit = "contradictory-commit"; }],
-    ["extra owner meta field", (deployment) => { deployment.meta.ownerId = "contradictory-owner"; }],
-    ["extra project meta field", (deployment) => { deployment.meta.projectId = "contradictory-project"; }],
-    ["extra target meta field", (deployment) => { deployment.meta.target = "production"; }],
-    ["extra production meta field", (deployment) => { deployment.meta.production = true; }],
-    ["nested critical identity wrapper", (deployment) => {
-      deployment.details = {
-        projectId: "contradictory-project",
-        git: { sha: "b".repeat(40) },
-      };
-    }],
-    ["nested commit alias", (deployment) => { deployment.details = { commit: "contradictory" }; }],
-    ["nested branch alias", (deployment) => { deployment.details = { branch: "production" }; }],
-    ["nested org alias", (deployment) => { deployment.details = { org: "contradictory" }; }],
-    ["nested organization alias", (deployment) => {
-      deployment.details = { organization: "contradictory" };
-    }],
-    ["nested deployment alias", (deployment) => {
-      deployment.details = { deployment: "contradictory" };
-    }],
-    ["nested aliases plural", (deployment) => { deployment.details = { aliases: [] }; }],
-    ["nested commits plural", (deployment) => { deployment.details = { commits: [] }; }],
-    ["nested branches plural", (deployment) => { deployment.details = { branches: [] }; }],
-    ["nested organizations plural", (deployment) => {
-      deployment.details = { organizations: [] };
-    }],
-    ["nested deployments plural", (deployment) => {
-      deployment.details = { deployments: [] };
-    }],
-    ["extra non-reviewed scalar path", (deployment) => { deployment.createdAt = 1; }],
     ["deployment ID LF injection", (deployment) => {
       deployment.id = "dpl_AttestedPreview1\nattested_sha=contradictory";
     }],

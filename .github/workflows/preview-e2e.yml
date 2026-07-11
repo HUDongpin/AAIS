@@ -286,7 +286,36 @@ jobs:
             if (response.status < 200 || response.status >= 300) {
               fail();
             }
-            const deployment = JSON.parse(await response.text());
+            const rawDeployment = JSON.parse(await response.text());
+            const deployment = {
+              id: rawDeployment?.id,
+              name: rawDeployment?.name,
+              projectId: rawDeployment?.projectId,
+              ownerId: rawDeployment?.ownerId,
+              team: {
+                id: rawDeployment?.team?.id,
+                slug: rawDeployment?.team?.slug,
+              },
+              readyState: rawDeployment?.readyState,
+              status: rawDeployment?.status,
+              target: rawDeployment?.target,
+              url: rawDeployment?.url,
+              alias: Array.isArray(rawDeployment?.alias)
+                ? rawDeployment.alias.slice()
+                : rawDeployment?.alias,
+              gitSource: {
+                type: rawDeployment?.gitSource?.type,
+                repoId: rawDeployment?.gitSource?.repoId,
+                ref: rawDeployment?.gitSource?.ref,
+                sha: rawDeployment?.gitSource?.sha,
+              },
+              meta: {
+                githubOrg: rawDeployment?.meta?.githubOrg,
+                githubRepo: rawDeployment?.meta?.githubRepo,
+                githubCommitRef: rawDeployment?.meta?.githubCommitRef,
+                githubCommitSha: rawDeployment?.meta?.githubCommitSha,
+              },
+            };
             if (!validateDeploymentShape(deployment)
               || deployment.id === process.env.GITHUB_DEPLOYMENT_ID
               || deployment.id === process.env.GITHUB_DEPLOYMENT_STATUS_ID
