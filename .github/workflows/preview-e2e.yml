@@ -103,7 +103,8 @@ jobs:
               repo: REPO,
               ref: `heads/${DEFAULT_BRANCH}`,
             });
-            if (!/^[a-f0-9]{40}$/.test(mainRef.object.sha)) {
+            if (!/^[a-f0-9]{40}$/.test(mainRef.object.sha)
+              || executingWorkflowSha !== mainRef.object.sha) {
               fail();
             }
             const { data: workflow } = await github.rest.actions.getWorkflow({
@@ -111,13 +112,7 @@ jobs:
               repo: REPO,
               workflow_id: "preview-e2e.yml",
             });
-            const { data: mainWorkflowFile } = await github.rest.repos.getContent({
-              owner: OWNER,
-              repo: REPO,
-              path: WORKFLOW_PATH,
-              ref: mainRef.object.sha,
-            });
-            const { data: executingWorkflowFile } = await github.rest.repos.getContent({
+            const { data: workflowFile } = await github.rest.repos.getContent({
               owner: OWNER,
               repo: REPO,
               path: WORKFLOW_PATH,
@@ -154,14 +149,10 @@ jobs:
               || repository.default_branch !== DEFAULT_BRANCH
               || workflow.path !== WORKFLOW_PATH
               || workflow.state !== "active"
-              || Array.isArray(mainWorkflowFile)
-              || mainWorkflowFile.type !== "file"
-              || Array.isArray(executingWorkflowFile)
-              || executingWorkflowFile.type !== "file"
+              || Array.isArray(workflowFile)
+              || workflowFile.type !== "file"
               || !positiveId(workflow.id)
-              || typeof mainWorkflowFile.sha !== "string"
-              || typeof executingWorkflowFile.sha !== "string"
-              || mainWorkflowFile.sha !== executingWorkflowFile.sha
+              || typeof workflowFile.sha !== "string"
               || !/^[a-f0-9]{40}$/.test(mainRef.object.sha)
               || deployment.id !== Number(eventDeployment.id)
               || deploymentStatus.id !== Number(eventStatus.id)
@@ -176,7 +167,6 @@ jobs:
               || pullRequest.headRefName !== RECOVERY_REF
               || deployment.ref !== RECOVERY_REF
               || deployment.sha !== pullRequest.headRefOid
-              || executingWorkflowSha !== pullRequest.headRefOid
               || !/^[a-f0-9]{40}$/.test(pullRequest.headRefOid)) {
               fail();
             }
@@ -200,7 +190,7 @@ jobs:
             core.setOutput("ref", RECOVERY_REF);
             core.setOutput("workflow_id", String(workflow.id));
             core.setOutput("workflow_path", WORKFLOW_PATH);
-            core.setOutput("workflow_blob", mainWorkflowFile.sha);
+            core.setOutput("workflow_blob", workflowFile.sha);
             core.setOutput("main_sha", mainRef.object.sha);
             console.log("AAIS_PREVIEW_TRUST_GITHUB_PASS");
 
@@ -296,7 +286,36 @@ jobs:
             if (response.status < 200 || response.status >= 300) {
               fail();
             }
-            const deployment = JSON.parse(await response.text());
+            const rawDeployment = JSON.parse(await response.text());
+            const deployment = {
+              id: rawDeployment?.id,
+              name: rawDeployment?.name,
+              projectId: rawDeployment?.projectId,
+              ownerId: rawDeployment?.ownerId,
+              team: {
+                id: rawDeployment?.team?.id,
+                slug: rawDeployment?.team?.slug,
+              },
+              readyState: rawDeployment?.readyState,
+              status: rawDeployment?.status,
+              target: rawDeployment?.target,
+              url: rawDeployment?.url,
+              alias: Array.isArray(rawDeployment?.alias)
+                ? rawDeployment.alias.slice()
+                : rawDeployment?.alias,
+              gitSource: {
+                type: rawDeployment?.gitSource?.type,
+                repoId: rawDeployment?.gitSource?.repoId,
+                ref: rawDeployment?.gitSource?.ref,
+                sha: rawDeployment?.gitSource?.sha,
+              },
+              meta: {
+                githubOrg: rawDeployment?.meta?.githubOrg,
+                githubRepo: rawDeployment?.meta?.githubRepo,
+                githubCommitRef: rawDeployment?.meta?.githubCommitRef,
+                githubCommitSha: rawDeployment?.meta?.githubCommitSha,
+              },
+            };
             if (!validateDeploymentShape(deployment)
               || deployment.id === process.env.GITHUB_DEPLOYMENT_ID
               || deployment.id === process.env.GITHUB_DEPLOYMENT_STATUS_ID

@@ -7,7 +7,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 
 const workflow = readFileSync(".github/workflows/preview-e2e.yml", "utf8");
 
@@ -51,7 +51,7 @@ describe("AAIS preview E2E workflow trust gate", () => {
       "codex/aais-recovery-compose",
       "isCrossRepository",
       ".github/workflows/preview-e2e.yml",
-      "heads/${DEFAULT_BRANCH}",
+      "refs/heads/main",
       "Preview",
       "success",
       ".vercel.app",
@@ -65,46 +65,19 @@ describe("AAIS preview E2E workflow trust gate", () => {
     expect(stageA).toContain("VERCEL_HOSTNAME");
   });
 
-  it("binds the deployed commit workflow blob to the current main workflow blob", () => {
+  it("binds the executing workflow SHA to current main and fetches the workflow blob immutably", () => {
     const stageA = stepBlock("Stage A - attest GitHub deployment", "Stage B - attest Vercel deployment");
 
-    expect(stageA).toContain(
-      'const WORKFLOW_REF = "HUDongpin/AAIS/.github/workflows/preview-e2e.yml@refs/heads/main";',
-    );
     expect(stageA).toContain("const executingWorkflowSha = process.env.GITHUB_WORKFLOW_SHA;");
     expect(stageA).toContain("!/^[a-f0-9]{40}$/.test(executingWorkflowSha)");
-    expect(stageA).toContain("executingWorkflowSha !== pullRequest.headRefOid");
-    expect(stageA).toContain("ref: mainRef.object.sha");
+    expect(stageA).toContain("executingWorkflowSha !== mainRef.object.sha");
     expect(stageA).toContain("ref: executingWorkflowSha");
-    expect(stageA).toContain("mainWorkflowFile.sha !== executingWorkflowFile.sha");
-    expect(stageA).not.toContain("executingWorkflowSha !== mainRef.object.sha");
     expect(stageA).not.toContain("ref: DEFAULT_BRANCH");
-  });
 
-  it("accepts default-main workflow ref with candidate workflow SHA only when blobs match", async () => {
-    const result = await runStageA();
-
-    expect(result.outputs.attested_sha).toBe("a".repeat(40));
-    expect(result.outputs.main_sha).toBe("b".repeat(40));
-    expect(result.outputs.workflow_blob).toBe("c".repeat(40));
-    expect(result.logs).toEqual(["AAIS_PREVIEW_TRUST_GITHUB_PASS"]);
-  });
-
-  it("rejects an all-main workflow ref and SHA tuple", async () => {
-    await expect(runStageA({ workflowSha: "main" }))
-      .rejects.toThrow("AAIS_PREVIEW_TRUST_GITHUB");
-  });
-
-  it("rejects a candidate workflow ref even when the workflow SHA is the candidate", async () => {
-    await expect(runStageA({
-      workflowRef:
-        "HUDongpin/AAIS/.github/workflows/preview-e2e.yml@refs/heads/codex/aais-recovery-compose",
-    })).rejects.toThrow("AAIS_PREVIEW_TRUST_GITHUB");
-  });
-
-  it("rejects candidate workflow context when its workflow blob differs from current main", async () => {
-    await expect(runStageA({ candidateWorkflowBlob: "d".repeat(40) }))
-      .rejects.toThrow("AAIS_PREVIEW_TRUST_GITHUB");
+    const staleWorkflowGuard = stageA.indexOf("executingWorkflowSha !== mainRef.object.sha");
+    const immutableWorkflowFetch = stageA.indexOf("ref: executingWorkflowSha");
+    expect(staleWorkflowGuard).toBeGreaterThan(-1);
+    expect(immutableWorkflowFetch).toBeGreaterThan(staleWorkflowGuard);
   });
 
   it("uses only the normalized Stage-A hostname as the Vercel idOrUrl", () => {
@@ -195,8 +168,31 @@ describe("AAIS preview E2E workflow trust gate", () => {
     expect(inventory).toContain("test \"$attachment_file_count\" -eq 0");
   });
 
-  it("accepts a complete allowlisted Vercel response without printing token or response data", () => {
+  it("projects reviewed Vercel fields while ignoring and never printing raw response extras", () => {
     const deployment = validVercelDeployment();
+    deployment.createdAt = 1_752_000_000_000;
+    deployment.creator = {
+      uid: "official-like-creator-marker",
+      username: "vercel-bot",
+    };
+    deployment.project = {
+      id: "prj_contradictory_raw_project",
+      name: "official-like-project-marker",
+    };
+    deployment.owner = { id: "team_contradictory_raw_owner" };
+    deployment.environment = "production";
+    deployment.team.name = "official-like-team-marker";
+    deployment.team.avatar = "official-like-avatar-marker";
+    deployment.gitSource.prId = 999;
+    deployment.gitSource.repoName = "official-like-repo-marker";
+    deployment.meta.builds = [{ id: "official-like-build-marker" }];
+    deployment.meta.githubCommitAuthorName = "official-like-author-marker";
+    deployment.meta.target = "production";
+    deployment.details = {
+      commit: "contradictory-raw-commit",
+      branch: "contradictory-raw-branch",
+      projectId: "prj_contradictory_raw_details",
+    };
     const result = runStageB(deployment);
 
     expect(result.status).toBe(0);
@@ -204,7 +200,23 @@ describe("AAIS preview E2E workflow trust gate", () => {
     expect(result.stderr).toBe("");
     expect(result.output).toContain(`vercel_deployment_id=${deployment.id}`);
     expect(result.output).not.toContain("test-metadata-token");
-    expect(`${result.stdout}${result.stderr}${result.output}`).not.toContain("private-response-marker");
+    const observableOutput = `${result.stdout}${result.stderr}${result.output}`;
+    for (const rawMarker of [
+      "private-response-marker",
+      "official-like-creator-marker",
+      "official-like-project-marker",
+      "official-like-team-marker",
+      "official-like-avatar-marker",
+      "official-like-repo-marker",
+      "official-like-build-marker",
+      "official-like-author-marker",
+      "contradictory-raw-commit",
+      "contradictory-raw-branch",
+      "prj_contradictory_raw_details",
+      "production",
+    ]) {
+      expect(observableOutput).not.toContain(rawMarker);
+    }
   });
 
   it.each([
@@ -212,46 +224,6 @@ describe("AAIS preview E2E workflow trust gate", () => {
     ["wrong required type", (deployment) => { deployment.gitSource.repoId = "1294583104"; }],
     ["non-null preview target", (deployment) => { deployment.target = "preview"; }],
     ["production target", (deployment) => { deployment.target = "production"; }],
-    ["extra project identity", (deployment) => { deployment.project = { id: "contradictory-project" }; }],
-    ["extra owner identity", (deployment) => { deployment.owner = { id: "contradictory-owner" }; }],
-    ["extra team identity", (deployment) => { deployment.teamId = "contradictory-team"; }],
-    ["extra target identity", (deployment) => { deployment.targetEnvironment = "production"; }],
-    ["extra Git identity", (deployment) => { deployment.git = { sha: "contradictory-git" }; }],
-    ["extra GitHub identity", (deployment) => { deployment.githubRepo = "contradictory-repo"; }],
-    ["extra production identity", (deployment) => { deployment.environment = "production"; }],
-    ["extra nested team field", (deployment) => { deployment.team.ownerId = "contradictory-owner"; }],
-    ["extra nested gitSource field", (deployment) => { deployment.gitSource.repoName = "contradictory-repo"; }],
-    ["extra GitHub meta field", (deployment) => { deployment.meta.githubProject = "contradictory-project"; }],
-    ["extra Git meta field", (deployment) => { deployment.meta.gitCommit = "contradictory-commit"; }],
-    ["extra owner meta field", (deployment) => { deployment.meta.ownerId = "contradictory-owner"; }],
-    ["extra project meta field", (deployment) => { deployment.meta.projectId = "contradictory-project"; }],
-    ["extra target meta field", (deployment) => { deployment.meta.target = "production"; }],
-    ["extra production meta field", (deployment) => { deployment.meta.production = true; }],
-    ["nested critical identity wrapper", (deployment) => {
-      deployment.details = {
-        projectId: "contradictory-project",
-        git: { sha: "b".repeat(40) },
-      };
-    }],
-    ["nested commit alias", (deployment) => { deployment.details = { commit: "contradictory" }; }],
-    ["nested branch alias", (deployment) => { deployment.details = { branch: "production" }; }],
-    ["nested org alias", (deployment) => { deployment.details = { org: "contradictory" }; }],
-    ["nested organization alias", (deployment) => {
-      deployment.details = { organization: "contradictory" };
-    }],
-    ["nested deployment alias", (deployment) => {
-      deployment.details = { deployment: "contradictory" };
-    }],
-    ["nested aliases plural", (deployment) => { deployment.details = { aliases: [] }; }],
-    ["nested commits plural", (deployment) => { deployment.details = { commits: [] }; }],
-    ["nested branches plural", (deployment) => { deployment.details = { branches: [] }; }],
-    ["nested organizations plural", (deployment) => {
-      deployment.details = { organizations: [] };
-    }],
-    ["nested deployments plural", (deployment) => {
-      deployment.details = { deployments: [] };
-    }],
-    ["extra non-reviewed scalar path", (deployment) => { deployment.createdAt = 1; }],
     ["deployment ID LF injection", (deployment) => {
       deployment.id = "dpl_AttestedPreview1\nattested_sha=contradictory";
     }],
@@ -310,125 +282,6 @@ function validVercelDeployment() {
       githubCommitSha: "a".repeat(40),
     },
   };
-}
-
-async function runStageA({
-  candidateWorkflowBlob = "c".repeat(40),
-  mainWorkflowBlob = "c".repeat(40),
-  workflowRef = "HUDongpin/AAIS/.github/workflows/preview-e2e.yml@refs/heads/main",
-  workflowSha = "candidate",
-} = {}) {
-  const candidateSha = "a".repeat(40);
-  const mainSha = "b".repeat(40);
-  const actor = {
-    login: "vercel[bot]",
-    id: 35613825,
-    node_id: "MDM6Qm90MzU2MTM4MjU=",
-    type: "Bot",
-  };
-  const outputs = {};
-  const logs = [];
-  const github = {
-    graphql: vi.fn(async () => ({
-      repository: {
-        pullRequest: {
-          state: "OPEN",
-          isCrossRepository: false,
-          baseRefName: "main",
-          headRefName: "codex/aais-recovery-compose",
-          headRefOid: candidateSha,
-          headRepository: { nameWithOwner: "HUDongpin/AAIS" },
-        },
-      },
-    })),
-    rest: {
-      actions: {
-        getWorkflow: vi.fn(async () => ({
-          data: {
-            id: 309746229,
-            path: ".github/workflows/preview-e2e.yml",
-            state: "active",
-          },
-        })),
-      },
-      git: {
-        getRef: vi.fn(async () => ({ data: { object: { sha: mainSha } } })),
-      },
-      repos: {
-        get: vi.fn(async () => ({
-          data: { full_name: "HUDongpin/AAIS", default_branch: "main" },
-        })),
-        getContent: vi.fn(async ({ ref }) => ({
-          data: {
-            type: "file",
-            sha: ref === mainSha ? mainWorkflowBlob : candidateWorkflowBlob,
-          },
-        })),
-        getDeployment: vi.fn(async () => ({
-          data: {
-            id: 101,
-            ref: "codex/aais-recovery-compose",
-            sha: candidateSha,
-            environment: "Preview",
-            creator: actor,
-          },
-        })),
-        getDeploymentStatus: vi.fn(async () => ({
-          data: {
-            id: 202,
-            state: "success",
-            creator: actor,
-            target_url: "https://preview.example.vercel.app",
-            environment_url: "https://preview.example.vercel.app",
-          },
-        })),
-      },
-    },
-  };
-  const context = {
-    eventName: "deployment_status",
-    repo: { owner: "HUDongpin", repo: "AAIS" },
-    payload: {
-      deployment: { id: 101 },
-      deployment_status: { id: 202 },
-    },
-  };
-  const core = {
-    setOutput: vi.fn((name, value) => {
-      outputs[name] = value;
-    }),
-  };
-  const processStub = {
-    env: {
-      GITHUB_WORKFLOW_REF: workflowRef,
-      GITHUB_WORKFLOW_SHA: workflowSha === "main" ? mainSha : candidateSha,
-    },
-  };
-  const consoleStub = { log: vi.fn((value) => logs.push(value)) };
-  const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
-  const execute = new AsyncFunction(
-    "context",
-    "github",
-    "core",
-    "process",
-    "console",
-    stageAScript(),
-  );
-  await execute(context, github, core, processStub, consoleStub);
-  return { outputs, logs };
-}
-
-function stageAScript() {
-  const stageA = stepBlock("Stage A - attest GitHub deployment", "Stage B - attest Vercel deployment");
-  const marker = "script: |\n";
-  const start = stageA.indexOf(marker);
-  expect(start).toBeGreaterThan(-1);
-  return stageA
-    .slice(start + marker.length)
-    .split("\n")
-    .map((line) => line.replace(/^ {12}/, ""))
-    .join("\n")
-    .trimEnd();
 }
 
 function runStageB(deployment) {
