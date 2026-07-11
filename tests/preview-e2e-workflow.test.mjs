@@ -7,7 +7,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 const workflow = readFileSync(".github/workflows/preview-e2e.yml", "utf8");
 
@@ -78,6 +78,47 @@ describe("AAIS preview E2E workflow trust gate", () => {
     const immutableWorkflowFetch = stageA.indexOf("ref: executingWorkflowSha");
     expect(staleWorkflowGuard).toBeGreaterThan(-1);
     expect(immutableWorkflowFetch).toBeGreaterThan(staleWorkflowGuard);
+  });
+
+  it("executes Stage A from current main while attesting the distinct candidate SHA", async () => {
+    const result = await runStageA();
+
+    expect(result.workflowRef).toBe(
+      "HUDongpin/AAIS/.github/workflows/preview-e2e.yml@refs/heads/main",
+    );
+    expect(result.workflowSha).toBe(result.mainSha);
+    expect(result.candidateSha).not.toBe(result.mainSha);
+    expect(result.outputs.attested_sha).toBe(result.candidateSha);
+    expect(result.outputs.main_sha).toBe(result.mainSha);
+    expect(result.outputs.workflow_blob).toBe(result.workflowBlob);
+    expect(result.logs).toEqual(["AAIS_PREVIEW_TRUST_GITHUB_PASS"]);
+  });
+
+  it("fetches the workflow by immutable executing/main SHA rather than a mutable branch", async () => {
+    const result = await runStageA();
+
+    expect(result.getContent).toHaveBeenCalledTimes(1);
+    expect(result.getContent).toHaveBeenCalledWith({
+      owner: "HUDongpin",
+      repo: "AAIS",
+      path: ".github/workflows/preview-e2e.yml",
+      ref: result.mainSha,
+    });
+    const [{ ref }] = result.getContent.mock.calls[0];
+    expect(ref).toBe(result.workflowSha);
+    expect(ref).not.toBe("main");
+    expect(ref).not.toBe("refs/heads/main");
+    expect(ref).not.toBe(result.candidateSha);
+  });
+
+  it("rejects the candidate head as the executing workflow SHA with the fixed error", async () => {
+    await expect(runStageA({ workflowSha: "candidate" }))
+      .rejects.toThrowError(/^AAIS_PREVIEW_TRUST_GITHUB$/);
+  });
+
+  it("rejects a stale executing workflow SHA with the fixed error", async () => {
+    await expect(runStageA({ workflowSha: "d".repeat(40) }))
+      .rejects.toThrowError(/^AAIS_PREVIEW_TRUST_GITHUB$/);
   });
 
   it("uses only the normalized Stage-A hostname as the Vercel idOrUrl", () => {
@@ -282,6 +323,138 @@ function validVercelDeployment() {
       githubCommitSha: "a".repeat(40),
     },
   };
+}
+
+async function runStageA({ workflowSha = "main" } = {}) {
+  const candidateSha = "a".repeat(40);
+  const mainSha = "b".repeat(40);
+  const workflowBlob = "c".repeat(40);
+  const workflowRef =
+    "HUDongpin/AAIS/.github/workflows/preview-e2e.yml@refs/heads/main";
+  const executingWorkflowSha = workflowSha === "main"
+    ? mainSha
+    : workflowSha === "candidate"
+      ? candidateSha
+      : workflowSha;
+  const actor = {
+    login: "vercel[bot]",
+    id: 35613825,
+    node_id: "MDM6Qm90MzU2MTM4MjU=",
+    type: "Bot",
+  };
+  const outputs = {};
+  const logs = [];
+  const getContent = vi.fn(async () => ({
+    data: {
+      type: "file",
+      sha: workflowBlob,
+    },
+  }));
+  const github = {
+    graphql: vi.fn(async () => ({
+      repository: {
+        pullRequest: {
+          state: "OPEN",
+          isCrossRepository: false,
+          baseRefName: "main",
+          headRefName: "codex/aais-recovery-compose",
+          headRefOid: candidateSha,
+          headRepository: { nameWithOwner: "HUDongpin/AAIS" },
+        },
+      },
+    })),
+    rest: {
+      actions: {
+        getWorkflow: vi.fn(async () => ({
+          data: {
+            id: 309746229,
+            path: ".github/workflows/preview-e2e.yml",
+            state: "active",
+          },
+        })),
+      },
+      git: {
+        getRef: vi.fn(async () => ({ data: { object: { sha: mainSha } } })),
+      },
+      repos: {
+        get: vi.fn(async () => ({
+          data: { full_name: "HUDongpin/AAIS", default_branch: "main" },
+        })),
+        getContent,
+        getDeployment: vi.fn(async () => ({
+          data: {
+            id: 101,
+            ref: "codex/aais-recovery-compose",
+            sha: candidateSha,
+            environment: "Preview",
+            creator: actor,
+          },
+        })),
+        getDeploymentStatus: vi.fn(async () => ({
+          data: {
+            id: 202,
+            state: "success",
+            creator: actor,
+            target_url: "https://preview.example.vercel.app",
+            environment_url: "https://preview.example.vercel.app",
+          },
+        })),
+      },
+    },
+  };
+  const context = {
+    eventName: "deployment_status",
+    repo: { owner: "HUDongpin", repo: "AAIS" },
+    payload: {
+      deployment: { id: 101 },
+      deployment_status: { id: 202 },
+    },
+  };
+  const core = {
+    setOutput: vi.fn((name, value) => {
+      outputs[name] = value;
+    }),
+  };
+  const processStub = {
+    env: {
+      GITHUB_WORKFLOW_REF: workflowRef,
+      GITHUB_WORKFLOW_SHA: executingWorkflowSha,
+    },
+  };
+  const consoleStub = { log: vi.fn((value) => logs.push(value)) };
+  const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
+  const execute = new AsyncFunction(
+    "context",
+    "github",
+    "core",
+    "process",
+    "console",
+    stageAScript(),
+  );
+  await execute(context, github, core, processStub, consoleStub);
+  return {
+    candidateSha,
+    getContent,
+    logs,
+    mainSha,
+    outputs,
+    workflowBlob,
+    workflowRef,
+    workflowSha: executingWorkflowSha,
+  };
+}
+
+function stageAScript() {
+  const stageA = stepBlock("Stage A - attest GitHub deployment", "Stage B - attest Vercel deployment");
+  const marker = "script: |\n";
+  const start = stageA.indexOf(marker);
+  expect(start).toBeGreaterThan(-1);
+  return stageA
+    .slice(start + marker.length)
+    .split("\n")
+    .map((line) => line.replace(/^ {12}/, ""))
+    .join("\n")
+    .trimEnd();
 }
 
 function runStageB(deployment) {
