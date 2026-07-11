@@ -46,7 +46,7 @@ jobs:
             const PR_NUMBER = 5;
             const RECOVERY_REF = "codex/aais-recovery-compose";
             const WORKFLOW_PATH = ".github/workflows/preview-e2e.yml";
-            const WORKFLOW_REF = "HUDongpin/AAIS/.github/workflows/preview-e2e.yml@refs/heads/main";
+            const WORKFLOW_REF = "HUDongpin/AAIS/.github/workflows/preview-e2e.yml@refs/heads/codex/aais-recovery-compose";
             const executingWorkflowSha = process.env.GITHUB_WORKFLOW_SHA;
             const VERCEL_APP = {
               login: "vercel[bot]",
@@ -103,8 +103,7 @@ jobs:
               repo: REPO,
               ref: `heads/${DEFAULT_BRANCH}`,
             });
-            if (!/^[a-f0-9]{40}$/.test(mainRef.object.sha)
-              || executingWorkflowSha !== mainRef.object.sha) {
+            if (!/^[a-f0-9]{40}$/.test(mainRef.object.sha)) {
               fail();
             }
             const { data: workflow } = await github.rest.actions.getWorkflow({
@@ -112,7 +111,13 @@ jobs:
               repo: REPO,
               workflow_id: "preview-e2e.yml",
             });
-            const { data: workflowFile } = await github.rest.repos.getContent({
+            const { data: mainWorkflowFile } = await github.rest.repos.getContent({
+              owner: OWNER,
+              repo: REPO,
+              path: WORKFLOW_PATH,
+              ref: mainRef.object.sha,
+            });
+            const { data: executingWorkflowFile } = await github.rest.repos.getContent({
               owner: OWNER,
               repo: REPO,
               path: WORKFLOW_PATH,
@@ -149,10 +154,14 @@ jobs:
               || repository.default_branch !== DEFAULT_BRANCH
               || workflow.path !== WORKFLOW_PATH
               || workflow.state !== "active"
-              || Array.isArray(workflowFile)
-              || workflowFile.type !== "file"
+              || Array.isArray(mainWorkflowFile)
+              || mainWorkflowFile.type !== "file"
+              || Array.isArray(executingWorkflowFile)
+              || executingWorkflowFile.type !== "file"
               || !positiveId(workflow.id)
-              || typeof workflowFile.sha !== "string"
+              || typeof mainWorkflowFile.sha !== "string"
+              || typeof executingWorkflowFile.sha !== "string"
+              || mainWorkflowFile.sha !== executingWorkflowFile.sha
               || !/^[a-f0-9]{40}$/.test(mainRef.object.sha)
               || deployment.id !== Number(eventDeployment.id)
               || deploymentStatus.id !== Number(eventStatus.id)
@@ -167,6 +176,7 @@ jobs:
               || pullRequest.headRefName !== RECOVERY_REF
               || deployment.ref !== RECOVERY_REF
               || deployment.sha !== pullRequest.headRefOid
+              || executingWorkflowSha !== pullRequest.headRefOid
               || !/^[a-f0-9]{40}$/.test(pullRequest.headRefOid)) {
               fail();
             }
@@ -190,7 +200,7 @@ jobs:
             core.setOutput("ref", RECOVERY_REF);
             core.setOutput("workflow_id", String(workflow.id));
             core.setOutput("workflow_path", WORKFLOW_PATH);
-            core.setOutput("workflow_blob", workflowFile.sha);
+            core.setOutput("workflow_blob", mainWorkflowFile.sha);
             core.setOutput("main_sha", mainRef.object.sha);
             console.log("AAIS_PREVIEW_TRUST_GITHUB_PASS");
 
