@@ -5,25 +5,345 @@ on:
 
 permissions:
   contents: read
+  deployments: read
+  pull-requests: read
+  actions: read
 
 jobs:
-  preview-e2e:
+  trust-preview:
     if: >
+      github.event_name == 'deployment_status' &&
       github.event.deployment_status.state == 'success' &&
-      github.event.deployment.environment == 'Preview' &&
-      startsWith(github.event.deployment_status.target_url, 'https://')
+      github.event.deployment.environment == 'Preview'
     runs-on: ubuntu-latest
-    env:
-      AAIS_E2E_BASE_URL: ${{ github.event.deployment_status.target_url }}
-      AAIS_E2E_STUDENT_ACCOUNT: ${{ secrets.AAIS_E2E_STUDENT_ACCOUNT }}
-      AAIS_E2E_STUDENT_PASSWORD: ${{ secrets.AAIS_E2E_STUDENT_PASSWORD }}
-      AAIS_E2E_TEACHER_ACCOUNT: ${{ secrets.AAIS_E2E_TEACHER_ACCOUNT }}
-      AAIS_E2E_TEACHER_PASSWORD: ${{ secrets.AAIS_E2E_TEACHER_PASSWORD }}
+    outputs:
+      github_deployment_id: ${{ steps.github-trust.outputs.github_deployment_id }}
+      github_deployment_status_id: ${{ steps.github-trust.outputs.github_deployment_status_id }}
+      vercel_origin: ${{ steps.github-trust.outputs.vercel_origin }}
+      vercel_hostname: ${{ steps.github-trust.outputs.vercel_hostname }}
+      attested_sha: ${{ steps.github-trust.outputs.attested_sha }}
+      repository: ${{ steps.github-trust.outputs.repository }}
+      pull_number: ${{ steps.github-trust.outputs.pull_number }}
+      ref: ${{ steps.github-trust.outputs.ref }}
+      workflow_id: ${{ steps.github-trust.outputs.workflow_id }}
+      workflow_path: ${{ steps.github-trust.outputs.workflow_path }}
+      workflow_blob: ${{ steps.github-trust.outputs.workflow_blob }}
+      main_sha: ${{ steps.github-trust.outputs.main_sha }}
+      vercel_deployment_id: ${{ steps.vercel-trust.outputs.vercel_deployment_id }}
+      provider_observed_at: ${{ steps.vercel-trust.outputs.provider_observed_at }}
     steps:
-      - name: Checkout deployed commit
+      - name: Stage A - attest GitHub deployment
+        id: github-trust
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const OWNER = "HUDongpin";
+            const REPO = "AAIS";
+            const REPOSITORY = "HUDongpin/AAIS";
+            const EVENT = "deployment_status";
+            const DEFAULT_BRANCH = "main";
+            const PR_NUMBER = 5;
+            const RECOVERY_REF = "codex/aais-recovery-compose";
+            const WORKFLOW_PATH = ".github/workflows/preview-e2e.yml";
+            const WORKFLOW_REF = "HUDongpin/AAIS/.github/workflows/preview-e2e.yml@refs/heads/main";
+            const executingWorkflowSha = process.env.GITHUB_WORKFLOW_SHA;
+            const VERCEL_APP = {
+              login: "vercel[bot]",
+              id: 35613825,
+              node_id: "MDM6Qm90MzU2MTM4MjU=",
+              type: "Bot",
+            };
+            const fail = () => {
+              throw new Error("AAIS_PREVIEW_TRUST_GITHUB");
+            };
+            const positiveId = (value) => Number.isSafeInteger(Number(value)) && Number(value) > 0;
+            const isVercelApp = (actor) => actor
+              && actor.login === VERCEL_APP.login
+              && actor.id === VERCEL_APP.id
+              && actor.node_id === VERCEL_APP.node_id
+              && actor.type === VERCEL_APP.type;
+            const normalizeVercelOrigin = (value) => {
+              let url;
+              try {
+                url = new URL(value);
+              } catch {
+                fail();
+              }
+              if (url.protocol !== "https:"
+                || url.port
+                || url.username
+                || url.password
+                || url.pathname !== "/"
+                || url.search
+                || url.hash
+                || !url.hostname.endsWith(".vercel.app")) {
+                fail();
+              }
+              return { origin: url.origin, hostname: url.hostname };
+            };
+
+            if (context.eventName !== EVENT
+              || `${context.repo.owner}/${context.repo.repo}` !== REPOSITORY
+              || process.env.GITHUB_WORKFLOW_REF !== WORKFLOW_REF
+              || !/^[a-f0-9]{40}$/.test(executingWorkflowSha)) {
+              fail();
+            }
+            const eventDeployment = context.payload.deployment;
+            const eventStatus = context.payload.deployment_status;
+            if (!positiveId(eventDeployment?.id)
+              || !positiveId(eventStatus?.id)
+              || Number(eventDeployment.id) === Number(eventStatus.id)) {
+              fail();
+            }
+
+            const { data: repository } = await github.rest.repos.get({ owner: OWNER, repo: REPO });
+            const { data: mainRef } = await github.rest.git.getRef({
+              owner: OWNER,
+              repo: REPO,
+              ref: `heads/${DEFAULT_BRANCH}`,
+            });
+            if (!/^[a-f0-9]{40}$/.test(mainRef.object.sha)
+              || executingWorkflowSha !== mainRef.object.sha) {
+              fail();
+            }
+            const { data: workflow } = await github.rest.actions.getWorkflow({
+              owner: OWNER,
+              repo: REPO,
+              workflow_id: "preview-e2e.yml",
+            });
+            const { data: workflowFile } = await github.rest.repos.getContent({
+              owner: OWNER,
+              repo: REPO,
+              path: WORKFLOW_PATH,
+              ref: executingWorkflowSha,
+            });
+            const { data: deployment } = await github.rest.repos.getDeployment({
+              owner: OWNER,
+              repo: REPO,
+              deployment_id: Number(eventDeployment.id),
+            });
+            const { data: deploymentStatus } = await github.rest.repos.getDeploymentStatus({
+              owner: OWNER,
+              repo: REPO,
+              deployment_id: Number(eventDeployment.id),
+              status_id: Number(eventStatus.id),
+            });
+            const pullResult = await github.graphql(`
+              query {
+                repository(owner: "HUDongpin", name: "AAIS") {
+                  pullRequest(number: 5) {
+                    state
+                    isCrossRepository
+                    baseRefName
+                    headRefName
+                    headRefOid
+                    headRepository { nameWithOwner }
+                  }
+                }
+              }
+            `);
+            const pullRequest = pullResult.repository?.pullRequest;
+
+            if (repository.full_name !== REPOSITORY
+              || repository.default_branch !== DEFAULT_BRANCH
+              || workflow.path !== WORKFLOW_PATH
+              || workflow.state !== "active"
+              || Array.isArray(workflowFile)
+              || workflowFile.type !== "file"
+              || !positiveId(workflow.id)
+              || typeof workflowFile.sha !== "string"
+              || !/^[a-f0-9]{40}$/.test(mainRef.object.sha)
+              || deployment.id !== Number(eventDeployment.id)
+              || deploymentStatus.id !== Number(eventStatus.id)
+              || !isVercelApp(deployment.creator)
+              || !isVercelApp(deploymentStatus.creator)
+              || deployment.environment !== "Preview"
+              || deploymentStatus.state !== "success"
+              || pullRequest?.state !== "OPEN"
+              || pullRequest.isCrossRepository !== false
+              || pullRequest.baseRefName !== DEFAULT_BRANCH
+              || pullRequest.headRepository?.nameWithOwner !== REPOSITORY
+              || pullRequest.headRefName !== RECOVERY_REF
+              || deployment.ref !== RECOVERY_REF
+              || deployment.sha !== pullRequest.headRefOid
+              || !/^[a-f0-9]{40}$/.test(pullRequest.headRefOid)) {
+              fail();
+            }
+            const target = normalizeVercelOrigin(deploymentStatus.target_url);
+            const environment = normalizeVercelOrigin(deploymentStatus.environment_url);
+            if (target.origin !== environment.origin || target.hostname !== environment.hostname) {
+              fail();
+            }
+
+            const GITHUB_DEPLOYMENT_ID = String(deployment.id);
+            const GITHUB_DEPLOYMENT_STATUS_ID = String(deploymentStatus.id);
+            const ATTESTED_SHA = pullRequest.headRefOid;
+            const VERCEL_HOSTNAME = target.hostname;
+            core.setOutput("github_deployment_id", GITHUB_DEPLOYMENT_ID);
+            core.setOutput("github_deployment_status_id", GITHUB_DEPLOYMENT_STATUS_ID);
+            core.setOutput("vercel_origin", target.origin);
+            core.setOutput("vercel_hostname", VERCEL_HOSTNAME);
+            core.setOutput("attested_sha", ATTESTED_SHA);
+            core.setOutput("repository", REPOSITORY);
+            core.setOutput("pull_number", String(PR_NUMBER));
+            core.setOutput("ref", RECOVERY_REF);
+            core.setOutput("workflow_id", String(workflow.id));
+            core.setOutput("workflow_path", WORKFLOW_PATH);
+            core.setOutput("workflow_blob", workflowFile.sha);
+            core.setOutput("main_sha", mainRef.object.sha);
+            console.log("AAIS_PREVIEW_TRUST_GITHUB_PASS");
+
+      - name: Stage B - attest Vercel deployment
+        id: vercel-trust
+        env:
+          VERCEL_E2E_METADATA_TOKEN: ${{ secrets.VERCEL_E2E_METADATA_TOKEN }}
+          VERCEL_HOSTNAME: ${{ steps.github-trust.outputs.vercel_hostname }}
+          ATTESTED_SHA: ${{ steps.github-trust.outputs.attested_sha }}
+          GITHUB_DEPLOYMENT_ID: ${{ steps.github-trust.outputs.github_deployment_id }}
+          GITHUB_DEPLOYMENT_STATUS_ID: ${{ steps.github-trust.outputs.github_deployment_status_id }}
+        run: |
+          node <<'NODE'
+          const { appendFileSync } = require("node:fs");
+          const token = process.env.VERCEL_E2E_METADATA_TOKEN;
+          if (!token) {
+            console.error("AAIS_PREVIEW_TRUST_METADATA_TOKEN_ABSENT");
+            process.exit(1);
+          }
+          const fail = () => {
+            throw new Error("AAIS_PREVIEW_TRUST_METADATA_RESPONSE");
+          };
+          const isString = (value) => typeof value === "string" && value.length > 0;
+          const isObject = (value) => value !== null
+            && typeof value === "object"
+            && !Array.isArray(value);
+          const hasOwn = (value, key) => Object.prototype.hasOwnProperty.call(value, key);
+          const exactKeys = (value, keys) => isObject(value)
+            && Object.keys(value).length === keys.length
+            && keys.every((key) => hasOwn(value, key));
+          const validateDeploymentShape = (deployment) => {
+            const topLevelKeys = [
+              "id",
+              "name",
+              "projectId",
+              "ownerId",
+              "team",
+              "readyState",
+              "status",
+              "target",
+              "url",
+              "alias",
+              "gitSource",
+              "meta",
+            ];
+            if (!exactKeys(deployment, topLevelKeys)
+              || !exactKeys(deployment.team, ["id", "slug"])
+              || !exactKeys(deployment.gitSource, ["type", "repoId", "ref", "sha"])
+              || !exactKeys(deployment.meta, [
+                "githubOrg",
+                "githubRepo",
+                "githubCommitRef",
+                "githubCommitSha",
+              ])) {
+              return false;
+            }
+            const metaKeys = [
+              "githubOrg",
+              "githubRepo",
+              "githubCommitRef",
+              "githubCommitSha",
+            ];
+            return isString(deployment.id)
+              && /^dpl_[A-Za-z0-9]+$/.test(deployment.id)
+              && isString(deployment.name)
+              && isString(deployment.projectId)
+              && isString(deployment.ownerId)
+              && isString(deployment.team.id)
+              && isString(deployment.team.slug)
+              && isString(deployment.readyState)
+              && isString(deployment.status)
+              && deployment.target === null
+              && isString(deployment.url)
+              && Array.isArray(deployment.alias)
+              && deployment.alias.every(isString)
+              && isString(deployment.gitSource.type)
+              && Number.isSafeInteger(deployment.gitSource.repoId)
+              && isString(deployment.gitSource.ref)
+              && isString(deployment.gitSource.sha)
+              && metaKeys.every((key) => isString(deployment.meta[key]));
+          };
+          (async () => {
+            const idOrUrl = encodeURIComponent(process.env.VERCEL_HOSTNAME);
+            const endpoint = `https://api.vercel.com/v13/deployments/${idOrUrl}?teamId=team_i9xhhYXUeYBOCLcfWBjTqlYG`;
+            const response = await fetch(endpoint, {
+              method: "GET",
+              headers: {
+                Accept: "application/json",
+                Authorization: `Bearer ${token}`,
+              },
+              redirect: "manual",
+            });
+            if (response.status < 200 || response.status >= 300) {
+              fail();
+            }
+            const deployment = JSON.parse(await response.text());
+            if (!validateDeploymentShape(deployment)
+              || deployment.id === process.env.GITHUB_DEPLOYMENT_ID
+              || deployment.id === process.env.GITHUB_DEPLOYMENT_STATUS_ID
+              || deployment.name !== "aais"
+              || deployment.projectId !== "prj_sKF9lhawVQyjxnv3jLyZvQH95Z1c"
+              || deployment.ownerId !== "team_i9xhhYXUeYBOCLcfWBjTqlYG"
+              || deployment.team.id !== "team_i9xhhYXUeYBOCLcfWBjTqlYG"
+              || deployment.team.slug !== "peter-dongpin-hu-s-projects"
+              || deployment.readyState !== "READY"
+              || deployment.status !== "READY"
+              || deployment.target !== null
+              || !isString(deployment.url)
+              || !Array.isArray(deployment.alias)
+              || !deployment.alias.every(isString)
+              || (deployment.url !== process.env.VERCEL_HOSTNAME
+                && !deployment.alias.includes(process.env.VERCEL_HOSTNAME))
+              || deployment.gitSource.type !== "github"
+              || deployment.gitSource.repoId !== 1294583104
+              || deployment.gitSource.ref !== "codex/aais-recovery-compose"
+              || deployment.gitSource.sha !== process.env.ATTESTED_SHA
+              || deployment.meta.githubOrg !== "HUDongpin"
+              || deployment.meta.githubRepo !== "AAIS"
+              || deployment.meta.githubCommitRef !== "codex/aais-recovery-compose"
+              || deployment.meta.githubCommitSha !== process.env.ATTESTED_SHA) {
+              fail();
+            }
+            const observedAt = new Date().toISOString();
+            const VERCEL_DEPLOYMENT_ID = deployment.id;
+            appendFileSync(process.env.GITHUB_OUTPUT, `vercel_deployment_id=${VERCEL_DEPLOYMENT_ID}\n`);
+            appendFileSync(process.env.GITHUB_OUTPUT, `provider_observed_at=${observedAt}\n`);
+            console.log("AAIS_PREVIEW_TRUST_METADATA_PASS");
+          })().catch(() => {
+            console.error("AAIS_PREVIEW_TRUST_METADATA_RESPONSE");
+            process.exit(1);
+          });
+          NODE
+
+  preview-e2e:
+    needs: trust-preview
+    runs-on: ubuntu-latest
+    steps:
+      - name: Stage C - checkout attested commit
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.deployment.sha || github.sha }}
+          ref: ${{ needs.trust-preview.outputs.attested_sha }}
+
+      - name: Verify exact checkout and repository
+        env:
+          ATTESTED_SHA: ${{ needs.trust-preview.outputs.attested_sha }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$ATTESTED_SHA"
+          origin="$(git remote get-url origin)"
+          case "$origin" in
+            https://github.com/HUDongpin/AAIS|https://github.com/HUDongpin/AAIS.git|git@github.com:HUDongpin/AAIS.git) ;;
+            *) exit 1 ;;
+          esac
+          echo "AAIS_PREVIEW_TRUST_CHECKOUT_PASS"
 
       - name: Set up Node
         uses: actions/setup-node@v4
@@ -34,15 +354,41 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Verify preview E2E credentials
+      - name: Install Playwright browser
+        run: npx playwright install --with-deps chromium
+
+      - name: Run Playwright against attested preview
+        env:
+          AAIS_E2E_BASE_URL: ${{ needs.trust-preview.outputs.vercel_origin }}
+          PLAYWRIGHT_LAST_RUN_OUTPUT_FILE: /dev/null
+          AAIS_E2E_STUDENT_ACCOUNT: ${{ secrets.AAIS_E2E_STUDENT_ACCOUNT }}
+          AAIS_E2E_STUDENT_PASSWORD: ${{ secrets.AAIS_E2E_STUDENT_PASSWORD }}
+          AAIS_E2E_TEACHER_ACCOUNT: ${{ secrets.AAIS_E2E_TEACHER_ACCOUNT }}
+          AAIS_E2E_TEACHER_PASSWORD: ${{ secrets.AAIS_E2E_TEACHER_PASSWORD }}
+          VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
         run: |
           test -n "$AAIS_E2E_STUDENT_ACCOUNT"
           test -n "$AAIS_E2E_STUDENT_PASSWORD"
           test -n "$AAIS_E2E_TEACHER_ACCOUNT"
           test -n "$AAIS_E2E_TEACHER_PASSWORD"
+          test -n "$VERCEL_AUTOMATION_BYPASS_SECRET"
+          npm run e2e
 
-      - name: Install Playwright browser
-        run: npx playwright install --with-deps chromium
-
-      - name: Run Playwright against preview deployment
-        run: npm run e2e
+      - name: Verify no secret-bearing artifacts
+        if: always()
+        run: |
+          artifact_file_count=0
+          for directory in test-results playwright-report blob-report; do
+            if test -d "$directory"; then
+              count="$(find "$directory" -type f 2>/dev/null | wc -l | tr -d ' ')"
+              artifact_file_count=$((artifact_file_count + count))
+            fi
+          done
+          attachment_file_count=0
+          if test -d test-results; then
+            attachment_file_count="$(find test-results -type f -path '*/attachments/*' 2>/dev/null | wc -l | tr -d ' ')"
+          fi
+          echo "AAIS_PREVIEW_ARTIFACT_FILE_COUNT=$artifact_file_count"
+          echo "AAIS_PREVIEW_ATTACHMENT_FILE_COUNT=$attachment_file_count"
+          test "$artifact_file_count" -eq 0
+          test "$attachment_file_count" -eq 0
