@@ -46,7 +46,7 @@ jobs:
             const PR_NUMBER = 5;
             const RECOVERY_REF = "codex/aais-recovery-compose";
             const WORKFLOW_PATH = ".github/workflows/preview-e2e.yml";
-            const WORKFLOW_REF = "HUDongpin/AAIS/.github/workflows/preview-e2e.yml@refs/heads/codex/aais-recovery-compose";
+            const WORKFLOW_REF = "HUDongpin/AAIS/.github/workflows/preview-e2e.yml@refs/heads/main";
             const executingWorkflowSha = process.env.GITHUB_WORKFLOW_SHA;
             const VERCEL_APP = {
               login: "vercel[bot]",
