@@ -24,6 +24,20 @@ fresh specification review, fresh quality/security review, and reviewed
 postconditions. This document records authority and design; it does not itself
 perform any local code, provider, deployment, pull-request, or cleanup change.
 
+After disclosure that the Task 4A legacy-secret deletion had already occurred
+after a redacted preflight capture but before the required preflight reviews,
+the owner explicitly authorized this one-time process exception:
+`我授权 Task 4A 流程例外：接受四个旧弱 secrets 删除的追溯验证，并授权修订及重新双审 AAIS Preview provider recovery 设计与计划；继续保持零新增费用、Preview-only，任何凭据缺失、收费不确定或 Production 影响立即停止。`
+The exception applies only to the four exact legacy GitHub Actions secret names
+in section 2 and only to the immutable before/after artifacts for this recovery
+run. It does not authorize recreating weak values, deleting any additional
+secret, skipping review for any future mutation, incurring a charge, or
+affecting Production. Before bootstrap publication, this amended design and
+plan receive fresh sequential specification and quality/security review; fresh
+retrospective preflight specification and quality/security reviews, followed by
+fresh postcondition specification and quality/security reviews, must then accept
+the preserved evidence, owner exception, and current live absence.
+
 The account identifiers and roles remain exactly:
 
 - `Phoebe` — `student`
@@ -301,6 +315,20 @@ secret API without retrieving or printing values. The owner's authorization to
 replace those weak values covers this temporary removal; a missing authorization
 or unexpected secret name stops. Thus the old default workflow cannot receive
 those values when the bootstrap PR deployment is created.
+
+For this recovery run only, the four exact records were deleted after the
+redacted preflight was captured but before its required reviewers returned. The
+records must remain absent and the weak values must never be reconstructed. The
+owner-authorized exception in section 1 permits retrospective acceptance only
+when immutable artifacts
+`provider/03-legacy-secret-quarantine-preflight.json`,
+`provider/03-legacy-secret-quarantine-postcondition.json`, and
+`provider/04-task4a-owner-exception.json` are internally consistent and fresh
+live metadata proves the repository Actions secret list remains empty. Fresh
+preflight specification review followed by preflight quality/security review,
+then fresh postcondition specification review followed by postcondition
+quality/security review, must pass before any bootstrap branch is pushed. Any
+mismatch stops; this exception is not reusable.
 
 The bootstrap change receives code and workflow tests, fresh specification and
 quality/security review of the exact tip, an exact-head PR review, merge with
@@ -858,6 +886,14 @@ mutation may occur from the isolated code branch. The executable order is:
    metadata state; the implementer deletes only those four records through the
    no-output secret API; fresh post-mutation spec and quality/security reviewers
    independently prove their absence. Any state drift restarts both reviews.
+   In this run, the deletion occurred after the preflight artifact but before
+   those reviews. Under the exact owner exception recorded in section 1, the
+   amended design/plan are first dual-reviewed, then fresh retrospective
+   preflight spec and quality/security reviewers, followed by fresh
+   postcondition spec and quality/security reviewers, must validate the
+   immutable artifacts, current empty Actions-secret metadata, exact four-name
+   scope, and absence of value access. Only those four PASS results may satisfy
+   slice 4A; no later or different mutation inherits the exception.
 5. A fresh bootstrap implementer creates the exact two-path default-main slice
    in section 5.3 from live `main`. Fresh code spec and quality/security
    reviewers pass its exact tip and gates. It is pushed as the sole temporary
@@ -1039,8 +1075,13 @@ The provider recovery is acceptable only when all of these are proven:
 10. External Preview E2E creates no trace, video, screenshot, HAR, HTML/blob/
     JUnit report, storage state, attachment, or retained output; post-run secret-
     bearing artifact count is exactly zero. Local E2E behavior remains covered.
-11. The four weak legacy secret records were dual-reviewed and quarantined
-    before bootstrap. All five strong application/E2E secret names later exist
+11. The four weak legacy secret records were quarantined before bootstrap. For
+    this run's owner-authorized exception, immutable before/after metadata, the
+    current live empty secret list, and exact scope were retrospectively
+    dual-reviewed only after the amended design/plan themselves passed fresh
+    dual review; the evidence explicitly preserves the sequencing deviation and
+    proves no value was read or restored. All five strong application/E2E
+    secret names later exist
     with current update timestamps, values remain masked, and deployed DB-first
     probes return `student` for the student account and `teacher` for the teacher
     account. The sixth metadata-token secret existed only for its reviewed
@@ -1092,6 +1133,10 @@ drift stops before merge and root cleanup.
 - Legacy-secret quarantine or bootstrap failure: do not restore the weak values.
   Leave PR `#5` open and root untouched; repair the exact two-path bootstrap in
   its dedicated branch, restart both reviews, and do not create any new secret.
+  If the one-time retrospective Task 4A exception or any of its three evidence
+  artifacts fails review, keep all four weak records absent and stop before
+  bootstrap push; do not reuse the exception or infer authority for another
+  deletion.
 - Stage-A or workflow-source mismatch: do not enter Stage B, expose no provider
   or application secret, run no checkout/package code, and return to bootstrap
   review. Stage-B metadata/schema/project mismatch: expose none of the five app
