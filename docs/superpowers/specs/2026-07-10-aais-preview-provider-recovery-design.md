@@ -351,8 +351,17 @@ secret is available to this stage.
 The pre-check fails unless one internally consistent evidence chain proves:
 
 - repository full name is exactly `HUDongpin/AAIS`, event is exactly
-  `deployment_status`, and the workflow path/blob is the exact dual-reviewed
-  bootstrap blob on current default branch `main`;
+  `deployment_status`; `GITHUB_WORKFLOW_REF` is exactly
+  `HUDongpin/AAIS/.github/workflows/preview-e2e.yml@refs/heads/main`, while
+  `GITHUB_WORKFLOW_SHA` is the full Preview candidate SHA and equals both the
+  current PR head and deployment SHA;
+- the workflow file is fetched twice by immutable SHA: once at the observed
+  current `main` SHA and once at `GITHUB_WORKFLOW_SHA`; both objects are regular
+  files at `.github/workflows/preview-e2e.yml` and their exact Git blob SHAs are
+  equal. This deliberately models GitHub's `deployment_status` runner context:
+  the workflow ref identifies the required default-branch workflow, while the
+  workflow SHA and event head identify the commit being deployed. Treating both
+  values as either `main` or the candidate is invalid and fails closed;
 - the GitHub deployment and successful status have nonzero exact IDs, belong to
   that repository, and were both created by Vercel bot login `vercel[bot]`, bot
   ID `35613825`, node ID `MDM6Qm90MzU2MTM4MjU=`, and type `Bot`;
@@ -374,6 +383,16 @@ SHA as non-secret in-memory/job outputs. The two GitHub IDs remain GitHub
 identifiers and are never used as Vercel `idOrUrl`. Stage A emits no event body
 or response body. A default-main tip or workflow-blob change invalidates every
 earlier PASS and requires bootstrap re-review before Stage B.
+
+This mixed ref/SHA invariant is backed by the two fail-closed remote probes on
+2026-07-11. Run `29138247787` rejected the invalid all-`main` assumption, and
+run `29140041611` rejected the invalid all-candidate assumption; both stopped at
+the same first Stage A runner-context guard before Stage B, checkout, package
+execution, or any provider credential was available. GitHub's official event
+contract independently defines `deployment_status` `GITHUB_SHA`/`GITHUB_REF`
+as the commit/ref being deployed and requires the workflow file to exist on the
+default branch. Only the mixed invariant above is accepted; future drift or a
+different runner context is a hard stop, never a compatibility fallback.
 
 #### Stage B: pre-checkout Vercel project attestation
 

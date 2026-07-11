@@ -383,6 +383,29 @@ Merge fresh `origin/main` into compose, prove the bootstrap merge/workflow blob 
 
 Push `codex/aais-recovery-compose`, require PR `#5` exact head/base/repository/non-fork tuple, and wait for a Git-created real-project Preview deployment of that SHA. Record `GITHUB_DEPLOYMENT_ID`, `GITHUB_DEPLOYMENT_STATUS_ID`, normalized Vercel URL/hostname, PR head SHA, default-main workflow blob, and Stage-A result as distinct fields. No provider application secret exists; Stage B must emit only the fixed missing-token code and Stage C must be skipped. Dual-review remote binding.
 
+Remote correction amendment (owner-authorized 2026-07-11): Stage A must model
+the observed `deployment_status` runner context exactly. Require
+`GITHUB_WORKFLOW_REF` to be the exact default-branch `main` workflow ref, require
+`GITHUB_WORKFLOW_SHA` to equal the exact current PR head and deployment SHA, and
+fetch the workflow by both immutable candidate and current-main SHAs before
+requiring exact Git blob equality. Runs `29138247787` and `29140041611` are
+negative evidence: the former rejected an all-`main` ref/SHA assumption and the
+latter rejected an all-candidate ref/SHA assumption at the same first Stage A
+guard, with Stage B and Stage C skipped. Add executable harness cases for the
+mixed PASS tuple plus all-main, all-candidate-ref, and blob-mismatch failures.
+Revise and dual-review the design/plan first; then use the retained bootstrap
+worktree to create an exact workflow/test-only correction from fresh `main`,
+run focused and full local gates, dual-review locally and remotely, merge with
+head matching, and perform post-merge dual review. Merge that exact new `main`
+into compose, rerun all candidate gates and both candidate reviews, and update
+the same PR `#5`. Every intermediate trust run must stop before Stage B; no
+provider preflight, secret creation, paid resource, or Production configuration
+mutation is allowed during this correction loop. An automatic Git-integration
+Production deployment is acceptable only when independent post-merge review
+proves the server diff contains workflow/test paths exclusively and zero
+application/runtime, provider, environment, secret, billing, or deployment-
+configuration change; any actual Production impact stops immediately.
+
 - [ ] **Step 2 — Slice 5B, fresh metadata/cost preflight implementer: Run metadata/cost/credential preflight only**
 
 Using an inline Node client with tokens from memory/environment and fixed JSON selectors, re-query exact real `aais` ID/name/team/SSO/Git integration/deployment; accidental project count-only metadata; production/development fingerprints; branch-scoped Preview support and absence of same-name project-wide entries for the four runtime keys/components; Neon account/plan/quota/region/zero-charge creation capability; approved Neon credential usability from `All API Keys.docx` without output; and Vercel deployment-metadata token scope/expiry/revocation feasibility. Validate exact `GET https://api.vercel.com/v13/deployments/{idOrUrl}?teamId=team_i9xhhYXUeYBOCLcfWBjTqlYG`, with `idOrUrl` equal to the URL-encoded normalized Vercel hostname from Stage A—never either GitHub ID—bearer token only from step environment into the in-memory header, redirects disabled, and the exact allowlist/predicates in Task 2 Step 5. Returned `.id` becomes `VERCEL_DEPLOYMENT_ID`; bind it to Stage-A hostname/project/team/PR-head SHA while `GITHUB_DEPLOYMENT_ID` and `GITHUB_DEPLOYMENT_STATUS_ID` remain distinct. `jq` may output only the allowlisted projection or a boolean; missing/extra critical fields, `.target != null`, string `"preview"`, production, or identity/Git mismatch stops. Write redacted `04-provider-preflight.json` and dual-review it. Missing credential, paid/ambiguous Neon, broad-only token, unsupported branch scope, production overlap, schema drift, or candidate drift hard-stops before mutation.
