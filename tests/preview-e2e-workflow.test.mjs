@@ -68,6 +68,9 @@ describe("AAIS preview E2E workflow trust gate", () => {
   it("binds the deployed commit workflow blob to the current main workflow blob", () => {
     const stageA = stepBlock("Stage A - attest GitHub deployment", "Stage B - attest Vercel deployment");
 
+    expect(stageA).toContain(
+      'const WORKFLOW_REF = "HUDongpin/AAIS/.github/workflows/preview-e2e.yml@refs/heads/main";',
+    );
     expect(stageA).toContain("const executingWorkflowSha = process.env.GITHUB_WORKFLOW_SHA;");
     expect(stageA).toContain("!/^[a-f0-9]{40}$/.test(executingWorkflowSha)");
     expect(stageA).toContain("executingWorkflowSha !== pullRequest.headRefOid");
@@ -78,13 +81,25 @@ describe("AAIS preview E2E workflow trust gate", () => {
     expect(stageA).not.toContain("ref: DEFAULT_BRANCH");
   });
 
-  it("accepts candidate workflow context only when its workflow blob equals current main", async () => {
+  it("accepts default-main workflow ref with candidate workflow SHA only when blobs match", async () => {
     const result = await runStageA();
 
     expect(result.outputs.attested_sha).toBe("a".repeat(40));
     expect(result.outputs.main_sha).toBe("b".repeat(40));
     expect(result.outputs.workflow_blob).toBe("c".repeat(40));
     expect(result.logs).toEqual(["AAIS_PREVIEW_TRUST_GITHUB_PASS"]);
+  });
+
+  it("rejects an all-main workflow ref and SHA tuple", async () => {
+    await expect(runStageA({ workflowSha: "main" }))
+      .rejects.toThrow("AAIS_PREVIEW_TRUST_GITHUB");
+  });
+
+  it("rejects a candidate workflow ref even when the workflow SHA is the candidate", async () => {
+    await expect(runStageA({
+      workflowRef:
+        "HUDongpin/AAIS/.github/workflows/preview-e2e.yml@refs/heads/codex/aais-recovery-compose",
+    })).rejects.toThrow("AAIS_PREVIEW_TRUST_GITHUB");
   });
 
   it("rejects candidate workflow context when its workflow blob differs from current main", async () => {
@@ -300,6 +315,8 @@ function validVercelDeployment() {
 async function runStageA({
   candidateWorkflowBlob = "c".repeat(40),
   mainWorkflowBlob = "c".repeat(40),
+  workflowRef = "HUDongpin/AAIS/.github/workflows/preview-e2e.yml@refs/heads/main",
+  workflowSha = "candidate",
 } = {}) {
   const candidateSha = "a".repeat(40);
   const mainSha = "b".repeat(40);
@@ -383,9 +400,8 @@ async function runStageA({
   };
   const processStub = {
     env: {
-      GITHUB_WORKFLOW_REF:
-        "HUDongpin/AAIS/.github/workflows/preview-e2e.yml@refs/heads/codex/aais-recovery-compose",
-      GITHUB_WORKFLOW_SHA: candidateSha,
+      GITHUB_WORKFLOW_REF: workflowRef,
+      GITHUB_WORKFLOW_SHA: workflowSha === "main" ? mainSha : candidateSha,
     },
   };
   const consoleStub = { log: vi.fn((value) => logs.push(value)) };
