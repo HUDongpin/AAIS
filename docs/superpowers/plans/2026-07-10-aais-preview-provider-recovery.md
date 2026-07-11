@@ -16,6 +16,16 @@ Use the approved design at `docs/superpowers/specs/2026-07-10-aais-preview-provi
 
 Numbered tasks are orchestration groups, not implementer ownership units. Every explicitly labeled slice is dispatched sequentially to its own fresh implementer; that implementer owns only that slice. A fresh read-only specification reviewer evaluates its exact Git tip or external observation timestamp, then a fresh read-only quality/security reviewer evaluates the same state. Findings return to that slice implementer and both reviews restart. Destructive/external slices require: redacted preflight artifact -> spec review -> quality/security review -> mutation -> redacted postcondition artifact -> spec review -> quality/security review. No implementers run in parallel, and a grouped task never lets one implementer absorb two distinct slices.
 
+One owner-authorized recovery exception is recorded for Task 4A only. The four
+exact legacy GitHub Actions secret records were deleted after the redacted
+preflight artifact was captured but before its required reviews. They remain
+absent and are never reconstructed. This amended design/plan must receive fresh
+specification then quality/security review. After that, fresh retrospective
+specification then quality/security reviewers inspect the immutable preflight,
+immutable postcondition, exact owner-exception artifact, and current live empty
+Actions-secret list. No bootstrap push occurs until all four retrospective
+reviews pass. The exception does not apply to any future mutation.
+
 | Task | Depends on | Produces |
 | --- | --- | --- |
 | 1 | approved spec `4049c03a5be50d7f179588b8a464d25883a0ae6c` | frozen local/provider/PR metadata and owner-only evidence directory |
@@ -320,6 +330,22 @@ Run the four focused files, `npm run ci`, `npm run e2e`, strict hygiene, diff-ch
 - [ ] **Step 1 — Slice 4A, fresh quarantine implementer: Dual-review and delete only the four legacy records**
 
 Capture `gh secret list --app actions --json name,updatedAt` and filter exact names `AAIS_E2E_STUDENT_ACCOUNT`, `AAIS_E2E_STUDENT_PASSWORD`, `AAIS_E2E_TEACHER_ACCOUNT`, `AAIS_E2E_TEACHER_PASSWORD`; require each exactly once and record names/timestamps only. After preflight dual review, delete those names one by one with `gh secret delete "$secret_name" --app actions`. Re-list and require all four absent; postcondition dual review. Never retrieve/log/restore old values.
+
+Observed one-time exception for this run: the immutable preflight at
+`provider/03-legacy-secret-quarantine-preflight.json` was captured before the
+four exact deletions, and
+`provider/03-legacy-secret-quarantine-postcondition.json` plus current live
+metadata prove all four absent, but the preflight reviewers had not yet run.
+The owner exception is recorded at
+`provider/04-task4a-owner-exception.json`. Do not replay deletion or recreate a
+secret. First dual-review this amended design/plan. Then dispatch a fresh
+retrospective preflight spec reviewer and quality/security reviewer, followed
+by a fresh postcondition/current-state spec reviewer and quality/security
+reviewer. Each checks exact names/counts/timestamps, candidate/root binding,
+owner scope, redaction, no value access, no additional deletion, and the live
+empty Actions-secret list. Record the historical sequencing deviation in every
+PASS. Any finding stops before bootstrap push. This exception is consumed by
+this exact evidence set and cannot authorize another out-of-order mutation.
 
 - [ ] **Step 2 — Slice 4B, fresh bootstrap implementer: Create the exact two-path bootstrap from fresh main**
 
