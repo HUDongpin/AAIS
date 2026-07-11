@@ -16,21 +16,6 @@ jobs:
       github.event.deployment_status.state == 'success' &&
       github.event.deployment.environment == 'Preview'
     runs-on: ubuntu-latest
-    outputs:
-      github_deployment_id: ${{ steps.github-trust.outputs.github_deployment_id }}
-      github_deployment_status_id: ${{ steps.github-trust.outputs.github_deployment_status_id }}
-      vercel_origin: ${{ steps.github-trust.outputs.vercel_origin }}
-      vercel_hostname: ${{ steps.github-trust.outputs.vercel_hostname }}
-      attested_sha: ${{ steps.github-trust.outputs.attested_sha }}
-      repository: ${{ steps.github-trust.outputs.repository }}
-      pull_number: ${{ steps.github-trust.outputs.pull_number }}
-      ref: ${{ steps.github-trust.outputs.ref }}
-      workflow_id: ${{ steps.github-trust.outputs.workflow_id }}
-      workflow_path: ${{ steps.github-trust.outputs.workflow_path }}
-      workflow_blob: ${{ steps.github-trust.outputs.workflow_blob }}
-      main_sha: ${{ steps.github-trust.outputs.main_sha }}
-      vercel_deployment_id: ${{ steps.vercel-trust.outputs.vercel_deployment_id }}
-      provider_observed_at: ${{ steps.vercel-trust.outputs.provider_observed_at }}
     steps:
       - name: Stage A - attest GitHub deployment
         id: github-trust
@@ -41,160 +26,377 @@ jobs:
             const OWNER = "HUDongpin";
             const REPO = "AAIS";
             const REPOSITORY = "HUDongpin/AAIS";
-            const EVENT = "deployment_status";
             const DEFAULT_BRANCH = "main";
             const PR_NUMBER = 5;
             const RECOVERY_REF = "codex/aais-recovery-compose";
             const WORKFLOW_PATH = ".github/workflows/preview-e2e.yml";
-            const WORKFLOW_REF = "HUDongpin/AAIS/.github/workflows/preview-e2e.yml@refs/heads/main";
-            const executingWorkflowSha = process.env.GITHUB_WORKFLOW_SHA;
+            const WORKFLOW_LOCATION = "HUDongpin/AAIS/.github/workflows/preview-e2e.yml";
+            const WORKFLOW_ID = 309746229;
+            const MAX_INPUT_LENGTH = 512;
             const VERCEL_APP = {
               login: "vercel[bot]",
               id: 35613825,
               node_id: "MDM6Qm90MzU2MTM4MjU=",
               type: "Bot",
             };
-            const fail = () => {
-              throw new Error("AAIS_PREVIEW_TRUST_GITHUB");
-            };
-            const positiveId = (value) => Number.isSafeInteger(Number(value)) && Number(value) > 0;
-            const isVercelApp = (actor) => actor
+            const isObject = (value) => value !== null
+              && typeof value === "object"
+              && !Array.isArray(value);
+            const safeString = (value) => typeof value === "string"
+              && value.length > 0
+              && value.length <= MAX_INPUT_LENGTH
+              && !/[\u0000-\u001f\u007f]/u.test(value);
+            const fullSha = (value) => safeString(value) && /^[a-f0-9]{40}$/.test(value);
+            const positiveInteger = (value) => Number.isSafeInteger(value) && value > 0;
+            const positiveIdString = (value) => safeString(value)
+              && /^[1-9][0-9]*$/.test(value)
+              && Number.isSafeInteger(Number(value));
+            const usableActor = (actor) => isObject(actor)
+              && safeString(actor.login)
+              && positiveInteger(actor.id)
+              && safeString(actor.node_id)
+              && safeString(actor.type);
+            const isVercelApp = (actor) => isObject(actor)
               && actor.login === VERCEL_APP.login
               && actor.id === VERCEL_APP.id
               && actor.node_id === VERCEL_APP.node_id
               && actor.type === VERCEL_APP.type;
-            const normalizeVercelOrigin = (value) => {
-              let url;
-              try {
-                url = new URL(value);
-              } catch {
-                fail();
-              }
-              if (url.protocol !== "https:"
-                || url.port
-                || url.username
-                || url.password
-                || url.pathname !== "/"
-                || url.search
-                || url.hash
-                || !url.hostname.endsWith(".vercel.app")) {
-                fail();
-              }
-              return { origin: url.origin, hostname: url.hostname };
+            const classifySha = (value, mainSha, prSha) => {
+              if (!fullSha(value)) return "INVALID";
+              if (!fullSha(mainSha) || !fullSha(prSha)) return "REFERENCE_FACTS_UNAVAILABLE";
+              if (value === mainSha && value === prSha) return "MAIN_AND_PR_HEAD";
+              if (value === mainSha) return "MAIN_TIP";
+              if (value === prSha) return "PR_HEAD";
+              return "OTHER_SHA";
             };
-
-            if (context.eventName !== EVENT
-              || `${context.repo.owner}/${context.repo.repo}` !== REPOSITORY
-              || process.env.GITHUB_WORKFLOW_REF !== WORKFLOW_REF
-              || !/^[a-f0-9]{40}$/.test(executingWorkflowSha)) {
-              fail();
-            }
-            const eventDeployment = context.payload.deployment;
-            const eventStatus = context.payload.deployment_status;
-            if (!positiveId(eventDeployment?.id)
-              || !positiveId(eventStatus?.id)
-              || Number(eventDeployment.id) === Number(eventStatus.id)) {
-              fail();
-            }
-
-            const { data: repository } = await github.rest.repos.get({ owner: OWNER, repo: REPO });
-            const { data: mainRef } = await github.rest.git.getRef({
-              owner: OWNER,
-              repo: REPO,
-              ref: `heads/${DEFAULT_BRANCH}`,
-            });
-            if (!/^[a-f0-9]{40}$/.test(mainRef.object.sha)
-              || executingWorkflowSha !== mainRef.object.sha) {
-              fail();
-            }
-            const { data: workflow } = await github.rest.actions.getWorkflow({
-              owner: OWNER,
-              repo: REPO,
-              workflow_id: "preview-e2e.yml",
-            });
-            const { data: workflowFile } = await github.rest.repos.getContent({
-              owner: OWNER,
-              repo: REPO,
-              path: WORKFLOW_PATH,
-              ref: executingWorkflowSha,
-            });
-            const { data: deployment } = await github.rest.repos.getDeployment({
-              owner: OWNER,
-              repo: REPO,
-              deployment_id: Number(eventDeployment.id),
-            });
-            const { data: deploymentStatus } = await github.rest.repos.getDeploymentStatus({
-              owner: OWNER,
-              repo: REPO,
-              deployment_id: Number(eventDeployment.id),
-              status_id: Number(eventStatus.id),
-            });
-            const pullResult = await github.graphql(`
-              query {
-                repository(owner: "HUDongpin", name: "AAIS") {
-                  pullRequest(number: 5) {
-                    state
-                    isCrossRepository
-                    baseRefName
-                    headRefName
-                    headRefOid
-                    headRepository { nameWithOwner }
-                  }
-                }
+            const classifyWorkflowRef = (value, mainSha, prSha) => {
+              if (!safeString(value)) return "INVALID";
+              const firstAt = value.indexOf("@");
+              if (firstAt <= 0 || firstAt !== value.lastIndexOf("@")) return "INVALID";
+              const location = value.slice(0, firstAt);
+              const suffix = value.slice(firstAt + 1);
+              if (!safeString(location)
+                || !safeString(suffix)
+                || !/^[^/@\s]+\/[^/@\s]+\/[^/@\s]+(?:\/[^/@\s]+)*$/.test(location)) {
+                return "INVALID";
               }
-            `);
-            const pullRequest = pullResult.repository?.pullRequest;
-
-            if (repository.full_name !== REPOSITORY
-              || repository.default_branch !== DEFAULT_BRANCH
-              || workflow.path !== WORKFLOW_PATH
-              || workflow.state !== "active"
-              || Array.isArray(workflowFile)
-              || workflowFile.type !== "file"
-              || !positiveId(workflow.id)
-              || typeof workflowFile.sha !== "string"
-              || !/^[a-f0-9]{40}$/.test(mainRef.object.sha)
-              || deployment.id !== Number(eventDeployment.id)
-              || deploymentStatus.id !== Number(eventStatus.id)
-              || !isVercelApp(deployment.creator)
-              || !isVercelApp(deploymentStatus.creator)
-              || deployment.environment !== "Preview"
-              || deploymentStatus.state !== "success"
-              || pullRequest?.state !== "OPEN"
-              || pullRequest.isCrossRepository !== false
-              || pullRequest.baseRefName !== DEFAULT_BRANCH
-              || pullRequest.headRepository?.nameWithOwner !== REPOSITORY
-              || pullRequest.headRefName !== RECOVERY_REF
-              || deployment.ref !== RECOVERY_REF
-              || deployment.sha !== pullRequest.headRefOid
-              || !/^[a-f0-9]{40}$/.test(pullRequest.headRefOid)) {
-              fail();
+              if (location !== WORKFLOW_LOCATION) return "OTHER_REPOSITORY_OR_PATH";
+              if (suffix === "refs/heads/main") return "MAIN_BRANCH";
+              if (suffix === "refs/heads/" + RECOVERY_REF) return "RECOVERY_BRANCH";
+              if (fullSha(suffix)) {
+                if (!fullSha(mainSha) || !fullSha(prSha)) return "REFERENCE_FACTS_UNAVAILABLE";
+                if (suffix === mainSha && suffix === prSha) {
+                  return "MAIN_AND_PR_HEAD_SHA_LITERAL";
+                }
+                if (suffix === mainSha) return "MAIN_SHA_LITERAL";
+                if (suffix === prSha) return "PR_HEAD_SHA_LITERAL";
+                return "OTHER_SHA_LITERAL";
+              }
+              return "SAME_REPO_PATH_OTHER_REF";
+            };
+            const classifyDeploymentRef = (value, mainSha, prSha) => {
+              if (!safeString(value)) return "INVALID";
+              if (fullSha(value)) {
+                if (!fullSha(mainSha) || !fullSha(prSha)) return "REFERENCE_FACTS_UNAVAILABLE";
+                if (value === mainSha && value === prSha) return "MAIN_AND_PR_HEAD_SHA";
+                if (value === prSha) return "PR_HEAD_SHA";
+                if (value === mainSha) return "MAIN_TIP_SHA";
+                return "OTHER_SHA";
+              }
+              if (value === RECOVERY_REF) return "RECOVERY_BRANCH";
+              if (value === DEFAULT_BRANCH) return "MAIN_BRANCH";
+              return "OTHER_REF";
+            };
+            const normalizeWorkflowFile = (data) => {
+              if (!isObject(data)
+                || data.type !== "file"
+                || data.path !== WORKFLOW_PATH
+                || !fullSha(data.sha)
+                || !Number.isSafeInteger(data.size)
+                || data.size < 0
+                || data.encoding !== "base64"
+                || typeof data.content !== "string") {
+                return undefined;
+              }
+              let compact = data.content;
+              if (compact.includes("\r") || /[ \t]/.test(compact)) return undefined;
+              if (compact.includes("\n")) {
+                const terminalLf = compact.endsWith("\n");
+                const lines = compact.split("\n");
+                if (terminalLf) lines.pop();
+                if (lines.length === 0
+                  || lines.some((line) => line.length === 0)
+                  || (lines.length === 1 && (!terminalLf || lines[0].length > 60))
+                  || (lines.length > 1
+                    && (lines.slice(0, -1).some((line) => line.length !== 60)
+                      || lines[lines.length - 1].length > 60))) {
+                  return undefined;
+                }
+                compact = lines.join("");
+              }
+              if (compact.length % 4 !== 0
+                || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(compact)) {
+                return undefined;
+              }
+              let bytes;
+              try {
+                bytes = Buffer.from(compact, "base64");
+              } catch {
+                return undefined;
+              }
+              if (bytes.length !== data.size || bytes.toString("base64") !== compact) {
+                return undefined;
+              }
+              return { sha: data.sha, bytes };
+            };
+            const sameWorkflowFile = (left, right) => left.sha === right.sha
+              && Buffer.compare(left.bytes, right.bytes) === 0;
+            const classifyWorkflowFiles = (source, main, pr) => {
+              if (!source || !main || !pr) return "UNAVAILABLE";
+              const sourceMain = sameWorkflowFile(source, main);
+              const sourcePr = sameWorkflowFile(source, pr);
+              const mainPr = sameWorkflowFile(main, pr);
+              if (sourceMain && sourcePr && mainPr) return "ALL_EQUAL";
+              if (sourceMain) return "SOURCE_MAIN_ONLY";
+              if (sourcePr) return "SOURCE_PR_ONLY";
+              if (mainPr) return "MAIN_PR_ONLY";
+              return "ALL_DIFFERENT";
+            };
+            const facts = {
+              repository: false,
+              main: false,
+              workflow: false,
+              pr: false,
+              run: false,
+              deployment: false,
+              deploymentStatus: false,
+              sourceFile: false,
+              mainFile: false,
+              prFile: false,
+            };
+            const attempt = async (key, operation, validator) => {
+              try {
+                const value = await operation();
+                if (!validator(value)) return undefined;
+                facts[key] = true;
+                return value;
+              } catch {
+                return undefined;
+              }
+            };
+            const fetchWorkflowFile = async (key, ref) => {
+              if (!fullSha(ref)) return undefined;
+              try {
+                const { data } = await github.rest.repos.getContent({
+                  owner: OWNER,
+                  repo: REPO,
+                  path: WORKFLOW_PATH,
+                  ref,
+                });
+                const normalized = normalizeWorkflowFile(data);
+                if (!normalized) return undefined;
+                facts[key] = true;
+                return normalized;
+              } catch {
+                return undefined;
+              }
+            };
+            let workflowRefClass = "INVALID";
+            let workflowShaClass = "INVALID";
+            let githubShaClass = "INVALID";
+            let deploymentRefClass = "INVALID";
+            let workflowBlobsClass = "UNAVAILABLE";
+            let runBindingClass = "UNAVAILABLE";
+            let apiFactsClass = "UNAVAILABLE";
+            try {
+              const repository = await attempt(
+                "repository",
+                async () => (await github.rest.repos.get({ owner: OWNER, repo: REPO })).data,
+                (value) => isObject(value)
+                  && value.full_name === REPOSITORY
+                  && value.default_branch === DEFAULT_BRANCH,
+              );
+              const mainRef = await attempt(
+                "main",
+                async () => (await github.rest.git.getRef({
+                  owner: OWNER,
+                  repo: REPO,
+                  ref: "heads/" + DEFAULT_BRANCH,
+                })).data,
+                (value) => isObject(value)
+                  && value.ref === "refs/heads/" + DEFAULT_BRANCH
+                  && isObject(value.object)
+                  && value.object.type === "commit"
+                  && fullSha(value.object.sha),
+              );
+              const workflow = await attempt(
+                "workflow",
+                async () => (await github.rest.actions.getWorkflow({
+                  owner: OWNER,
+                  repo: REPO,
+                  workflow_id: WORKFLOW_ID,
+                })).data,
+                (value) => isObject(value)
+                  && value.id === WORKFLOW_ID
+                  && value.path === WORKFLOW_PATH
+                  && value.state === "active",
+              );
+              const pullRequest = await attempt(
+                "pr",
+                async () => (await github.rest.pulls.get({
+                  owner: OWNER,
+                  repo: REPO,
+                  pull_number: PR_NUMBER,
+                })).data,
+                (value) => isObject(value)
+                  && value.number === PR_NUMBER
+                  && value.state === "open"
+                  && isObject(value.base)
+                  && value.base.ref === DEFAULT_BRANCH
+                  && value.base.repo?.full_name === REPOSITORY
+                  && isObject(value.head)
+                  && value.head.ref === RECOVERY_REF
+                  && value.head.repo?.full_name === REPOSITORY
+                  && fullSha(value.head.sha),
+              );
+              const mainSha = mainRef?.object?.sha;
+              const prSha = pullRequest?.head?.sha;
+              const contextRunId = positiveInteger(context.runId)
+                ? context.runId
+                : undefined;
+              const workflowRun = await attempt(
+                "run",
+                async () => contextRunId
+                  ? (await github.rest.actions.getWorkflowRun({
+                    owner: OWNER,
+                    repo: REPO,
+                    run_id: contextRunId,
+                  })).data
+                  : undefined,
+                (value) => isObject(value)
+                  && positiveInteger(value.id)
+                  && safeString(value.event)
+                  && positiveInteger(value.workflow_id)
+                  && safeString(value.path)
+                  && safeString(value.head_branch)
+                  && fullSha(value.head_sha)
+                  && isObject(value.repository)
+                  && safeString(value.repository.full_name)
+                  && usableActor(value.actor)
+                  && usableActor(value.triggering_actor),
+              );
+              const eventDeployment = context.payload && context.payload.deployment;
+              const eventStatus = context.payload && context.payload.deployment_status;
+              const eventDeploymentId = positiveInteger(eventDeployment?.id)
+                ? eventDeployment.id
+                : undefined;
+              const eventStatusId = positiveInteger(eventStatus?.id)
+                ? eventStatus.id
+                : undefined;
+              const deployment = await attempt(
+                "deployment",
+                async () => eventDeploymentId
+                  ? (await github.rest.repos.getDeployment({
+                    owner: OWNER,
+                    repo: REPO,
+                    deployment_id: eventDeploymentId,
+                  })).data
+                  : undefined,
+                (value) => isObject(value)
+                  && value.id === eventDeploymentId
+                  && safeString(value.ref)
+                  && fullSha(value.sha)
+                  && usableActor(value.creator),
+              );
+              const deploymentStatus = await attempt(
+                "deploymentStatus",
+                async () => eventDeploymentId && eventStatusId
+                  ? (await github.rest.repos.getDeploymentStatus({
+                    owner: OWNER,
+                    repo: REPO,
+                    deployment_id: eventDeploymentId,
+                    status_id: eventStatusId,
+                  })).data
+                  : undefined,
+                (value) => isObject(value)
+                  && value.id === eventStatusId
+                  && safeString(value.state)
+                  && usableActor(value.creator),
+              );
+              const sourceFile = await fetchWorkflowFile(
+                "sourceFile",
+                process.env.GITHUB_WORKFLOW_SHA,
+              );
+              const mainFile = await fetchWorkflowFile("mainFile", mainSha);
+              const prFile = await fetchWorkflowFile("prFile", prSha);
+              workflowRefClass = classifyWorkflowRef(
+                process.env.GITHUB_WORKFLOW_REF,
+                mainSha,
+                prSha,
+              );
+              workflowShaClass = classifySha(
+                process.env.GITHUB_WORKFLOW_SHA,
+                mainSha,
+                prSha,
+              );
+              githubShaClass = classifySha(process.env.GITHUB_SHA, mainSha, prSha);
+              deploymentRefClass = classifyDeploymentRef(deployment?.ref, mainSha, prSha);
+              workflowBlobsClass = classifyWorkflowFiles(sourceFile, mainFile, prFile);
+              const envRunId = positiveIdString(process.env.GITHUB_RUN_ID)
+                ? Number(process.env.GITHUB_RUN_ID)
+                : undefined;
+              const contextEventUsable = safeString(context.eventName);
+              const contextRepositoryUsable = safeString(context.repo?.owner)
+                && safeString(context.repo?.repo);
+              if (workflowRun
+                && fullSha(prSha)
+                && contextRunId
+                && envRunId
+                && contextEventUsable
+                && contextRepositoryUsable) {
+                runBindingClass = workflowRun.id === contextRunId
+                  && envRunId === contextRunId
+                  && context.eventName === "deployment_status"
+                  && context.repo.owner === OWNER
+                  && context.repo.repo === REPO
+                  && workflowRun.event === "deployment_status"
+                  && workflowRun.workflow_id === WORKFLOW_ID
+                  && workflowRun.path === WORKFLOW_PATH
+                  && workflowRun.repository.full_name === REPOSITORY
+                  && workflowRun.head_branch === RECOVERY_REF
+                  && workflowRun.head_sha === prSha
+                  && isVercelApp(workflowRun.actor)
+                  && isVercelApp(workflowRun.triggering_actor)
+                  ? "EXACT"
+                  : "MISMATCH";
+              }
+              const factValues = Object.values(facts);
+              const usableFactCount = factValues.filter(Boolean).length;
+              apiFactsClass = usableFactCount === factValues.length
+                ? "COMPLETE"
+                : usableFactCount === 0
+                  ? "UNAVAILABLE"
+                  : "PARTIAL";
+              void repository;
+              void workflow;
+              void deploymentStatus;
+            } catch {
+              // Fixed defaults below are the only permitted failure observation.
             }
-            const target = normalizeVercelOrigin(deploymentStatus.target_url);
-            const environment = normalizeVercelOrigin(deploymentStatus.environment_url);
-            if (target.origin !== environment.origin || target.hostname !== environment.hostname) {
-              fail();
-            }
-
-            const GITHUB_DEPLOYMENT_ID = String(deployment.id);
-            const GITHUB_DEPLOYMENT_STATUS_ID = String(deploymentStatus.id);
-            const ATTESTED_SHA = pullRequest.headRefOid;
-            const VERCEL_HOSTNAME = target.hostname;
-            core.setOutput("github_deployment_id", GITHUB_DEPLOYMENT_ID);
-            core.setOutput("github_deployment_status_id", GITHUB_DEPLOYMENT_STATUS_ID);
-            core.setOutput("vercel_origin", target.origin);
-            core.setOutput("vercel_hostname", VERCEL_HOSTNAME);
-            core.setOutput("attested_sha", ATTESTED_SHA);
-            core.setOutput("repository", REPOSITORY);
-            core.setOutput("pull_number", String(PR_NUMBER));
-            core.setOutput("ref", RECOVERY_REF);
-            core.setOutput("workflow_id", String(workflow.id));
-            core.setOutput("workflow_path", WORKFLOW_PATH);
-            core.setOutput("workflow_blob", workflowFile.sha);
-            core.setOutput("main_sha", mainRef.object.sha);
-            console.log("AAIS_PREVIEW_TRUST_GITHUB_PASS");
+            console.log([
+              "AAIS_PREVIEW_CONTEXT_DIAG",
+              "WORKFLOW_REF=" + workflowRefClass,
+              "WORKFLOW_SHA=" + workflowShaClass,
+              "GITHUB_SHA=" + githubShaClass,
+              "DEPLOYMENT_REF=" + deploymentRefClass,
+              "WORKFLOW_BLOBS=" + workflowBlobsClass,
+              "RUN_BINDING=" + runBindingClass,
+              "API_FACTS=" + apiFactsClass,
+            ].join(" "));
+            throw new Error("AAIS_PREVIEW_CONTEXT_DIAGNOSTIC_STOP");
 
       - name: Stage B - attest Vercel deployment
+        if: ${{ false }}
         id: vercel-trust
         env:
           VERCEL_E2E_METADATA_TOKEN: ${{ secrets.VERCEL_E2E_METADATA_TOKEN }}
@@ -354,6 +556,7 @@ jobs:
           NODE
 
   preview-e2e:
+    if: ${{ false }}
     needs: trust-preview
     runs-on: ubuntu-latest
     steps:
