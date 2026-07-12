@@ -57,7 +57,7 @@ export async function POST(request: Request) {
     const studentId = await resolveAaisStudentId(request);
     requireAaisCsrf(request, studentId);
     const store = getAaisLearningStore();
-    const budget = await requireDailyGuideBudget(studentId, store);
+    const budget = await reserveDailyGuideBudget(studentId, store);
     const targetAgentIds = normalizeAaisGuideTargetAgentIds(
       body.targetAgentIds,
       body.learnerInput,
@@ -101,17 +101,16 @@ export async function POST(request: Request) {
         threadId: result.runtime.threadId,
       },
     });
-    const finalizedBudget = finalizeDailyGuideBudget(budget);
     recordGuideBudgetAudit({
       studentId,
       event: "ai.guide.budget.used",
       outcome: "success",
-      budget: finalizedBudget,
+      budget,
     });
 
     return NextResponse.json({
       ...createGuideJsonBody(result),
-      budget: finalizedBudget,
+      budget,
     });
   } catch (error) {
     return createAaisApiErrorResponse(getErrorResponseInput(error));
@@ -224,7 +223,7 @@ function createGuideStreamResponse(input: {
         send("ack", {
           status: "accepted",
           graphId: "learning-ai-guide",
-          budget: finalizeDailyGuideBudget(input.budget),
+          budget: input.budget,
         });
         for (const agentId of targetAgentIds) {
           send("agent_start", { agentId });
@@ -244,12 +243,11 @@ function createGuideStreamResponse(input: {
             threadId: result.runtime.threadId,
           },
         });
-        const finalizedBudget = finalizeDailyGuideBudget(input.budget);
         recordGuideBudgetAudit({
           studentId: input.input.studentId,
           event: "ai.guide.budget.used",
           outcome: "success",
-          budget: finalizedBudget,
+          budget: input.budget,
         });
 
         for (const turn of result.visibleTurns) {
@@ -307,19 +305,19 @@ class AaisGuideDailyBudgetError extends Error {
   }
 }
 
-async function requireDailyGuideBudget(
+async function reserveDailyGuideBudget(
   studentId: string,
   store: ReturnType<typeof getAaisLearningStore>,
 ): Promise<AaisGuideDailyBudget> {
   const limit = readDailyGuideLimit();
-  const usage = await store.getDailyGuideUsage(studentId);
-  const budget = {
-    limit,
-    used: usage.used,
-    remaining: Math.max(0, limit - usage.used),
-    resetsAt: usage.end,
+  const reservation = await store.reserveDailyGuideRequest({ studentId, limit });
+  const budget: AaisGuideDailyBudget = {
+    limit: reservation.limit,
+    used: reservation.used,
+    remaining: reservation.remaining,
+    resetsAt: reservation.resetsAt,
   };
-  if (budget.remaining <= 0) {
+  if (reservation.status === "exhausted") {
     recordGuideBudgetAudit({
       studentId,
       event: "ai.guide.budget.exceeded",
@@ -329,15 +327,6 @@ async function requireDailyGuideBudget(
     throw new AaisGuideDailyBudgetError(budget);
   }
   return budget;
-}
-
-function finalizeDailyGuideBudget(budget: AaisGuideDailyBudget): AaisGuideDailyBudget {
-  const used = budget.used + 1;
-  return {
-    ...budget,
-    used,
-    remaining: Math.max(0, budget.limit - used),
-  };
 }
 
 function readDailyGuideLimit() {

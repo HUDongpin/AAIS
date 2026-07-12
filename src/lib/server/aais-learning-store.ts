@@ -466,7 +466,7 @@ export function createAaisLearningStore(input: StoreInput = {}) {
 
   async function completeTask(studentId: string, taskId: string) {
     const session = await getOrCreateSession(studentId);
-    const completed = requireTask(session, taskId);
+    const completed = requireUnlockedTask(session, taskId);
     const nextTaskId = getNextTaskId(taskId);
     const tasks = session.tasks.map((task) => {
       if (task.taskId === taskId) {
@@ -533,7 +533,7 @@ export function createAaisLearningStore(input: StoreInput = {}) {
     toolId: string,
   ): Promise<ScaffoldResult> {
     const session = await getOrCreateSession(studentId);
-    const task = requireTask(session, taskId);
+    const task = requireUnlockedTask(session, taskId);
     if (task.phase !== "practice") {
       throw new Error("A1 scaffolding is only available in practice tasks");
     }
@@ -615,7 +615,7 @@ export function createAaisLearningStore(input: StoreInput = {}) {
     },
   ) {
     const session = await getOrCreateSession(studentId);
-    const task = requireTask(session, taskId);
+    const task = requireUnlockedTask(session, taskId);
     const reason = requireSafeText(input.reason ?? "", "AI acceptance reason");
     const decisionKey = input.messageId
       ? createAiAcceptanceDecisionKey(session, task, requireSafeId(input.messageId, "AI message id"))
@@ -777,6 +777,10 @@ export function createAaisLearningStore(input: StoreInput = {}) {
         [safeStudentId],
       );
       await database.query(
+        "delete from aais_ai_guide_daily_usage where student_id = $1",
+        [safeStudentId],
+      );
+      await database.query(
         "delete from aais_events where student_id = $1",
         [safeStudentId],
       );
@@ -859,6 +863,58 @@ export function createAaisLearningStore(input: StoreInput = {}) {
     };
   }
 
+  async function reserveDailyGuideRequest(input: {
+    studentId: string;
+    limit: number;
+    now?: Date;
+  }): Promise<AaisDailyGuideReservation> {
+    const safeStudentId = requireSafeId(input.studentId, "student id");
+    const now = input.now ?? new Date();
+    const dayRange = getAaisUtcDayRange(now);
+    const limit = Math.max(1, Math.floor(input.limit));
+    if (database) {
+      try {
+        // Atomic reserve-then-run gate: the guarded upsert increments the daily
+        // counter only while it is below the limit, so concurrent requests (even on
+        // separate serverless instances) cannot both slip past the cap.
+        const reserved = await database.query(
+          `insert into aais_ai_guide_daily_usage (student_id, usage_day, used, updated_at)
+           values ($1, $2::date, 1, $3::timestamptz)
+           on conflict (student_id, usage_day)
+           do update set used = aais_ai_guide_daily_usage.used + 1, updated_at = $3::timestamptz
+           where aais_ai_guide_daily_usage.used < $4
+           returning used`,
+          [safeStudentId, dayRange.start, now.toISOString(), limit],
+        );
+        if (reserved.rows.length > 0) {
+          return buildDailyGuideReservation("reserved", limit, Number(reserved.rows[0]?.used) || 1, dayRange.end);
+        }
+        const current = await database.query(
+          `select used
+             from aais_ai_guide_daily_usage
+            where student_id = $1
+              and usage_day = $2::date
+            limit 1`,
+          [safeStudentId, dayRange.start],
+        );
+        return buildDailyGuideReservation("exhausted", limit, Number(current.rows[0]?.used ?? limit) || limit, dayRange.end);
+      } catch (error) {
+        // If migration 0008 has not been applied yet, degrade to best-effort
+        // prompt-event counting rather than failing every guide request.
+        if (!isMissingAaisRelationError(error)) {
+          throw error;
+        }
+      }
+    }
+    // File/memory backend (or a database still missing the durable counter table) is
+    // single-process best effort; the increment lands when the exchange is appended.
+    const usage = await getDailyGuideUsage(safeStudentId, now);
+    if (usage.used >= limit) {
+      return buildDailyGuideReservation("exhausted", limit, usage.used, usage.end);
+    }
+    return buildDailyGuideReservation("reserved", limit, usage.used + 1, usage.end);
+  }
+
   async function getCohortAnalytics(
     filters: AaisCohortAnalyticsFilters = {},
     pagination?: AaisCohortLearnerPaginationInput,
@@ -936,7 +992,7 @@ export function createAaisLearningStore(input: StoreInput = {}) {
     const value = requireSafeText(input.value, input.field);
     for (let attempt = 0; attempt < 2; attempt += 1) {
       const session = await getOrCreateSession(input.studentId);
-      const task = requireTask(session, input.taskId);
+      const task = requireUnlockedTask(session, input.taskId);
       baseFieldValue ??= task[input.field];
       if (attempt > 0 && task[input.field] !== baseFieldValue && task[input.field] !== value) {
         recordAaisSessionWriteConflict({
@@ -1186,6 +1242,7 @@ export function createAaisLearningStore(input: StoreInput = {}) {
     getOrCreateSession,
     recordRecommendationOverride,
     recordAiAcceptance,
+    reserveDailyGuideRequest,
     requestScaffold,
     saveArtifact,
     saveSelfReport,
@@ -1897,12 +1954,20 @@ export async function flushAaisPersistentLrsOutbox(input: {
   let failed = 0;
   let batches = 0;
   for (const batch of chunkOutboxRows(result.rows, input.maxBatchSize ?? 50)) {
-    const events = batch.map((row) => normalizeOutboxPayload(row.payload));
-    const delivery = await sendAaisEventsToLrs(events, {
-      config: input.config,
-      fetchImpl: input.fetchImpl,
-      maxBatchSize: events.length,
-    });
+    let delivery: Awaited<ReturnType<typeof sendAaisEventsToLrs>> | { status: "error"; sent: number };
+    try {
+      const events = batch.map((row) => normalizeOutboxPayload(row.payload));
+      delivery = await sendAaisEventsToLrs(events, {
+        config: input.config,
+        fetchImpl: input.fetchImpl,
+        maxBatchSize: events.length,
+      });
+    } catch {
+      // A malformed payload or an event with no xAPI mapping must not stall the
+      // outbox with an unhandled rejection — treat it as a delivery failure so the
+      // batch retries and eventually dead-letters instead of blocking every flush.
+      delivery = { status: "error", sent: 0 };
+    }
     if (delivery.status === "not_configured") {
       return {
         status: "not_configured" as const,
@@ -2545,6 +2610,14 @@ function requireTask(session: AaisLearnerSession, taskId: string) {
   return task;
 }
 
+function requireUnlockedTask(session: AaisLearnerSession, taskId: string) {
+  const task = requireTask(session, taskId);
+  if (task.status === "locked") {
+    throw new Error(`Task ${taskId} is locked`);
+  }
+  return task;
+}
+
 function getNextTaskId(taskId: string) {
   const index = taskOrder.findIndex((task) => task.taskId === taskId);
   return index >= 0 ? taskOrder[index + 1]?.taskId : undefined;
@@ -2814,6 +2887,37 @@ function getAaisUtcDayRange(now: Date) {
     start: start.toISOString(),
     end: end.toISOString(),
   };
+}
+
+export type AaisDailyGuideReservation = {
+  status: "reserved" | "exhausted";
+  limit: number;
+  used: number;
+  remaining: number;
+  resetsAt: string;
+};
+
+function buildDailyGuideReservation(
+  status: AaisDailyGuideReservation["status"],
+  limit: number,
+  used: number,
+  resetsAt: string,
+): AaisDailyGuideReservation {
+  return {
+    status,
+    limit,
+    used,
+    remaining: Math.max(0, limit - used),
+    resetsAt,
+  };
+}
+
+function isMissingAaisRelationError(error: unknown) {
+  if (typeof error !== "object" || error === null || !("code" in error)) {
+    return false;
+  }
+  const code = (error as { code?: unknown }).code;
+  return code === "42P01" || code === "42703";
 }
 
 function hashForId(seed: string) {

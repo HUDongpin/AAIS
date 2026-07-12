@@ -1063,6 +1063,47 @@ describe("AAIS learning API routes", () => {
     expect(JSON.stringify(body)).not.toContain("test-session-secret");
   });
 
+  it("rejects completing a locked task through the session route", async () => {
+    const sessionRoute = await import("@/app/api/learning/session/route");
+    const s001Cookie = createAuthedCookie("S001");
+
+    // A brand-new learner may not complete practice_task_3 (locked) directly —
+    // this would otherwise bypass server-side sequencing and inflate analytics.
+    const response = await sessionRoute.PATCH(
+      new Request("http://localhost/api/learning/session", {
+        method: "PATCH",
+        headers: {
+          cookie: s001Cookie,
+          "x-aais-csrf": createAaisCsrfToken("S001"),
+        },
+        body: JSON.stringify({
+          action: "complete-task",
+          taskId: "practice_task_3",
+        }),
+      }),
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(400);
+    expect(body.error).toEqual({
+      code: "AAIS_TASK_LOCKED",
+      message: "AAIS task is locked.",
+    });
+
+    // The locked task must remain uncompleted after the rejected request.
+    const sessionResponse = await sessionRoute.GET(
+      new Request("http://localhost/api/learning/session", {
+        headers: { cookie: s001Cookie },
+      }),
+    );
+    const sessionBody = await sessionResponse.json();
+    expect(
+      sessionBody.session.tasks.find(
+        (task: { taskId: string }) => task.taskId === "practice_task_3",
+      )?.status,
+    ).toBe("locked");
+  });
+
   it("serves cohort analytics only to teacher or admin sessions", async () => {
     const sessionRoute = await import("@/app/api/learning/session/route");
     const analyticsRoute = await import("@/app/api/learning/analytics/route");

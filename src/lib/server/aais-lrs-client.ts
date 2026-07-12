@@ -106,6 +106,7 @@ const eventVerbMap: Record<string, AaisXapiVerb> = {
   expert_trace_compared: "experienced",
   monitoring_pause_detected: "experienced",
   planning_submitted: "generated",
+  recommendation_override_recorded: "completed",
   scaffold_request: "requested",
   scaffold_self_check_started: "attempted",
   self_report_saved: "generated",

@@ -5,7 +5,7 @@ import {
   sendAaisEventsToLrs,
 } from "@/lib/server/aais-lrs-client";
 import * as lrsClient from "@/lib/server/aais-lrs-client";
-import type { AaisEvent } from "@/data/aais";
+import { aaisEventDefinitions, type AaisEvent } from "@/data/aais";
 
 const testConfig = {
   endpoint: "https://lrs.example.test/xapi",
@@ -28,6 +28,25 @@ const scaffoldEvent: AaisEvent = {
 };
 
 describe("AAIS LRS xAPI client", () => {
+  it("has an xAPI verb mapping for every defined AAIS event", () => {
+    // Any event that reaches the LRS outbox must build a statement without
+    // throwing; a missing verb mapping would permanently stall the persistent
+    // outbox flush. Guard the whole class, not just one event.
+    for (const [eventName, definition] of Object.entries(aaisEventDefinitions)) {
+      const event: AaisEvent = {
+        student_id: "S001",
+        session_id: "session-coverage",
+        phase: "practice",
+        task: "practice_task_1",
+        agent: definition.agent,
+        event: eventName as AaisEvent["event"],
+        time: "2026-07-10T00:00:00.000Z",
+        detail: {},
+      };
+      expect(() => buildAaisXapiStatement(event), `event ${eventName} must map to an xAPI verb`).not.toThrow();
+    }
+  });
+
   it("builds analysis-ready xAPI statements from AAIS events", () => {
     const statement = buildAaisXapiStatement(scaffoldEvent);
 
