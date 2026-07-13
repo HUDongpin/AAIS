@@ -35,7 +35,7 @@ describe("AAIS preview E2E workflow trust gate", () => {
     expect(stageB).toContain("VERCEL_E2E_METADATA_TOKEN: ${{ secrets.VERCEL_E2E_METADATA_TOKEN }}");
     expect(stageB).toContain("AAIS_PREVIEW_TRUST_METADATA_TOKEN_ABSENT");
     expect(stageB).not.toContain("actions/checkout");
-    expect(stageC).toContain("uses: actions/checkout@v4");
+    expect(stageC).toContain("uses: actions/checkout@v7");
     expect(stageC).toContain("ref: ${{ needs.trust-preview.outputs.main_sha }}");
     expect(stageC).toContain("test \"$(git rev-parse HEAD)\" = \"$TRUSTED_MAIN_SHA\"");
     expect(stageC).not.toContain("ref: ${{ needs.trust-preview.outputs.attested_sha }}");
