@@ -346,6 +346,7 @@ describe("AAIS preview E2E workflow trust gate", () => {
   it("forbids upload artifacts and inventories retained Playwright output", () => {
     expect(workflow).not.toContain("upload-artifact");
     const inventory = workflow.slice(workflow.indexOf("- name: Verify no secret-bearing artifacts"));
+    expect(inventory).toContain("rm -rf test-results playwright-report blob-report");
     expect(inventory).toContain("AAIS_PREVIEW_ARTIFACT_FILE_COUNT");
     expect(inventory).toContain("AAIS_PREVIEW_ATTACHMENT_FILE_COUNT");
     expect(inventory).toContain("test \"$artifact_file_count\" -eq 0");
