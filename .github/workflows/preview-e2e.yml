@@ -1,7 +1,9 @@
 name: AAIS Preview E2E
 
 on:
-  deployment_status:
+  workflow_run:
+    workflows: ["AAIS CI"]
+    types: [completed]
 
 permissions:
   contents: read
@@ -12,14 +14,14 @@ permissions:
 jobs:
   trust-preview:
     if: >
-      github.event_name == 'deployment_status' &&
-      github.event.deployment_status.state == 'success' &&
-      github.event.deployment.environment == 'Preview'
+      github.event_name == 'workflow_run' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'pull_request'
     runs-on: ubuntu-latest
     outputs:
       github_deployment_id: ${{ steps.github-trust.outputs.github_deployment_id }}
       github_deployment_status_id: ${{ steps.github-trust.outputs.github_deployment_status_id }}
-      vercel_origin: ${{ steps.github-trust.outputs.vercel_origin }}
+      vercel_origin: ${{ steps.vercel-trust.outputs.vercel_origin }}
       vercel_hostname: ${{ steps.github-trust.outputs.vercel_hostname }}
       attested_sha: ${{ steps.github-trust.outputs.attested_sha }}
       repository: ${{ steps.github-trust.outputs.repository }}
@@ -41,11 +43,20 @@ jobs:
             const OWNER = "HUDongpin";
             const REPO = "AAIS";
             const REPOSITORY = "HUDongpin/AAIS";
-            const EVENT = "deployment_status";
+            const EVENT = "workflow_run";
             const DEFAULT_BRANCH = "main";
+            const UPSTREAM_WORKFLOW = "AAIS CI";
+            const UPSTREAM_WORKFLOW_PATH = ".github/workflows/ci.yml";
             const WORKFLOW_PATH = ".github/workflows/preview-e2e.yml";
             const WORKFLOW_REF = "HUDongpin/AAIS/.github/workflows/preview-e2e.yml@refs/heads/main";
+            const OWNER_ACCOUNT = {
+              login: "HUDongpin",
+              id: 47708816,
+              node_id: "MDQ6VXNlcjQ3NzA4ODE2",
+              type: "User",
+            };
             const executingWorkflowSha = process.env.GITHUB_WORKFLOW_SHA;
+            const triggeringSha = process.env.GITHUB_SHA;
             const VERCEL_APP = {
               login: "vercel[bot]",
               id: 35613825,
@@ -61,6 +72,11 @@ jobs:
               && actor.id === VERCEL_APP.id
               && actor.node_id === VERCEL_APP.node_id
               && actor.type === VERCEL_APP.type;
+            const isOwnerAccount = (actor) => actor
+              && actor.login === OWNER_ACCOUNT.login
+              && actor.id === OWNER_ACCOUNT.id
+              && actor.node_id === OWNER_ACCOUNT.node_id
+              && actor.type === OWNER_ACCOUNT.type;
             const normalizeVercelOrigin = (value) => {
               let url;
               try {
@@ -84,27 +100,25 @@ jobs:
             if (context.eventName !== EVENT
               || `${context.repo.owner}/${context.repo.repo}` !== REPOSITORY
               || process.env.GITHUB_WORKFLOW_REF !== WORKFLOW_REF
-              || !/^[a-f0-9]{40}$/.test(executingWorkflowSha)) {
+              || !/^[a-f0-9]{40}$/.test(executingWorkflowSha)
+              || triggeringSha !== executingWorkflowSha) {
               fail();
             }
-            const eventDeployment = context.payload.deployment;
-            const eventStatus = context.payload.deployment_status;
-            if (!positiveId(eventDeployment?.id)
-              || !positiveId(eventStatus?.id)
-              || Number(eventDeployment.id) === Number(eventStatus.id)) {
+            const eventWorkflowRun = context.payload.workflow_run;
+            if (!positiveId(eventWorkflowRun?.id)
+              || eventWorkflowRun?.event !== "pull_request"
+              || eventWorkflowRun?.status !== "completed"
+              || eventWorkflowRun?.conclusion !== "success"
+              || !/^[a-f0-9]{40}$/.test(eventWorkflowRun?.head_sha)) {
               fail();
             }
 
             const { data: repository } = await github.rest.repos.get({ owner: OWNER, repo: REPO });
-            const { data: mainRef } = await github.rest.git.getRef({
+            const { data: workflowRun } = await github.rest.actions.getWorkflowRun({
               owner: OWNER,
               repo: REPO,
-              ref: `heads/${DEFAULT_BRANCH}`,
+              run_id: Number(eventWorkflowRun.id),
             });
-            if (!/^[a-f0-9]{40}$/.test(mainRef.object.sha)
-              || executingWorkflowSha !== mainRef.object.sha) {
-              fail();
-            }
             const { data: workflow } = await github.rest.actions.getWorkflow({
               owner: OWNER,
               repo: REPO,
@@ -116,66 +130,166 @@ jobs:
               path: WORKFLOW_PATH,
               ref: executingWorkflowSha,
             });
-            const { data: deployment } = await github.rest.repos.getDeployment({
+            const { data: upstreamWorkflow } = await github.rest.actions.getWorkflow({
               owner: OWNER,
               repo: REPO,
-              deployment_id: Number(eventDeployment.id),
+              workflow_id: "ci.yml",
             });
-            const { data: deploymentStatus } = await github.rest.repos.getDeploymentStatus({
+            const candidateSha = eventWorkflowRun.head_sha;
+            if (!/^[a-f0-9]{40}$/.test(candidateSha)) {
+              fail();
+            }
+            const { data: trustedCiFile } = await github.rest.repos.getContent({
               owner: OWNER,
               repo: REPO,
-              deployment_id: Number(eventDeployment.id),
-              status_id: Number(eventStatus.id),
+              path: UPSTREAM_WORKFLOW_PATH,
+              ref: executingWorkflowSha,
             });
-            if (!/^[a-f0-9]{40}$/.test(deployment.sha)) {
-              fail();
-            }
-            const associatedPullRequests = await github.paginate(
-              github.rest.repos.listPullRequestsAssociatedWithCommit,
-              {
-                owner: OWNER,
-                repo: REPO,
-                commit_sha: deployment.sha,
-                per_page: 100,
-              },
-            );
-            if (!Array.isArray(associatedPullRequests)
-              || associatedPullRequests.some((pull) => !positiveId(pull?.number))) {
-              fail();
-            }
-            const pullRequests = await Promise.all(
-              associatedPullRequests.map(async ({ number }) => {
-                const { data } = await github.rest.pulls.get({
+            const { data: candidateCiFile } = await github.rest.repos.getContent({
+              owner: OWNER,
+              repo: REPO,
+              path: UPSTREAM_WORKFLOW_PATH,
+              ref: candidateSha,
+            });
+            const approvalCommand = `/aais-preview-e2e approve ${candidateSha}`;
+            const resolvePullRequest = async () => {
+              const associatedPullRequests = await github.paginate(
+                github.rest.repos.listPullRequestsAssociatedWithCommit,
+                {
                   owner: OWNER,
                   repo: REPO,
-                  pull_number: Number(number),
-                });
-                return data;
-              }),
-            );
-            const matchingPullRequests = pullRequests.filter((pullRequest) =>
-              pullRequest?.state === "open"
-              && pullRequest.base?.ref === DEFAULT_BRANCH
-              && pullRequest.head?.repo?.full_name === REPOSITORY
-              && pullRequest.head?.sha === deployment.sha
-              && (deployment.ref === pullRequest.head.ref
-                || deployment.ref === pullRequest.head.sha));
-            if (matchingPullRequests.length !== 1) {
+                  commit_sha: candidateSha,
+                  per_page: 100,
+                },
+              );
+              if (!Array.isArray(associatedPullRequests)
+                || associatedPullRequests.some((pull) => !positiveId(pull?.number))) {
+                fail();
+              }
+              const pullRequests = await Promise.all(
+                associatedPullRequests.map(async ({ number }) => {
+                  const { data } = await github.rest.pulls.get({
+                    owner: OWNER,
+                    repo: REPO,
+                    pull_number: Number(number),
+                  });
+                  return data;
+                }),
+              );
+              const matchingPullRequests = pullRequests.filter((candidate) =>
+                candidate?.state === "open"
+                && candidate.base?.ref === DEFAULT_BRANCH
+                && candidate.head?.repo?.full_name === REPOSITORY
+                && candidate.head?.ref === eventWorkflowRun.head_branch
+                && candidate.head?.sha === candidateSha);
+              if (matchingPullRequests.length !== 1) {
+                fail();
+              }
+              return matchingPullRequests[0];
+            };
+            const requireOwnerApproval = async (candidate) => {
+              const comments = await github.paginate(
+                github.rest.issues.listComments,
+                {
+                  owner: OWNER,
+                  repo: REPO,
+                  issue_number: Number(candidate.number),
+                  per_page: 100,
+                },
+              );
+              const ownerApprovals = comments.filter((comment) => positiveId(comment?.id)
+                && comment.author_association === "OWNER"
+                && isOwnerAccount(comment.user)
+                && typeof comment.body === "string"
+                && comment.body.trim() === approvalCommand);
+              if (ownerApprovals.length < 1) {
+                fail();
+              }
+            };
+            let pullRequest = await resolvePullRequest();
+            await requireOwnerApproval(pullRequest);
+
+            let deployment;
+            let deploymentStatus;
+            for (let attempt = 0; attempt < 18; attempt += 1) {
+              const deployments = await github.paginate(
+                github.rest.repos.listDeployments,
+                {
+                  owner: OWNER,
+                  repo: REPO,
+                  sha: candidateSha,
+                  environment: "Preview",
+                  per_page: 100,
+                },
+              );
+              const matchingDeployments = deployments
+                .filter((candidate) => candidate?.sha === candidateSha
+                  && candidate.environment === "Preview"
+                  && isVercelApp(candidate.creator)
+                  && (candidate.ref === pullRequest.head.ref
+                    || candidate.ref === candidateSha))
+                .sort((left, right) => Number(right.id) - Number(left.id));
+              [deployment] = matchingDeployments;
+              if (deployment) {
+                const statuses = await github.paginate(
+                  github.rest.repos.listDeploymentStatuses,
+                  {
+                    owner: OWNER,
+                    repo: REPO,
+                    deployment_id: Number(deployment.id),
+                    per_page: 100,
+                  },
+                );
+                [deploymentStatus] = statuses
+                  .filter((status) => isVercelApp(status?.creator))
+                  .sort((left, right) => Number(right.id) - Number(left.id));
+                if (deploymentStatus?.state === "success") {
+                  break;
+                }
+              }
+              deployment = undefined;
+              deploymentStatus = undefined;
+              if (attempt < 17) {
+                await new Promise((resolve) => setTimeout(resolve, 10000));
+              }
+            }
+            const refreshedPullRequest = await resolvePullRequest();
+            if (refreshedPullRequest.number !== pullRequest.number) {
               fail();
             }
-            const [pullRequest] = matchingPullRequests;
+            await requireOwnerApproval(refreshedPullRequest);
+            pullRequest = refreshedPullRequest;
 
             if (repository.full_name !== REPOSITORY
               || repository.default_branch !== DEFAULT_BRANCH
+              || workflowRun.id !== Number(eventWorkflowRun.id)
+              || workflowRun.name !== UPSTREAM_WORKFLOW
+              || workflowRun.path !== UPSTREAM_WORKFLOW_PATH
+              || workflowRun.workflow_id !== upstreamWorkflow.id
+              || workflowRun.event !== "pull_request"
+              || workflowRun.status !== "completed"
+              || workflowRun.conclusion !== "success"
+              || workflowRun.head_sha !== candidateSha
+              || workflowRun.head_branch !== pullRequest.head.ref
+              || workflowRun.repository?.full_name !== REPOSITORY
+              || workflowRun.head_repository?.full_name !== REPOSITORY
               || workflow.path !== WORKFLOW_PATH
               || workflow.state !== "active"
+              || upstreamWorkflow.name !== UPSTREAM_WORKFLOW
+              || upstreamWorkflow.path !== UPSTREAM_WORKFLOW_PATH
+              || upstreamWorkflow.state !== "active"
+              || Array.isArray(trustedCiFile)
+              || trustedCiFile.type !== "file"
+              || Array.isArray(candidateCiFile)
+              || candidateCiFile.type !== "file"
+              || typeof trustedCiFile.sha !== "string"
+              || candidateCiFile.sha !== trustedCiFile.sha
               || Array.isArray(workflowFile)
               || workflowFile.type !== "file"
               || !positiveId(workflow.id)
               || typeof workflowFile.sha !== "string"
-              || !/^[a-f0-9]{40}$/.test(mainRef.object.sha)
-              || deployment.id !== Number(eventDeployment.id)
-              || deploymentStatus.id !== Number(eventStatus.id)
+              || !positiveId(deployment?.id)
+              || !positiveId(deploymentStatus?.id)
               || !isVercelApp(deployment.creator)
               || !isVercelApp(deploymentStatus.creator)
               || deployment.environment !== "Preview"
@@ -184,9 +298,10 @@ jobs:
               || pullRequest.state !== "open"
               || pullRequest.base?.ref !== DEFAULT_BRANCH
               || pullRequest.head?.repo?.full_name !== REPOSITORY
-              || pullRequest.head?.sha !== deployment.sha
+              || pullRequest.head?.sha !== candidateSha
+              || deployment.sha !== candidateSha
               || (deployment.ref !== pullRequest.head.ref
-                && deployment.ref !== pullRequest.head.sha)
+                && deployment.ref !== candidateSha)
               || !/^[a-f0-9]{40}$/.test(pullRequest.head.sha)) {
               fail();
             }
@@ -211,7 +326,7 @@ jobs:
             core.setOutput("workflow_id", String(workflow.id));
             core.setOutput("workflow_path", WORKFLOW_PATH);
             core.setOutput("workflow_blob", workflowFile.sha);
-            core.setOutput("main_sha", mainRef.object.sha);
+            core.setOutput("main_sha", executingWorkflowSha);
             console.log("AAIS_PREVIEW_TRUST_GITHUB_PASS");
 
       - name: Stage B - attest Vercel deployment
@@ -351,8 +466,7 @@ jobs:
               || !isString(deployment.url)
               || !Array.isArray(deployment.alias)
               || !deployment.alias.every(isString)
-              || (deployment.url !== process.env.VERCEL_HOSTNAME
-                && !deployment.alias.includes(process.env.VERCEL_HOSTNAME))
+              || deployment.url !== process.env.VERCEL_HOSTNAME
               || deployment.gitSource.type !== "github"
               || deployment.gitSource.repoId !== 1294583104
               || deployment.gitSource.ref !== process.env.ATTESTED_REF
@@ -365,8 +479,10 @@ jobs:
             }
             const observedAt = new Date().toISOString();
             const VERCEL_DEPLOYMENT_ID = deployment.id;
+            const VERCEL_ORIGIN = `https://${deployment.url}`;
             appendFileSync(process.env.GITHUB_OUTPUT, `vercel_deployment_id=${VERCEL_DEPLOYMENT_ID}\n`);
             appendFileSync(process.env.GITHUB_OUTPUT, `provider_observed_at=${observedAt}\n`);
+            appendFileSync(process.env.GITHUB_OUTPUT, `vercel_origin=${VERCEL_ORIGIN}\n`);
             console.log("AAIS_PREVIEW_TRUST_METADATA_PASS");
           })().catch(() => {
             console.error("AAIS_PREVIEW_TRUST_METADATA_RESPONSE");
@@ -378,16 +494,16 @@ jobs:
     needs: trust-preview
     runs-on: ubuntu-latest
     steps:
-      - name: Stage C - checkout attested commit
+      - name: Stage C - checkout trusted main
         uses: actions/checkout@v4
         with:
-          ref: ${{ needs.trust-preview.outputs.attested_sha }}
+          ref: ${{ needs.trust-preview.outputs.main_sha }}
 
       - name: Verify exact checkout and repository
         env:
-          ATTESTED_SHA: ${{ needs.trust-preview.outputs.attested_sha }}
+          TRUSTED_MAIN_SHA: ${{ needs.trust-preview.outputs.main_sha }}
         run: |
-          test "$(git rev-parse HEAD)" = "$ATTESTED_SHA"
+          test "$(git rev-parse HEAD)" = "$TRUSTED_MAIN_SHA"
           origin="$(git remote get-url origin)"
           case "$origin" in
             https://github.com/HUDongpin/AAIS|https://github.com/HUDongpin/AAIS.git|git@github.com:HUDongpin/AAIS.git) ;;

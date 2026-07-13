@@ -12,8 +12,11 @@ import { describe, expect, it, vi } from "vitest";
 const workflow = readFileSync(".github/workflows/preview-e2e.yml", "utf8");
 
 describe("AAIS preview E2E workflow trust gate", () => {
-  it("uses deployment_status with read-only Stage-A permissions and no manual dispatch", () => {
-    expect(workflow).toContain("on:\n  deployment_status:");
+  it("uses a trusted workflow_run chain with read-only Stage-A permissions", () => {
+    expect(workflow).toContain("workflow_run:");
+    expect(workflow).toContain("workflows: [\"AAIS CI\"]");
+    expect(workflow).toContain("types: [completed]");
+    expect(workflow).not.toContain("on:\n  deployment_status:");
     expect(workflow).not.toContain("workflow_dispatch");
     expect(workflow).toContain("contents: read");
     expect(workflow).toContain("deployments: read");
@@ -22,10 +25,10 @@ describe("AAIS preview E2E workflow trust gate", () => {
     expect(workflow).not.toMatch(/permissions:[\s\S]*?write/);
   });
 
-  it("orders secret-free Stage A, pre-checkout Stage B, and exact-SHA Stage C", () => {
+  it("orders secret-free Stage A, pre-checkout Stage B, and trusted-main Stage C", () => {
     const stageA = stepBlock("Stage A - attest GitHub deployment", "Stage B - attest Vercel deployment");
-    const stageB = stepBlock("Stage B - attest Vercel deployment", "Stage C - checkout attested commit");
-    const stageC = workflow.slice(workflow.indexOf("- name: Stage C - checkout attested commit"));
+    const stageB = stepBlock("Stage B - attest Vercel deployment", "Stage C - checkout trusted main");
+    const stageC = workflow.slice(workflow.indexOf("- name: Stage C - checkout trusted main"));
 
     expect(stageA).not.toContain("secrets.");
     expect(stageA).not.toContain("VERCEL_E2E_METADATA_TOKEN");
@@ -33,21 +36,39 @@ describe("AAIS preview E2E workflow trust gate", () => {
     expect(stageB).toContain("AAIS_PREVIEW_TRUST_METADATA_TOKEN_ABSENT");
     expect(stageB).not.toContain("actions/checkout");
     expect(stageC).toContain("uses: actions/checkout@v4");
-    expect(stageC).toContain("ref: ${{ needs.trust-preview.outputs.attested_sha }}");
-    expect(stageC).toContain("test \"$(git rev-parse HEAD)\" = \"$ATTESTED_SHA\"");
+    expect(stageC).toContain("ref: ${{ needs.trust-preview.outputs.main_sha }}");
+    expect(stageC).toContain("test \"$(git rev-parse HEAD)\" = \"$TRUSTED_MAIN_SHA\"");
+    expect(stageC).not.toContain("ref: ${{ needs.trust-preview.outputs.attested_sha }}");
   });
 
-  it("binds Stage A to Vercel App and a unique open same-repository PR for the deployment SHA", () => {
+  it("never checks out or executes candidate code in the privileged workflow", () => {
+    expect(workflow).not.toContain("Stage C - checkout attested commit");
+    expect(workflow).not.toContain("ref: ${{ needs.trust-preview.outputs.attested_sha }}");
+    expect(workflow).toContain("Stage C - checkout trusted main");
+    expect(workflow).toContain("ref: ${{ needs.trust-preview.outputs.main_sha }}");
+  });
+
+  it("binds Stage A to a successful AAIS CI run, Vercel App, and one same-repository PR", () => {
     const stageA = stepBlock("Stage A - attest GitHub deployment", "Stage B - attest Vercel deployment");
 
     for (const required of [
       "HUDongpin/AAIS",
-      "deployment_status",
+      "workflow_run",
+      "AAIS CI",
+      ".github/workflows/ci.yml",
       "vercel[bot]",
       "35613825",
       "MDM6Qm90MzU2MTM4MjU=",
       "Bot",
       "github.paginate",
+      "getWorkflowRun",
+      "listDeployments",
+      "listDeploymentStatuses",
+      "github.rest.issues.listComments",
+      "/aais-preview-e2e approve ${candidateSha}",
+      "author_association === \"OWNER\"",
+      "47708816",
+      "MDQ6VXNlcjQ3NzA4ODE2",
       "listPullRequestsAssociatedWithCommit",
       "github.rest.pulls.get",
       "pullRequest.base?.ref",
@@ -72,19 +93,15 @@ describe("AAIS preview E2E workflow trust gate", () => {
     expect(stageA).not.toContain("pullRequest(number: 5)");
   });
 
-  it("binds the executing workflow SHA to current main and fetches the workflow blob immutably", () => {
+  it("binds the workflow_run execution to an immutable main workflow SHA", () => {
     const stageA = stepBlock("Stage A - attest GitHub deployment", "Stage B - attest Vercel deployment");
 
     expect(stageA).toContain("const executingWorkflowSha = process.env.GITHUB_WORKFLOW_SHA;");
+    expect(stageA).toContain("const triggeringSha = process.env.GITHUB_SHA;");
     expect(stageA).toContain("!/^[a-f0-9]{40}$/.test(executingWorkflowSha)");
-    expect(stageA).toContain("executingWorkflowSha !== mainRef.object.sha");
+    expect(stageA).toContain("triggeringSha !== executingWorkflowSha");
     expect(stageA).toContain("ref: executingWorkflowSha");
     expect(stageA).not.toContain("ref: DEFAULT_BRANCH");
-
-    const staleWorkflowGuard = stageA.indexOf("executingWorkflowSha !== mainRef.object.sha");
-    const immutableWorkflowFetch = stageA.indexOf("ref: executingWorkflowSha");
-    expect(staleWorkflowGuard).toBeGreaterThan(-1);
-    expect(immutableWorkflowFetch).toBeGreaterThan(staleWorkflowGuard);
   });
 
   it("executes Stage A from current main while attesting the distinct candidate SHA", async () => {
@@ -125,6 +142,37 @@ describe("AAIS preview E2E workflow trust gate", () => {
     });
     expect(result.outputs.pull_number).toBe("27");
     expect(result.outputs.ref).toBe("dependabot/npm_and_yarn/production-safe");
+  });
+
+  it("requires an exact owner approval bound to the candidate SHA", async () => {
+    const result = await runStageA();
+
+    expect(result.paginate).toHaveBeenCalledWith(
+      result.listComments,
+      {
+        owner: "HUDongpin",
+        repo: "AAIS",
+        issue_number: 18,
+        per_page: 100,
+      },
+    );
+    await expect(runStageA({ approvalMode: "missing" }))
+      .rejects.toThrowError(/^AAIS_PREVIEW_TRUST_GITHUB$/);
+    await expect(runStageA({ approvalMode: "wrong-actor" }))
+      .rejects.toThrowError(/^AAIS_PREVIEW_TRUST_GITHUB$/);
+    await expect(runStageA({ approvalMode: "wrong-sha" }))
+      .rejects.toThrowError(/^AAIS_PREVIEW_TRUST_GITHUB$/);
+  });
+
+  it("revalidates the PR and approval after polling and supports pending-to-success", async () => {
+    await expect(runStageA({ refreshMode: "closed" }))
+      .rejects.toThrowError(/^AAIS_PREVIEW_TRUST_GITHUB$/);
+    await expect(runStageA({ approvalMode: "removed-on-refresh" }))
+      .rejects.toThrowError(/^AAIS_PREVIEW_TRUST_GITHUB$/);
+
+    const result = await runStageA({ deploymentStates: ["pending", "success"] });
+    expect(result.setTimeoutStub).toHaveBeenCalledWith(expect.any(Function), 10000);
+    expect(result.outputs.attested_sha).toBe(result.candidateSha);
   });
 
   it("accepts GitHub deployment refs expressed as either the candidate SHA or head branch", async () => {
@@ -171,18 +219,32 @@ describe("AAIS preview E2E workflow trust gate", () => {
   it("fetches the workflow by immutable executing/main SHA rather than a mutable branch", async () => {
     const result = await runStageA();
 
-    expect(result.getContent).toHaveBeenCalledTimes(1);
+    expect(result.getContent).toHaveBeenCalledTimes(3);
     expect(result.getContent).toHaveBeenCalledWith({
       owner: "HUDongpin",
       repo: "AAIS",
       path: ".github/workflows/preview-e2e.yml",
       ref: result.mainSha,
     });
-    const [{ ref }] = result.getContent.mock.calls[0];
-    expect(ref).toBe(result.workflowSha);
-    expect(ref).not.toBe("main");
-    expect(ref).not.toBe("refs/heads/main");
-    expect(ref).not.toBe(result.candidateSha);
+    expect(result.getContent).toHaveBeenCalledWith({
+      owner: "HUDongpin",
+      repo: "AAIS",
+      path: ".github/workflows/ci.yml",
+      ref: result.mainSha,
+    });
+    expect(result.getContent).toHaveBeenCalledWith({
+      owner: "HUDongpin",
+      repo: "AAIS",
+      path: ".github/workflows/ci.yml",
+      ref: result.candidateSha,
+    });
+  });
+
+  it("rejects a candidate-modified upstream CI definition or mismatched workflow id", async () => {
+    await expect(runStageA({ candidateCiBlob: "f".repeat(40) }))
+      .rejects.toThrowError(/^AAIS_PREVIEW_TRUST_GITHUB$/);
+    await expect(runStageA({ workflowRunWorkflowId: 999 }))
+      .rejects.toThrowError(/^AAIS_PREVIEW_TRUST_GITHUB$/);
   });
 
   it("rejects the candidate head as the executing workflow SHA with the fixed error", async () => {
@@ -196,7 +258,7 @@ describe("AAIS preview E2E workflow trust gate", () => {
   });
 
   it("uses only the normalized Stage-A hostname as the Vercel idOrUrl", () => {
-    const stageB = stepBlock("Stage B - attest Vercel deployment", "Stage C - checkout attested commit");
+    const stageB = stepBlock("Stage B - attest Vercel deployment", "Stage C - checkout trusted main");
 
     expect(stageB).toContain("https://api.vercel.com/v13/deployments/");
     expect(stageB).toContain("teamId=team_i9xhhYXUeYBOCLcfWBjTqlYG");
@@ -207,7 +269,7 @@ describe("AAIS preview E2E workflow trust gate", () => {
   });
 
   it("allowlists and validates the exact Vercel deployment identity projection", () => {
-    const stageB = stepBlock("Stage B - attest Vercel deployment", "Stage C - checkout attested commit");
+    const stageB = stepBlock("Stage B - attest Vercel deployment", "Stage C - checkout trusted main");
 
     for (const allowedPath of [
       "deployment.id",
@@ -252,6 +314,8 @@ describe("AAIS preview E2E workflow trust gate", () => {
     expect(stageB).toContain("deployment.id === process.env.GITHUB_DEPLOYMENT_STATUS_ID");
     expect(stageB).toContain("deployment.gitSource.ref !== process.env.ATTESTED_REF");
     expect(stageB).toContain("deployment.meta.githubCommitRef !== process.env.ATTESTED_REF");
+    expect(stageB).toContain("deployment.url !== process.env.VERCEL_HOSTNAME");
+    expect(stageB).not.toContain("deployment.alias.includes(process.env.VERCEL_HOSTNAME)");
     expect(stageB).not.toContain("codex/aais-recovery-compose");
     expect(stageB).not.toContain("JSON.stringify(deployment)");
     expect(stageB).not.toContain("console.log(deployment)");
@@ -317,6 +381,7 @@ describe("AAIS preview E2E workflow trust gate", () => {
     expect(result.stdout.trim()).toBe("AAIS_PREVIEW_TRUST_METADATA_PASS");
     expect(result.stderr).toBe("");
     expect(result.output).toContain(`vercel_deployment_id=${deployment.id}`);
+    expect(result.output).toContain(`vercel_origin=https://${deployment.url}`);
     expect(result.output).not.toContain("test-metadata-token");
     const observableOutput = `${result.stdout}${result.stderr}${result.output}`;
     for (const rawMarker of [
@@ -350,6 +415,7 @@ describe("AAIS preview E2E workflow trust gate", () => {
     }],
     ["contradictory reviewed project ID", (deployment) => { deployment.projectId = "prj_contradictory"; }],
     ["contradictory reviewed Git SHA", (deployment) => { deployment.gitSource.sha = "b".repeat(40); }],
+    ["mutable alias substitution", (deployment) => { deployment.url = "replacement.vercel.app"; }],
   ])("rejects Stage-B response with %s using only the fixed error", (_name, mutate) => {
     const deployment = validVercelDeployment();
     mutate(deployment);
@@ -403,18 +469,24 @@ function validVercelDeployment(branchName = "codex/aais-dependency-governance") 
 }
 
 async function runStageA({
+  approvalMode = "valid",
   associatedPullNumbers,
   branchName = "codex/aais-dependency-governance",
+  candidateCiBlob = "e".repeat(40),
   deploymentRefMode = "sha",
+  deploymentStates = ["success"],
   matchingPullNumbers,
   prNumber = 18,
   pullBranches = new Map(),
+  refreshMode = "stable",
+  workflowRunWorkflowId = 309700001,
   workflowSha = "main",
 } = {}) {
   const candidateSha = "a".repeat(40);
   const deploymentRef = deploymentRefMode === "branch" ? branchName : candidateSha;
   const mainSha = "b".repeat(40);
   const workflowBlob = "c".repeat(40);
+  const trustedCiBlob = "e".repeat(40);
   const workflowRef =
     "HUDongpin/AAIS/.github/workflows/preview-e2e.yml@refs/heads/main";
   const executingWorkflowSha = workflowSha === "main"
@@ -430,10 +502,17 @@ async function runStageA({
   };
   const outputs = {};
   const logs = [];
-  const getContent = vi.fn(async () => ({
+  const workflowRunId = 303;
+  const deploymentId = 101;
+  const deploymentStatusId = 202;
+  const getContent = vi.fn(async ({ path: contentPath, ref }) => ({
     data: {
       type: "file",
-      sha: workflowBlob,
+      sha: contentPath === ".github/workflows/preview-e2e.yml"
+        ? workflowBlob
+        : ref === candidateSha
+          ? candidateCiBlob
+          : trustedCiBlob,
     },
   }));
   const candidatePullNumbers = associatedPullNumbers ?? [prNumber];
@@ -442,10 +521,11 @@ async function runStageA({
   const listAssociatedPullRequests = vi.fn(async () => ({
     data: firstPagePullNumbers.map((number) => ({ number })),
   }));
+  let associationRound = 0;
   const getPull = vi.fn(async ({ pull_number }) => ({
     data: {
       number: pull_number,
-      state: "open",
+      state: refreshMode === "closed" && associationRound > 1 ? "closed" : "open",
       base: { ref: "main" },
       head: {
         ref: pullBranches.get(pull_number) ?? branchName,
@@ -454,19 +534,100 @@ async function runStageA({
       },
     },
   }));
-  const paginate = vi.fn(async () =>
-    candidatePullNumbers.map((number) => ({ number })));
+  const listDeployments = vi.fn(async () => ({ data: [] }));
+  const listDeploymentStatuses = vi.fn(async () => ({ data: [] }));
+  const listComments = vi.fn(async () => ({ data: [] }));
+  const owner = {
+    login: "HUDongpin",
+    id: 47708816,
+    node_id: "MDQ6VXNlcjQ3NzA4ODE2",
+    type: "User",
+  };
+  let approvalRound = 0;
+  let deploymentStatusRound = 0;
+  const paginate = vi.fn(async (method) => {
+    if (method === listAssociatedPullRequests) {
+      associationRound += 1;
+      return candidatePullNumbers.map((number) => ({ number }));
+    }
+    if (method === listDeployments) {
+      return [{
+        id: deploymentId,
+        ref: deploymentRef,
+        sha: candidateSha,
+        environment: "Preview",
+        creator: actor,
+      }];
+    }
+    if (method === listDeploymentStatuses) {
+      const state = deploymentStates[
+        Math.min(deploymentStatusRound, deploymentStates.length - 1)
+      ];
+      deploymentStatusRound += 1;
+      return [{
+        id: deploymentStatusId,
+        state,
+        creator: actor,
+        target_url: "https://preview.example.vercel.app",
+        environment_url: "https://preview.example.vercel.app",
+      }];
+    }
+    if (method === listComments) {
+      approvalRound += 1;
+      if (approvalMode === "missing") {
+        return [];
+      }
+      if (approvalMode === "removed-on-refresh" && approvalRound > 1) {
+        return [];
+      }
+      return [{
+        id: 404,
+        author_association: "OWNER",
+        user: approvalMode === "wrong-actor"
+          ? { ...owner, id: 999 }
+          : owner,
+        body: approvalMode === "wrong-sha"
+          ? `/aais-preview-e2e approve ${"d".repeat(40)}`
+          : `/aais-preview-e2e approve ${candidateSha}`,
+      }];
+    }
+    throw new Error("unexpected paginated method");
+  });
+  const getWorkflowRun = vi.fn(async () => ({
+    data: {
+      id: workflowRunId,
+      workflow_id: workflowRunWorkflowId,
+      name: "AAIS CI",
+      path: ".github/workflows/ci.yml",
+      event: "pull_request",
+      status: "completed",
+      conclusion: "success",
+      head_sha: candidateSha,
+      head_branch: branchName,
+      repository: { full_name: "HUDongpin/AAIS" },
+      head_repository: { full_name: "HUDongpin/AAIS" },
+    },
+  }));
   const github = {
     paginate,
     rest: {
       actions: {
-        getWorkflow: vi.fn(async () => ({
-          data: {
-            id: 309746229,
-            path: ".github/workflows/preview-e2e.yml",
-            state: "active",
-          },
+        getWorkflow: vi.fn(async ({ workflow_id }) => ({
+          data: workflow_id === "ci.yml"
+            ? {
+                id: 309700001,
+                name: "AAIS CI",
+                path: ".github/workflows/ci.yml",
+                state: "active",
+              }
+            : {
+                id: 309746229,
+                name: "AAIS Preview E2E",
+                path: ".github/workflows/preview-e2e.yml",
+                state: "active",
+              },
         })),
+        getWorkflowRun,
       },
       git: {
         getRef: vi.fn(async () => ({ data: { object: { sha: mainSha } } })),
@@ -474,39 +635,32 @@ async function runStageA({
       pulls: {
         get: getPull,
       },
+      issues: {
+        listComments,
+      },
       repos: {
         get: vi.fn(async () => ({
           data: { full_name: "HUDongpin/AAIS", default_branch: "main" },
         })),
         getContent,
-        getDeployment: vi.fn(async () => ({
-          data: {
-            id: 101,
-            ref: deploymentRef,
-            sha: candidateSha,
-            environment: "Preview",
-            creator: actor,
-          },
-        })),
-        getDeploymentStatus: vi.fn(async () => ({
-          data: {
-            id: 202,
-            state: "success",
-            creator: actor,
-            target_url: "https://preview.example.vercel.app",
-            environment_url: "https://preview.example.vercel.app",
-          },
-        })),
+        listDeployments,
+        listDeploymentStatuses,
         listPullRequestsAssociatedWithCommit: listAssociatedPullRequests,
       },
     },
   };
   const context = {
-    eventName: "deployment_status",
+    eventName: "workflow_run",
     repo: { owner: "HUDongpin", repo: "AAIS" },
     payload: {
-      deployment: { id: 101 },
-      deployment_status: { id: 202 },
+      workflow_run: {
+        id: workflowRunId,
+        event: "pull_request",
+        status: "completed",
+        conclusion: "success",
+        head_sha: candidateSha,
+        head_branch: branchName,
+      },
     },
   };
   const core = {
@@ -518,9 +672,14 @@ async function runStageA({
     env: {
       GITHUB_WORKFLOW_REF: workflowRef,
       GITHUB_WORKFLOW_SHA: executingWorkflowSha,
+      GITHUB_SHA: mainSha,
     },
   };
   const consoleStub = { log: vi.fn((value) => logs.push(value)) };
+  const setTimeoutStub = vi.fn((resolve) => {
+    resolve();
+    return 1;
+  });
   const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
   const execute = new AsyncFunction(
     "context",
@@ -528,19 +687,25 @@ async function runStageA({
     "core",
     "process",
     "console",
+    "setTimeout",
     stageAScript(),
   );
-  await execute(context, github, core, processStub, consoleStub);
+  await execute(context, github, core, processStub, consoleStub, setTimeoutStub);
   return {
     candidateSha,
     deploymentRef,
     getContent,
     getPull,
+    getWorkflowRun,
+    listDeployments,
+    listDeploymentStatuses,
+    listComments,
     listAssociatedPullRequests,
     logs,
     mainSha,
     outputs,
     paginate,
+    setTimeoutStub,
     workflowBlob,
     workflowRef,
     workflowSha: executingWorkflowSha,
@@ -561,7 +726,7 @@ function stageAScript() {
 }
 
 function runStageB(deployment) {
-  const stageB = stepBlock("Stage B - attest Vercel deployment", "Stage C - checkout attested commit");
+  const stageB = stepBlock("Stage B - attest Vercel deployment", "Stage C - checkout trusted main");
   const marker = "node <<'NODE'\n";
   const start = stageB.indexOf(marker);
   const end = stageB.indexOf("\n          NODE", start);
