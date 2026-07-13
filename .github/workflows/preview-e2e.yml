@@ -534,7 +534,7 @@ jobs:
           test -n "$AAIS_E2E_STUDENT_ACCOUNT"
           test -n "$AAIS_E2E_STUDENT_PASSWORD"
           test -n "$VERCEL_AUTOMATION_BYPASS_SECRET"
-          npm run e2e -- --grep-invert "teacher|core screens"
+          npm run e2e -- --grep-invert "teacher|core screens|persists after reload"
 
       - name: Verify no secret-bearing artifacts
         if: always()

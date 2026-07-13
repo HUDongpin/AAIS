@@ -334,7 +334,9 @@ describe("AAIS preview E2E workflow trust gate", () => {
       expect(workflow.match(new RegExp(`secrets\\.${name}`, "g"))).toHaveLength(1);
     }
     expect(playwright).toContain("PLAYWRIGHT_LAST_RUN_OUTPUT_FILE: /dev/null");
-    expect(playwright).toContain('npm run e2e -- --grep-invert "teacher|core screens"');
+    expect(playwright).toContain(
+      'npm run e2e -- --grep-invert "teacher|core screens|persists after reload"',
+    );
     expect(playwright).not.toContain("AAIS_E2E_TEACHER_ACCOUNT");
     expect(playwright).not.toContain("AAIS_E2E_TEACHER_PASSWORD");
     expect(workflow).not.toContain("secrets.AAIS_E2E_TEACHER_ACCOUNT");
