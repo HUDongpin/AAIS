@@ -43,8 +43,6 @@ jobs:
             const REPOSITORY = "HUDongpin/AAIS";
             const EVENT = "deployment_status";
             const DEFAULT_BRANCH = "main";
-            const PR_NUMBER = 5;
-            const RECOVERY_REF = "codex/aais-recovery-compose";
             const WORKFLOW_PATH = ".github/workflows/preview-e2e.yml";
             const WORKFLOW_REF = "HUDongpin/AAIS/.github/workflows/preview-e2e.yml@refs/heads/main";
             const executingWorkflowSha = process.env.GITHUB_WORKFLOW_SHA;
@@ -129,21 +127,43 @@ jobs:
               deployment_id: Number(eventDeployment.id),
               status_id: Number(eventStatus.id),
             });
-            const pullResult = await github.graphql(`
-              query {
-                repository(owner: "HUDongpin", name: "AAIS") {
-                  pullRequest(number: 5) {
-                    state
-                    isCrossRepository
-                    baseRefName
-                    headRefName
-                    headRefOid
-                    headRepository { nameWithOwner }
-                  }
-                }
-              }
-            `);
-            const pullRequest = pullResult.repository?.pullRequest;
+            if (!/^[a-f0-9]{40}$/.test(deployment.sha)) {
+              fail();
+            }
+            const associatedPullRequests = await github.paginate(
+              github.rest.repos.listPullRequestsAssociatedWithCommit,
+              {
+                owner: OWNER,
+                repo: REPO,
+                commit_sha: deployment.sha,
+                per_page: 100,
+              },
+            );
+            if (!Array.isArray(associatedPullRequests)
+              || associatedPullRequests.some((pull) => !positiveId(pull?.number))) {
+              fail();
+            }
+            const pullRequests = await Promise.all(
+              associatedPullRequests.map(async ({ number }) => {
+                const { data } = await github.rest.pulls.get({
+                  owner: OWNER,
+                  repo: REPO,
+                  pull_number: Number(number),
+                });
+                return data;
+              }),
+            );
+            const matchingPullRequests = pullRequests.filter((pullRequest) =>
+              pullRequest?.state === "open"
+              && pullRequest.base?.ref === DEFAULT_BRANCH
+              && pullRequest.head?.repo?.full_name === REPOSITORY
+              && pullRequest.head?.sha === deployment.sha
+              && (deployment.ref === pullRequest.head.ref
+                || deployment.ref === pullRequest.head.sha));
+            if (matchingPullRequests.length !== 1) {
+              fail();
+            }
+            const [pullRequest] = matchingPullRequests;
 
             if (repository.full_name !== REPOSITORY
               || repository.default_branch !== DEFAULT_BRANCH
@@ -160,14 +180,14 @@ jobs:
               || !isVercelApp(deploymentStatus.creator)
               || deployment.environment !== "Preview"
               || deploymentStatus.state !== "success"
-              || pullRequest?.state !== "OPEN"
-              || pullRequest.isCrossRepository !== false
-              || pullRequest.baseRefName !== DEFAULT_BRANCH
-              || pullRequest.headRepository?.nameWithOwner !== REPOSITORY
-              || pullRequest.headRefName !== RECOVERY_REF
-              || deployment.ref !== RECOVERY_REF
-              || deployment.sha !== pullRequest.headRefOid
-              || !/^[a-f0-9]{40}$/.test(pullRequest.headRefOid)) {
+              || !positiveId(pullRequest.number)
+              || pullRequest.state !== "open"
+              || pullRequest.base?.ref !== DEFAULT_BRANCH
+              || pullRequest.head?.repo?.full_name !== REPOSITORY
+              || pullRequest.head?.sha !== deployment.sha
+              || (deployment.ref !== pullRequest.head.ref
+                && deployment.ref !== pullRequest.head.sha)
+              || !/^[a-f0-9]{40}$/.test(pullRequest.head.sha)) {
               fail();
             }
             const target = normalizeVercelOrigin(deploymentStatus.target_url);
@@ -178,7 +198,7 @@ jobs:
 
             const GITHUB_DEPLOYMENT_ID = String(deployment.id);
             const GITHUB_DEPLOYMENT_STATUS_ID = String(deploymentStatus.id);
-            const ATTESTED_SHA = pullRequest.headRefOid;
+            const ATTESTED_SHA = pullRequest.head.sha;
             const VERCEL_HOSTNAME = target.hostname;
             core.setOutput("github_deployment_id", GITHUB_DEPLOYMENT_ID);
             core.setOutput("github_deployment_status_id", GITHUB_DEPLOYMENT_STATUS_ID);
@@ -186,8 +206,8 @@ jobs:
             core.setOutput("vercel_hostname", VERCEL_HOSTNAME);
             core.setOutput("attested_sha", ATTESTED_SHA);
             core.setOutput("repository", REPOSITORY);
-            core.setOutput("pull_number", String(PR_NUMBER));
-            core.setOutput("ref", RECOVERY_REF);
+            core.setOutput("pull_number", String(pullRequest.number));
+            core.setOutput("ref", pullRequest.head.ref);
             core.setOutput("workflow_id", String(workflow.id));
             core.setOutput("workflow_path", WORKFLOW_PATH);
             core.setOutput("workflow_blob", workflowFile.sha);
@@ -200,6 +220,7 @@ jobs:
           VERCEL_E2E_METADATA_TOKEN: ${{ secrets.VERCEL_E2E_METADATA_TOKEN }}
           VERCEL_HOSTNAME: ${{ steps.github-trust.outputs.vercel_hostname }}
           ATTESTED_SHA: ${{ steps.github-trust.outputs.attested_sha }}
+          ATTESTED_REF: ${{ steps.github-trust.outputs.ref }}
           GITHUB_DEPLOYMENT_ID: ${{ steps.github-trust.outputs.github_deployment_id }}
           GITHUB_DEPLOYMENT_STATUS_ID: ${{ steps.github-trust.outputs.github_deployment_status_id }}
         run: |
@@ -334,11 +355,11 @@ jobs:
                 && !deployment.alias.includes(process.env.VERCEL_HOSTNAME))
               || deployment.gitSource.type !== "github"
               || deployment.gitSource.repoId !== 1294583104
-              || deployment.gitSource.ref !== "codex/aais-recovery-compose"
+              || deployment.gitSource.ref !== process.env.ATTESTED_REF
               || deployment.gitSource.sha !== process.env.ATTESTED_SHA
               || deployment.meta.githubOrg !== "HUDongpin"
               || deployment.meta.githubRepo !== "AAIS"
-              || deployment.meta.githubCommitRef !== "codex/aais-recovery-compose"
+              || deployment.meta.githubCommitRef !== process.env.ATTESTED_REF
               || deployment.meta.githubCommitSha !== process.env.ATTESTED_SHA) {
               fail();
             }

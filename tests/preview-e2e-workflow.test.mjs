@@ -37,7 +37,7 @@ describe("AAIS preview E2E workflow trust gate", () => {
     expect(stageC).toContain("test \"$(git rev-parse HEAD)\" = \"$ATTESTED_SHA\"");
   });
 
-  it("binds Stage A to Vercel App, default main, PR 5, repository, branch, and SHA", () => {
+  it("binds Stage A to Vercel App and a unique open same-repository PR for the deployment SHA", () => {
     const stageA = stepBlock("Stage A - attest GitHub deployment", "Stage B - attest Vercel deployment");
 
     for (const required of [
@@ -47,9 +47,13 @@ describe("AAIS preview E2E workflow trust gate", () => {
       "35613825",
       "MDM6Qm90MzU2MTM4MjU=",
       "Bot",
-      "PR_NUMBER = 5",
-      "codex/aais-recovery-compose",
-      "isCrossRepository",
+      "github.paginate",
+      "listPullRequestsAssociatedWithCommit",
+      "github.rest.pulls.get",
+      "pullRequest.base?.ref",
+      "pullRequest.head.ref",
+      "pullRequest.head?.sha",
+      "pullRequest.head?.repo?.full_name",
       ".github/workflows/preview-e2e.yml",
       "refs/heads/main",
       "Preview",
@@ -63,6 +67,9 @@ describe("AAIS preview E2E workflow trust gate", () => {
     expect(stageA).toContain("GITHUB_DEPLOYMENT_STATUS_ID");
     expect(stageA).toContain("ATTESTED_SHA");
     expect(stageA).toContain("VERCEL_HOSTNAME");
+    expect(stageA).not.toContain("PR_NUMBER = 5");
+    expect(stageA).not.toContain("codex/aais-recovery-compose");
+    expect(stageA).not.toContain("pullRequest(number: 5)");
   });
 
   it("binds the executing workflow SHA to current main and fetches the workflow blob immutably", () => {
@@ -91,7 +98,74 @@ describe("AAIS preview E2E workflow trust gate", () => {
     expect(result.outputs.attested_sha).toBe(result.candidateSha);
     expect(result.outputs.main_sha).toBe(result.mainSha);
     expect(result.outputs.workflow_blob).toBe(result.workflowBlob);
+    expect(result.outputs.pull_number).toBe("18");
+    expect(result.outputs.ref).toBe("codex/aais-dependency-governance");
     expect(result.logs).toEqual(["AAIS_PREVIEW_TRUST_GITHUB_PASS"]);
+  });
+
+  it("resolves the pull request from the attested commit instead of a fixed PR number", async () => {
+    const result = await runStageA({
+      branchName: "dependabot/npm_and_yarn/production-safe",
+      prNumber: 27,
+    });
+
+    expect(result.paginate).toHaveBeenCalledWith(
+      result.listAssociatedPullRequests,
+      {
+        owner: "HUDongpin",
+        repo: "AAIS",
+        commit_sha: result.candidateSha,
+        per_page: 100,
+      },
+    );
+    expect(result.getPull).toHaveBeenCalledWith({
+      owner: "HUDongpin",
+      repo: "AAIS",
+      pull_number: 27,
+    });
+    expect(result.outputs.pull_number).toBe("27");
+    expect(result.outputs.ref).toBe("dependabot/npm_and_yarn/production-safe");
+  });
+
+  it("accepts GitHub deployment refs expressed as either the candidate SHA or head branch", async () => {
+    const shaRef = await runStageA({ deploymentRefMode: "sha" });
+    const branchRef = await runStageA({ deploymentRefMode: "branch" });
+
+    expect(shaRef.deploymentRef).toBe(shaRef.candidateSha);
+    expect(branchRef.deploymentRef).toBe("codex/aais-dependency-governance");
+    expect(shaRef.outputs.ref).toBe("codex/aais-dependency-governance");
+    expect(branchRef.outputs.ref).toBe("codex/aais-dependency-governance");
+  });
+
+  it("rejects a deployment SHA without exactly one matching open pull request", async () => {
+    await expect(runStageA({ associatedPullNumbers: [] }))
+      .rejects.toThrowError(/^AAIS_PREVIEW_TRUST_GITHUB$/);
+    await expect(runStageA({ associatedPullNumbers: [18, 19] }))
+      .rejects.toThrowError(/^AAIS_PREVIEW_TRUST_GITHUB$/);
+  });
+
+  it("rejects ambiguity found after the first associated-PR page", async () => {
+    const associatedPullNumbers = Array.from({ length: 31 }, (_, index) => 18 + index);
+
+    await expect(runStageA({
+      associatedPullNumbers,
+      matchingPullNumbers: [18, 48],
+    })).rejects.toThrowError(/^AAIS_PREVIEW_TRUST_GITHUB$/);
+  });
+
+  it("uses a branch-form deployment ref to disambiguate PRs sharing the same SHA", async () => {
+    const result = await runStageA({
+      associatedPullNumbers: [18, 19],
+      branchName: "codex/aais-dependency-governance",
+      deploymentRefMode: "branch",
+      pullBranches: new Map([
+        [18, "codex/aais-dependency-governance"],
+        [19, "codex/other-branch-with-shared-sha"],
+      ]),
+    });
+
+    expect(result.outputs.pull_number).toBe("18");
+    expect(result.outputs.ref).toBe("codex/aais-dependency-governance");
   });
 
   it("fetches the workflow by immutable executing/main SHA rather than a mutable branch", async () => {
@@ -168,7 +242,7 @@ describe("AAIS preview E2E workflow trust gate", () => {
       "github",
       "HUDongpin",
       "AAIS",
-      "codex/aais-recovery-compose",
+      "ATTESTED_REF",
     ]) {
       expect(stageB).toContain(exactIdentity);
     }
@@ -176,6 +250,9 @@ describe("AAIS preview E2E workflow trust gate", () => {
     expect(stageB).toContain("VERCEL_DEPLOYMENT_ID");
     expect(stageB).toContain("deployment.id === process.env.GITHUB_DEPLOYMENT_ID");
     expect(stageB).toContain("deployment.id === process.env.GITHUB_DEPLOYMENT_STATUS_ID");
+    expect(stageB).toContain("deployment.gitSource.ref !== process.env.ATTESTED_REF");
+    expect(stageB).toContain("deployment.meta.githubCommitRef !== process.env.ATTESTED_REF");
+    expect(stageB).not.toContain("codex/aais-recovery-compose");
     expect(stageB).not.toContain("JSON.stringify(deployment)");
     expect(stageB).not.toContain("console.log(deployment)");
   });
@@ -295,7 +372,7 @@ function stepBlock(startName, endName) {
   return workflow.slice(start, end);
 }
 
-function validVercelDeployment() {
+function validVercelDeployment(branchName = "codex/aais-dependency-governance") {
   return {
     id: "dpl_AttestedPreview1",
     name: "aais",
@@ -313,20 +390,29 @@ function validVercelDeployment() {
     gitSource: {
       type: "github",
       repoId: 1294583104,
-      ref: "codex/aais-recovery-compose",
+      ref: branchName,
       sha: "a".repeat(40),
     },
     meta: {
       githubOrg: "HUDongpin",
       githubRepo: "AAIS",
-      githubCommitRef: "codex/aais-recovery-compose",
+      githubCommitRef: branchName,
       githubCommitSha: "a".repeat(40),
     },
   };
 }
 
-async function runStageA({ workflowSha = "main" } = {}) {
+async function runStageA({
+  associatedPullNumbers,
+  branchName = "codex/aais-dependency-governance",
+  deploymentRefMode = "sha",
+  matchingPullNumbers,
+  prNumber = 18,
+  pullBranches = new Map(),
+  workflowSha = "main",
+} = {}) {
   const candidateSha = "a".repeat(40);
+  const deploymentRef = deploymentRefMode === "branch" ? branchName : candidateSha;
   const mainSha = "b".repeat(40);
   const workflowBlob = "c".repeat(40);
   const workflowRef =
@@ -350,19 +436,28 @@ async function runStageA({ workflowSha = "main" } = {}) {
       sha: workflowBlob,
     },
   }));
-  const github = {
-    graphql: vi.fn(async () => ({
-      repository: {
-        pullRequest: {
-          state: "OPEN",
-          isCrossRepository: false,
-          baseRefName: "main",
-          headRefName: "codex/aais-recovery-compose",
-          headRefOid: candidateSha,
-          headRepository: { nameWithOwner: "HUDongpin/AAIS" },
-        },
+  const candidatePullNumbers = associatedPullNumbers ?? [prNumber];
+  const firstPagePullNumbers = candidatePullNumbers.slice(0, 30);
+  const matchingNumbers = matchingPullNumbers ?? candidatePullNumbers;
+  const listAssociatedPullRequests = vi.fn(async () => ({
+    data: firstPagePullNumbers.map((number) => ({ number })),
+  }));
+  const getPull = vi.fn(async ({ pull_number }) => ({
+    data: {
+      number: pull_number,
+      state: "open",
+      base: { ref: "main" },
+      head: {
+        ref: pullBranches.get(pull_number) ?? branchName,
+        sha: matchingNumbers.includes(pull_number) ? candidateSha : "d".repeat(40),
+        repo: { full_name: "HUDongpin/AAIS" },
       },
-    })),
+    },
+  }));
+  const paginate = vi.fn(async () =>
+    candidatePullNumbers.map((number) => ({ number })));
+  const github = {
+    paginate,
     rest: {
       actions: {
         getWorkflow: vi.fn(async () => ({
@@ -376,6 +471,9 @@ async function runStageA({ workflowSha = "main" } = {}) {
       git: {
         getRef: vi.fn(async () => ({ data: { object: { sha: mainSha } } })),
       },
+      pulls: {
+        get: getPull,
+      },
       repos: {
         get: vi.fn(async () => ({
           data: { full_name: "HUDongpin/AAIS", default_branch: "main" },
@@ -384,7 +482,7 @@ async function runStageA({ workflowSha = "main" } = {}) {
         getDeployment: vi.fn(async () => ({
           data: {
             id: 101,
-            ref: "codex/aais-recovery-compose",
+            ref: deploymentRef,
             sha: candidateSha,
             environment: "Preview",
             creator: actor,
@@ -399,6 +497,7 @@ async function runStageA({ workflowSha = "main" } = {}) {
             environment_url: "https://preview.example.vercel.app",
           },
         })),
+        listPullRequestsAssociatedWithCommit: listAssociatedPullRequests,
       },
     },
   };
@@ -434,10 +533,14 @@ async function runStageA({ workflowSha = "main" } = {}) {
   await execute(context, github, core, processStub, consoleStub);
   return {
     candidateSha,
+    deploymentRef,
     getContent,
+    getPull,
+    listAssociatedPullRequests,
     logs,
     mainSha,
     outputs,
+    paginate,
     workflowBlob,
     workflowRef,
     workflowSha: executingWorkflowSha,
@@ -495,6 +598,7 @@ global.fetch = async (url, options) => {
         GITHUB_OUTPUT: outputPath,
         MOCK_RESPONSE_BASE64: Buffer.from(JSON.stringify(deployment)).toString("base64"),
         ATTESTED_SHA: "a".repeat(40),
+        ATTESTED_REF: "codex/aais-dependency-governance",
         VERCEL_E2E_METADATA_TOKEN: "test-metadata-token",
         VERCEL_HOSTNAME: "preview.example.vercel.app",
       },
