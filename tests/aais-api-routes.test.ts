@@ -15,6 +15,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  vi.useRealTimers();
   delete process.env.AAIS_DATA_DIR;
   delete process.env.AAIS_SESSION_SECRET;
   vi.unstubAllEnvs();
@@ -408,7 +409,10 @@ describe("AAIS learning API routes", () => {
     const info = vi.spyOn(console, "info").mockImplementation(() => undefined);
     vi.resetModules();
     const guideRoute = await import("@/app/api/learning/ai-guide/route");
-    const s001Cookie = createAuthedCookie("S001");
+    vi.setSystemTime(new Date("2026-07-13T06:00:00.999Z"));
+    const s001CsrfToken = createAaisCsrfToken("S001");
+    const s001Cookie = createAuthedCookie("S001", "student", s001CsrfToken);
+    vi.setSystemTime(new Date("2026-07-13T06:00:01.001Z"));
     const requestBody = {
       locale: "zh-CN",
       phase: "training",
@@ -424,7 +428,7 @@ describe("AAIS learning API routes", () => {
         method: "POST",
         headers: {
           cookie: s001Cookie,
-          "x-aais-csrf": createAaisCsrfToken("S001"),
+          "x-aais-csrf": s001CsrfToken,
         },
         body: JSON.stringify(requestBody),
       }),
@@ -443,7 +447,7 @@ describe("AAIS learning API routes", () => {
         method: "POST",
         headers: {
           cookie: s001Cookie,
-          "x-aais-csrf": createAaisCsrfToken("S001"),
+          "x-aais-csrf": s001CsrfToken,
         },
         body: JSON.stringify({
           ...requestBody,
