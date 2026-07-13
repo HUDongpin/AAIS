@@ -71,12 +71,32 @@ The credentials file is local/ignored and should contain staging-only learners a
 
 ## Preview E2E
 
-When Vercel creates a successful `Preview` deployment, GitHub Actions runs `.github/workflows/preview-e2e.yml` against the deployment URL. The workflow requires these GitHub Actions secrets, which must match non-production accounts configured in the Vercel Preview environment:
+When Vercel creates a successful `Preview` deployment for a same-repository PR,
+the successful `AAIS CI` run triggers `.github/workflows/preview-e2e.yml`. An
+owner must approve the exact PR head with `/aais-preview-e2e approve <sha>`.
+The trusted workflow then attests the GitHub deployment and canonical Vercel
+metadata before running the stateless student smoke suite against the Preview
+URL.
+
+The workflow requires these GitHub Actions secrets:
 
 - `AAIS_E2E_STUDENT_ACCOUNT`
 - `AAIS_E2E_STUDENT_PASSWORD`
-- `AAIS_E2E_TEACHER_ACCOUNT`
-- `AAIS_E2E_TEACHER_PASSWORD`
+- `VERCEL_AUTOMATION_BYPASS_SECRET`
+- `VERCEL_E2E_METADATA_TOKEN`
+
+The student credentials must match the non-production learner configured in
+the Vercel Preview `AAIS_TRIAL_ACCOUNTS_JSON`; Preview also needs its own
+`AAIS_SESSION_SECRET`. Teacher/admin tests remain in the local CI E2E suite and
+must not receive teacher/admin secrets in the deployed Preview job.
+
+Create `VERCEL_E2E_METADATA_TOKEN` in the Vercel personal-account Tokens page,
+scope it only to the team that owns AAIS, and set an expiration of at most one
+year. Record the same expiry in the GitHub repository variable
+`VERCEL_E2E_METADATA_TOKEN_EXPIRES_AT`. Rotate it before expiry, update the
+GitHub secret through standard input, and validate the replacement with a new
+approved Preview PR. Never paste, print, commit, screenshot, or attach the
+token or deployed Playwright artifacts.
 
 The deployed run sets `AAIS_E2E_BASE_URL`, so Playwright skips the local dev server and signs in through `/login`. Do not reuse production learner or teacher credentials for preview E2E.
 
