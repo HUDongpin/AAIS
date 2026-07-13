@@ -9,10 +9,52 @@ updates:
       timezone: Asia/Hong_Kong
     open-pull-requests-limit: 5
     groups:
-      production-dependencies:
+      next-toolchain:
+        applies-to: version-updates
+        patterns:
+          - next
+          - eslint-config-next
+        update-types:
+          - minor
+          - patch
+      react-runtime:
+        applies-to: version-updates
+        patterns:
+          - react
+          - react-dom
+          - "@types/react"
+          - "@types/react-dom"
+        update-types:
+          - minor
+          - patch
+      production-safe:
         dependency-type: production
-      development-dependencies:
+        exclude-patterns:
+          - next
+          - react
+          - react-dom
+        update-types:
+          - minor
+          - patch
+      development-safe:
         dependency-type: development
+        exclude-patterns:
+          - eslint-config-next
+          - "@types/react"
+          - "@types/react-dom"
+        update-types:
+          - minor
+          - patch
+    ignore:
+      - dependency-name: typescript
+        update-types:
+          - version-update:semver-major
+      - dependency-name: eslint
+        update-types:
+          - version-update:semver-major
+      - dependency-name: "@types/node"
+        update-types:
+          - version-update:semver-major
 
   - package-ecosystem: github-actions
     directory: /
