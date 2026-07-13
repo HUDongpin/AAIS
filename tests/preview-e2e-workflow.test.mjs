@@ -321,13 +321,11 @@ describe("AAIS preview E2E workflow trust gate", () => {
     expect(stageB).not.toContain("console.log(deployment)");
   });
 
-  it("exposes the five application secrets only to the Playwright step", () => {
+  it("exposes only student smoke credentials and the bypass secret to Playwright", () => {
     const playwright = stepBlock("Run Playwright against attested preview", "Verify no secret-bearing artifacts");
     const names = [
       "AAIS_E2E_STUDENT_ACCOUNT",
       "AAIS_E2E_STUDENT_PASSWORD",
-      "AAIS_E2E_TEACHER_ACCOUNT",
-      "AAIS_E2E_TEACHER_PASSWORD",
       "VERCEL_AUTOMATION_BYPASS_SECRET",
     ];
 
@@ -336,7 +334,11 @@ describe("AAIS preview E2E workflow trust gate", () => {
       expect(workflow.match(new RegExp(`secrets\\.${name}`, "g"))).toHaveLength(1);
     }
     expect(playwright).toContain("PLAYWRIGHT_LAST_RUN_OUTPUT_FILE: /dev/null");
-    expect(playwright).toContain("npm run e2e");
+    expect(playwright).toContain('npm run e2e -- --grep-invert "teacher|core screens"');
+    expect(playwright).not.toContain("AAIS_E2E_TEACHER_ACCOUNT");
+    expect(playwright).not.toContain("AAIS_E2E_TEACHER_PASSWORD");
+    expect(workflow).not.toContain("secrets.AAIS_E2E_TEACHER_ACCOUNT");
+    expect(workflow).not.toContain("secrets.AAIS_E2E_TEACHER_PASSWORD");
     expect(playwright).not.toContain("VERCEL_E2E_METADATA_TOKEN");
     expect(workflow).not.toMatch(/^    env:\n(?:^      .+\n)*?^      (?:AAIS_E2E_|VERCEL_AUTOMATION_BYPASS_SECRET)/m);
   });

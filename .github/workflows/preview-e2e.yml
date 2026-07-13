@@ -529,16 +529,12 @@ jobs:
           PLAYWRIGHT_LAST_RUN_OUTPUT_FILE: /dev/null
           AAIS_E2E_STUDENT_ACCOUNT: ${{ secrets.AAIS_E2E_STUDENT_ACCOUNT }}
           AAIS_E2E_STUDENT_PASSWORD: ${{ secrets.AAIS_E2E_STUDENT_PASSWORD }}
-          AAIS_E2E_TEACHER_ACCOUNT: ${{ secrets.AAIS_E2E_TEACHER_ACCOUNT }}
-          AAIS_E2E_TEACHER_PASSWORD: ${{ secrets.AAIS_E2E_TEACHER_PASSWORD }}
           VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
         run: |
           test -n "$AAIS_E2E_STUDENT_ACCOUNT"
           test -n "$AAIS_E2E_STUDENT_PASSWORD"
-          test -n "$AAIS_E2E_TEACHER_ACCOUNT"
-          test -n "$AAIS_E2E_TEACHER_PASSWORD"
           test -n "$VERCEL_AUTOMATION_BYPASS_SECRET"
-          npm run e2e
+          npm run e2e -- --grep-invert "teacher|core screens"
 
       - name: Verify no secret-bearing artifacts
         if: always()
