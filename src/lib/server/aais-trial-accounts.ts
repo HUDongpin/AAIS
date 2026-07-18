@@ -162,13 +162,10 @@ function readConfiguredTrialAccountLookup(): ConfiguredTrialAccountLookup {
       }
     }
     const accounts = [...accountsById.values()];
-    if (accounts.length === 0) {
-      return {
-        status: "invalid",
-        accounts: null,
-      };
-    }
-    if (isProductionRuntime() && accounts.some((account) => account.role !== "student")) {
+    const allowedAccounts = isProductionRuntime()
+      ? accounts.filter((account) => account.role === "student")
+      : accounts;
+    if (allowedAccounts.length === 0) {
       return {
         status: "invalid",
         accounts: null,
@@ -176,7 +173,7 @@ function readConfiguredTrialAccountLookup(): ConfiguredTrialAccountLookup {
     }
     return {
       status: "configured",
-      accounts,
+      accounts: allowedAccounts,
     };
   } catch {
     return {
