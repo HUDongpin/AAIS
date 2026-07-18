@@ -307,6 +307,49 @@ describe("AAIS trial account auth route", () => {
     expect(otherLearner.status).toBe(200);
   });
 
+  it("keeps production learners available when another source contains educator smoke records", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    process.env.AAIS_TRIAL_ACCOUNTS_JSON = JSON.stringify([
+      {
+        id: "Bobie",
+        displayName: "Bobie",
+        role: "student",
+        password: createPasswordRecord("production-bobie-secret"),
+      },
+    ]);
+    process.env.AAIS_TRIAL_SMOKE_ACCOUNTS_JSON = JSON.stringify([
+      {
+        id: "teacher-smoke",
+        displayName: "Teacher Smoke",
+        role: "teacher",
+        password: createPasswordRecord("teacher-secret"),
+      },
+    ]);
+    const { POST } = await import("@/app/api/auth/app-session/route");
+
+    const learner = await POST(
+      new Request("http://localhost/api/auth/app-session", {
+        method: "POST",
+        body: authBody({
+          account: "Bobie",
+          password: "production-bobie-secret",
+        }),
+      }),
+    );
+    const educator = await POST(
+      new Request("http://localhost/api/auth/app-session", {
+        method: "POST",
+        body: authBody({
+          account: "teacher-smoke",
+          password: "teacher-secret",
+        }),
+      }),
+    );
+
+    expect(learner.status).toBe(200);
+    expect(educator.status).toBe(401);
+  });
+
   it("refuses production educator trial accounts so teachers and admins use database or OIDC identities", async () => {
     vi.stubEnv("NODE_ENV", "production");
     process.env.AAIS_TRIAL_ACCOUNTS_JSON = JSON.stringify([
