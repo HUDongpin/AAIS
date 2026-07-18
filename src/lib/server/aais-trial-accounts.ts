@@ -130,57 +130,82 @@ function readConfiguredTrialAccounts() {
 
 function readConfiguredTrialAccountLookup(): ConfiguredTrialAccountLookup {
   const rawSources = [
-    process.env.AAIS_TRIAL_ACCOUNTS_JSON?.trim(),
-    process.env.AAIS_TRIAL_SMOKE_ACCOUNTS_JSON?.trim(),
-    process.env.AAIS_TRIAL_ADDITIONAL_ACCOUNTS_JSON?.trim(),
-  ].filter((raw): raw is string => Boolean(raw));
+    {
+      raw: process.env.AAIS_TRIAL_ACCOUNTS_JSON?.trim() ?? "",
+      recovery: false,
+    },
+    {
+      raw: process.env.AAIS_TRIAL_SMOKE_ACCOUNTS_JSON?.trim() ?? "",
+      recovery: false,
+    },
+    {
+      raw: process.env.AAIS_TRIAL_ADDITIONAL_ACCOUNTS_JSON?.trim() ?? "",
+      recovery: true,
+    },
+  ].filter((source) => Boolean(source.raw));
   if (!rawSources.length) {
     return {
       status: "missing",
       accounts: null,
     };
   }
+
   const accountsById = new Map<string, TrialAccountRecord>();
-  try {
-    for (const raw of rawSources) {
-      const parsed = JSON.parse(raw) as Partial<TrialAccountRecord>[];
-      if (!Array.isArray(parsed)) {
-        return {
-          status: "invalid",
-          accounts: null,
-        };
-      }
-      const sourceAccounts = parsed.map(requireTrialAccount);
-      if (new Set(sourceAccounts.map((account) => account.id)).size !== sourceAccounts.length) {
-        return {
-          status: "invalid",
-          accounts: null,
-        };
+  let hasInvalidLegacySource = false;
+  let hasValidRecoverySource = false;
+  for (const source of rawSources) {
+    try {
+      const sourceAccounts = parseTrialAccountSource(source.raw);
+      if (source.recovery && sourceAccounts.length === 0) {
+        throw new Error("The recovery account source must not be empty.");
       }
       for (const account of sourceAccounts) {
         accountsById.set(account.id, account);
       }
+      hasValidRecoverySource ||= source.recovery;
+    } catch {
+      if (source.recovery) {
+        return {
+          status: "invalid",
+          accounts: null,
+        };
+      }
+      hasInvalidLegacySource = true;
     }
-    const accounts = [...accountsById.values()];
-    const allowedAccounts = isProductionRuntime()
-      ? accounts.filter((account) => account.role === "student")
-      : accounts;
-    if (allowedAccounts.length === 0) {
-      return {
-        status: "invalid",
-        accounts: null,
-      };
-    }
-    return {
-      status: "configured",
-      accounts: allowedAccounts,
-    };
-  } catch {
+  }
+  if (hasInvalidLegacySource && !hasValidRecoverySource) {
     return {
       status: "invalid",
       accounts: null,
     };
   }
+
+  const accounts = [...accountsById.values()];
+  const allowedAccounts = isProductionRuntime()
+    ? accounts.filter((account) => account.role === "student")
+    : accounts;
+  if (allowedAccounts.length === 0) {
+    return {
+      status: "invalid",
+      accounts: null,
+    };
+  }
+  return {
+    status: "configured",
+    accounts: allowedAccounts,
+  };
+}
+
+function parseTrialAccountSource(raw: string) {
+  const parsed = JSON.parse(raw) as Partial<TrialAccountRecord>[];
+  if (!Array.isArray(parsed)) {
+    throw new Error("AAIS trial account source must be an array.");
+  }
+  const accounts = parsed.map(requireTrialAccount);
+  if (new Set(accounts.map((account) => account.id)).size !== accounts.length) {
+    throw new Error("AAIS trial account source contains duplicate account IDs.");
+  }
+  return accounts;
 }
 
 function requireTrialAccount(account: Partial<TrialAccountRecord>): TrialAccountRecord {
