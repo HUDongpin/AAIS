@@ -69,7 +69,7 @@ describe("AAIS LoginPage", () => {
     const { container } = render(<LoginPage trialLoginEnabled={false} />);
 
     expect(screen.getByRole("main", {
-      name: "欢迎来到 CAAIS：专注 Cognitive Apprenticeship 的智能学习平台",
+      name: "欢迎来到 CAAIS",
     })).toBeTruthy();
     expect(screen.queryByRole("link", { name: "使用机构 SSO 登录" })).toBeNull();
     expect((container.firstElementChild as HTMLElement).dataset.trialLogin).toBe("disabled");
@@ -251,21 +251,21 @@ describe("AAIS LoginPage", () => {
 
     expect(pageRoot.style.fontFamily).toContain("Anthropic Serif");
     expect(pageRoot.style.fontFamily).toContain("Georgia");
-    expect(screen.getAllByText("CAAIS")).toHaveLength(2);
-    expect(screen.getAllByText("Cognitive Apprenticeship AI System")).toHaveLength(2);
+    expect(screen.getAllByText("CAAIS")).toHaveLength(1);
+    expect(screen.getAllByText("Cognitive Apprenticeship AI System")).toHaveLength(1);
     expect(screen.queryByText("AAIS")).toBeNull();
     expect(screen.queryByText("AAIS 学习端")).toBeNull();
     expect(screen.queryByText("Apprenticeship AI system")).toBeNull();
     expect(screen.queryByText("Learning studio")).toBeNull();
     const welcomeHeading = screen.getByRole("heading", {
-      name: "欢迎来到 CAAIS：专注 Cognitive Apprenticeship 的智能学习平台",
+      name: "欢迎来到 CAAIS",
     });
     const welcomeHeadingClasses = welcomeHeading.className.split(/\s+/);
     expect(welcomeHeadingClasses).toContain("text-2xl");
     expect(welcomeHeadingClasses).toContain("sm:text-3xl");
     expect(welcomeHeadingClasses).not.toContain("text-3xl");
     expect(welcomeHeadingClasses).not.toContain("sm:text-4xl");
-    expect(screen.getAllByText(/Cognitive Apprenticeship/)).toHaveLength(3);
+    expect(screen.getAllByText(/Cognitive Apprenticeship/)).toHaveLength(1);
     expect(screen.queryByText("我的教学")).toBeNull();
     expect(screen.queryByText("课程广场")).toBeNull();
     const consentCheckbox = screen.getByRole("checkbox", { name: /用户协议和隐私政策/ }) as HTMLInputElement;

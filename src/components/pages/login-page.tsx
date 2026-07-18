@@ -11,13 +11,7 @@ import {
   UserCircle,
 } from "@phosphor-icons/react";
 import { getAaisApiErrorMessage } from "@/lib/client/aais-api-error";
-import {
-  LoginDesignDeck,
-  LoginMobileDesignCarousel,
-  loginCopy,
-  loginDeckCards,
-  loginSerifFontFamily,
-} from "@/components/pages/login/login-design";
+import { loginCopy, loginSerifFontFamily } from "@/components/pages/login/login-design";
 
 type LoginPageProps = {
   trialLoginEnabled?: boolean;
@@ -221,27 +215,9 @@ export function LoginPage({ trialLoginEnabled = true }: LoginPageProps) {
       style={{ fontFamily: loginSerifFontFamily }}
       data-trial-login={trialLoginEnabled ? "enabled" : "disabled"}
     >
-      <div className="mx-auto grid min-h-[100dvh] w-full max-w-[1760px] grid-cols-1 lg:grid-cols-[1.18fr_0.82fr]">
-        <section className="relative hidden min-h-[100dvh] items-center px-10 py-10 lg:flex">
-          <div className="absolute left-10 top-8 flex items-center gap-3 xl:left-16">
-            <span className="flex size-11 items-center justify-center rounded-2xl bg-[#1f6feb] text-white shadow-[0_14px_34px_rgba(31,111,235,0.24)]">
-              <Sparkle size={23} weight="duotone" />
-            </span>
-            <span>
-              <span className="block text-lg font-semibold tracking-normal">{loginCopy.brandName}</span>
-              <span className="block text-xs font-medium text-[#647089]">
-                {loginCopy.brandSubline}
-              </span>
-            </span>
-          </div>
-
-          <div className="relative mx-auto w-full max-w-[930px]">
-            <LoginDesignDeck cards={loginDeckCards} />
-          </div>
-        </section>
-
+      <div className="mx-auto grid min-h-[100dvh] w-full max-w-[1760px] grid-cols-1">
         <main
-          className="relative flex min-h-[100dvh] items-center px-5 py-8 sm:px-8 lg:px-10 xl:px-16"
+          className="relative mx-auto flex min-h-[100dvh] w-full max-w-[720px] items-center px-5 py-8 sm:px-8"
           aria-labelledby="aais-login-heading"
         >
           <button
@@ -265,8 +241,6 @@ export function LoginPage({ trialLoginEnabled = true }: LoginPageProps) {
                 </span>
               </span>
             </div>
-
-            <LoginMobileDesignCarousel cards={loginDeckCards} />
 
             <h1
               id="aais-login-heading"
