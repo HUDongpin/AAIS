@@ -307,6 +307,59 @@ describe("AAIS trial account auth route", () => {
     expect(otherLearner.status).toBe(200);
   });
 
+  it("uses a valid recovery learner when a legacy production source is malformed", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    process.env.AAIS_TRIAL_ACCOUNTS_JSON = "{not-json";
+    process.env.AAIS_TRIAL_ADDITIONAL_ACCOUNTS_JSON = JSON.stringify([
+      {
+        id: "Bobie",
+        displayName: "Bobie",
+        role: "student",
+        password: createPasswordRecord("recovery-bobie-secret"),
+      },
+    ]);
+    const { POST } = await import("@/app/api/auth/app-session/route");
+
+    const response = await POST(
+      new Request("http://localhost/api/auth/app-session", {
+        method: "POST",
+        body: authBody({
+          account: "Bobie",
+          password: "recovery-bobie-secret",
+        }),
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("set-cookie") ?? "").toContain("aais_session=");
+  });
+
+  it("fails closed when the recovery account source is malformed", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    process.env.AAIS_TRIAL_ACCOUNTS_JSON = JSON.stringify([
+      {
+        id: "Bobie",
+        displayName: "Bobie",
+        role: "student",
+        password: createPasswordRecord("production-bobie-secret"),
+      },
+    ]);
+    process.env.AAIS_TRIAL_ADDITIONAL_ACCOUNTS_JSON = "{not-json";
+    const { POST } = await import("@/app/api/auth/app-session/route");
+
+    const response = await POST(
+      new Request("http://localhost/api/auth/app-session", {
+        method: "POST",
+        body: authBody({
+          account: "Bobie",
+          password: "production-bobie-secret",
+        }),
+      }),
+    );
+
+    expect(response.status).toBe(503);
+  });
+
   it("keeps production learners available when another source contains educator smoke records", async () => {
     vi.stubEnv("NODE_ENV", "production");
     process.env.AAIS_TRIAL_ACCOUNTS_JSON = JSON.stringify([
