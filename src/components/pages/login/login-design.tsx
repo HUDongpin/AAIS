@@ -10,7 +10,7 @@ import {
 export const loginCopy = {
   brandName: "CAAIS",
   brandSubline: "Cognitive Apprenticeship AI System",
-  welcome: "欢迎来到 CAAIS：专注 Cognitive Apprenticeship 的智能学习平台",
+  welcome: "欢迎来到 CAAIS",
   accountLogin: "账号密码登录",
   accountLabel: "账号",
   accountPlaceholder: "学生账号",
