@@ -275,14 +275,14 @@ describe("AAIS governed AI provider", () => {
       "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
     );
     const payload = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
-    expect(payload.model).toBe("qwen3.6-plus");
+    expect(payload.model).toBe("qwen3.7-max");
     expect(payload.thinking).toEqual({ type: "disabled" });
     expect(fetchMock.mock.calls[0]?.[1]?.headers).toMatchObject({
       authorization: "Bearer dashscope-secret-key",
     });
     expect(result.runtime).toMatchObject({
       provider: "openai-compatible",
-      model: "qwen3.6-plus",
+      model: "qwen3.7-max",
       status: "ok",
       runtimeProfile: {
         mode: "live",

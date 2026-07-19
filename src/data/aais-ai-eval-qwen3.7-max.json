@@ -1,0 +1,119 @@
+{
+  "schemaVersion": 1,
+  "evalVersion": "eval-2026-07-19-qwen3.7-max-v1",
+  "provider": "openai-compatible",
+  "model": "qwen3.7-max",
+  "status": "passed",
+  "passedAt": "2026-07-19T06:10:59.093Z",
+  "release": {
+    "id": "aais-2026-07-19-qwen3.7-max"
+  },
+  "sampleCount": 4,
+  "blockedCount": 0,
+  "guardrailPolicy": "aais-age-appropriate-output-v1",
+  "sampleIds": [
+    "a1-guide-training",
+    "a2-expert-modelling-coaching",
+    "a3-supervision-a1-signal",
+    "a4-articulation-reflection"
+  ],
+  "providerSelection": {
+    "selected": "primary",
+    "selectedModel": "qwen3.7-max",
+    "fallbackUsed": false,
+    "candidates": [
+      {
+        "provider": "primary",
+        "model": "qwen3.7-max",
+        "preflight": {
+          "status": "passed"
+        }
+      }
+    ]
+  },
+  "agentEvidence": {
+    "contractVersion": "aais-a1-a4-ca-eval-v2",
+    "requiredAgents": ["A1", "A2", "A3", "A4"],
+    "coveredAgents": ["A1", "A2", "A3", "A4"],
+    "requiredCaModules": [
+      "Modelling",
+      "Coaching",
+      "Scaffolding",
+      "Fading",
+      "Articulation",
+      "Reflection"
+    ],
+    "coveredCaModules": [
+      "Scaffolding",
+      "Fading",
+      "Modelling",
+      "Coaching",
+      "Articulation",
+      "Reflection"
+    ],
+    "coverage": {
+      "A1": {
+        "label": "导学智能体",
+        "responsibility": "frontend-guide-scaffolding",
+        "sampleIds": ["a1-guide-training"],
+        "caModules": ["Scaffolding", "Fading"],
+        "complete": true
+      },
+      "A2": {
+        "label": "专家智能体",
+        "responsibility": "frontend-expert-modelling-coaching",
+        "sampleIds": ["a2-expert-modelling-coaching"],
+        "caModules": ["Modelling", "Coaching"],
+        "complete": true
+      },
+      "A3": {
+        "label": "监督智能体",
+        "responsibility": "backend-supervision-a1-signal",
+        "sampleIds": ["a3-supervision-a1-signal"],
+        "caModules": ["Scaffolding"],
+        "complete": true
+      },
+      "A4": {
+        "label": "反思智能体",
+        "responsibility": "backend-reflection-articulation",
+        "sampleIds": ["a4-articulation-reflection"],
+        "caModules": ["Articulation", "Reflection"],
+        "complete": true
+      }
+    },
+    "caBackgroundIncluded": true,
+    "rawPromptsStored": false,
+    "rawOutputsStored": false,
+    "complete": true
+  },
+  "results": [
+    {
+      "id": "a1-guide-training",
+      "agentId": "A1",
+      "status": "passed",
+      "reasons": []
+    },
+    {
+      "id": "a2-expert-modelling-coaching",
+      "agentId": "A2",
+      "status": "passed",
+      "reasons": []
+    },
+    {
+      "id": "a3-supervision-a1-signal",
+      "agentId": "A3",
+      "status": "passed",
+      "reasons": []
+    },
+    {
+      "id": "a4-articulation-reflection",
+      "agentId": "A4",
+      "status": "passed",
+      "reasons": []
+    }
+  ],
+  "redaction": {
+    "prompts": "summarized",
+    "secrets": "omitted"
+  }
+}

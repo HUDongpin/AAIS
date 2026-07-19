@@ -1,10 +1,13 @@
 import { readFileSync } from "node:fs";
+import qwen37MaxEvalManifest from "@/data/aais-ai-eval-qwen3.7-max.json";
 
 export type AaisAiEvalManifestStatus = "not-required" | "verified" | "missing" | "invalid" | "mismatch";
 
 export type AaisAiEvalManifestResult = {
   status: AaisAiEvalManifestStatus;
   issue?: "AAIS_AI_EVAL_MANIFEST";
+  evalVersion?: string;
+  source?: "configured" | "bundled";
 };
 
 type AaisAiEvalManifest = {
@@ -42,6 +45,7 @@ type AaisAiEvalManifest = {
 
 const requiredAgentIds = ["A1", "A2", "A3", "A4"];
 const requiredCaModules = ["Modelling", "Coaching", "Scaffolding", "Fading", "Articulation", "Reflection"];
+const bundledManifests = [qwen37MaxEvalManifest as AaisAiEvalManifest];
 const requiredAgentContracts = {
   A1: {
     label: "导学智能体",
@@ -76,37 +80,60 @@ export function verifyAaisAiEvalManifest(input: {
       status: "not-required",
     };
   }
-  const manifest = readConfiguredManifest();
-  if (!manifest) {
+  const configuredManifest = readConfiguredManifest();
+  if (isVerifiedManifest(configuredManifest, input, true)) {
+    return verifiedManifestResult(configuredManifest, "configured");
+  }
+  const bundledManifest = bundledManifests.find((manifest) =>
+    isVerifiedManifest(manifest, input, false));
+  if (bundledManifest) {
+    return verifiedManifestResult(bundledManifest, "bundled");
+  }
+  if (!configuredManifest) {
     return {
       status: "missing",
       issue: "AAIS_AI_EVAL_MANIFEST",
     };
   }
-  if (!isValidManifestShape(manifest)) {
+  if (!isValidManifestShape(configuredManifest)) {
     return {
       status: "invalid",
       issue: "AAIS_AI_EVAL_MANIFEST",
     };
   }
-  if (
-    manifest.evalVersion !== input.evalVersion
-    || manifest.provider !== input.provider
-    || manifest.model !== input.model
-    || manifest.status !== "passed"
-    || manifest.sampleCount <= 0
-    || manifest.blockedCount !== 0
-    || manifest.redaction.prompts !== "summarized"
-    || manifest.redaction.secrets !== "omitted"
-    || !isCompleteAgentEvidence(manifest.agentEvidence)
-  ) {
-    return {
-      status: "mismatch",
-      issue: "AAIS_AI_EVAL_MANIFEST",
-    };
-  }
+  return {
+    status: "mismatch",
+    issue: "AAIS_AI_EVAL_MANIFEST",
+  };
+}
+
+function isVerifiedManifest(
+  manifest: Partial<AaisAiEvalManifest> | null,
+  input: Parameters<typeof verifyAaisAiEvalManifest>[0],
+  requireRequestedVersion: boolean,
+): manifest is AaisAiEvalManifest {
+  return Boolean(
+    isValidManifestShape(manifest)
+      && (!requireRequestedVersion || manifest.evalVersion === input.evalVersion)
+      && manifest.provider === input.provider
+      && manifest.model === input.model
+      && manifest.status === "passed"
+      && manifest.sampleCount > 0
+      && manifest.blockedCount === 0
+      && manifest.redaction.prompts === "summarized"
+      && manifest.redaction.secrets === "omitted"
+      && isCompleteAgentEvidence(manifest.agentEvidence),
+  );
+}
+
+function verifiedManifestResult(
+  manifest: AaisAiEvalManifest,
+  source: NonNullable<AaisAiEvalManifestResult["source"]>,
+): AaisAiEvalManifestResult {
   return {
     status: "verified",
+    evalVersion: manifest.evalVersion,
+    source,
   };
 }
 

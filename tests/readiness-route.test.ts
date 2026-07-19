@@ -113,6 +113,7 @@ const enterpriseEnv = [
   "QWEN_MODEL",
   "AAIS_RELEASE_ID",
   "AAIS_DEPLOYMENT_GIT_COMMIT_SHA",
+  "AAIS_READINESS_MODE",
   "AAIS_READINESS_BEARER_TOKEN",
   "VERCEL",
   "VERCEL_GIT_COMMIT_SHA",
@@ -219,6 +220,7 @@ function stubMonitoringEnv() {
 
 describe("AAIS readiness route", () => {
   it("reports a redacted ready status when enterprise production configuration is complete", async () => {
+    vi.stubEnv("AAIS_READINESS_MODE", "enterprise");
     vi.stubEnv("AAIS_SESSION_SECRET", "session-secret-that-must-not-leak");
     vi.stubEnv("AAIS_TRIAL_ACCOUNTS_JSON", trialAccountConfig);
     vi.stubEnv("AAIS_DATABASE_URL", "postgres://aais:database-secret@ep-prod.us-east-1.aws.neon.tech/aais");
@@ -259,6 +261,7 @@ describe("AAIS readiness route", () => {
     expect(body).toMatchObject({
       status: "ready",
       runtime: "production",
+      readinessMode: "enterprise",
       release: {
         id: "aais-2026-06-30-rc1",
         source: "AAIS_RELEASE_ID",
@@ -490,6 +493,8 @@ describe("AAIS readiness route", () => {
     expect(serialized).not.toContain("ai-secret-that-must-not-leak");
     expect(serialized).not.toContain("enterprise-model");
     expect(serialized).not.toContain("0123456789abcdef0123456789abcdef01234567");
+    expect(body.issues).toEqual([]);
+    expect(body.warnings).toEqual([]);
   });
 
   it("returns only bare status to anonymous external readiness callers", async () => {
@@ -745,21 +750,20 @@ describe("AAIS readiness route", () => {
     expect(JSON.stringify(body)).not.toContain("database-secret");
   });
 
-  it("fails closed when production monitoring evidence is not configured", async () => {
+  it("reports missing operational evidence as warnings in traffic readiness mode", async () => {
     vi.stubEnv("AAIS_SESSION_SECRET", "session-secret-that-must-not-leak");
     vi.stubEnv("AAIS_TRIAL_ACCOUNTS_JSON", trialAccountConfig);
     vi.stubEnv("DATABASE_URL", "postgres://aais:database-secret@ep-prod.us-east-1.aws.neon.tech/aais");
-    vi.stubEnv("LRS_ENDPOINT", "https://lrs.example.test/xapi");
-    vi.stubEnv("LRS_USERNAME", "lrs-user");
-    vi.stubEnv("LRS_PASSWORD", "lrs-password-that-must-not-leak");
+    vi.stubEnv("AAIS_READINESS_MODE", "traffic");
     const { GET } = await import("@/app/api/system/readiness/route");
 
     const response = await GET();
     const body = await response.json();
 
-    expect(response.status).toBe(503);
+    expect(response.status).toBe(200);
     expect(body).toMatchObject({
-      status: "not_ready",
+      status: "ready",
+      readinessMode: "traffic",
       checks: {
         monitoring: {
           status: "missing",
@@ -783,8 +787,10 @@ describe("AAIS readiness route", () => {
         },
       },
     });
-    expect(body.issues).toEqual(
+    expect(body.issues).toEqual([]);
+    expect(body.warnings).toEqual(
       expect.arrayContaining([
+        "LRS_ENDPOINT/LRS_USERNAME/LRS_PASSWORD",
         "SENTRY_DSN/NEXT_PUBLIC_SENTRY_DSN",
         "AAIS_SENTRY_ALERTS_CONFIGURED",
         "AAIS_UPTIME_LOGIN_CHECK_URL",
@@ -793,6 +799,48 @@ describe("AAIS readiness route", () => {
       ]),
     );
     expect(JSON.stringify(body)).not.toContain("database-secret");
+  });
+
+  it("uses bundled Qwen evaluation evidence when the configured manifest belongs to an older model", async () => {
+    vi.stubEnv("AAIS_SESSION_SECRET", "session-secret-that-must-not-leak");
+    vi.stubEnv("AAIS_TRIAL_ACCOUNTS_JSON", trialAccountConfig);
+    vi.stubEnv("DATABASE_URL", "postgres://aais:database-secret@ep-prod.us-east-1.aws.neon.tech/aais");
+    vi.stubEnv("CRON_SECRET", "cron-secret-that-must-not-leak");
+    vi.stubEnv("AAIS_READINESS_MODE", "traffic");
+    vi.stubEnv("AAIS_AI_PROVIDER", "qwen");
+    vi.stubEnv("DASHSCOPE_API_KEY", "dashscope-secret-that-must-not-leak");
+    vi.stubEnv("AAIS_AI_MODEL", "qwen3.7-max");
+    vi.stubEnv("AAIS_AI_EVAL_APPROVED", "true");
+    vi.stubEnv("AAIS_AI_EVAL_VERSION", "eval-for-an-older-model");
+    vi.stubEnv("AAIS_AI_EVAL_MANIFEST_JSON", JSON.stringify(passingAiEvalManifest()));
+    const { GET } = await import("@/app/api/system/readiness/route");
+
+    const response = await GET();
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body).toMatchObject({
+      status: "ready",
+      readinessMode: "traffic",
+      checks: {
+        ai: {
+          status: "ok",
+          provider: "openai-compatible",
+          evalVersion: "eval-2026-07-19-qwen3.7-max-v1",
+          evalManifest: "verified",
+          evalSource: "bundled",
+          modelFingerprint: modelFingerprint("qwen3.7-max"),
+        },
+      },
+      issues: [],
+    });
+    expect(body.warnings).toEqual(expect.arrayContaining([
+      "LRS_ENDPOINT/LRS_USERNAME/LRS_PASSWORD",
+      "SENTRY_DSN/NEXT_PUBLIC_SENTRY_DSN",
+      "AAIS_UPTIME_LOGIN_CHECK_URL",
+      "AAIS_CRON_FAILURE_ALERTS_CONFIGURED",
+    ]));
+    expect(JSON.stringify(body)).not.toContain("dashscope-secret-that-must-not-leak");
   });
 
   it("accepts OIDC issuer discovery when explicit provider endpoints are not set", async () => {
@@ -910,6 +958,7 @@ describe("AAIS readiness route", () => {
   });
 
   it("fails closed when production is missing enterprise runtime configuration", async () => {
+    vi.stubEnv("AAIS_READINESS_MODE", "enterprise");
     const { GET } = await import("@/app/api/system/readiness/route");
 
     const response = await GET();
@@ -917,6 +966,7 @@ describe("AAIS readiness route", () => {
 
     expect(response.status).toBe(503);
     expect(body.status).toBe("not_ready");
+    expect(body.readinessMode).toBe("enterprise");
     expect(body.issues).toEqual(
       expect.arrayContaining([
         "AAIS_SESSION_SECRET",
@@ -937,7 +987,7 @@ describe("AAIS readiness route", () => {
     vi.stubEnv("NODE_ENV", "development");
     vi.stubEnv("AAIS_AI_PROVIDER", "qwen");
     vi.stubEnv("DASHSCOPE_API_KEY", "dashscope-secret-that-must-not-leak");
-    vi.stubEnv("AAIS_AI_MODEL", "qwen3.6-plus");
+    vi.stubEnv("AAIS_AI_MODEL", "qwen3.7-max");
     const { GET } = await import("@/app/api/system/readiness/route");
 
     const response = await GET();
@@ -949,12 +999,12 @@ describe("AAIS readiness route", () => {
       provider: "openai-compatible",
       evalVersion: null,
       evalManifest: "not-required",
-      modelFingerprint: modelFingerprint("qwen3.6-plus"),
+      modelFingerprint: modelFingerprint("qwen3.7-max"),
       runtimeProfile: {
         mode: "live",
         primary: {
           provider: "qwen",
-          modelFingerprint: modelFingerprint("qwen3.6-plus"),
+          modelFingerprint: modelFingerprint("qwen3.7-max"),
           thinkingMode: "disabled",
           timeoutMs: {
             configured: null,

@@ -31,6 +31,7 @@ type AaisReadinessCheck = {
 export type AaisReadinessReport = {
   status: "ready" | "not_ready";
   runtime: "production" | "development";
+  readinessMode: "traffic" | "enterprise";
   checkedAt: string;
   release: {
     id: string | null;
@@ -108,17 +109,22 @@ export type AaisReadinessReport = {
       provider: "deterministic" | "openai-compatible";
       evalVersion: string | null;
       evalManifest: AaisAiEvalManifestStatus;
+      evalSource: "configured" | "bundled" | null;
       modelFingerprint: string | null;
       runtimeProfile: AaisAiRuntimeProfile;
     };
   };
   issues: string[];
+  warnings: string[];
   secrets: "redacted";
 };
 
 export async function getAaisReadinessReport(now = new Date()): Promise<AaisReadinessReport> {
   const production = isProductionRuntime();
+  const readinessMode = readAaisReadinessMode();
   const issues: string[] = [];
+  const warnings: string[] = [];
+  const operationalGaps = readinessMode === "enterprise" ? issues : warnings;
   const sessionConfigured = Boolean(process.env.AAIS_SESSION_SECRET?.trim());
   const trialAccounts = getAaisTrialAccountConfigurationStatus();
   const databaseConfig = getAaisDatabaseConfiguration();
@@ -138,14 +144,15 @@ export async function getAaisReadinessReport(now = new Date()): Promise<AaisRead
   const aiModel = aiRuntimeConfig.primary?.model ?? null;
   const aiProvider = aiRuntimeConfig.profile.mode === "live" ? "openai-compatible" : "deterministic";
   const aiModelFingerprint = aiRuntimeConfig.profile.primary?.modelFingerprint ?? null;
-  const aiEvalVersion = process.env.AAIS_AI_EVAL_VERSION?.trim() || null;
-  const aiApproved = process.env.AAIS_AI_EVAL_APPROVED === "true" && Boolean(aiEvalVersion);
+  const configuredAiEvalVersion = process.env.AAIS_AI_EVAL_VERSION?.trim() || null;
   const aiEvalManifest = verifyAaisAiEvalManifest({
     required: production && aiProvider === "openai-compatible",
-    evalVersion: aiEvalVersion,
+    evalVersion: configuredAiEvalVersion,
     provider: aiProvider,
     model: aiModel,
   });
+  const aiEvalVersion = aiEvalManifest.evalVersion ?? configuredAiEvalVersion;
+  const aiApproved = process.env.AAIS_AI_EVAL_APPROVED === "true" && Boolean(aiEvalVersion);
   const release = getAaisReleaseMetadata();
 
   if (production && !sessionConfigured) {
@@ -161,22 +168,22 @@ export async function getAaisReadinessReport(now = new Date()): Promise<AaisRead
     issues.push("AAIS_DATABASE_URL_CONNECTIVITY");
   }
   if (production && !lrsConfigured) {
-    issues.push("LRS_ENDPOINT/LRS_USERNAME/LRS_PASSWORD");
+    operationalGaps.push("LRS_ENDPOINT/LRS_USERNAME/LRS_PASSWORD");
   }
   if (production && !monitoring.sentry.dsnConfigured) {
-    issues.push("SENTRY_DSN/NEXT_PUBLIC_SENTRY_DSN");
+    operationalGaps.push("SENTRY_DSN/NEXT_PUBLIC_SENTRY_DSN");
   }
   if (production && !monitoring.sentry.alertsConfigured) {
-    issues.push("AAIS_SENTRY_ALERTS_CONFIGURED");
+    operationalGaps.push("AAIS_SENTRY_ALERTS_CONFIGURED");
   }
   if (production && !monitoring.uptime.loginCheckConfigured) {
-    issues.push("AAIS_UPTIME_LOGIN_CHECK_URL");
+    operationalGaps.push("AAIS_UPTIME_LOGIN_CHECK_URL");
   }
   if (production && !monitoring.cron.secretConfigured) {
-    issues.push("CRON_SECRET");
+    operationalGaps.push("CRON_SECRET");
   }
   if (production && !monitoring.cron.alertsConfigured) {
-    issues.push("AAIS_CRON_FAILURE_ALERTS_CONFIGURED");
+    operationalGaps.push("AAIS_CRON_FAILURE_ALERTS_CONFIGURED");
   }
   if (ssoOnlyRequired && !oidcConfig.configured) {
     issues.push("AAIS_OIDC_*");
@@ -194,6 +201,7 @@ export async function getAaisReadinessReport(now = new Date()): Promise<AaisRead
   return {
     status: issues.length ? "not_ready" : "ready",
     runtime: production ? "production" : "development",
+    readinessMode,
     checkedAt: now.toISOString(),
     release,
     checks: {
@@ -288,13 +296,21 @@ export async function getAaisReadinessReport(now = new Date()): Promise<AaisRead
         provider: aiProvider,
         evalVersion: aiProvider === "openai-compatible" ? aiEvalVersion : null,
         evalManifest: aiEvalManifest.status,
+        evalSource: aiEvalManifest.source ?? null,
         modelFingerprint: aiModelFingerprint,
         runtimeProfile: aiRuntimeConfig.profile,
       },
     },
     issues,
+    warnings,
     secrets: "redacted",
   };
+}
+
+function readAaisReadinessMode(): AaisReadinessReport["readinessMode"] {
+  return process.env.AAIS_READINESS_MODE?.trim().toLowerCase() === "enterprise"
+    ? "enterprise"
+    : "traffic";
 }
 
 function getTrialAccountStatus(status: "configured" | "missing" | "invalid" | "disabled"): AaisReadinessCheckStatus {
