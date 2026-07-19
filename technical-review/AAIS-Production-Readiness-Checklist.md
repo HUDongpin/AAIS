@@ -37,8 +37,8 @@ Codex implementation progress is tracked separately in `20260709-AAIS-Advisory-I
 
 ## Monitoring
 
-- [ ] Sentry receiving client + server errors, with alerts reaching a named human — source proof exists in Sentry wiring and readiness checks; provider evidence pending for `SENTRY_DSN` / `NEXT_PUBLIC_SENTRY_DSN` and `AAIS_SENTRY_ALERTS_CONFIGURED=true`
-- [ ] Uptime check on `/login` and a cron-failure alert — readiness now requires `AAIS_UPTIME_LOGIN_CHECK_URL`, `CRON_SECRET`, and `AAIS_CRON_FAILURE_ALERTS_CONFIGURED=true`; external monitor/alert proof pending
+- [ ] Sentry receiving client + server errors, with alerts reaching a named human — source proof exists in Sentry wiring and readiness checks; provider evidence pending for `SENTRY_DSN` / `NEXT_PUBLIC_SENTRY_DSN` and `AAIS_SENTRY_ALERTS_CONFIGURED=true`. These remain blocking in `AAIS_READINESS_MODE=enterprise` and are reported as warnings in the explicitly limited `traffic` mode.
+- [ ] Uptime check on `/login` and a cron-failure alert — enterprise readiness requires `AAIS_UPTIME_LOGIN_CHECK_URL`, `CRON_SECRET`, and `AAIS_CRON_FAILURE_ALERTS_CONFIGURED=true`; external monitor/alert proof pending. Traffic readiness exposes the same gaps as warnings without marking an otherwise serviceable deployment unavailable.
 - [ ] Weekly 15-minute dashboard review owned by a named person
 
 ## Documentation
