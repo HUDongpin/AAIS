@@ -712,7 +712,9 @@ async function driveFullCoverageParticipant({ context, displayName, page }) {
   await editor.click();
   await page.getByRole("button", { name: "加粗" }).click();
   await waitForCaptureCount(page, ++expectedCount);
+  const downloadPromise = page.waitForEvent("download");
   await page.getByRole("button", { name: "下载到本地" }).click();
+  await downloadPromise;
   expectedCount += 4;
   await waitForCaptureCount(page, expectedCount);
   await page.getByRole("button", { name: "保存并关闭" }).click();
@@ -1225,6 +1227,7 @@ export function classifyBrowserNetworkUrl(value, allowedOrigin) {
 
 function installBrowserNetworkAudit(context, baseUrl, slot) {
   const allowedOrigin = new URL(baseUrl).origin;
+  const expectedDownloadCount = slot === "P1" ? 1 : 0;
   const inFlight = new Set();
   const recordByRequest = new WeakMap();
   const requestRecords = [];
@@ -1381,12 +1384,13 @@ function installBrowserNetworkAudit(context, baseUrl, slot) {
         && nonLocalWebsocketCount === 0
         && invalidWebsocketUrlCount === 0
         && serviceWorkerCount === 0
-        && downloadCount === 0
+        && downloadCount === expectedDownloadCount
         && observerErrorCount === 0;
       return {
         captureStartedAt,
         captureEndedAt,
         downloadCount,
+        expectedDownloadCount,
         inFlightRequestCount: inFlight.size,
         invalidMethodCount,
         invalidRequestUrlCount,
@@ -1448,7 +1452,8 @@ export function buildBrowserNetworkSummary({
   const numericFields = [
     "requestCount", "localRequestCount", "nonLocalRequestCount",
     "invalidRequestUrlCount", "invalidMethodCount", "requestFinishedCount",
-    "requestFailedCount", "downloadCount", "observerErrorCount",
+    "requestFailedCount", "downloadCount", "expectedDownloadCount",
+    "observerErrorCount",
     "routeGuardRequestCount", "routeGuardLocalRequestCount",
     "routeGuardNonLocalRequestCount", "routeGuardInvalidRequestCount",
     "inFlightRequestCount", "websocketCount", "localWebsocketCount",
@@ -1464,6 +1469,7 @@ export function buildBrowserNetworkSummary({
   for (let index = 0; index < audits.length; index += 1) {
     const audit = audits[index];
     const expectedSlot = `P${index + 1}`;
+    const expectedDownloadCount = expectedSlot === "P1" ? 1 : 0;
     const recordShapeIsSafe = Array.isArray(audit.requestRecords)
       && audit.requestRecords.length === audit.requestCount
       && audit.requestRecords.every((record, recordIndex) =>
@@ -1509,7 +1515,8 @@ export function buildBrowserNetworkSummary({
       || audit.nonLocalWebsocketCount !== 0
       || audit.invalidWebsocketUrlCount !== 0
       || audit.serviceWorkerCount !== 0
-      || audit.downloadCount !== 0
+      || audit.expectedDownloadCount !== expectedDownloadCount
+      || audit.downloadCount !== expectedDownloadCount
       || audit.observerErrorCount !== 0) {
       throw new Error("AAIS browser network audit failed closed.");
     }
@@ -1574,7 +1581,9 @@ export function buildBrowserNetworkSummary({
     non_local_websocket_count: total("nonLocalWebsocketCount"),
     invalid_websocket_url_count: total("invalidWebsocketUrlCount"),
     download_count: total("downloadCount"),
-    download_policy: "forbidden",
+    expected_download_count: total("expectedDownloadCount"),
+    download_policy:
+      "exactly-one-p1-synthetic-download-trigger-with-playwright-file-retention-disabled",
     observer_error_count: total("observerErrorCount"),
     request_resource_type_counts: Object.fromEntries(
       Object.entries(resourceTypeCounts).sort(([left], [right]) =>
