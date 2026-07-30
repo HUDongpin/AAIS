@@ -45,6 +45,7 @@ const eventQueueStorageKey = "aais_research_event_queue_v1";
 const sessionCookieName = process.env.AAIS_SESSION_COOKIE_NAME?.trim() || "aais_session";
 const csrfCookieName = process.env.AAIS_CSRF_COOKIE_NAME?.trim() || "aais_csrf";
 const sessionTtlSeconds = 60 * 60 * 2;
+const networkIdleQuietWindowMilliseconds = 2_000;
 const uuidPattern =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const safeTokenPattern = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
@@ -1252,9 +1253,11 @@ function installBrowserNetworkAudit(context, baseUrl, slot) {
   let routeGuardNonLocalRequestCount = 0;
   let routeGuardInvalidRequestCount = 0;
   let finalized = false;
+  let lastNetworkActivityAt = Date.now();
   const captureStartedAt = new Date().toISOString();
 
   context.on("request", (request) => {
+    lastNetworkActivityAt = Date.now();
     requestCount += 1;
     inFlight.add(request);
     const resourceType = String(request.resourceType() || "other").toLowerCase();
@@ -1290,6 +1293,7 @@ function installBrowserNetworkAudit(context, baseUrl, slot) {
     });
   });
   context.on("response", (response) => {
+    lastNetworkActivityAt = Date.now();
     const record = recordByRequest.get(response.request());
     const status = response.status();
     if (!record || !Number.isInteger(status) || status < 100 || status > 599) {
@@ -1299,6 +1303,7 @@ function installBrowserNetworkAudit(context, baseUrl, slot) {
     record.response_status = status;
   });
   const finishRequest = (request, outcome) => {
+    lastNetworkActivityAt = Date.now();
     const record = recordByRequest.get(request);
     if (!record || record.terminal_outcome !== null) {
       observerErrorCount += 1;
@@ -1316,22 +1321,31 @@ function installBrowserNetworkAudit(context, baseUrl, slot) {
     finishRequest(request, "failed");
   });
   context.on("serviceworker", () => {
+    lastNetworkActivityAt = Date.now();
     serviceWorkerCount += 1;
   });
   context.on("download", () => {
+    lastNetworkActivityAt = Date.now();
     downloadCount += 1;
   });
 
   const waitForIdle = async (timeoutMs) => {
-    const deadline = Date.now() + Math.min(Number(timeoutMs) || 5_000, 5_000);
+    const boundedTimeout = Math.min(
+      Math.max(Number(timeoutMs) || 5_000, 5_000),
+      120_000,
+    );
+    const deadline = Date.now() + boundedTimeout;
     while (Date.now() < deadline) {
-      if (inFlight.size === 0) {
-        await delay(100);
-        if (inFlight.size === 0) return;
-      } else {
-        await delay(50);
+      if (hasStableBrowserNetworkIdle({
+        inFlightCount: inFlight.size,
+        lastNetworkActivityAt,
+        now: Date.now(),
+      })) {
+        return;
       }
+      await delay(50);
     }
+    throw new Error("AAIS browser network audit did not reach a stable idle window.");
   };
 
   return {
@@ -1344,6 +1358,7 @@ function installBrowserNetworkAudit(context, baseUrl, slot) {
       });
     },
     recordWebsocketAttempt(url) {
+      lastNetworkActivityAt = Date.now();
       websocketCount += 1;
       recordClassification(classifyBrowserNetworkUrl(url, allowedOrigin), {
         invalid: () => { invalidWebsocketUrlCount += 1; },
@@ -1415,6 +1430,18 @@ function installBrowserNetworkAudit(context, baseUrl, slot) {
       };
     },
   };
+}
+
+export function hasStableBrowserNetworkIdle({
+  inFlightCount,
+  lastNetworkActivityAt,
+  now,
+}) {
+  return inFlightCount === 0
+    && Number.isFinite(lastNetworkActivityAt)
+    && Number.isFinite(now)
+    && now >= lastNetworkActivityAt
+    && now - lastNetworkActivityAt >= networkIdleQuietWindowMilliseconds;
 }
 
 function recordClassification(classification, handlers) {

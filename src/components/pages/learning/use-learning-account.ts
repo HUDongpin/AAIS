@@ -1,10 +1,10 @@
 import { useState } from "react";
-import { useRouter } from "next/navigation";
 import {
   deleteAaisAppSession,
   deleteLearnerPrivacyData,
   fetchLearnerPrivacyData,
 } from "@/components/pages/learning/learning-session-client";
+import { replaceAaisBrowserLocation } from "@/lib/client/aais-browser-navigation";
 import {
   createLearnerDataFileName,
   saveJsonDocumentToLocal,
@@ -32,7 +32,6 @@ export function useLearningAccount({
   onLearnerDataDeleteStarted,
   studentId,
 }: UseLearningAccountInput) {
-  const router = useRouter();
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
   const [privacyBusy, setPrivacyBusy] = useState(false);
@@ -107,15 +106,13 @@ export function useLearningAccount({
       setLoggingOut(false);
       return;
     }
-    if (telemetryActorGeneration !== captureAaisResearchActorGeneration()) {
-      setLoggingOut(false);
-      return;
+    if (telemetryActorGeneration === captureAaisResearchActorGeneration()) {
+      clearAaisResearchTelemetryForActor();
+      window.localStorage.removeItem("aais_student_id");
+      window.localStorage.removeItem("aais_display_name");
+      setAccountMenuOpen(false);
     }
-    clearAaisResearchTelemetryForActor();
-    window.localStorage.removeItem("aais_student_id");
-    window.localStorage.removeItem("aais_display_name");
-    setAccountMenuOpen(false);
-    router.replace(
+    replaceAaisBrowserLocation(
       window.sessionStorage.getItem("aais_research_logout_ack_gap_v1") === "1"
         ? "/login?researchLogout=ack-failed"
         : "/login",

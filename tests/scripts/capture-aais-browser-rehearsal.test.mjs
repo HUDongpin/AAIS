@@ -6,6 +6,7 @@ import {
   buildBrowserNetworkSummary,
   classifyBrowserNetworkUrl,
   createStrictBrowserManifest,
+  hasStableBrowserNetworkIdle,
   normalizeRunOptions,
   validateBrowserCapture,
 } from "../../scripts/capture-aais-browser-rehearsal.mjs";
@@ -148,6 +149,8 @@ describe("AAIS 22-event actual-UI browser capture harness", () => {
     }
     expect(source).toContain("acceptDownloads: false");
     expect(source).toContain('popup.waitForLoadState("domcontentloaded")');
+    expect(source).toContain("networkIdleQuietWindowMilliseconds = 2_000");
+    expect(source).toContain("did not reach a stable idle window");
     expect(source).toContain('serviceWorkers: "block"');
     expect(source).toContain('context.routeWebSocket("**/*"');
     expect(source).toContain("await route.fallback()");
@@ -172,6 +175,24 @@ describe("AAIS 22-event actual-UI browser capture harness", () => {
       "http://user:password@127.0.0.1:3219/learning",
       origin,
     )).toMatchObject({ local: false, valid: false });
+  });
+
+  it("requires two continuous seconds since the last network activity", () => {
+    expect(hasStableBrowserNetworkIdle({
+      inFlightCount: 0,
+      lastNetworkActivityAt: 1_500,
+      now: 3_000,
+    })).toBe(false);
+    expect(hasStableBrowserNetworkIdle({
+      inFlightCount: 1,
+      lastNetworkActivityAt: 1_000,
+      now: 4_000,
+    })).toBe(false);
+    expect(hasStableBrowserNetworkIdle({
+      inFlightCount: 0,
+      lastNetworkActivityAt: 1_500,
+      now: 3_500,
+    })).toBe(true);
   });
 
   it("builds a three-context, lifecycle-complete, same-origin network audit", () => {

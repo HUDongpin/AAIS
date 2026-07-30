@@ -33,6 +33,9 @@ function LearningPage({
 const routerMocks = vi.hoisted(() => ({
   replace: vi.fn(),
 }));
+const browserNavigationMocks = vi.hoisted(() => ({
+  replace: vi.fn(),
+}));
 const telemetryMocks = vi.hoisted(() => {
   const record = vi.fn();
   return {
@@ -57,6 +60,10 @@ vi.mock("next/navigation", () => ({
   useRouter: () => ({
     replace: routerMocks.replace,
   }),
+}));
+
+vi.mock("@/lib/client/aais-browser-navigation", () => ({
+  replaceAaisBrowserLocation: browserNavigationMocks.replace,
 }));
 
 vi.mock("@/lib/client/aais-research-telemetry", () => ({
@@ -85,6 +92,7 @@ afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
   routerMocks.replace.mockReset();
+  browserNavigationMocks.replace.mockReset();
   telemetryMocks.record.mockReset();
   telemetryMocks.admit.mockReset();
   telemetryMocks.admit.mockImplementation((event) => {
@@ -864,7 +872,7 @@ describe("AAIS LearningPage", () => {
         && (init as RequestInit | undefined)?.credentials === "same-origin"
       ))).toBe(true);
     });
-    await waitFor(() => expect(routerMocks.replace).toHaveBeenCalledWith("/login"));
+    await waitFor(() => expect(browserNavigationMocks.replace).toHaveBeenCalledWith("/login"));
     const logoutEvents = telemetryMocks.record.mock.calls
       .map(([event]) => event)
       .filter((event) => event.eventName === "account_logout");
@@ -915,7 +923,7 @@ describe("AAIS LearningPage", () => {
     fireEvent.click(screen.getByRole("button", { name: "Bobie 账户菜单" }));
     fireEvent.click(screen.getByRole("menuitem", { name: "退出" }));
 
-    await waitFor(() => expect(routerMocks.replace).toHaveBeenCalledWith("/login"));
+    await waitFor(() => expect(browserNavigationMocks.replace).toHaveBeenCalledWith("/login"));
     const deleteCall = fetchMock.mock.calls.find(([input, init]) =>
       String(input) === "/api/auth/app-session" && init?.method === "DELETE"
     );
@@ -968,7 +976,7 @@ describe("AAIS LearningPage", () => {
     fireEvent.click(screen.getByRole("button", { name: "Bobie 账户菜单" }));
     fireEvent.click(screen.getByRole("menuitem", { name: "退出" }));
 
-    await waitFor(() => expect(routerMocks.replace).toHaveBeenCalledWith(
+    await waitFor(() => expect(browserNavigationMocks.replace).toHaveBeenCalledWith(
       "/login?researchLogout=ack-failed",
     ));
     expect(window.sessionStorage.getItem("aais_research_logout_ack_gap_v1")).toBe("1");
@@ -1026,7 +1034,7 @@ describe("AAIS LearningPage", () => {
     });
     expect(telemetryMocks.flush).toHaveBeenCalledTimes(2);
     expect(telemetryMocks.clearActor).not.toHaveBeenCalled();
-    expect(routerMocks.replace).not.toHaveBeenCalled();
+    expect(browserNavigationMocks.replace).not.toHaveBeenCalled();
     expect(window.localStorage.getItem("aais_student_id")).toBe("Bobie");
     expect(window.localStorage.getItem("aais_display_name")).toBe("Bobie");
   });
@@ -1065,7 +1073,7 @@ describe("AAIS LearningPage", () => {
 
     logoutResponse.resolve(Response.json({ ok: true }));
 
-    await waitFor(() => expect(routerMocks.replace).toHaveBeenCalledWith("/login"));
+    await waitFor(() => expect(browserNavigationMocks.replace).toHaveBeenCalledWith("/login"));
   });
 
   it("abandons a stale logout continuation after the actor generation changes", async () => {
@@ -1099,7 +1107,40 @@ describe("AAIS LearningPage", () => {
       String(input) === "/api/auth/app-session" && init?.method === "DELETE"
     ))).toBe(false);
     expect(telemetryMocks.clearActor).not.toHaveBeenCalled();
-    expect(routerMocks.replace).not.toHaveBeenCalled();
+    expect(browserNavigationMocks.replace).not.toHaveBeenCalled();
+  });
+
+  it("forces a full login reload after revocation without clearing a newer actor", async () => {
+    const logoutResponse = createDeferred<Response>();
+    telemetryMocks.actorGeneration = 81;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.startsWith("/api/learning/session") && (!init || init.method === "GET")) {
+        return Response.json({ session: createClientSessionFixture("") });
+      }
+      if (url === "/api/auth/app-session" && init?.method === "DELETE") {
+        return logoutResponse.promise;
+      }
+      return Response.json({ ok: true });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<LearningPage />);
+    fireEvent.click(screen.getByRole("button", { name: "Bobie 账户菜单" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "退出" }));
+    await waitFor(() => expect(fetchMock.mock.calls.some(([input, init]) => (
+      String(input) === "/api/auth/app-session" && init?.method === "DELETE"
+    ))).toBe(true));
+
+    telemetryMocks.actorGeneration = 82;
+    window.localStorage.setItem("aais_student_id", "newer-actor");
+    window.localStorage.setItem("aais_display_name", "Newer actor");
+    logoutResponse.resolve(Response.json({ sessionRevoked: true }));
+
+    await waitFor(() => expect(browserNavigationMocks.replace).toHaveBeenCalledWith("/login"));
+    expect(telemetryMocks.clearActor).not.toHaveBeenCalled();
+    expect(window.localStorage.getItem("aais_student_id")).toBe("newer-actor");
+    expect(window.localStorage.getItem("aais_display_name")).toBe("Newer actor");
   });
 
   it("shows A1 and A2 with university education avatars instead of childlike cartoon badges", async () => {
