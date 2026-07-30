@@ -20,21 +20,6 @@ export async function fetchGuideRequest(
   }
 }
 
-export function getInitialStudentId() {
-  if (typeof window === "undefined") {
-    return "S001";
-  }
-  try {
-    const storedStudentId = window.localStorage.getItem("aais_student_id");
-    if (storedStudentId) {
-      return storedStudentId;
-    }
-  } catch {
-    // Cookie fallback still works when storage is unavailable.
-  }
-  return readClientCookie("aais_student_id") || "S001";
-}
-
 export function getAaisCsrfHeader(): Record<string, string> {
   const token = readClientCookie("aais_csrf");
   return token ? { "x-aais-csrf": token } : {};

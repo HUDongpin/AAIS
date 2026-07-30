@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import {
   type AaisCohortAnalyticsFilters,
   getAaisLearningStore,
+  isAaisLegacyResearchDataAccessDisabledError,
   isAaisLearningStorageConfigurationError,
   normalizeCohortAnalyticsFilters,
 } from "@/lib/server/aais-learning-store";
@@ -77,6 +78,14 @@ function getErrorResponseInput(error: unknown) {
     return {
       code: "AAIS_COHORT_EXPORT_FORBIDDEN",
       message: "AAIS cohort export requires educator authorization.",
+      status: 403,
+      extra: { secrets: "redacted" },
+    };
+  }
+  if (isAaisLegacyResearchDataAccessDisabledError(error)) {
+    return {
+      code: "AAIS_RESEARCH_CONTROLLED_EXPORT_REQUIRED",
+      message: "Research event exports are available only through the controlled research export.",
       status: 403,
       extra: { secrets: "redacted" },
     };

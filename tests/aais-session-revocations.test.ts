@@ -12,10 +12,11 @@ import {
 describe("AAIS session revocations", () => {
   it("revokes tokens with the local memory fallback", async () => {
     clearAaisSessionRevocationsForTest();
-    const { verified } = createVerifiedToken();
+    const { verified, now } = createVerifiedToken();
 
     await expect(isAaisSessionTokenRevoked({
       tokenHash: verified.tokenHash,
+      now,
       database: null,
     })).resolves.toBe(false);
 
@@ -23,6 +24,7 @@ describe("AAIS session revocations", () => {
       tokenHash: verified.tokenHash,
       actorId: verified.actor.id,
       expiresAt: verified.expiresAt,
+      now,
       database: null,
     })).resolves.toMatchObject({
       status: "revoked",
@@ -32,27 +34,31 @@ describe("AAIS session revocations", () => {
 
     await expect(isAaisSessionTokenRevoked({
       tokenHash: verified.tokenHash,
+      now,
       database: null,
     })).resolves.toBe(true);
   });
 
   it("persists revocations in Postgres without storing raw tokens or actor ids", async () => {
     const database = new FakeSessionRevocationDatabase();
-    const { token, verified } = createVerifiedToken();
+    const { token, verified, now } = createVerifiedToken();
 
     await expect(isAaisSessionTokenRevoked({
       tokenHash: verified.tokenHash,
+      now,
       database,
     })).resolves.toBe(false);
     await revokeAaisSessionToken({
       tokenHash: verified.tokenHash,
       actorId: verified.actor.id,
       expiresAt: verified.expiresAt,
+      now,
       database,
     });
 
     await expect(isAaisSessionTokenRevoked({
       tokenHash: verified.tokenHash,
+      now,
       database,
     })).resolves.toBe(true);
     expect(database.rows.get(verified.tokenHash)).toMatchObject({
@@ -65,6 +71,7 @@ describe("AAIS session revocations", () => {
 });
 
 function createVerifiedToken() {
+  const now = new Date(Date.UTC(2026, 6, 9, 12, 1, 0));
   const token = createAaisSessionToken(
     {
       id: "S001",
@@ -75,12 +82,12 @@ function createVerifiedToken() {
   );
   const verified = verifyAaisSessionTokenWithMetadata(
     token,
-    new Date(Date.UTC(2026, 6, 9, 12, 1, 0)),
+    now,
   );
   if (!verified) {
     throw new Error("Expected test AAIS session token to verify.");
   }
-  return { token, verified };
+  return { token, verified, now };
 }
 
 class FakeSessionRevocationDatabase {

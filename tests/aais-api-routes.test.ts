@@ -546,6 +546,84 @@ describe("AAIS learning API routes", () => {
     expect(serializedSession).not.toContain("attachments");
   });
 
+  it("rejects attachments before provider or session persistence in research mode", async () => {
+    vi.stubEnv("AAIS_RESEARCH_MODE", "true");
+    vi.resetModules();
+    const guideRoute = await import("@/app/api/learning/ai-guide/route");
+
+    const response = await guideRoute.POST(
+      new Request("http://localhost/api/learning/ai-guide", {
+        method: "POST",
+        headers: {
+          cookie: createAuthedCookie("S001"),
+          "x-aais-csrf": createAaisCsrfToken("S001"),
+        },
+        body: JSON.stringify({
+          phase: "training",
+          taskId: "training_task_1",
+          learnerInput: "请看文件。",
+          workspaceState: {
+            currentStep: "guide",
+            attachments: [{
+              name: "private-notes.txt",
+              mediaType: "text/plain",
+              sizeBytes: 18,
+              extractedText: "private raw text",
+            }],
+          },
+        }),
+      }),
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(400);
+    expect(body.error).toEqual({
+      code: "AAIS_RESEARCH_ATTACHMENT_PROHIBITED",
+      message: "Attachments are disabled for this research study.",
+    });
+    expect(JSON.stringify(body)).not.toContain("private-notes");
+    expect(JSON.stringify(body)).not.toContain("private raw text");
+  });
+
+  it("blocks direct AI provider input when research is required but mode is disabled", async () => {
+    vi.stubEnv("AAIS_RESEARCH_REQUIRED", "true");
+    vi.stubEnv("AAIS_RESEARCH_MODE", "false");
+    vi.resetModules();
+    const graphMock = vi.fn();
+    vi.doMock("@/lib/ai/orchestration/aais-learning-guide-graph", () => ({
+      runAaisLearningGuideGraph: graphMock,
+    }));
+    const guideRoute = await import("@/app/api/learning/ai-guide/route");
+    const rawInput = "required sentinel must not reach the provider";
+
+    const response = await guideRoute.POST(
+      new Request("http://localhost/api/learning/ai-guide", {
+        method: "POST",
+        headers: {
+          cookie: createAuthedCookie("S001"),
+          "x-aais-csrf": createAaisCsrfToken("S001"),
+        },
+        body: JSON.stringify({
+          phase: "training",
+          taskId: "training_task_1",
+          learnerInput: rawInput,
+          workspaceState: {
+            currentStep: "guide",
+          },
+        }),
+      }),
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(503);
+    expect(body.error).toEqual({
+      code: "AAIS_RESEARCH_MODE_REQUIRED",
+      message: "AAIS research collection is required but not enabled.",
+    });
+    expect(graphMock).not.toHaveBeenCalled();
+    expect(JSON.stringify(body)).not.toContain(rawInput);
+  });
+
   it("rejects invalid guide attachment payloads", async () => {
     vi.resetModules();
     const guideRoute = await import("@/app/api/learning/ai-guide/route");

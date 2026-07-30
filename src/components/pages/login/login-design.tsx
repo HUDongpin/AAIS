@@ -41,6 +41,7 @@ export const loginCopy = {
   passwordMismatchError: "两次输入的密码不一致。",
   invalidError: "账号或密码不匹配，请使用已授权的 CAAIS 账号登录。",
   serverError: "登录服务暂时不可用，请稍后再试。",
+  researchLogoutAckWarning: "账号已安全退出，但最终研究事件未获确认。请告知研究人员，且不要将本次实验标记为完成。",
 };
 
 export const loginSerifFontFamily =

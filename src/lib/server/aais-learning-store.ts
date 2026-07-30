@@ -20,6 +20,7 @@ import {
   enqueueAaisLrsEvents,
   sendAaisEventsToLrs,
 } from "@/lib/server/aais-lrs-client";
+import { requiresAaisResearchDataPlaneIsolation } from "@/lib/server/aais-research-contract";
 import type { AaisRecommendationOverrideDecision } from "@/lib/server/aais-recommendations";
 
 export type AaisDatabaseClient = {
@@ -59,6 +60,19 @@ export function isAaisLearningStorageConfigurationError(
   error: unknown,
 ): error is AaisLearningStorageConfigurationError {
   return error instanceof AaisLearningStorageConfigurationError;
+}
+
+export class AaisLegacyResearchDataAccessDisabledError extends Error {
+  constructor() {
+    super("Legacy product analytics and event exports are disabled on an AAIS research deployment.");
+    this.name = "AaisLegacyResearchDataAccessDisabledError";
+  }
+}
+
+export function isAaisLegacyResearchDataAccessDisabledError(
+  error: unknown,
+): error is AaisLegacyResearchDataAccessDisabledError {
+  return error instanceof AaisLegacyResearchDataAccessDisabledError;
 }
 
 export class AaisSessionWriteConflictError extends Error {
@@ -178,6 +192,16 @@ export type AaisLearnerDataDeletionResult = {
   mirroredAnalyticsDeleted: boolean;
   persistentOutboxDeleted: boolean;
   accountRetained: true;
+  secrets: "redacted";
+};
+
+export type AaisRestrictedResearchRawTextDeletionResult = {
+  studentId: string;
+  deletedAt: string;
+  storageMode: "postgres" | "file";
+  learnerRecordFound: boolean;
+  rawTextDeleted: true;
+  unrelatedProductHistoryPreserved: true;
   secrets: "redacted";
 };
 
@@ -727,6 +751,7 @@ export function createAaisLearningStore(input: StoreInput = {}) {
   }
 
   async function exportEvents(studentId: string, format: "json" | "csv") {
+    assertLegacyResearchDataAccessAllowed();
     const session = await getOrCreateSession(studentId);
     if (format === "json") {
       return {
@@ -812,6 +837,48 @@ export function createAaisLearningStore(input: StoreInput = {}) {
     };
   }
 
+  async function deleteRestrictedResearchRawText(
+    studentId: string,
+  ): Promise<AaisRestrictedResearchRawTextDeletionResult> {
+    const safeStudentId = requireSafeId(studentId, "student id");
+    const storageMode = database ? "postgres" : "file";
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const existing = await readSession(safeStudentId);
+      if (!existing) {
+        return {
+          studentId: safeStudentId,
+          deletedAt: new Date().toISOString(),
+          storageMode,
+          learnerRecordFound: false,
+          rawTextDeleted: true,
+          unrelatedProductHistoryPreserved: true,
+          secrets: "redacted",
+        };
+      }
+      const redacted = redactRestrictedResearchRawText(normalizeSession(existing));
+      try {
+        // This restricted erasure intentionally writes only the learner-session
+        // payload. Product events, task state, analytics, and outbox history are
+        // outside the approved research raw-text scope and remain untouched.
+        await writeSession(redacted);
+        return {
+          studentId: safeStudentId,
+          deletedAt: new Date().toISOString(),
+          storageMode,
+          learnerRecordFound: true,
+          rawTextDeleted: true,
+          unrelatedProductHistoryPreserved: true,
+          secrets: "redacted",
+        };
+      } catch (error) {
+        if (!isAaisSessionWriteConflictError(error) || attempt === 2) {
+          throw error;
+        }
+      }
+    }
+    throw new AaisSessionWriteConflictError();
+  }
+
   async function exportCohortAnalytics(format: "json" | "csv", filters: AaisCohortAnalyticsFilters = {}) {
     const analytics = await getCohortAnalytics(filters);
     const exported = buildAaisCohortAnalyticsExport(analytics);
@@ -830,6 +897,7 @@ export function createAaisLearningStore(input: StoreInput = {}) {
   }
 
   async function getAnalytics(studentId: string) {
+    assertLegacyResearchDataAccessAllowed();
     const session = await getOrCreateSession(studentId);
     return summarizeAaisLearningAnalytics(session);
   }
@@ -919,6 +987,7 @@ export function createAaisLearningStore(input: StoreInput = {}) {
     filters: AaisCohortAnalyticsFilters = {},
     pagination?: AaisCohortLearnerPaginationInput,
   ) {
+    assertLegacyResearchDataAccessAllowed();
     if (database) {
       const rows = await readSqlCohortAnalyticsRows(database, filters);
       return summarizeAaisSqlCohortAnalytics(rows, filters, pagination);
@@ -1209,7 +1278,7 @@ export function createAaisLearningStore(input: StoreInput = {}) {
     if (database) {
       await writeLearnerTaskStateRows(database, session);
     }
-    if (!events.length) {
+    if (!events.length || requiresAaisResearchDataPlaneIsolation()) {
       return;
     }
     if (database) {
@@ -1233,6 +1302,7 @@ export function createAaisLearningStore(input: StoreInput = {}) {
     appendGuideExchange,
     completeTask,
     deleteLearnerData,
+    deleteRestrictedResearchRawText,
     exportCohortAnalytics,
     exportEvents,
     exportLearnerData,
@@ -1249,6 +1319,12 @@ export function createAaisLearningStore(input: StoreInput = {}) {
     selectStage,
     selectTask,
   };
+}
+
+function assertLegacyResearchDataAccessAllowed() {
+  if (requiresAaisResearchDataPlaneIsolation()) {
+    throw new AaisLegacyResearchDataAccessDisabledError();
+  }
 }
 
 export function summarizeAaisLearningAnalytics(session: AaisLearnerSession) {
@@ -1934,6 +2010,13 @@ export async function flushAaisPersistentLrsOutbox(input: {
   maxBatchSize?: number;
   maxAttempts?: number;
 } = {}) {
+  if (requiresAaisResearchDataPlaneIsolation()) {
+    return {
+      status: "not_configured" as const,
+      sent: 0,
+      secrets: "redacted" as const,
+    };
+  }
   const database = input.database ?? getConfiguredDatabaseClient();
   if (!database) {
     return {
@@ -2011,6 +2094,13 @@ export async function requeueAaisPersistentLrsDeadLetters(input: {
   database?: AaisDatabaseClient;
   limit?: number;
 } = {}) {
+  if (requiresAaisResearchDataPlaneIsolation()) {
+    return {
+      status: "not_configured" as const,
+      requeued: 0,
+      secrets: "redacted" as const,
+    };
+  }
   const database = input.database ?? getConfiguredDatabaseClient();
   if (!database) {
     return {
@@ -2043,6 +2133,21 @@ export async function requeueAaisPersistentLrsDeadLetters(input: {
 export async function getAaisPersistentLrsOutboxStatus(input: {
   database?: AaisDatabaseClient;
 } = {}) {
+  if (requiresAaisResearchDataPlaneIsolation()) {
+    return {
+      mode: "research-isolated" as const,
+      storage: "disabled" as const,
+      configured: false,
+      pending: 0,
+      retry: 0,
+      sent: 0,
+      deadLetter: 0,
+      total: 0,
+      coalescing: getLrsOutboxCoalescingStatus(false),
+      recovery: getLrsOutboxRecoveryStatus(false),
+      secrets: "redacted" as const,
+    };
+  }
   const database = input.database ?? getConfiguredDatabaseClient();
   if (!database) {
     return {
@@ -2545,6 +2650,28 @@ function normalizeSession(session: AaisLearnerSession): AaisLearnerSession {
       session_id: event.session_id ?? sessionId,
     })),
   };
+}
+
+function redactRestrictedResearchRawText(
+  session: AaisLearnerSession,
+): AaisLearnerSession {
+  return touch({
+    ...session,
+    tasks: session.tasks.map((task) => ({
+      ...task,
+      artifactText: "",
+      selfReport: "",
+    })),
+    guideMessages: session.guideMessages.map((message) => ({
+      ...message,
+      text: "",
+      turns: message.turns?.map((turn) => ({
+        ...turn,
+        content: "",
+        actions: [],
+      })),
+    })),
+  });
 }
 
 function touch(session: AaisLearnerSession): AaisLearnerSession {

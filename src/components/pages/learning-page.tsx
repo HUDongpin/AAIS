@@ -1,63 +1,53 @@
 "use client";
 
-import {
-  useEffect,
-  useRef,
-  useState,
-  type CSSProperties,
-} from "react";
-import { useRouter } from "next/navigation";
-import {
-  anthropicLearningFontFamily,
-  artifactSaveDebounceMs,
-  defaultTaskId,
-} from "@/components/pages/learning/learning-page-constants";
-import {
-  ContentResizeSeparator,
-  ContentSidePanel,
-} from "@/components/pages/learning/content-side-panel";
+import { useEffect, useRef, useState, type CSSProperties } from "react";
+import { anthropicLearningFontFamily, artifactSaveDebounceMs } from "@/components/pages/learning/learning-page-constants";
+import { ContentResizeSeparator, ContentSidePanel } from "@/components/pages/learning/content-side-panel";
 import { GuidePanel } from "@/components/pages/learning/guide-panel";
-import { LearningTopBar } from "@/components/pages/learning/learning-top-bar";
-import { getInitialStudentId } from "@/components/pages/learning/client-helpers";
-import {
-  deleteAaisAppSession,
-  deleteLearnerPrivacyData,
-  fetchLearningSession,
-  fetchLearnerPrivacyData,
-  patchLearningSession,
-} from "@/components/pages/learning/learning-session-client";
+import { LearningAccountFeedback, LearningTopBar } from "@/components/pages/learning/learning-top-bar";
+import { useLearningAccount } from "@/components/pages/learning/use-learning-account";
 import { useContentPanelResize } from "@/components/pages/learning/use-content-panel-resize";
 import { useLearningGuide } from "@/components/pages/learning/use-learning-guide";
+import { useLearningWorkspaceSession } from "@/components/pages/learning/use-learning-workspace-session";
+import {
+  LearningResearchWorkspaceBoundary,
+  type LearningResearchBoundary,
+} from "@/components/pages/learning/research-telemetry-boundary";
+import {
+  admitAaisResearchAction,
+  captureAaisResearchActorGeneration,
+  classifyAaisResearchClientError,
+  createAaisResearchOperationId,
+  recordAaisResearchEvent,
+} from "@/lib/client/aais-research-telemetry";
 import {
   createHistoryDocument,
-  createLearnerDataFileName,
   createLearningDocumentFileName,
   createLearningDocumentMarkdown,
-  saveJsonDocumentToLocal,
   saveMarkdownDocumentToLocal,
 } from "@/components/pages/learning/document-markdown";
-import type {
-  AaisClientSession,
-  ContentItemId,
-  ContentTab,
-  SavedLearningDocument,
-} from "@/components/pages/learning/learning-page-types";
+import type { ContentItemId, ContentTab, SavedLearningDocument } from "@/components/pages/learning/learning-page-types";
 
-export function LearningPage() {
-  const router = useRouter();
-  const [studentId] = useState(() => getInitialStudentId());
-  const [activeTaskId, setActiveTaskId] = useState(defaultTaskId);
+export type LearningPageActor = { id: string; displayName: string };
+export type LearningPageResearchBoundary = LearningResearchBoundary;
+
+export function LearningPage({ actor, research }: {
+  actor: LearningPageActor;
+  research: LearningResearchBoundary;
+}) {
+  return (
+    <LearningResearchWorkspaceBoundary research={research}>
+      <LearningWorkbench actor={actor} />
+    </LearningResearchWorkspaceBoundary>
+  );
+}
+
+function LearningWorkbench({ actor }: { actor: LearningPageActor }) {
+  const studentId = actor.id;
   const [activeTab, setActiveTab] = useState<ContentTab>("display");
   const [activeContentId, setActiveContentId] = useState<ContentItemId | null>(null);
-  const [accountMenuOpen, setAccountMenuOpen] = useState(false);
-  const [loggingOut, setLoggingOut] = useState(false);
-  const [privacyBusy, setPrivacyBusy] = useState(false);
-  const [accountStatus, setAccountStatus] = useState("");
-  const [accountError, setAccountError] = useState("");
-  const [artifactText, setArtifactText] = useState("");
   const [documentTitle, setDocumentTitle] = useState("");
   const [historyDocuments, setHistoryDocuments] = useState<SavedLearningDocument[]>([]);
-  const [backendError, setBackendError] = useState("");
   const [artifactSaveBusy, setArtifactSaveBusy] = useState(false);
   const [artifactSaveStatus, setArtifactSaveStatus] = useState("");
   const [artifactSaveError, setArtifactSaveError] = useState("");
@@ -69,6 +59,16 @@ export function LearningPage() {
     taskId: string;
     value: string;
   } | null>(null);
+  const {
+    activeTaskId,
+    artifactText,
+    backendError,
+    lastSavedArtifactLengthRef,
+    patchSession,
+    resetWorkspaceSession,
+    setArtifactText,
+    setBackendError,
+  } = useLearningWorkspaceSession();
   const {
     contentPanelWidth,
     getMaxContentPanelWidth,
@@ -96,77 +96,27 @@ export function LearningPage() {
   } = useLearningGuide({
     activeTaskId,
     artifactText,
+    displayName: actor.displayName,
+    studentId,
+  });
+  const {
+    accountError,
+    accountMenuOpen,
+    accountStatus,
+    handleDeleteLearnerData,
+    handleExportLearnerData,
+    handleLogout,
+    loggingOut,
+    privacyBusy,
+    toggleAccountMenu,
+  } = useLearningAccount({
+    operationBusy:
+      guideBusy || guideAttachmentBusy || artifactSaveBusy || documentDownloadBusy,
+    onLearnerDataDeleteStarted: resetLearnerWorkspace,
     studentId,
   });
 
-  function applySession(session: AaisClientSession) {
-    const nextTaskId = session.activeTaskId || defaultTaskId;
-    setActiveTaskId(nextTaskId);
-    const selectedTask =
-      session.tasks?.find((task) => task.taskId === nextTaskId) ?? session.tasks?.[0];
-    setArtifactText(selectedTask?.artifactText ?? "");
-  }
-
-  async function patchSession(body: Record<string, unknown>) {
-    const session = await patchLearningSession(body);
-    applySession(session);
-    setBackendError("");
-    return session;
-  }
-
-  async function handleLogout() {
-    if (loggingOut) {
-      return;
-    }
-    setLoggingOut(true);
-    setAccountStatus("正在退出...");
-    setAccountError("");
-    try {
-      await deleteAaisAppSession();
-    } catch {
-      // A local redirect still returns the learner to the login surface if the network call fails.
-    }
-    window.localStorage.removeItem("aais_student_id");
-    window.localStorage.removeItem("aais_display_name");
-    setAccountMenuOpen(false);
-    router.replace("/login");
-    setLoggingOut(false);
-  }
-
-  async function handleExportLearnerData() {
-    if (privacyBusy) {
-      return;
-    }
-    setPrivacyBusy(true);
-    setAccountStatus("正在导出学习数据...");
-    setAccountError("");
-    try {
-      const data = await fetchLearnerPrivacyData();
-      await saveJsonDocumentToLocal({
-        fileName: createLearnerDataFileName(studentId),
-        data,
-      });
-      setAccountStatus("学习数据已导出。");
-      setAccountMenuOpen(false);
-    } catch {
-      setAccountStatus("");
-      setAccountError("学习数据导出未能完成，请稍后重试。");
-    } finally {
-      setPrivacyBusy(false);
-    }
-  }
-
-  async function handleDeleteLearnerData() {
-    if (privacyBusy) {
-      return;
-    }
-    const confirmed = window.confirm("确定要删除当前学习数据吗？此操作会清除你的学习记录，但不会删除账号。");
-    if (!confirmed) {
-      return;
-    }
-    setPrivacyBusy(true);
-    setAccountStatus("正在删除学习数据...");
-    setAccountError("");
+  function resetLearnerWorkspace() {
     setArtifactSaveStatus("");
     setArtifactSaveError("");
     setDocumentDownloadStatus("");
@@ -176,35 +126,46 @@ export function LearningPage() {
       artifactSaveTimerRef.current = null;
     }
     pendingArtifactSaveRef.current = null;
-    try {
-      await deleteLearnerPrivacyData();
-      setActiveTaskId(defaultTaskId);
-      setActiveTab("display");
-      setActiveContentId(null);
-      setArtifactText("");
-      setDocumentTitle("");
-      setHistoryDocuments([]);
-      setBackendError("");
-      setAccountStatus("学习数据已删除。");
-      setAccountMenuOpen(false);
-    } catch {
-      setAccountStatus("");
-      setAccountError("学习数据删除未能完成，请稍后重试。");
-    } finally {
-      setPrivacyBusy(false);
-    }
+    resetWorkspaceSession();
+    setActiveTab("display");
+    setActiveContentId(null);
+    setDocumentTitle("");
+    setHistoryDocuments([]);
   }
 
-  function flushPendingArtifactSave() {
+  function flushPendingArtifactSave(trigger = "manual") {
     const pending = pendingArtifactSaveRef.current;
-    pendingArtifactSaveRef.current = null;
     if (artifactSaveTimerRef.current) {
       clearTimeout(artifactSaveTimerRef.current);
       artifactSaveTimerRef.current = null;
     }
     if (!pending) {
-      return;
+      return true;
     }
+    const operationId = createAaisResearchOperationId("artifact-save");
+    const telemetryActorGeneration = captureAaisResearchActorGeneration();
+    const startedAt = clientNowMs();
+    const previousCharacters = lastSavedArtifactLengthRef.current;
+    const eventDetail = {
+      operation_id: operationId,
+      task_id: pending.taskId,
+      trigger,
+      previous_characters: previousCharacters,
+      current_characters: pending.value.length,
+      delta_characters: pending.value.length - previousCharacters,
+      artifact_length: pending.value.length,
+    };
+    if (!admitAaisResearchAction({
+      actorGeneration: telemetryActorGeneration,
+      eventName: "document_artifact_save",
+      outcome: "attempted",
+      detail: eventDetail,
+    })) {
+      pendingArtifactSaveRef.current = pending;
+      setArtifactSaveStatus("研究记录连接已暂停，文档更改仍待保存。");
+      return false;
+    }
+    pendingArtifactSaveRef.current = null;
     setArtifactSaveBusy(true);
     setArtifactSaveStatus("正在保存文档...");
     setArtifactSaveError("");
@@ -214,17 +175,36 @@ export function LearningPage() {
       artifactText: pending.value,
     })
       .then(() => {
+        lastSavedArtifactLengthRef.current = pending.value.length;
         setArtifactSaveStatus("文档已保存。");
+        recordAaisResearchEvent({
+          actorGeneration: telemetryActorGeneration,
+          eventName: "document_artifact_save",
+          outcome: "success",
+          latencyMs: clientNowMs() - startedAt,
+          detail: eventDetail,
+        });
       })
-      .catch(() => {
+      .catch((error) => {
         const message = "任务过程记录未能保存到后端。";
         setBackendError(message);
         setArtifactSaveStatus("");
         setArtifactSaveError(message);
+        recordAaisResearchEvent({
+          actorGeneration: telemetryActorGeneration,
+          eventName: "document_artifact_save",
+          outcome: "failure",
+          latencyMs: clientNowMs() - startedAt,
+          detail: {
+            ...eventDetail,
+            error_kind: classifyAaisResearchClientError(error),
+          },
+        });
       })
       .finally(() => {
         setArtifactSaveBusy(false);
       });
+    return true;
   }
 
   function scheduleArtifactSave(taskId: string, value: string) {
@@ -237,7 +217,10 @@ export function LearningPage() {
     if (artifactSaveTimerRef.current) {
       clearTimeout(artifactSaveTimerRef.current);
     }
-    artifactSaveTimerRef.current = setTimeout(flushPendingArtifactSave, artifactSaveDebounceMs);
+    artifactSaveTimerRef.current = setTimeout(
+      () => flushPendingArtifactSave("debounce"),
+      artifactSaveDebounceMs,
+    );
   }
 
   function recordArtifact(value: string) {
@@ -246,6 +229,16 @@ export function LearningPage() {
   }
 
   function selectContentTab(nextTab: ContentTab) {
+    if (!admitAaisResearchAction({
+      eventName: "content_tab_selected",
+      outcome: "success",
+      detail: {
+        operation_id: createAaisResearchOperationId("content-tab"),
+        tab_id: nextTab,
+      },
+    })) {
+      return;
+    }
     setActiveTab(nextTab);
     if (nextTab === "display") {
       setActiveContentId(null);
@@ -253,7 +246,24 @@ export function LearningPage() {
   }
 
   function saveAndCloseDocument() {
-    flushPendingArtifactSave();
+    const operationId = createAaisResearchOperationId("document-save-close");
+    const hadPendingSave = Boolean(pendingArtifactSaveRef.current);
+    if (!flushPendingArtifactSave("save_close")) {
+      return;
+    }
+    if (!admitAaisResearchAction({
+      eventName: "document_save_closed",
+      outcome: "success",
+      detail: {
+        operation_id: operationId,
+        task_id: activeTaskId,
+        pending_save: hadPendingSave,
+        title_length: documentTitle.trim().length,
+        artifact_length: artifactText.length,
+      },
+    })) {
+      return;
+    }
     const sourceHtml = artifactText.trim();
     if (sourceHtml || documentTitle.trim()) {
       const archivedDocument = createHistoryDocument({
@@ -271,7 +281,27 @@ export function LearningPage() {
     if (documentDownloadBusy) {
       return;
     }
-    flushPendingArtifactSave();
+    const operationId = createAaisResearchOperationId("document-download");
+    const telemetryActorGeneration = captureAaisResearchActorGeneration();
+    const startedAt = clientNowMs();
+    const downloadMethod = "showSaveFilePicker" in window ? "file_picker" : "browser_download";
+    if (!flushPendingArtifactSave("download")) {
+      return;
+    }
+    const downloadDetail = {
+      operation_id: operationId,
+      task_id: activeTaskId,
+      download_method: downloadMethod,
+      artifact_length: artifactText.length,
+    };
+    if (!admitAaisResearchAction({
+      actorGeneration: telemetryActorGeneration,
+      eventName: "document_download",
+      outcome: "attempted",
+      detail: downloadDetail,
+    })) {
+      return;
+    }
     setDocumentDownloadBusy(true);
     setDocumentDownloadStatus("正在准备下载...");
     setDocumentDownloadError("");
@@ -281,45 +311,81 @@ export function LearningPage() {
         markdown: createLearningDocumentMarkdown(artifactText),
       });
       setDocumentDownloadStatus("文档下载已准备。");
-    } catch {
+      recordAaisResearchEvent({
+        actorGeneration: telemetryActorGeneration,
+        eventName: "document_download",
+        outcome: "success",
+        latencyMs: clientNowMs() - startedAt,
+        detail: downloadDetail,
+      });
+    } catch (error) {
       const message = "文档下载未能完成，请稍后重试。";
       setBackendError(message);
       setDocumentDownloadStatus("");
       setDocumentDownloadError(message);
+      recordAaisResearchEvent({
+        actorGeneration: telemetryActorGeneration,
+        eventName: "document_download",
+        outcome: "failure",
+        latencyMs: clientNowMs() - startedAt,
+        detail: {
+          ...downloadDetail,
+          error_kind: isUserCancelledFilePicker(error)
+            ? "user_cancelled"
+            : classifyAaisResearchClientError(error),
+        },
+      });
     } finally {
       setDocumentDownloadBusy(false);
     }
   }
 
   function openHistoryDocument(document: SavedLearningDocument) {
+    if (!admitAaisResearchAction({
+      eventName: "history_document_opened",
+      outcome: "success",
+      detail: {
+        operation_id: createAaisResearchOperationId("history-document"),
+        task_id: document.taskId,
+        document_id: document.id,
+        title_length: document.title.length,
+        artifact_length: document.html.length,
+      },
+    })) {
+      return;
+    }
     setDocumentTitle(document.title);
     setArtifactText(document.html);
     setActiveContentId(null);
     setActiveTab("editor");
   }
-  useEffect(() => {
-    let cancelled = false;
-
-    async function loadSession() {
-      try {
-        const session = await fetchLearningSession();
-        if (!cancelled) {
-          applySession(session);
-          setBackendError("");
-        }
-      } catch {
-        if (!cancelled) {
-          setBackendError("学习记录服务暂时不可用，本页会保留当前输入但不会完成持久化。");
-        }
-      }
+  function openContentItem(contentId: ContentItemId) {
+    if (!admitAaisResearchAction({
+      eventName: "content_item_opened",
+      outcome: "success",
+      detail: {
+        operation_id: createAaisResearchOperationId("content-item"),
+        content_id: contentId,
+      },
+    })) {
+      return;
     }
+    setActiveContentId(contentId);
+  }
 
-    void loadSession();
-
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+  function returnToContentMenu() {
+    if (!admitAaisResearchAction({
+      eventName: "content_item_back",
+      outcome: "success",
+      detail: {
+        operation_id: createAaisResearchOperationId("content-back"),
+        ...(activeContentId ? { content_id: activeContentId } : {}),
+      },
+    })) {
+      return;
+    }
+    setActiveContentId(null);
+  }
 
   useEffect(() => () => {
     if (artifactSaveTimerRef.current) {
@@ -347,34 +413,16 @@ export function LearningPage() {
 
         <LearningTopBar
           accountMenuOpen={accountMenuOpen}
+          displayName={actor.displayName}
           loggingOut={loggingOut}
           privacyBusy={privacyBusy}
           onDeleteLearnerData={() => { void handleDeleteLearnerData(); }}
           onExportLearnerData={() => { void handleExportLearnerData(); }}
           onLogout={handleLogout}
-          onToggleAccountMenu={() => setAccountMenuOpen((open) => !open)}
+          onToggleAccountMenu={toggleAccountMenu}
         />
 
-        {accountStatus ? (
-          <p
-            className="border-b border-[#cce9d6] bg-[#effff4] px-4 py-2 text-sm font-semibold text-[#166534]"
-            role="status"
-            aria-live="polite"
-            aria-atomic="true"
-          >
-            {accountStatus}
-          </p>
-        ) : null}
-        {accountError ? (
-          <p
-            className="border-b border-[#f0b7c9] bg-[#fff1f5] px-4 py-2 text-sm font-semibold text-[#a12f56]"
-            role="alert"
-            aria-live="assertive"
-            aria-atomic="true"
-          >
-            {accountError}
-          </p>
-        ) : null}
+        <LearningAccountFeedback error={accountError} status={accountStatus} />
 
         <div
           ref={splitLayoutRef}
@@ -399,7 +447,7 @@ export function LearningPage() {
             guideMessages={guideMessages}
             hasGuideSubmission={hasGuideSubmission}
             onRemoveAttachment={removeGuideAttachment}
-            onSubmitGuideQuestion={(question) => { void submitGuideQuestion(question); }}
+            onSubmitGuideQuestion={(question, options) => { void submitGuideQuestion(question, options); }}
             sendGuideMessage={sendGuideMessage}
             setGuideDraft={setGuideDraft}
             setGuideError={setGuideError}
@@ -424,7 +472,7 @@ export function LearningPage() {
             documentDownloadError={documentDownloadError}
             documentDownloadStatus={documentDownloadStatus}
             documentTitle={documentTitle}
-            flushPendingArtifactSave={flushPendingArtifactSave}
+            flushPendingArtifactSave={() => flushPendingArtifactSave("blur")}
             historyDocuments={historyDocuments}
             onDocumentTitleChange={setDocumentTitle}
             onDownloadDocument={() => { void downloadDocumentToLocal(); }}
@@ -432,10 +480,19 @@ export function LearningPage() {
             onRecordArtifact={recordArtifact}
             onSaveAndCloseDocument={saveAndCloseDocument}
             selectContentTab={selectContentTab}
-            setActiveContentId={setActiveContentId}
+            onBackContent={returnToContentMenu}
+            onOpenContent={openContentItem}
           />
         </div>
       </main>
     </div>
   );
+}
+
+function clientNowMs() {
+  return typeof performance !== "undefined" ? performance.now() : Date.now();
+}
+
+function isUserCancelledFilePicker(error: unknown) {
+  return error instanceof Error && error.name === "AbortError";
 }

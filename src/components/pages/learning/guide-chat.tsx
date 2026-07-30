@@ -1,6 +1,10 @@
 import type { ReactNode } from "react";
 import type { AaisGuideAttachment } from "@/lib/ai/aais-guide-attachments";
 import {
+  admitAaisResearchAction,
+  createAaisResearchOperationId,
+} from "@/lib/client/aais-research-telemetry";
+import {
   visibleGuideAgentIds,
 } from "@/components/pages/learning/learning-page-constants";
 import type {
@@ -285,6 +289,28 @@ function renderSafeMarkdownInline(text: string, keyPrefix: string): ReactNode[] 
             key={key}
             className="font-medium underline decoration-current/40 underline-offset-4"
             href={safeHref}
+            onClick={(event) => {
+              const parsedUrl = new URL(safeHref);
+              if (!admitAaisResearchAction({
+                eventName: "guide_response_link_opened",
+                outcome: "success",
+                detail: {
+                  operation_id: createAaisResearchOperationId("guide-link"),
+                  source: "ai_response",
+                  link_protocol: parsedUrl.protocol,
+                  ...(parsedUrl.hostname
+                    ? {
+                        link_host: parsedUrl.hostname === "aais.site"
+                          || parsedUrl.hostname.endsWith(".aais.site")
+                          ? "aais_site"
+                          : "external",
+                      }
+                    : {}),
+                },
+              })) {
+                event.preventDefault();
+              }
+            }}
             rel="noreferrer"
             target="_blank"
           >

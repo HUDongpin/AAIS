@@ -11,6 +11,7 @@ import {
   UserCircle,
 } from "@phosphor-icons/react";
 import { getAaisApiErrorMessage } from "@/lib/client/aais-api-error";
+import { clearAaisResearchTelemetryForActor } from "@/lib/client/aais-research-telemetry";
 import {
   LoginDesignDeck,
   LoginMobileDesignCarousel,
@@ -35,7 +36,11 @@ export function LoginPage({ trialLoginEnabled = true }: LoginPageProps) {
   const [confirmPassword, setConfirmPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [consentAccepted, setConsentAccepted] = useState(false);
-  const [error, setError] = useState("");
+  const [error, setError] = useState(
+    searchParams.get("researchLogout") === "ack-failed"
+      ? loginCopy.researchLogoutAckWarning
+      : "",
+  );
   const [notice, setNotice] = useState("");
   const [resetMode, setResetMode] = useState(false);
   const [resetEmail, setResetEmail] = useState("");
@@ -99,6 +104,10 @@ export function LoginPage({ trialLoginEnabled = true }: LoginPageProps) {
           return;
         }
 
+        // A successful login establishes a new actor boundary. Discard any
+        // visit validation and unsent queue left by an expired/revoked prior
+        // session before storing the newly authenticated actor locally.
+        clearAaisResearchTelemetryForActor();
         if (result?.appSession?.actor?.id) {
           window.localStorage.setItem("aais_student_id", result.appSession.actor.id);
         }

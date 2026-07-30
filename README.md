@@ -57,7 +57,15 @@ npm run verify:postgres-restore -- --env-file ./.env.postgres-restore.local
 
 Login requires explicit terms/privacy/guardian-consent acknowledgement. Signed-in learners can export and delete their learning data through `/api/learning/privacy`; account lifecycle remains administrator-owned.
 
-The privacy baseline, retention notes, processor/DPA register, and consent/minor-user gate are in [docs/privacy-data-inventory.md](./docs/privacy-data-inventory.md). No real cohort should onboard until cohort age/region/institution, legal basis, retention schedule, consent workflow, and provider DPA/data-region terms are confirmed.
+The general privacy baseline, processor/DPA register, and consent/minor-user gate are in [docs/privacy-data-inventory.md](./docs/privacy-data-inventory.md). No real cohort should onboard until cohort age/region/institution, legal basis, consent workflow, provider DPA/data-region terms, and any non-research retention requirements are confirmed.
+
+The named research study is limited to 30 participants and one visit each. Its exact Postgres-only data contract, raw-text boundary, access rules, 90/180/1825/35-day retention schedule, backup/restore controls, and withdrawal/LRS physical-deletion SOP are in [docs/research-data-governance.md](./docs/research-data-governance.md). Enable it only with `AAIS_RESEARCH_MODE=true`, `AAIS_RESEARCH_REQUIRED=true`, and a dedicated `AAIS_RESEARCH_DATABASE_URL`; apply the isolated fact-store schema with `npm run db:migrate:research`. Either research sentinel disables the legacy product event/LRS mirror and generic analytics/event exports so a stale `LRS_ENDPOINT` cannot receive study activity. Research mode must fail closed when Postgres or required study configuration is unavailable. New experiment statements use a clean, physically isolated, AAIS-only research store; the existing mixed 828-statement AAIS/MAIS pool is a legacy archive and is excluded from new-study queries, exports, and counts.
+
+`npm run study:rehearse -- --participants 4 --output ./aais-research-rehearsal.json` runs exactly seven metadata-only semantic operations for each of 3-5 synthetic participants against migrated Postgres, then compares operation, Postgres-event, LRS-eligible outbox, and mock statement-id sets. It rolls back by default; `--commit` requires `AAIS_RESEARCH_REHEARSAL_APPROVED=true` and `AAIS_RESEARCH_ENVIRONMENT=research`. The command does not perform actual external LRS delivery or replace actual-UI browser evidence. Clean-store launch still requires an external provider receipt for isolation, zero baseline, delivery reconciliation, and physical deletion.
+
+`npm run lrs:archive-legacy -- --expected-count 828 --stored-through <owner-approved-inclusive-provider-stored-ISO>` inventories that old pool only with read-only `AAIS_LEGACY_LRS_ENDPOINT`, `AAIS_LEGACY_LRS_USERNAME`, and `AAIS_LEGACY_LRS_PASSWORD`. The cutoff freezes the historical set by provider `stored` time and reports any later AAIS rows separately. A valid restricted receipt contains statement ids, content SHA-256 digests, and counts but no statement bodies; the selected historical set must equal exactly 828. The command's presence does not mean the external pool has actually been accessed.
+
+Formal visit creation and event ingestion are runtime-gated by the approved access register, distinct research worker credentials and POST schedules, dedicated research LRS configuration, and pairwise-distinct SHA-256 receipts for database/LRS isolation, zero baseline, PUT/physical-DELETE behavior, backup policy, restore, the 828-row legacy archive, the signed access register, consent/legal basis, DPA, data region, successful daily backup, and 35-day backup destruction. A separately signed governance manifest must be verified within 36 hours, its validity window must remain open, the daily-backup evidence must be no older than 36 hours, and the destruction evidence must be no older than 45 days. `/api/system/readiness` reports ordinary `applicationReady` separately from `studyLaunchReady`; only `studyLaunchReady=true` authorizes the 30-participant run.
 
 ## Docs
 
@@ -65,6 +73,7 @@ The privacy baseline, retention notes, processor/DPA register, and consent/minor
 - [OPERATIONS.md](./OPERATIONS.md): deploy, smoke, migration, rollback, restore, monitoring, and staging load sanity.
 - [CONTRIBUTING.md](./CONTRIBUTING.md): branch, review, verification, database, and secret rules.
 - [docs/release-checklist.md](./docs/release-checklist.md): one-page release checklist.
+- [docs/research-data-governance.md](./docs/research-data-governance.md): enforceable research event, identity, access, retention, backup, export, and withdrawal contract.
 - [docs/teacher-recommendation-rules.md](./docs/teacher-recommendation-rules.md): teacher-facing recommendation policy.
 
 Legacy enterprise evidence scripts are archived under `tools/release-legacy/` and are not part of active CI.

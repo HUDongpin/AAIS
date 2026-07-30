@@ -20,6 +20,8 @@ export type AaisOidcConfigurationStatus = {
 const aaisOidcRoleMappingEnvNames = [
   "AAIS_OIDC_TEACHER_GROUPS",
   "AAIS_OIDC_TEACHER_EMAILS",
+  "AAIS_OIDC_RESEARCHER_GROUPS",
+  "AAIS_OIDC_RESEARCHER_EMAILS",
   "AAIS_OIDC_ADMIN_GROUPS",
   "AAIS_OIDC_ADMIN_EMAILS",
 ] as const;
@@ -451,6 +453,12 @@ function resolveAaisOidcActorRole(payload: JWTPayload): AaisSessionActor["role"]
     || intersects(claimValues, readCsv(process.env.AAIS_OIDC_ADMIN_GROUPS))
   ) {
     return "admin";
+  }
+  if (
+    (email && readLowercaseCsv(process.env.AAIS_OIDC_RESEARCHER_EMAILS).has(email))
+    || intersects(claimValues, readCsv(process.env.AAIS_OIDC_RESEARCHER_GROUPS))
+  ) {
+    return "researcher";
   }
   if (
     (email && readLowercaseCsv(process.env.AAIS_OIDC_TEACHER_EMAILS).has(email))

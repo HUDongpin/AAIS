@@ -1,6 +1,7 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   buildAaisXapiStatement,
+  getLrsConfigurationStatus,
   probeAaisLrsConnection,
   sendAaisEventsToLrs,
 } from "@/lib/server/aais-lrs-client";
@@ -26,6 +27,10 @@ const scaffoldEvent: AaisEvent = {
     tool_id: "stage-checklist",
   },
 };
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
 
 describe("AAIS LRS xAPI client", () => {
   it("has an xAPI verb mapping for every defined AAIS event", () => {
@@ -151,6 +156,34 @@ describe("AAIS LRS xAPI client", () => {
         }),
       }),
     );
+  });
+
+  it("refuses the generic product LRS pipeline on a research deployment even with explicit credentials", async () => {
+    vi.stubEnv("AAIS_RESEARCH_MODE", "true");
+    vi.stubEnv("LRS_ENDPOINT", "https://legacy-mixed.example/xapi");
+    vi.stubEnv("LRS_USERNAME", "legacy-user");
+    vi.stubEnv("LRS_PASSWORD", "legacy-password");
+    const fetchMock = vi.fn<typeof fetch>();
+
+    await expect(sendAaisEventsToLrs([scaffoldEvent], {
+      config: testConfig,
+      fetchImpl: fetchMock as unknown as typeof fetch,
+    })).resolves.toEqual({
+      status: "not_configured",
+      sent: 0,
+    });
+    await expect(probeAaisLrsConnection({
+      config: testConfig,
+      fetchImpl: fetchMock as unknown as typeof fetch,
+    })).resolves.toEqual({
+      status: "not_configured",
+      configured: false,
+    });
+    expect(getLrsConfigurationStatus()).toMatchObject({
+      configured: false,
+      disabledByResearchIsolation: true,
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("uses a targeted statements query for health checks", async () => {

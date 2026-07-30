@@ -6,6 +6,10 @@ import {
 } from "react";
 import { anthropicLearningFontFamily } from "@/components/pages/learning/learning-page-constants";
 import {
+  admitAaisResearchAction,
+  createAaisResearchOperationId,
+} from "@/lib/client/aais-research-telemetry";
+import {
   toEditableHtml,
 } from "@/components/pages/learning/document-markdown";
 import type {
@@ -39,6 +43,7 @@ export function DocumentEditor({
 }) {
   const editorRef = useRef<HTMLDivElement | null>(null);
   const editorSelectionRef = useRef<Range | null>(null);
+  const titleAtFocusRef = useRef(documentTitle);
   const [fontFamily, setFontFamily] = useState<DocumentFontFamily>("serif");
   const [fontSize, setFontSize] = useState<DocumentFontSize>("17");
   const [editorEmpty, setEditorEmpty] = useState(!artifactText.trim());
@@ -121,7 +126,17 @@ export function DocumentEditor({
     saveEditorSelection();
   }
 
+  function runTrackedEditorCommand(formatId: string, command: string) {
+    if (!admitEditorFormat(formatId)) {
+      return;
+    }
+    runEditorCommand(command);
+  }
+
   function runHeadingCommand(tagName: DocumentHeadingTag) {
+    if (!admitEditorFormat("heading", tagName)) {
+      return;
+    }
     const editor = editorRef.current;
     restoreEditorSelection();
     const previousHtml = editor?.innerHTML;
@@ -138,6 +153,9 @@ export function DocumentEditor({
   }
 
   function runListCommand(command: "insertUnorderedList" | "insertOrderedList", tagName: DocumentListTag) {
+    if (!admitEditorFormat("list", tagName === "ul" ? "unordered" : "ordered")) {
+      return;
+    }
     const editor = editorRef.current;
     restoreEditorSelection();
     const previousHtml = editor?.innerHTML;
@@ -208,15 +226,33 @@ export function DocumentEditor({
   }
 
   function setEditorFontFamily(nextFontFamily: DocumentFontFamily) {
+    if (!admitEditorFormat("font_family", nextFontFamily)) {
+      return;
+    }
     setFontFamily(nextFontFamily);
     const cssFontFamily = documentFontFamilyStyles[nextFontFamily];
     runEditorCommand("fontName", cssFontFamily);
   }
 
   function setEditorFontSize(nextFontSize: DocumentFontSize) {
+    if (!admitEditorFormat("font_size", nextFontSize)) {
+      return;
+    }
     setFontSize(nextFontSize);
     focusEditor();
     syncEditorValue();
+  }
+
+  function admitEditorFormat(formatId: string, valueId?: string) {
+    return admitAaisResearchAction({
+      eventName: "editor_format_applied",
+      outcome: "success",
+      detail: {
+        operation_id: createAaisResearchOperationId("editor-format"),
+        format_id: formatId,
+        ...(valueId ? { value_id: valueId } : {}),
+      },
+    });
   }
 
   const toolbarButtonClass =
@@ -231,7 +267,24 @@ export function DocumentEditor({
       <input
         aria-label="文档标题"
         value={documentTitle}
+        onFocus={(event) => {
+          titleAtFocusRef.current = event.currentTarget.value;
+        }}
         onChange={(event) => onDocumentTitleChange(event.target.value)}
+        onBlur={(event) => {
+          if (event.currentTarget.value === titleAtFocusRef.current) {
+            return;
+          }
+          admitAaisResearchAction({
+            eventName: "document_title_committed",
+            outcome: "success",
+            detail: {
+              operation_id: createAaisResearchOperationId("document-title"),
+              trigger: "blur",
+              title_length: event.currentTarget.value.trim().length,
+            },
+          });
+        }}
         placeholder="输入标题..."
         className="h-12 w-full rounded-md border border-[#e7e7e7] px-4 text-[17px] text-[#333333] outline-none placeholder:text-[#b5b5b5] focus:border-[#536de8]"
       />
@@ -259,12 +312,12 @@ export function DocumentEditor({
               </option>
             ))}
           </select>
-          <EditorButton label="加粗" className={`${toolbarButtonClass} font-bold`} onMouseDown={keepEditorSelection} onClick={() => runEditorCommand("bold")}>B</EditorButton>
-          <EditorButton label="斜体" className={`${toolbarButtonClass} italic`} onMouseDown={keepEditorSelection} onClick={() => runEditorCommand("italic")}>I</EditorButton>
-          <EditorButton label="下划线" className={`${toolbarButtonClass} underline`} onMouseDown={keepEditorSelection} onClick={() => runEditorCommand("underline")}>U</EditorButton>
-          <EditorButton label="左对齐" className={toolbarButtonClass} onMouseDown={keepEditorSelection} onClick={() => runEditorCommand("justifyLeft")}>L</EditorButton>
-          <EditorButton label="居中" className={toolbarButtonClass} onMouseDown={keepEditorSelection} onClick={() => runEditorCommand("justifyCenter")}>C</EditorButton>
-          <EditorButton label="右对齐" className={toolbarButtonClass} onMouseDown={keepEditorSelection} onClick={() => runEditorCommand("justifyRight")}>R</EditorButton>
+          <EditorButton label="加粗" className={`${toolbarButtonClass} font-bold`} onMouseDown={keepEditorSelection} onClick={() => runTrackedEditorCommand("bold", "bold")}>B</EditorButton>
+          <EditorButton label="斜体" className={`${toolbarButtonClass} italic`} onMouseDown={keepEditorSelection} onClick={() => runTrackedEditorCommand("italic", "italic")}>I</EditorButton>
+          <EditorButton label="下划线" className={`${toolbarButtonClass} underline`} onMouseDown={keepEditorSelection} onClick={() => runTrackedEditorCommand("underline", "underline")}>U</EditorButton>
+          <EditorButton label="左对齐" className={toolbarButtonClass} onMouseDown={keepEditorSelection} onClick={() => runTrackedEditorCommand("align_left", "justifyLeft")}>L</EditorButton>
+          <EditorButton label="居中" className={toolbarButtonClass} onMouseDown={keepEditorSelection} onClick={() => runTrackedEditorCommand("align_center", "justifyCenter")}>C</EditorButton>
+          <EditorButton label="右对齐" className={toolbarButtonClass} onMouseDown={keepEditorSelection} onClick={() => runTrackedEditorCommand("align_right", "justifyRight")}>R</EditorButton>
         </div>
         <div className="mt-3 flex flex-wrap items-center gap-3">
           <EditorButton label="项目符号" className={toolbarButtonClass} onMouseDown={keepEditorSelection} onClick={() => runListCommand("insertUnorderedList", "ul")}>=</EditorButton>

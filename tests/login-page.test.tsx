@@ -7,6 +7,9 @@ import {
 import { LoginPage } from "@/components/pages/login-page";
 
 const replace = vi.fn();
+const telemetryMocks = vi.hoisted(() => ({
+  clear: vi.fn(),
+}));
 
 vi.mock("next/navigation", () => ({
   useRouter: () => ({
@@ -38,13 +41,29 @@ vi.mock("next/image", () => ({
   },
 }));
 
+vi.mock("@/lib/client/aais-research-telemetry", () => ({
+  clearAaisResearchTelemetryForActor: telemetryMocks.clear,
+}));
+
 afterEach(() => {
   replace.mockReset();
+  telemetryMocks.clear.mockReset();
   vi.unstubAllGlobals();
   window.localStorage.clear();
+  window.sessionStorage.clear();
+  window.history.replaceState({}, "", "/login");
 });
 
 describe("AAIS LoginPage", () => {
+  it("warns that a revoked logout with no research ACK must not be marked complete", () => {
+    window.history.pushState({}, "", "/login?researchLogout=ack-failed");
+
+    render(<LoginPage />);
+
+    expect(screen.getByRole("alert").textContent).toContain(
+      "不要将本次实验标记为完成",
+    );
+  });
   it("keeps the login route dynamic so runtime auth-mode changes are honored", () => {
     expect(loginRouteDynamic).toBe("force-dynamic");
     expect(loginRouteMetadata).toMatchObject({
@@ -147,6 +166,7 @@ describe("AAIS LoginPage", () => {
     }));
 
     await waitFor(() => expect(replace).toHaveBeenCalledWith("/learning"));
+    expect(telemetryMocks.clear).toHaveBeenCalledTimes(1);
   });
 
   it("prevents duplicate invite password saves while the request is pending", async () => {

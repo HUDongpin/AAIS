@@ -25,6 +25,8 @@ afterEach(async () => {
   delete process.env.LRS_ENDPOINT;
   delete process.env.LRS_USERNAME;
   delete process.env.LRS_PASSWORD;
+  delete process.env.AAIS_RESEARCH_MODE;
+  delete process.env.AAIS_RESEARCH_REQUIRED;
   delete process.env.AAIS_DATABASE_DRIVER;
   delete process.env.AAIS_DATABASE_URL;
   delete process.env.DATABASE_URL;
@@ -163,6 +165,60 @@ describe("AAIS backend learning store", () => {
     expect(csv.contentType).toBe("text/csv;charset=utf-8");
     expect(csv.body).toContain("student_id,session_id,phase,task,agent,event,time,detail");
     expect(csv.body).toContain("practice_task_1");
+  });
+
+  it("deletes only restricted research raw text while preserving unrelated learner history", async () => {
+    const store = createAaisLearningStore({ rootDir: tempDir });
+    await store.saveArtifact("S001", "training_task_1", "研究作品原文");
+    await store.saveSelfReport("S001", "training_task_1", "研究自我报告原文");
+    await store.appendGuideExchange({
+      studentId: "S001",
+      phase: "training",
+      taskId: "training_task_1",
+      question: "研究 AI 提问原文",
+      answer: "研究 AI 回答原文",
+      turns: [{
+        agentId: "A1",
+        label: "导学智能体",
+        content: "研究 AI 分步回答原文",
+        actions: ["研究 AI 建议原文"],
+      }],
+      orchestration: {
+        graphId: "learning-ai-guide",
+        topologicalOrder: ["A1"],
+        threadId: "thread-1",
+      },
+    });
+    const before = await store.getOrCreateSession("S001");
+    const eventFacts = before.events.map((event) => JSON.stringify(event));
+    const taskStatuses = before.tasks.map((task) => [task.taskId, task.status]);
+
+    await expect(store.deleteRestrictedResearchRawText("S001")).resolves.toMatchObject({
+      studentId: "S001",
+      storageMode: "file",
+      learnerRecordFound: true,
+      rawTextDeleted: true,
+      unrelatedProductHistoryPreserved: true,
+      secrets: "redacted",
+    });
+
+    const reloaded = await createAaisLearningStore({ rootDir: tempDir })
+      .getOrCreateSession("S001");
+    expect(reloaded.tasks.every((task) =>
+      task.artifactText === "" && task.selfReport === ""
+    )).toBe(true);
+    expect(reloaded.guideMessages.every((message) => message.text === "")).toBe(true);
+    expect(reloaded.guideMessages.flatMap((message) => message.turns ?? []).every((turn) =>
+      turn.content === "" && turn.actions.length === 0
+    )).toBe(true);
+    expect(reloaded.events.map((event) => JSON.stringify(event))).toEqual(eventFacts);
+    expect(reloaded.tasks.map((task) => [task.taskId, task.status])).toEqual(taskStatuses);
+    expect(reloaded.guideMessages.map((message) => [message.id, message.kind, message.time]))
+      .toEqual(before.guideMessages.map((message) => [message.id, message.kind, message.time]));
+    expect(JSON.stringify(reloaded)).not.toContain("研究作品原文");
+    expect(JSON.stringify(reloaded)).not.toContain("研究自我报告原文");
+    expect(JSON.stringify(reloaded)).not.toContain("研究 AI 提问原文");
+    expect(JSON.stringify(reloaded)).not.toContain("研究 AI 回答原文");
   });
 
   it("persists first and mirrors learning events to LRS through the async delivery queue", async () => {
@@ -577,6 +633,53 @@ describe("AAIS backend learning store", () => {
     const postedStatements = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
     expect(postedStatements).toHaveLength(database.outboxRows.length);
     expect(JSON.stringify(result)).not.toContain("test-password");
+  });
+
+  it("keeps legacy product events, analytics, exports, and LRS disabled on a research deployment", async () => {
+    vi.stubEnv("AAIS_RESEARCH_REQUIRED", "true");
+    vi.stubEnv("LRS_ENDPOINT", "https://legacy-mixed.example/xapi");
+    vi.stubEnv("LRS_USERNAME", "legacy-user");
+    vi.stubEnv("LRS_PASSWORD", "legacy-password");
+    const database = createFakeDatabaseClient();
+    const fetchMock = vi.fn<typeof fetch>(async () => new Response(null, { status: 204 }));
+    const store = createAaisLearningStore({ database });
+
+    await store.getOrCreateSession("S001");
+    await store.saveArtifact("S001", "training_task_1", "restricted study artifact");
+
+    expect(database.eventRows).toEqual([]);
+    expect(database.outboxRows).toEqual([]);
+    expect(database.queries.some((query) => /^insert into aais_events/i.test(query.sql.trim()))).toBe(false);
+    expect(database.queries.some((query) => /^insert into aais_lrs_outbox/i.test(query.sql.trim()))).toBe(false);
+    expect(database.queries.some((query) => /^insert into aais_learner_sessions/i.test(query.sql.trim()))).toBe(true);
+    expect(database.queries.some((query) => /^insert into aais_learner_task_state/i.test(query.sql.trim()))).toBe(true);
+
+    await expect(flushAaisPersistentLrsOutbox({
+      database,
+      config: {
+        endpoint: "https://legacy-mixed.example/xapi",
+        username: "legacy-user",
+        password: "legacy-password",
+      },
+      fetchImpl: fetchMock as unknown as typeof fetch,
+    })).resolves.toEqual({
+      status: "not_configured",
+      sent: 0,
+      secrets: "redacted",
+    });
+    await expect(getAaisPersistentLrsOutboxStatus({ database })).resolves.toMatchObject({
+      mode: "research-isolated",
+      storage: "disabled",
+      configured: false,
+      total: 0,
+    });
+    await expect(store.exportEvents("S001", "json")).rejects.toThrow(
+      "Legacy product analytics and event exports are disabled",
+    );
+    await expect(store.getAnalytics("S001")).rejects.toThrow(
+      "Legacy product analytics and event exports are disabled",
+    );
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("dead-letters an unmappable outbox event instead of stalling every flush", async () => {

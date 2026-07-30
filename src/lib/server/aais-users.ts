@@ -541,7 +541,10 @@ function readConfiguredCohort(value: string | undefined, fallback: string) {
 }
 
 function isAaisUserRole(value: unknown): value is AaisUserRole {
-  return value === "student" || value === "teacher" || value === "admin";
+  return value === "student"
+    || value === "teacher"
+    || value === "researcher"
+    || value === "admin";
 }
 
 function isAaisUserStatus(value: unknown): value is AaisUserStatus {

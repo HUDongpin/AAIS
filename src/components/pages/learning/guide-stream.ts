@@ -1,4 +1,5 @@
 import { getAaisApiErrorMessage } from "@/lib/client/aais-api-error";
+import { guideRequestTimeoutMs } from "@/components/pages/learning/learning-page-constants";
 import type { GuideTurn } from "@/components/pages/learning/learning-page-types";
 
 export type GuideResponseBody = {
@@ -48,6 +49,7 @@ const guideStreamAgentLabels: Record<string, string> = {
 export async function readGuideStreamResponse(
   response: Response,
   onProgress: (progress: GuideStreamProgress) => void,
+  idleTimeoutMs = guideRequestTimeoutMs,
 ): Promise<GuideResponseBody> {
   if (!response.body) {
     throw new Error("AAIS guide stream is unavailable");
@@ -59,6 +61,7 @@ export async function readGuideStreamResponse(
   let fallback = false;
   let graphId: string | undefined;
   let buffer = "";
+  let streamCompleted = false;
 
   const emitProgress = (text: string) => {
     onProgress({
@@ -114,28 +117,43 @@ export async function readGuideStreamResponse(
     if (streamEvent.event === "fallback") {
       fallback = true;
       emitProgress(turns.length ? guideStreamDoneText : guideStreamProgressText);
+      return;
+    }
+
+    if (streamEvent.event === "background_done") {
+      streamCompleted = true;
     }
   };
 
-  while (true) {
-    const { value, done } = await reader.read();
-    if (done) {
-      break;
-    }
-    buffer += decoder.decode(value, { stream: true });
-    const blocks = buffer.split(/\n\n/);
-    buffer = blocks.pop() ?? "";
-    for (const block of blocks) {
-      const streamEvent = parseGuideStreamEvent(block);
-      if (streamEvent) {
-        handleStreamEvent(streamEvent);
+  try {
+    while (true) {
+      const { value, done } = await readGuideStreamChunk(reader, idleTimeoutMs);
+      if (done) {
+        break;
+      }
+      buffer += decoder.decode(value, { stream: true });
+      const blocks = buffer.split(/\n\n/);
+      buffer = blocks.pop() ?? "";
+      for (const block of blocks) {
+        const streamEvent = parseGuideStreamEvent(block);
+        if (streamEvent) {
+          handleStreamEvent(streamEvent);
+        }
       }
     }
+  } catch (error) {
+    await reader.cancel().catch(() => undefined);
+    throw error;
   }
   buffer += decoder.decode();
   const streamEvent = parseGuideStreamEvent(buffer);
   if (streamEvent) {
     handleStreamEvent(streamEvent);
+  }
+  if (!streamCompleted) {
+    throw Object.assign(new Error("AAIS guide stream disconnected before completion"), {
+      name: "AaisGuideStreamDisconnectedError",
+    });
   }
 
   const body: GuideResponseBody = {
@@ -156,6 +174,29 @@ export async function readGuideStreamResponse(
   };
   validateGuideResponse(response, body);
   return body;
+}
+
+async function readGuideStreamChunk(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  idleTimeoutMs: number,
+) {
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      reader.read(),
+      new Promise<never>((_resolve, reject) => {
+        timeoutId = setTimeout(() => {
+          const error = new Error("AAIS guide stream timed out while waiting for data");
+          error.name = "AbortError";
+          reject(error);
+        }, idleTimeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+    }
+  }
 }
 
 export async function readGuideJsonBody(response: Response): Promise<GuideResponseBody> {

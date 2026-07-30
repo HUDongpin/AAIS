@@ -2,7 +2,7 @@ import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 
 export type AaisSessionActor = {
   id: string;
-  role: "student" | "teacher" | "admin";
+  role: "student" | "teacher" | "researcher" | "admin";
   displayName: string;
 };
 
@@ -167,7 +167,10 @@ function requireSafeActor(actor: Partial<AaisSessionActor>): AaisSessionActor {
 }
 
 function isAaisSessionRole(value: unknown): value is AaisSessionActor["role"] {
-  return value === "student" || value === "teacher" || value === "admin";
+  return value === "student"
+    || value === "teacher"
+    || value === "researcher"
+    || value === "admin";
 }
 
 function getSessionSecret() {

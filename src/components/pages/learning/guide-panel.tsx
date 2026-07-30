@@ -1,6 +1,10 @@
 import type { Dispatch, FormEvent, RefObject, SetStateAction } from "react";
 import { ArrowUp, FileText, Plus, X } from "@phosphor-icons/react";
 import { aaisGuideFileAccept } from "@/lib/client/aais-guide-file-reader";
+import {
+  admitAaisResearchAction,
+  createAaisResearchOperationId,
+} from "@/lib/client/aais-research-telemetry";
 import { guideQuickStarts } from "@/components/pages/learning/learning-page-constants";
 import {
   formatGuideAttachmentSize,
@@ -9,6 +13,7 @@ import {
 import type {
   GuideClientAttachment,
   GuideMessage,
+  GuideQuickStart,
 } from "@/components/pages/learning/learning-page-types";
 
 export function GuidePanel({
@@ -41,7 +46,10 @@ export function GuidePanel({
   guideMessages: GuideMessage[];
   hasGuideSubmission: boolean;
   onRemoveAttachment: (attachmentId: string) => void;
-  onSubmitGuideQuestion: (question: string) => void;
+  onSubmitGuideQuestion: (
+    question: string,
+    options?: { source: "quick_start"; quickStartId: GuideQuickStart["id"] },
+  ) => void;
   sendGuideMessage: (event: FormEvent<HTMLFormElement>) => void;
   setGuideDraft: Dispatch<SetStateAction<string>>;
   setGuideError: Dispatch<SetStateAction<string>>;
@@ -76,7 +84,22 @@ export function GuidePanel({
               key={item.label}
               type="button"
               disabled={guidePanelBusy}
-              onClick={() => onSubmitGuideQuestion(item.prompt)}
+              onClick={() => {
+                if (!admitAaisResearchAction({
+                  eventName: "guide_quick_start_selected",
+                  outcome: "success",
+                  detail: {
+                    operation_id: createAaisResearchOperationId("quick-start"),
+                    quick_start_id: item.id,
+                  },
+                })) {
+                  return;
+                }
+                onSubmitGuideQuestion(item.prompt, {
+                  source: "quick_start",
+                  quickStartId: item.id,
+                });
+              }}
               className="min-h-9 rounded-full border border-[#d9dde7] bg-white px-3 text-[13px] font-semibold text-[#3d4656] shadow-[0_4px_14px_rgba(17,24,39,0.04)] outline-none transition hover:border-[#536de8] hover:text-[#324fd6] focus-visible:ring-2 focus-visible:ring-[#536de8] disabled:cursor-not-allowed disabled:opacity-60"
             >
               {item.label}
@@ -102,7 +125,19 @@ export function GuidePanel({
             disabled={guidePanelBusy}
             aria-label="Upload file"
             title="Upload file"
-            onClick={() => guideFileInputRef.current?.click()}
+            onClick={() => {
+              if (!admitAaisResearchAction({
+                eventName: "guide_attachment_picker_opened",
+                outcome: "success",
+                detail: {
+                  operation_id: createAaisResearchOperationId("attachment-picker"),
+                  trigger: "upload_button",
+                },
+              })) {
+                return;
+              }
+              guideFileInputRef.current?.click();
+            }}
             className="grid size-10 shrink-0 place-items-center rounded-full text-[#4b5563] outline-none transition hover:bg-[#f2f4f8] focus-visible:ring-2 focus-visible:ring-[#536de8] disabled:cursor-not-allowed disabled:opacity-60"
           >
             <Plus size={22} weight="bold" />

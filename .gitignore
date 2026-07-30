@@ -16,5 +16,7 @@ test-results/
 technical-review/.codex-render/
 technical-review/.codex-work/
 aais-load-sanity*.json
+aais-legacy-lrs-archive-manifest*.json
+aais-research-rehearsal*.json
 .aais-load-users*.json
 tsconfig.tsbuildinfo

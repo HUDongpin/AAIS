@@ -20,6 +20,7 @@ describe("learning page components", () => {
     render(
       <LearningTopBar
         accountMenuOpen
+        displayName="Bobie"
         loggingOut={false}
         privacyBusy={false}
         onDeleteLearnerData={onDeleteLearnerData}
@@ -42,6 +43,7 @@ describe("learning page components", () => {
     render(
       <LearningTopBar
         accountMenuOpen
+        displayName="Bobie"
         loggingOut={false}
         privacyBusy
         onDeleteLearnerData={vi.fn()}
@@ -110,7 +112,13 @@ describe("learning page components", () => {
     fireEvent.click(screen.getByRole("button", { name: "移除 notes.pdf" }));
     fireEvent.submit(screen.getByLabelText("向智能导学输入你的想法").closest("form") as HTMLFormElement);
 
-    expect(onSubmitGuideQuestion).toHaveBeenCalledWith("请帮我明确这个学习任务的目标，并拆成下一步。");
+    expect(onSubmitGuideQuestion).toHaveBeenCalledWith(
+      "请帮我明确这个学习任务的目标，并拆成下一步。",
+      {
+        quickStartId: "clarify_goal",
+        source: "quick_start",
+      },
+    );
     expect(setGuideDraft).toHaveBeenCalledWith("请帮我整理下一步");
     expect(setGuideError).toHaveBeenCalledWith("");
     expect(onRemoveAttachment).toHaveBeenCalledWith("attachment-1");
@@ -196,28 +204,28 @@ describe("learning page components", () => {
   });
 
   it("keeps ContentSidePanel display menu and history document callbacks isolated", () => {
-    const setActiveContentId = vi.fn();
+    const onOpenContent = vi.fn();
     const onOpenDocument = vi.fn();
     const historyDocument = createSavedDocument();
     const { rerender } = render(
       <ContentSidePanel
         {...createContentSidePanelProps({
           historyDocuments: [historyDocument],
-          setActiveContentId,
+          onOpenContent,
           onOpenDocument,
         })}
       />,
     );
 
     fireEvent.click(screen.getByRole("button", { name: "理论知识" }));
-    expect(setActiveContentId).toHaveBeenCalledWith("theory");
+    expect(onOpenContent).toHaveBeenCalledWith("theory");
 
     rerender(
       <ContentSidePanel
         {...createContentSidePanelProps({
           activeContentId: "history",
           historyDocuments: [historyDocument],
-          setActiveContentId,
+          onOpenContent,
           onOpenDocument,
         })}
       />,
@@ -275,11 +283,12 @@ function createContentSidePanelProps(overrides: Partial<{
   historyDocuments: SavedLearningDocument[];
   onDocumentTitleChange: (value: string) => void;
   onDownloadDocument: () => void;
+  onBackContent: () => void;
+  onOpenContent: (id: ContentItemId) => void;
   onOpenDocument: (document: SavedLearningDocument) => void;
   onRecordArtifact: (value: string) => void;
   onSaveAndCloseDocument: () => void;
   selectContentTab: (nextTab: ContentTab) => void;
-  setActiveContentId: (id: ContentItemId | null) => void;
 }> = {}) {
   return {
     activeContentId: null,
@@ -296,11 +305,12 @@ function createContentSidePanelProps(overrides: Partial<{
     historyDocuments: [],
     onDocumentTitleChange: vi.fn(),
     onDownloadDocument: vi.fn(),
+    onBackContent: vi.fn(),
+    onOpenContent: vi.fn(),
     onOpenDocument: vi.fn(),
     onRecordArtifact: vi.fn(),
     onSaveAndCloseDocument: vi.fn(),
     selectContentTab: vi.fn(),
-    setActiveContentId: vi.fn(),
     ...overrides,
   };
 }

@@ -3,6 +3,7 @@ import {
   createAaisCsrfToken,
   getAaisCsrfCookieName,
   getAaisCsrfCookieOptions,
+  requireAaisCsrf,
 } from "@/lib/server/aais-csrf";
 import { recordAaisAuditEvent } from "@/lib/server/aais-audit-log";
 import {
@@ -24,6 +25,13 @@ import {
 import { authenticateAaisTrialAccount, isAaisTrialLoginEnabled } from "@/lib/server/aais-trial-accounts";
 import { authenticateAaisUserAccount } from "@/lib/server/aais-users";
 import { createAaisApiErrorResponse } from "@/lib/server/aais-api-error";
+import {
+  AaisResearchValidationError,
+  assertAaisResearchModeEnabled,
+  parseAaisResearchEventInput,
+} from "@/lib/server/aais-research-contract";
+import { getAaisResearchErrorResponseInput } from "@/lib/server/aais-research-api";
+import { getAaisResearchStore } from "@/lib/server/aais-research-store";
 
 const aaisLoginConsentVersion = "terms-privacy-guardian-v1";
 
@@ -183,38 +191,210 @@ async function authenticateAaisAccount(account: string, password: string) {
 }
 
 export async function DELETE(request?: Request) {
-  const token = request ? readCookie(request.headers.get("cookie"), getAaisSessionCookieName()) : null;
-  const verified = verifyAaisSessionTokenWithMetadata(token);
-  const revocation = verified
-    ? await revokeAaisSessionToken({
-        tokenHash: verified.tokenHash,
+  try {
+    const token = request
+      ? readCookie(request.headers.get("cookie"), getAaisSessionCookieName())
+      : null;
+    const verified = verifyAaisSessionTokenWithMetadata(token);
+    if (verified && request) {
+      requireAaisCsrf(request, verified.actor.id);
+    }
+    const researchLogout = verified && request
+      ? await readResearchLogoutContext(request)
+      : null;
+    const researchStore = researchLogout ? getAaisResearchStore() : null;
+    if (researchLogout) {
+      assertAaisResearchModeEnabled();
+    }
+
+    let revocation: Awaited<ReturnType<typeof revokeAaisSessionToken>> | null = null;
+    try {
+      revocation = verified
+        ? await revokeAaisSessionToken({
+            tokenHash: verified.tokenHash,
+            actorId: verified.actor.id,
+            expiresAt: verified.expiresAt,
+          })
+        : null;
+    } catch (error) {
+      if (verified && researchLogout && researchStore) {
+        try {
+          await researchStore.recordEvent(verified.actor, {
+            clientEventId: researchLogout.failureClientEventId,
+            clientTime: researchLogout.finalClientTime,
+            expectedVisitId: researchLogout.expectedVisitId,
+            eventName: "account_logout",
+            outcome: "failure",
+            detail: {
+              operation_id: researchLogout.operationId,
+              error_kind: "session_revoke_failed",
+            },
+          });
+        } catch {
+          // The authenticated client retries this exact idempotent failure event.
+        }
+      }
+      throw new AaisLogoutRevocationError(error);
+    }
+    let researchLogoutEvent: Awaited<ReturnType<NonNullable<typeof researchStore>["recordEvent"]>>
+      | null = null;
+    if (verified && researchLogout && researchStore) {
+      try {
+        researchLogoutEvent = await researchStore.recordEvent(verified.actor, {
+          clientEventId: researchLogout.successClientEventId,
+          clientTime: researchLogout.finalClientTime,
+          expectedVisitId: researchLogout.expectedVisitId,
+          eventName: "account_logout",
+          outcome: "success",
+          detail: {
+            operation_id: researchLogout.operationId,
+            trigger: "server_session_revoke",
+          },
+        });
+      } catch (error) {
+        recordAaisAuditEvent({
+          event: "auth.logout",
+          actorId: verified.actor.id,
+          outcome: "success",
+          metadata: {
+            researchEventRecorded: false,
+            revocationStorage: revocation?.storageMode ?? "none",
+          },
+        });
+        const response = createAaisApiErrorResponse({
+          code: "AAIS_RESEARCH_LOGOUT_ACK_FAILED",
+          message: "AAIS server session was revoked, but the final research acknowledgement failed.",
+          status: 503,
+          extra: {
+            sessionRevoked: true,
+            researchLogoutAcknowledged: false,
+            secrets: "redacted",
+          },
+          cause: error,
+          route: "/api/auth/app-session",
+        });
+        expireAaisSessionCookies(response);
+        return response;
+      }
+    }
+    if (verified) {
+      recordAaisAuditEvent({
+        event: "auth.logout",
         actorId: verified.actor.id,
-        expiresAt: verified.expiresAt,
-      })
-    : null;
-  if (verified) {
-    recordAaisAuditEvent({
-      event: "auth.logout",
-      actorId: verified.actor.id,
-      outcome: "success",
-      metadata: {
-        revocationStorage: revocation?.storageMode ?? "none",
-      },
+        outcome: "success",
+        metadata: {
+          revocationStorage: revocation?.storageMode ?? "none",
+        },
+      });
+    }
+    const response = NextResponse.json({
+      ok: true,
+      sessionRevoked: Boolean(revocation),
+      ...(researchLogoutEvent
+        ? {
+            researchLogout: {
+              clientEventId: researchLogoutEvent.clientEventId,
+              visitId: researchLogoutEvent.visitId,
+            },
+          }
+        : {}),
+      secrets: "redacted",
     });
+    expireAaisSessionCookies(response);
+    return response;
+  } catch (error) {
+    if (error instanceof AaisLogoutRevocationError) {
+      return createAaisApiErrorResponse({
+        code: "AAIS_LOGOUT_FAILED",
+        message: "AAIS server session revocation failed; the session remains active.",
+        status: 503,
+        cause: error.cause,
+        route: "/api/auth/app-session",
+      });
+    }
+    return createAaisApiErrorResponse(
+      getAaisResearchErrorResponseInput(error, "/api/auth/app-session"),
+    );
   }
-  const response = NextResponse.json({
-    ok: true,
-    sessionRevoked: Boolean(revocation),
-    secrets: "redacted",
+}
+
+type AaisResearchLogoutContext = {
+  expectedVisitId: string;
+  failureClientEventId: string;
+  finalClientTime: string;
+  operationId: string;
+  successClientEventId: string;
+};
+
+class AaisLogoutRevocationError extends Error {
+  constructor(readonly cause: unknown) {
+    super("AAIS logout revocation failed.");
+    this.name = "AaisLogoutRevocationError";
+  }
+}
+
+async function readResearchLogoutContext(
+  request: Request,
+): Promise<AaisResearchLogoutContext | null> {
+  const text = await request.text();
+  if (!text) {
+    return null;
+  }
+  let body: unknown;
+  try {
+    body = JSON.parse(text) as unknown;
+  } catch {
+    throw new AaisResearchValidationError("AAIS logout request is invalid.");
+  }
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    throw new AaisResearchValidationError("AAIS logout request is invalid.");
+  }
+  const bodyRecord = body as Record<string, unknown>;
+  if (Object.keys(bodyRecord).length !== 1 || !("researchLogout" in bodyRecord)) {
+    throw new AaisResearchValidationError("AAIS logout request is invalid.");
+  }
+  const value = bodyRecord.researchLogout;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new AaisResearchValidationError("AAIS research logout request is invalid.");
+  }
+  const record = value as Record<string, unknown>;
+  const keys = [
+    "expectedVisitId",
+    "failureClientEventId",
+    "finalClientTime",
+    "operationId",
+    "successClientEventId",
+  ];
+  if (
+    Object.keys(record).length !== keys.length
+    || !keys.every((key) => typeof record[key] === "string")
+  ) {
+    throw new AaisResearchValidationError("AAIS research logout request is invalid.");
+  }
+  const context = record as AaisResearchLogoutContext;
+  parseAaisResearchEventInput({
+    clientEventId: context.successClientEventId,
+    clientTime: context.finalClientTime,
+    expectedVisitId: context.expectedVisitId,
+    eventName: "account_logout",
+    outcome: "success",
+    detail: {
+      operation_id: context.operationId,
+      trigger: "server_session_revoke",
+    },
   });
-  response.cookies.set(getAaisSessionCookieName(), "", {
-    ...getAaisExpiredCookieOptions(),
-    httpOnly: true,
+  parseAaisResearchEventInput({
+    clientEventId: context.failureClientEventId,
+    clientTime: context.finalClientTime,
+    expectedVisitId: context.expectedVisitId,
+    eventName: "account_logout",
+    outcome: "failure",
+    detail: {
+      operation_id: context.operationId,
+      error_kind: "session_revoke_failed",
+    },
   });
-  response.cookies.set(getAaisCsrfCookieName(), "", getAaisExpiredCookieOptions());
-  response.cookies.set("aais_student_id", "", getAaisExpiredCookieOptions());
-  response.cookies.set("aais_display_name", "", getAaisExpiredCookieOptions());
-  return response;
+  return context;
 }
 
 function readCookie(cookieHeader: string | null, name: string) {
@@ -229,6 +409,16 @@ function readCookie(cookieHeader: string | null, name: string) {
     return null;
   }
   return decodeURIComponent(cookie.slice(name.length + 1));
+}
+
+function expireAaisSessionCookies(response: NextResponse) {
+  response.cookies.set(getAaisSessionCookieName(), "", {
+    ...getAaisExpiredCookieOptions(),
+    httpOnly: true,
+  });
+  response.cookies.set(getAaisCsrfCookieName(), "", getAaisExpiredCookieOptions());
+  response.cookies.set("aais_student_id", "", getAaisExpiredCookieOptions());
+  response.cookies.set("aais_display_name", "", getAaisExpiredCookieOptions());
 }
 
 function createSessionTokenOrResponse(actor: Parameters<typeof createAaisSessionToken>[0]) {
