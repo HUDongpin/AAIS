@@ -372,7 +372,12 @@ try {
     && outboxGate
     && coverageGate
     && transportValidation.aggregateGatePassed;
-  const physicalIsolationGate = productCounts.learner_sessions === manifest.participant_count
+  const productSessionExpectation = calculatePostDeleteSessionExpectation(
+    events,
+    manifest.participant_count,
+  );
+  const physicalIsolationGate = productCounts.learner_sessions
+      === productSessionExpectation.expectedProductSessions
     && productCounts.session_revocations === manifest.participant_count
     && productCounts.generic_events === 0
     && productCounts.generic_outbox === 0
@@ -522,6 +527,13 @@ try {
     },
     physical_isolation_rehearsal: {
       product_postgres_learner_sessions: productCounts.learner_sessions,
+      observed_successful_learner_data_delete_visits:
+        productSessionExpectation.observedSuccessfulDeletionVisits,
+      expected_product_post_delete_learner_sessions:
+        productSessionExpectation.expectedProductSessions,
+      product_post_delete_learner_session_count_matches:
+        productCounts.learner_sessions
+          === productSessionExpectation.expectedProductSessions,
       product_postgres_session_revocations: productCounts.session_revocations,
       product_postgres_generic_events: productCounts.generic_events,
       product_postgres_generic_lrs_outbox: productCounts.generic_outbox,
@@ -932,6 +944,31 @@ export function evaluateContractCoverage(events) {
     missingEventNames,
     unexpectedEventNames,
     complete: missingEventNames.length === 0 && unexpectedEventNames.length === 0,
+  };
+}
+
+export function calculatePostDeleteSessionExpectation(events, participantCount) {
+  if (!Array.isArray(events)
+    || !Number.isInteger(participantCount)
+    || participantCount < 0) {
+    throw new Error("AAIS product session expectation input is invalid.");
+  }
+  const successfulDeletionVisitIds = new Set(
+    events
+      .filter((event) =>
+        event?.event_name === "learner_data_delete"
+          && event?.outcome === "success")
+      .map((event) => event.visit_id),
+  );
+  if ([...successfulDeletionVisitIds].some((visitId) => !isUuid(visitId))
+    || successfulDeletionVisitIds.size > participantCount) {
+    throw new Error(
+      "AAIS successful learner-data deletion visits are invalid.",
+    );
+  }
+  return {
+    observedSuccessfulDeletionVisits: successfulDeletionVisitIds.size,
+    expectedProductSessions: participantCount - successfulDeletionVisitIds.size,
   };
 }
 

@@ -10,6 +10,7 @@ import { describe, expect, it } from "vitest";
 import {
   aaisBrowserResearchEventNames,
   assertManifestShape,
+  calculatePostDeleteSessionExpectation,
   compareOutboxPayloads,
   compareTransportAcknowledgements,
   evaluateContractCoverage,
@@ -203,6 +204,63 @@ describe("AAIS browser rehearsal reconciliation boundaries", () => {
       .toThrow("does not cover the complete 22-event contract");
   });
 
+  it("derives the expected product sessions from distinct successful deletion visits", () => {
+    const firstVisit = "50000000-0000-4000-8000-000000000001";
+    const secondVisit = "50000000-0000-4000-8000-000000000002";
+    const events = [
+      {
+        event_name: "learner_data_delete",
+        outcome: "failure",
+        visit_id: firstVisit,
+      },
+      {
+        event_name: "learner_data_delete",
+        outcome: "success",
+        visit_id: firstVisit,
+      },
+      {
+        event_name: "learner_data_delete",
+        outcome: "success",
+        visit_id: firstVisit,
+      },
+      {
+        event_name: "learner_data_delete",
+        outcome: "success",
+        visit_id: secondVisit,
+      },
+      {
+        event_name: "account_logout",
+        outcome: "success",
+        visit_id: secondVisit,
+      },
+    ];
+
+    expect(calculatePostDeleteSessionExpectation(events, 3)).toEqual({
+      observedSuccessfulDeletionVisits: 2,
+      expectedProductSessions: 1,
+    });
+    expect(calculatePostDeleteSessionExpectation(events.slice(0, 2), 3)).toEqual({
+      observedSuccessfulDeletionVisits: 1,
+      expectedProductSessions: 2,
+    });
+  });
+
+  it("fails closed on invalid or impossible successful deletion visits", () => {
+    expect(() => calculatePostDeleteSessionExpectation([{
+      event_name: "learner_data_delete",
+      outcome: "success",
+      visit_id: "not-a-uuid",
+    }], 3)).toThrow("deletion visits are invalid");
+
+    const deletionEvents = [1, 2, 3, 4].map((index) => ({
+      event_name: "learner_data_delete",
+      outcome: "success",
+      visit_id: `50000000-0000-4000-8000-00000000000${index}`,
+    }));
+    expect(() => calculatePostDeleteSessionExpectation(deletionEvents, 3))
+      .toThrow("deletion visits are invalid");
+  });
+
   it("creates evidence once with mode 0600 and refuses overwrite", async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), "aais-reconcile-evidence-"));
     const output = path.join(directory, "report.json");
@@ -259,6 +317,7 @@ describe("AAIS browser rehearsal reconciliation boundaries", () => {
       "outboxPayload.verified",
       "runtimeBuildGate.verified",
       "externalLrsContactGate.verified",
+      "productSessionExpectation.expectedProductSessions",
     ]) {
       expect(source).toContain(invariant);
     }
