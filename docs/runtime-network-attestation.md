@@ -89,7 +89,7 @@ digest-pinned capture image identity, hashed subject/origin/address sets, and
 packet/statistics counts.
 
 This Docker mode captures all outbound TCP and UDP from the app network
-namespace, not only pre-resolved LRS addresses. Any public-destination packet,
+namespace, not the host Chromium process, and not only pre-resolved LRS addresses. Any public-destination packet,
 any declared-target packet, a DNS address-set change, any tcpdump kernel drop,
 any unparseable packet summary, missing statistics, or a nonzero browser-driver
 exit produces only a blocked artifact. Because encrypted packet metadata
@@ -98,12 +98,21 @@ packet count into a request count. It records
 `observed_external_lrs_requests=0` only when the complete window has zero
 public packets and zero declared-target packets.
 
-Finally pass both valid v2 attestations to:
+The browser driver also writes `browser-network-summary.json`. It blocks service
+workers and WebSockets, applies an exact-base-origin HTTP(S) route guard, and
+retains only a lifecycle-complete ledger of safe request classifications. It
+does not retain URLs, paths, queries, headers, cookies, bodies, frames,
+downloads, or raw Playwright artifacts. This browser-context audit complements
+the app-network packet capture; neither artifact claims host-level Chromium
+background DNS, QUIC, WebRTC, or WebTransport packet coverage.
+
+Finally pass the runtime, browser-context, and app-network evidence to:
 
 ```bash
 npm run study:reconcile-browser -- \
   <existing-reconciliation-arguments> \
   --application-mode production-build \
+  --browser-network-summary output/<run>/browser/browser-network-summary.json \
   --runtime-build-attestation output/<run>/runtime-build-attestation.json \
   --external-lrs-attestation output/<run>/external-lrs-attestation.json
 ```
@@ -111,5 +120,22 @@ npm run study:reconcile-browser -- \
 The reconciler rejects legacy/extra-key attestation shapes, unsafe capture
 paths, checksum drift, capture/attestation metadata drift, retained raw
 capture, packet loss, parse gaps, positive public/target contact, mismatched
-scope/commit, and a capture window that does not enclose the visits and
+scope/commit, browser request-ledger drift, non-local or unguarded browser
+requests, and a capture window that does not enclose the visits and
 server-received events.
+
+## Actual controlled-export receipt
+
+After the browser run and before teardown, run
+`scripts/attest-aais-controlled-exports.mjs` against the same production build,
+manifest, and observed-visits artifact. Its reconciliation database credential
+must default to read-only, have no elevated attributes or role memberships, no
+database/research-schema CREATE privilege, no research relation or sequence
+write privilege, and no identity-schema access. The tool calls the real authenticated researcher export
+route for each of the three synthetic runs, verifies response metadata and
+bytes, and compares every exported field with Postgres in a repeatable-read,
+read-only snapshot. It also requires a same-actor export-audit row created in
+the corresponding request window. The retained receipt contains only scope,
+commit/runtime/input hashes, per-slot row counts and file hashes, and aggregate
+verification flags; export bodies, opaque ids, actor fingerprints, headers,
+cookies, credentials, and raw text are never written.

@@ -182,7 +182,18 @@ async function main() {
   const manifestRaw = await writeJsonEvidence(manifestPath, manifest);
   const manifestSha256 = sha256(manifestRaw);
 
-  const browser = await chromium.launch({ headless: !options.headed });
+  const browser = await chromium.launch({
+    headless: !options.headed,
+    args: [
+      "--disable-background-networking",
+      "--disable-component-update",
+      "--disable-domain-reliability",
+      "--disable-features=OptimizationHints,MediaRouter,AutofillServerCommunication",
+      "--disable-sync",
+      "--metrics-recording-only",
+      "--no-default-browser-check",
+    ],
+  });
   const participantRuns = [];
   try {
     for (let index = 0; index < options.participantActors.length; index += 1) {
@@ -213,6 +224,16 @@ async function main() {
     participantRuns,
   });
   const generatedAt = new Date().toISOString();
+  const browserNetwork = buildBrowserNetworkSummary({
+    baseUrl: options.baseUrl,
+    environment: options.environment,
+    generatedAt,
+    lrsNamespace: options.lrsNamespace,
+    manifestSha256,
+    participantRuns,
+    projectId: options.projectId,
+    studyId: options.studyId,
+  });
   const observedVisits = {
     evidence_schema_version: 1,
     observed_at: generatedAt,
@@ -267,6 +288,7 @@ async function main() {
     ["observed-visits.json", observedVisits],
     ["transport-summary.json", transport],
     ["coverage-summary.json", coverage],
+    ["browser-network-summary.json", browserNetwork],
   ];
   for (const [fileName, value] of evidenceFiles) {
     await writeJsonEvidence(path.join(options.outputDir, fileName), value);
@@ -293,6 +315,8 @@ async function main() {
     physical_ui_triggers: manifest.counting_contract.physical_ui_triggers,
     semantic_event_records: acknowledgements.length,
     event_name_coverage: `${validation.coveredEventNames.length}/${aaisBrowserResearchEventNames.length}`,
+    browser_network_gate_passed: browserNetwork.browser_network_gate_passed,
+    browser_non_local_requests: browserNetwork.non_local_request_count,
     output_dir: options.outputDir,
     raw_request_data_captured: false,
     secrets: "redacted",
@@ -510,9 +534,11 @@ async function runSyntheticParticipant({
   const context = await browser.newContext({
     acceptDownloads: false,
     baseURL: baseUrl,
+    serviceWorkers: "block",
     viewport: { width: 1440, height: 1000 },
   });
   context.setDefaultTimeout(timeoutMs);
+  const networkAudit = installBrowserNetworkAudit(context, baseUrl, slot);
   await context.addInitScript(installSanitizedCaptureAndPicker, {
     captureStorageKey,
     eventQueueStorageKey,
@@ -526,6 +552,10 @@ async function runSyntheticParticipant({
   });
 
   if (slot === "P1") {
+    const syntheticReferenceUrl = new URL(
+      "/__aais-synthetic-reference",
+      baseUrl,
+    ).href;
     let guideRequestCount = 0;
     await context.route("**/api/learning/ai-guide", async (route) => {
       guideRequestCount += 1;
@@ -547,7 +577,7 @@ async function runSyntheticParticipant({
               agentId: "A1",
               label: "导学智能体",
               content:
-                "[Synthetic research reference](https://example.com/aais-synthetic-reference)",
+                `[Synthetic research reference](${syntheticReferenceUrl})`,
               actions: ["guide-flow"],
             }],
             orchestration: {
@@ -576,7 +606,7 @@ async function runSyntheticParticipant({
       await delay(350);
       await route.fulfill({ response });
     });
-    await context.route("https://example.com/**", async (route) => {
+    await context.route("**/__aais-synthetic-reference", async (route) => {
       await route.fulfill({
         status: 200,
         contentType: "text/html",
@@ -584,14 +614,32 @@ async function runSyntheticParticipant({
       });
     });
   }
+  await context.routeWebSocket("**/*", async (websocket) => {
+    networkAudit.recordWebsocketAttempt(websocket.url());
+    await websocket.close({ code: 1008, reason: "controlled-rehearsal-block" });
+  });
+  await context.route("**/*", async (route) => {
+    const classification = classifyBrowserNetworkUrl(
+      route.request().url(),
+      new URL(baseUrl).origin,
+    );
+    networkAudit.recordRouteGuard(classification);
+    if (!classification.valid || !classification.local) {
+      await route.abort("blockedbyclient");
+      return;
+    }
+    await route.fallback();
+  });
 
   const page = await context.newPage();
+  let participantResult;
   try {
     await page.goto("/learning", { waitUntil: "domcontentloaded" });
     await page.locator('[data-research-boundary-state="ready"]').waitFor();
     await page.getByTestId("learning-shell").waitFor();
     await waitForCaptureCount(page, 2);
     const visit = await readSanitizedVisit(page);
+    await networkAudit.waitForIdle(timeoutMs);
 
     if (slot === "P1") {
       await driveFullCoverageParticipant({ context, displayName, page });
@@ -600,10 +648,13 @@ async function runSyntheticParticipant({
     }
     await waitForCaptureCount(page, expectedEvents.length);
     const capture = await readSanitizedCapture(page);
-    return { capture, slot, visit };
+    await networkAudit.waitForIdle(timeoutMs);
+    participantResult = { capture, slot, visit };
   } finally {
     await context.close();
   }
+  const browserNetworkAudit = await networkAudit.finalize(timeoutMs);
+  return { ...participantResult, browserNetworkAudit };
 }
 
 async function driveFullCoverageParticipant({ context, displayName, page }) {
@@ -1139,6 +1190,416 @@ function countBy(rows, key) {
       return counts;
     }, new Map()).entries()].sort(([left], [right]) => left.localeCompare(right)),
   );
+}
+
+export function classifyBrowserNetworkUrl(value, allowedOrigin) {
+  let parsed;
+  let allowed;
+  try {
+    parsed = new URL(String(value));
+    allowed = new URL(String(allowedOrigin));
+  } catch {
+    return { externalOriginSha256: null, local: false, valid: false };
+  }
+  if (!["http:", "https:", "ws:", "wss:"].includes(parsed.protocol)
+    || !["http:", "https:"].includes(allowed.protocol)
+    || parsed.username
+    || parsed.password
+    || allowed.username
+    || allowed.password) {
+    return { externalOriginSha256: null, local: false, valid: false };
+  }
+  const normalizedProtocol = parsed.protocol === "ws:"
+    ? "http:"
+    : parsed.protocol === "wss:"
+      ? "https:"
+      : parsed.protocol;
+  const normalizedOrigin = `${normalizedProtocol}//${parsed.host}`;
+  const local = normalizedOrigin === allowed.origin;
+  return {
+    externalOriginSha256: local ? null : sha256(normalizedOrigin),
+    local,
+    valid: true,
+  };
+}
+
+function installBrowserNetworkAudit(context, baseUrl, slot) {
+  const allowedOrigin = new URL(baseUrl).origin;
+  const inFlight = new Set();
+  const recordByRequest = new WeakMap();
+  const requestRecords = [];
+  const resourceTypeCounts = new Map();
+  const allowedMethods = new Set([
+    "DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT",
+  ]);
+  let requestCount = 0;
+  let localRequestCount = 0;
+  let nonLocalRequestCount = 0;
+  let invalidRequestUrlCount = 0;
+  let invalidMethodCount = 0;
+  let requestFinishedCount = 0;
+  let requestFailedCount = 0;
+  let websocketCount = 0;
+  let localWebsocketCount = 0;
+  let nonLocalWebsocketCount = 0;
+  let invalidWebsocketUrlCount = 0;
+  let serviceWorkerCount = 0;
+  let downloadCount = 0;
+  let observerErrorCount = 0;
+  let routeGuardRequestCount = 0;
+  let routeGuardLocalRequestCount = 0;
+  let routeGuardNonLocalRequestCount = 0;
+  let routeGuardInvalidRequestCount = 0;
+  let finalized = false;
+  const captureStartedAt = new Date().toISOString();
+
+  context.on("request", (request) => {
+    requestCount += 1;
+    inFlight.add(request);
+    const resourceType = String(request.resourceType() || "other").toLowerCase();
+    const safeResourceType = /^[a-z][a-z-]{0,31}$/.test(resourceType)
+      ? resourceType
+      : "invalid";
+    const rawMethod = String(request.method() || "").toUpperCase();
+    const method = allowedMethods.has(rawMethod) ? rawMethod : "UNEXPECTED";
+    if (method === "UNEXPECTED") invalidMethodCount += 1;
+    const classification = classifyBrowserNetworkUrl(request.url(), allowedOrigin);
+    const destinationClass = classification.valid
+      ? classification.local ? "same_origin" : "non_local"
+      : "invalid";
+    const record = {
+      context_slot: slot,
+      context_request_sequence: requestCount,
+      method,
+      resource_type: safeResourceType,
+      destination_class: destinationClass,
+      terminal_outcome: null,
+      response_status: null,
+    };
+    requestRecords.push(record);
+    recordByRequest.set(request, record);
+    resourceTypeCounts.set(
+      safeResourceType,
+      (resourceTypeCounts.get(safeResourceType) ?? 0) + 1,
+    );
+    recordClassification(classification, {
+      invalid: () => { invalidRequestUrlCount += 1; },
+      local: () => { localRequestCount += 1; },
+      nonLocal: () => { nonLocalRequestCount += 1; },
+    });
+  });
+  context.on("response", (response) => {
+    const record = recordByRequest.get(response.request());
+    const status = response.status();
+    if (!record || !Number.isInteger(status) || status < 100 || status > 599) {
+      observerErrorCount += 1;
+      return;
+    }
+    record.response_status = status;
+  });
+  const finishRequest = (request, outcome) => {
+    const record = recordByRequest.get(request);
+    if (!record || record.terminal_outcome !== null) {
+      observerErrorCount += 1;
+    } else {
+      record.terminal_outcome = outcome;
+    }
+    inFlight.delete(request);
+  };
+  context.on("requestfinished", (request) => {
+    requestFinishedCount += 1;
+    finishRequest(request, "finished");
+  });
+  context.on("requestfailed", (request) => {
+    requestFailedCount += 1;
+    finishRequest(request, "failed");
+  });
+  context.on("serviceworker", () => {
+    serviceWorkerCount += 1;
+  });
+  context.on("download", () => {
+    downloadCount += 1;
+  });
+
+  const waitForIdle = async (timeoutMs) => {
+    const deadline = Date.now() + Math.min(Number(timeoutMs) || 5_000, 5_000);
+    while (Date.now() < deadline) {
+      if (inFlight.size === 0) {
+        await delay(100);
+        if (inFlight.size === 0) return;
+      } else {
+        await delay(50);
+      }
+    }
+  };
+
+  return {
+    recordRouteGuard(classification) {
+      routeGuardRequestCount += 1;
+      recordClassification(classification, {
+        invalid: () => { routeGuardInvalidRequestCount += 1; },
+        local: () => { routeGuardLocalRequestCount += 1; },
+        nonLocal: () => { routeGuardNonLocalRequestCount += 1; },
+      });
+    },
+    recordWebsocketAttempt(url) {
+      websocketCount += 1;
+      recordClassification(classifyBrowserNetworkUrl(url, allowedOrigin), {
+        invalid: () => { invalidWebsocketUrlCount += 1; },
+        local: () => { localWebsocketCount += 1; },
+        nonLocal: () => { nonLocalWebsocketCount += 1; },
+      });
+    },
+    waitForIdle,
+    async finalize(timeoutMs) {
+      if (finalized) {
+        throw new Error("AAIS browser network audit cannot be finalized twice.");
+      }
+      finalized = true;
+      await waitForIdle(timeoutMs);
+      const captureEndedAt = new Date().toISOString();
+      const networkGatePassed = requestCount > 0
+        && requestCount === requestRecords.length
+        && requestCount === localRequestCount
+        && nonLocalRequestCount === 0
+        && invalidRequestUrlCount === 0
+        && invalidMethodCount === 0
+        && requestFinishedCount + requestFailedCount === requestCount
+        && requestFailedCount === 0
+        && requestRecords.every((record) =>
+          record.terminal_outcome === "finished"
+            && Number.isInteger(record.response_status)
+            && record.response_status >= 100
+            && record.response_status < 400)
+        && inFlight.size === 0
+        && routeGuardRequestCount === requestCount
+        && routeGuardLocalRequestCount === requestCount
+        && routeGuardNonLocalRequestCount === 0
+        && routeGuardInvalidRequestCount === 0
+        && websocketCount === 0
+        && localWebsocketCount === 0
+        && nonLocalWebsocketCount === 0
+        && invalidWebsocketUrlCount === 0
+        && serviceWorkerCount === 0
+        && downloadCount === 0
+        && observerErrorCount === 0;
+      return {
+        captureStartedAt,
+        captureEndedAt,
+        downloadCount,
+        inFlightRequestCount: inFlight.size,
+        invalidMethodCount,
+        invalidRequestUrlCount,
+        invalidWebsocketUrlCount,
+        localRequestCount,
+        localWebsocketCount,
+        networkGatePassed,
+        nonLocalRequestCount,
+        nonLocalWebsocketCount,
+        observerErrorCount,
+        requestCount,
+        requestFailedCount,
+        requestFinishedCount,
+        requestRecords: requestRecords.map((record) => ({ ...record })),
+        routeGuardInvalidRequestCount,
+        routeGuardLocalRequestCount,
+        routeGuardNonLocalRequestCount,
+        routeGuardRequestCount,
+        resourceTypeCounts: Object.fromEntries(
+          [...resourceTypeCounts.entries()].sort(([left], [right]) =>
+            left.localeCompare(right)),
+        ),
+        serviceWorkerCount,
+        websocketCount,
+      };
+    },
+  };
+}
+
+function recordClassification(classification, handlers) {
+  if (!classification.valid) {
+    handlers.invalid();
+  } else if (classification.local) {
+    handlers.local();
+  } else {
+    handlers.nonLocal(classification.externalOriginSha256);
+  }
+}
+
+export function buildBrowserNetworkSummary({
+  baseUrl,
+  environment,
+  generatedAt,
+  lrsNamespace,
+  manifestSha256,
+  participantRuns,
+  projectId,
+  studyId,
+}) {
+  const audits = participantRuns.map((run) => run.browserNetworkAudit);
+  if (audits.length !== 3 || audits.some((audit) => !audit)) {
+    throw new Error("AAIS browser network audit must cover all three contexts.");
+  }
+  if (!isIsoDate(generatedAt)
+    || !/^[a-f0-9]{64}$/.test(manifestSha256)
+    || new URL(baseUrl).origin !== baseUrl) {
+    throw new Error("AAIS browser network audit scope is invalid.");
+  }
+  const numericFields = [
+    "requestCount", "localRequestCount", "nonLocalRequestCount",
+    "invalidRequestUrlCount", "invalidMethodCount", "requestFinishedCount",
+    "requestFailedCount", "downloadCount", "observerErrorCount",
+    "routeGuardRequestCount", "routeGuardLocalRequestCount",
+    "routeGuardNonLocalRequestCount", "routeGuardInvalidRequestCount",
+    "inFlightRequestCount", "websocketCount", "localWebsocketCount",
+    "nonLocalWebsocketCount", "invalidWebsocketUrlCount", "serviceWorkerCount",
+  ];
+  const recordKeys = [
+    "context_slot", "context_request_sequence", "method", "resource_type",
+    "destination_class", "terminal_outcome", "response_status",
+  ].sort().join("|");
+  const allowedMethods = new Set([
+    "DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT",
+  ]);
+  for (let index = 0; index < audits.length; index += 1) {
+    const audit = audits[index];
+    const expectedSlot = `P${index + 1}`;
+    const recordShapeIsSafe = Array.isArray(audit.requestRecords)
+      && audit.requestRecords.length === audit.requestCount
+      && audit.requestRecords.every((record, recordIndex) =>
+        record
+          && Object.keys(record).sort().join("|") === recordKeys
+          && record.context_slot === expectedSlot
+          && record.context_request_sequence === recordIndex + 1
+          && allowedMethods.has(record.method)
+          && /^[a-z][a-z-]{0,31}$/.test(record.resource_type)
+          && record.destination_class === "same_origin"
+          && record.terminal_outcome === "finished"
+          && Number.isInteger(record.response_status)
+          && record.response_status >= 100
+          && record.response_status < 400);
+    const resourceTypeTotal = audit.resourceTypeCounts
+      && typeof audit.resourceTypeCounts === "object"
+      ? Object.values(audit.resourceTypeCounts).reduce(
+        (sum, count) => sum + (Number.isInteger(count) ? count : 0),
+        0,
+      )
+      : -1;
+    if (!audit.networkGatePassed
+      || numericFields.some((field) => !Number.isInteger(audit[field]) || audit[field] < 0)
+      || !isIsoDate(audit.captureStartedAt)
+      || !isIsoDate(audit.captureEndedAt)
+      || new Date(audit.captureEndedAt) < new Date(audit.captureStartedAt)
+      || !recordShapeIsSafe
+      || resourceTypeTotal !== audit.requestCount
+      || audit.requestCount < 1
+      || audit.requestCount !== audit.localRequestCount
+      || audit.nonLocalRequestCount !== 0
+      || audit.invalidRequestUrlCount !== 0
+      || audit.invalidMethodCount !== 0
+      || audit.requestFinishedCount + audit.requestFailedCount !== audit.requestCount
+      || audit.requestFailedCount !== 0
+      || audit.inFlightRequestCount !== 0
+      || audit.routeGuardRequestCount !== audit.requestCount
+      || audit.routeGuardLocalRequestCount !== audit.requestCount
+      || audit.routeGuardNonLocalRequestCount !== 0
+      || audit.routeGuardInvalidRequestCount !== 0
+      || audit.websocketCount !== 0
+      || audit.localWebsocketCount !== 0
+      || audit.nonLocalWebsocketCount !== 0
+      || audit.invalidWebsocketUrlCount !== 0
+      || audit.serviceWorkerCount !== 0
+      || audit.downloadCount !== 0
+      || audit.observerErrorCount !== 0) {
+      throw new Error("AAIS browser network audit failed closed.");
+    }
+  }
+  const total = (field) => audits.reduce((sum, audit) => sum + audit[field], 0);
+  const resourceTypeCounts = {};
+  const requestRecords = [];
+  for (const audit of audits) {
+    for (const [resourceType, count] of Object.entries(audit.resourceTypeCounts)) {
+      if (!/^[a-z][a-z-]{0,31}$/.test(resourceType)
+        || !Number.isInteger(count)
+        || count < 0) {
+        throw new Error("AAIS browser network resource classification is invalid.");
+      }
+      resourceTypeCounts[resourceType] = (resourceTypeCounts[resourceType] ?? 0) + count;
+    }
+    for (const record of audit.requestRecords) {
+      requestRecords.push({
+        sequence: requestRecords.length + 1,
+        ...record,
+      });
+    }
+  }
+  return {
+    evidence_schema_version: 1,
+    artifact_type: "aais-browser-context-network-audit",
+    generated_at: generatedAt,
+    capture_started_at: audits.map((audit) => audit.captureStartedAt).sort()[0],
+    capture_ended_at: audits.map((audit) => audit.captureEndedAt).sort().at(-1),
+    capture_scope:
+      "playwright-observable-http(s)-requests-and-routed-websocket-attempts-in-three-isolated-contexts",
+    source:
+      "Playwright BrowserContext request, response, requestfinished, requestfailed, page, route, and routed-WebSocket lifecycle with service workers blocked; every non-local HTTP(S) route is aborted before egress.",
+    project_id: projectId,
+    study_id: studyId,
+    environment,
+    lrs_namespace: lrsNamespace,
+    manifest_sha256: manifestSha256,
+    browser_engine: "chromium",
+    http_policy: "exact-base-origin-only-route-guard",
+    websocket_policy: "all-websocket-attempts-blocked-zero-expected",
+    participant_context_count: audits.length,
+    context_gate_pass_count: audits.filter((audit) => audit.networkGatePassed).length,
+    service_worker_policy: "blocked",
+    service_worker_count: total("serviceWorkerCount"),
+    total_request_count: total("requestCount"),
+    local_request_count: total("localRequestCount"),
+    non_local_request_count: total("nonLocalRequestCount"),
+    invalid_request_url_count: total("invalidRequestUrlCount"),
+    invalid_method_count: total("invalidMethodCount"),
+    request_finished_count: total("requestFinishedCount"),
+    request_failed_count: total("requestFailedCount"),
+    in_flight_request_count: total("inFlightRequestCount"),
+    route_guard_request_count: total("routeGuardRequestCount"),
+    route_guard_local_request_count: total("routeGuardLocalRequestCount"),
+    route_guard_non_local_request_count: total("routeGuardNonLocalRequestCount"),
+    route_guard_invalid_request_count: total("routeGuardInvalidRequestCount"),
+    route_guard_coverage_match:
+      total("routeGuardRequestCount") === total("requestCount"),
+    websocket_count: total("websocketCount"),
+    local_websocket_count: total("localWebsocketCount"),
+    non_local_websocket_count: total("nonLocalWebsocketCount"),
+    invalid_websocket_url_count: total("invalidWebsocketUrlCount"),
+    download_count: total("downloadCount"),
+    download_policy: "forbidden",
+    observer_error_count: total("observerErrorCount"),
+    request_resource_type_counts: Object.fromEntries(
+      Object.entries(resourceTypeCounts).sort(([left], [right]) =>
+        left.localeCompare(right)),
+    ),
+    request_records: requestRecords,
+    local_origin_sha256: sha256(new URL(baseUrl).origin),
+    external_origin_hash_count: 0,
+    browser_network_gate_passed: true,
+    raw_request_urls_retained: false,
+    request_headers_retained: false,
+    request_bodies_retained: false,
+    response_bodies_retained: false,
+    websocket_frames_retained: false,
+    download_files_retained: false,
+    cookies_retained: false,
+    raw_playwright_artifacts_retained: false,
+    secrets: "redacted",
+  };
+}
+
+function isIsoDate(value) {
+  return typeof value === "string"
+    && !Number.isNaN(new Date(value).getTime())
+    && new Date(value).toISOString() === value;
 }
 
 function readCliOptions(args) {

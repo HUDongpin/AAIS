@@ -1,3 +1,5 @@
+import { readFile } from "node:fs/promises";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { config as middlewareConfig, middleware } from "@/../middleware";
 import nextConfig, { createAaisContentSecurityPolicy } from "@/../next.config";
@@ -32,7 +34,8 @@ describe("AAIS Next security headers", () => {
     expect(policy).toContain("default-src 'self'");
     expect(policy).toContain("script-src 'self' 'nonce-test-nonce' 'strict-dynamic'");
     expect(policy).toContain("style-src 'self' 'nonce-test-nonce'");
-    expect(policy).toContain("font-src 'self' data: https://cdn.prod.website-files.com");
+    expect(policy).toContain("font-src 'self' data:");
+    expect(policy).not.toContain("cdn.prod.website-files.com");
     expect(policy).toContain("frame-ancestors 'none'");
     expect(policy).toContain("base-uri 'self'");
     expect(policy).not.toContain("'unsafe-inline'");
@@ -52,6 +55,28 @@ describe("AAIS Next security headers", () => {
       .toContain("'unsafe-inline'");
     expect(policy)
       .toContain("ws:");
+  });
+
+  it("keeps the controlled research browser on same-origin connections", () => {
+    const policy = createAaisContentSecurityPolicy({
+      nonce: "test-nonce",
+      env: {
+        NODE_ENV: "production",
+        AAIS_RESEARCH_MODE: "true",
+        AAIS_RESEARCH_REQUIRED: "true",
+      } as NodeJS.ProcessEnv,
+    });
+
+    expect(policy).toContain("connect-src 'self'");
+    expect(policy).not.toContain("connect-src 'self' https:");
+    expect(policy).not.toContain("cdn.prod.website-files.com");
+  });
+
+  it("does not load runtime fonts or CSS assets from remote origins", async () => {
+    const css = await readFile(path.join(process.cwd(), "src/app/globals.css"), "utf8");
+
+    expect(css).not.toMatch(/url\(\s*["']?https?:/i);
+    expect(css).not.toContain("cdn.prod.website-files.com");
   });
 
   it("sets per-request nonce CSP through Next middleware", () => {

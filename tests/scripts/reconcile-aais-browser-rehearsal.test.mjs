@@ -14,6 +14,8 @@ import {
   compareOutboxPayloads,
   compareTransportAcknowledgements,
   evaluateContractCoverage,
+  validateBrowserNetworkSummary,
+  validateBrowserNetworkWindow,
   validateExternalLrsAttestationForRun,
   validateRuntimeBuildAttestationForRun,
   validateTransportSummary,
@@ -204,6 +206,54 @@ describe("AAIS browser rehearsal reconciliation boundaries", () => {
       .toThrow("does not cover the complete 22-event contract");
   });
 
+  it("requires a scope-bound, lifecycle-complete browser-context network ledger", () => {
+    const { manifest } = createManifestPair();
+    const value = createBrowserNetworkSummary(manifest);
+    const validated = validateBrowserNetworkSummary(
+      value,
+      manifest,
+      "b".repeat(64),
+      "c".repeat(64),
+    );
+
+    expect(validated).toMatchObject({
+      status: "verified",
+      verified: true,
+      participantContextCount: 3,
+      totalRequestCount: 3,
+      localRequestCount: 3,
+      nonLocalRequestCount: 0,
+      routeGuardCoverageMatch: true,
+    });
+    expect(validateBrowserNetworkWindow(validated, {
+      startedTimes: ["2026-07-30T10:00:00.000Z"],
+      receivedTimes: ["2026-07-30T10:00:05.000Z"],
+    })).toBe(true);
+    expect(validateBrowserNetworkWindow(validated, {
+      startedTimes: ["2026-07-30T09:59:59.000Z"],
+      receivedTimes: ["2026-07-30T10:00:05.000Z"],
+    })).toBe(false);
+
+    const external = structuredClone(value);
+    external.non_local_request_count = 1;
+    external.browser_network_gate_passed = false;
+    expect(() => validateBrowserNetworkSummary(
+      external,
+      manifest,
+      "b".repeat(64),
+      "c".repeat(64),
+    )).toThrow("network summary is invalid");
+
+    const rawUrl = structuredClone(value);
+    rawUrl.request_records[0].url = "https://forbidden.example/private";
+    expect(() => validateBrowserNetworkSummary(
+      rawUrl,
+      manifest,
+      "b".repeat(64),
+      "c".repeat(64),
+    )).toThrow("request ledger is invalid");
+  });
+
   it("derives the expected product sessions from distinct successful deletion visits", () => {
     const firstVisit = "50000000-0000-4000-8000-000000000001";
     const secondVisit = "50000000-0000-4000-8000-000000000002";
@@ -317,6 +367,8 @@ describe("AAIS browser rehearsal reconciliation boundaries", () => {
       "outboxPayload.verified",
       "runtimeBuildGate.verified",
       "externalLrsContactGate.verified",
+      "browserNetworkValidation.verified",
+      "browserNetworkWindowGate",
       "productSessionExpectation.expectedProductSessions",
     ]) {
       expect(source).toContain(invariant);
@@ -457,5 +509,75 @@ function createManifestPair() {
         condition: index % 2 === 0 ? "control" : "treatment",
       })),
     },
+  };
+}
+
+function createBrowserNetworkSummary(manifest) {
+  const requestRecords = ["P1", "P2", "P3"].map((slot, index) => ({
+    sequence: index + 1,
+    context_slot: slot,
+    context_request_sequence: 1,
+    method: "GET",
+    resource_type: "document",
+    destination_class: "same_origin",
+    terminal_outcome: "finished",
+    response_status: 200,
+  }));
+  return {
+    evidence_schema_version: 1,
+    artifact_type: "aais-browser-context-network-audit",
+    generated_at: "2026-07-30T10:00:10.000Z",
+    capture_started_at: "2026-07-30T10:00:00.000Z",
+    capture_ended_at: "2026-07-30T10:00:09.000Z",
+    capture_scope:
+      "playwright-observable-http(s)-requests-and-routed-websocket-attempts-in-three-isolated-contexts",
+    source:
+      "Playwright BrowserContext request, response, requestfinished, requestfailed, page, route, and routed-WebSocket lifecycle with service workers blocked; every non-local HTTP(S) route is aborted before egress.",
+    project_id: manifest.project_id,
+    study_id: manifest.study_id,
+    environment: manifest.environment,
+    lrs_namespace: manifest.lrs_namespace,
+    manifest_sha256: "b".repeat(64),
+    browser_engine: "chromium",
+    http_policy: "exact-base-origin-only-route-guard",
+    websocket_policy: "all-websocket-attempts-blocked-zero-expected",
+    participant_context_count: 3,
+    context_gate_pass_count: 3,
+    service_worker_policy: "blocked",
+    service_worker_count: 0,
+    total_request_count: 3,
+    local_request_count: 3,
+    non_local_request_count: 0,
+    invalid_request_url_count: 0,
+    invalid_method_count: 0,
+    request_finished_count: 3,
+    request_failed_count: 0,
+    in_flight_request_count: 0,
+    route_guard_request_count: 3,
+    route_guard_local_request_count: 3,
+    route_guard_non_local_request_count: 0,
+    route_guard_invalid_request_count: 0,
+    route_guard_coverage_match: true,
+    websocket_count: 0,
+    local_websocket_count: 0,
+    non_local_websocket_count: 0,
+    invalid_websocket_url_count: 0,
+    download_count: 0,
+    download_policy: "forbidden",
+    observer_error_count: 0,
+    request_resource_type_counts: { document: 3 },
+    request_records: requestRecords,
+    local_origin_sha256: "d".repeat(64),
+    external_origin_hash_count: 0,
+    browser_network_gate_passed: true,
+    raw_request_urls_retained: false,
+    request_headers_retained: false,
+    request_bodies_retained: false,
+    response_bodies_retained: false,
+    websocket_frames_retained: false,
+    download_files_retained: false,
+    cookies_retained: false,
+    raw_playwright_artifacts_retained: false,
+    secrets: "redacted",
   };
 }

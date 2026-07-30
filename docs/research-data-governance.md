@@ -156,19 +156,21 @@ Store the mode-0600 report in the restricted study operations register; it must 
 
 ### Browser Rehearsal v4 Evidence Contract
 
-Before the first browser action, freeze the v4 action manifest. After each authenticated research bootstrap, obtain only the opaque observed visit record from Playwright localStorage. Reduce the browser transport capture to the strict acknowledgement metadata below and delete the raw trace. All listed objects use exact key allowlists; extra fields, including `actor_id`, account names, or any request/response content, invalidate the artifact.
+Before the first browser action, freeze the v4 action manifest. After each authenticated research bootstrap, obtain only the opaque observed visit record from Playwright localStorage. Reduce the browser transport capture to the strict acknowledgement metadata below and delete the raw trace. Block service workers and all WebSockets, remove external font dependencies, enforce an exact-base-origin route guard, and retain a second sanitized browser-context request ledger that contains only sequence, participant slot, method, resource type, destination class, terminal outcome, and response status. It must never retain a URL, path, query, header, cookie, request/response body, WebSocket frame, download file, or browser trace. All listed objects use exact key allowlists; extra fields, including `actor_id`, account names, or request/response content, invalidate the artifact.
 
 - The manifest root contains exactly `evidence_schema_version`, `declared_at`, `declared_before_run`, `project_id`, `study_id`, `environment`, `lrs_namespace`, `lrs_store_id`, `participant_count`, `counting_contract`, and `participants`. Its evidence schema is at least 2 and `declared_before_run` is `true`. The immutable `lrs_store_id` is required even when delivery is disabled because reconciliation binds it to every outbox payload. `counting_contract` contains exactly `physical_ui_triggers`, `expected_semantic_event_records`, and `note`. Each participant contains exactly `slot`, `physical_ui_triggers`, and `expected_events`; each ordered expected event contains exactly `event_name`, `outcome`, and one-based `sequence`.
 - The observed-visits root contains exactly `evidence_schema_version`, `observed_at`, `source`, `project_id`, `study_id`, `environment`, `lrs_namespace`, and `participants`. `source` must be the literal `Playwright localStorage after each authenticated research bootstrap`. Each observed participant contains exactly `slot`, `participant_id`, `study_run_id`, `visit_id`, and `condition`. The three ids are UUIDs and are unique across the 3–5 participant slots.
 - Every sanitized transport acknowledgement contains exactly `route`, `method`, `status`, `client_event_id`, and `visit_id`. An ordinary semantic event is acknowledged only by `/api/research/events`, `POST`, `201`; a successful `account_logout` is acknowledged only by `/api/auth/app-session`, `DELETE`, `200`. Reconciliation binds each complete tuple to one exact Postgres event and rejects aggregate-only evidence, route swaps, duplicates, missing acknowledgements, and extras.
+- `browser-network-summary.json` must cover exactly the same three synthetic browser contexts and the complete visit/event window. Every HTTP(S) request must pass the exact-origin route guard and have one terminal ledger row; non-local/invalid requests, unguarded or in-flight requests, WebSockets, service workers, downloads, observer errors, and retained raw network fields must all be zero. The manifest-byte SHA-256 binds this audit to the predeclared actions.
 
-Run the reconciler with the two independent provenance inputs:
+Run the reconciler with the three complementary provenance inputs:
 
 ```bash
 npm run study:reconcile-browser -- \
   --manifest <manifest.json> \
   --observed-visits <observed-visits.json> \
   --transport-summary <transport-summary.json> \
+  --browser-network-summary <browser-network-summary.json> \
   --output <browser-reconciliation.json> \
   --application-mode production-build \
   --lrs-counter-url <local-counter-url> \
@@ -176,7 +178,41 @@ npm run study:reconcile-browser -- \
   --external-lrs-attestation <external-lrs-attestation.json>
 ```
 
-The runtime-build attestation binds a production runtime build id and bundle SHA-256 to the same project/study/environment/namespace and the commit recorded in the events. The external-LRS attestation is a complete, checksummed, sanitized network capture whose time window begins no later than the first visit start and ends no earlier than the final server-received event; full pass also requires `observed_external_lrs_requests=0`. If either argument is omitted, its gate remains `not_verified` and the maximum result is `limited-pass`, even when the count, set, sequence, transport, Postgres, and outbox gates all pass. A commit/build mismatch, a nonzero observed external request count, an incomplete capture, or a capture-window mismatch likewise cannot produce `pass`.
+After browser capture succeeds, exercise the actual researcher-only export
+route once per observed synthetic run. Inject the session secret, research
+identity-fingerprint key, and a separate read-only reconciliation database URL
+from the secret manager; never place them in the command line or evidence
+directory:
+
+```bash
+node scripts/attest-aais-controlled-exports.mjs \
+  --base-url <localhost-production-origin> \
+  --manifest <manifest.json> \
+  --observed-visits <observed-visits.json> \
+  --runtime-build-attestation <runtime-build-attestation.json> \
+  --expected-commit <full-git-head> \
+  --researcher-actor SyntheticResearchExportAttester \
+  --output <controlled-export-receipt.json>
+```
+
+The attester uses the real authenticated/CSRF-protected HTTP route and requires
+the actor to be explicitly allowlisted. Before any export it verifies that the
+reconciliation role is read-only, has no elevated role attributes or role
+memberships, has no database/research-schema creation privileges, has no write
+privileges on research relations or sequences, and has no identity-schema
+access. It then validates each response
+SHA and exact predeclared participant/visit/condition/event projection against
+the corresponding Postgres rows plus a same-actor audit row created inside the
+request window, all in one `REPEATABLE READ READ ONLY` snapshot. The mode-0600
+receipt binds the manifest, observed-visits file, runtime attestation, commit,
+declared store metadata, three response hashes, and counts; it retains no response body,
+participant/run/visit id, actor fingerprint, header, cookie, credential, or raw
+text. The declared store id is not physical-isolation evidence; only the
+independent provider receipt can establish that external fact.
+
+The runtime-build attestation binds a production runtime build id and bundle SHA-256 to the same project/study/environment/namespace and the commit recorded in the events. The external-LRS attestation is a complete, checksummed, sanitized capture of all outbound TCP/UDP packets from the production app container's network namespace; its time window begins no later than the first visit start and ends no earlier than the final server-received event, and full pass requires `observed_external_lrs_requests=0`. The separate browser-context audit covers page/context HTTP(S) request intent and lifecycle under an exact-origin deny guard. Full pass requires all three gates. A commit/build mismatch, nonzero app public/target packets, non-local browser request intent, an incomplete ledger/capture, or a capture-window mismatch cannot produce `pass`.
+
+These two network scopes are complementary and deliberately privacy-reduced. They do not constitute host-level packet capture of Chromium background DNS, QUIC, WebRTC, WebTransport, or other traffic outside Playwright page contexts. If an approval requires browser-process packet evidence, run Chromium inside a separately captured or deny-egress network namespace and retain only the approved sanitized packet summary.
 
 A zero local mock counter proves only that the endpoints configured to use that counter received no requests. It cannot independently prove that the application or host made no external network contact. The browser-run contact gate requires the complete external-LRS network attestation; even a verified zero-contact capture is not a substitute for the provider's physical-isolation, zero-baseline, delivery, and physical-deletion receipts.
 

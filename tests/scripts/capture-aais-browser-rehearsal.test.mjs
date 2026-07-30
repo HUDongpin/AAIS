@@ -3,6 +3,8 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   aaisBrowserResearchEventNames,
+  buildBrowserNetworkSummary,
+  classifyBrowserNetworkUrl,
   createStrictBrowserManifest,
   normalizeRunOptions,
   validateBrowserCapture,
@@ -145,7 +147,74 @@ describe("AAIS 22-event actual-UI browser capture harness", () => {
       expect(source).not.toContain(forbiddenApi);
     }
     expect(source).toContain("acceptDownloads: false");
+    expect(source).toContain('serviceWorkers: "block"');
+    expect(source).toContain('context.routeWebSocket("**/*"');
+    expect(source).toContain("await route.fallback()");
+    expect(source.indexOf('context.route("**/__aais-synthetic-reference"'))
+      .toBeLessThan(source.lastIndexOf('context.route("**/*"'));
     expect(source).toContain("persisted_sensitive_fields: []");
+  });
+
+  it("classifies exact-origin browser traffic without retaining URLs", () => {
+    const origin = "http://127.0.0.1:3219";
+    expect(classifyBrowserNetworkUrl(`${origin}/learning?synthetic=1`, origin))
+      .toMatchObject({ local: true, valid: true });
+    expect(classifyBrowserNetworkUrl("ws://127.0.0.1:3219/socket", origin))
+      .toMatchObject({ local: true, valid: true });
+    expect(classifyBrowserNetworkUrl("http://localhost:3219/learning", origin))
+      .toMatchObject({ local: false, valid: true });
+    expect(classifyBrowserNetworkUrl("http://127.0.0.1:3220/learning", origin))
+      .toMatchObject({ local: false, valid: true });
+    expect(classifyBrowserNetworkUrl("https://127.0.0.1:3219/learning", origin))
+      .toMatchObject({ local: false, valid: true });
+    expect(classifyBrowserNetworkUrl(
+      "http://user:password@127.0.0.1:3219/learning",
+      origin,
+    )).toMatchObject({ local: false, valid: false });
+  });
+
+  it("builds a three-context, lifecycle-complete, same-origin network audit", () => {
+    const baseUrl = "http://127.0.0.1:3219";
+    const participantRuns = createParticipantRuns(createManifest()).map((run, index) => ({
+      ...run,
+      browserNetworkAudit: createSafeNetworkAudit(`P${index + 1}`),
+    }));
+    const summary = buildBrowserNetworkSummary({
+      baseUrl,
+      generatedAt: "2026-07-30T15:00:10.000Z",
+      manifestSha256: "a".repeat(64),
+      participantRuns,
+      ...scope,
+    });
+
+    expect(summary).toMatchObject({
+      participant_context_count: 3,
+      context_gate_pass_count: 3,
+      total_request_count: 3,
+      local_request_count: 3,
+      non_local_request_count: 0,
+      route_guard_request_count: 3,
+      route_guard_coverage_match: true,
+      websocket_count: 0,
+      service_worker_count: 0,
+      download_count: 0,
+      browser_network_gate_passed: true,
+      raw_request_urls_retained: false,
+      request_headers_retained: false,
+      request_bodies_retained: false,
+    });
+    expect(summary.request_records).toHaveLength(3);
+    expect(JSON.stringify(summary)).not.toContain("/learning");
+
+    participantRuns[0].browserNetworkAudit.nonLocalRequestCount = 1;
+    participantRuns[0].browserNetworkAudit.networkGatePassed = false;
+    expect(() => buildBrowserNetworkSummary({
+      baseUrl,
+      generatedAt: "2026-07-30T15:00:10.000Z",
+      manifestSha256: "a".repeat(64),
+      participantRuns,
+      ...scope,
+    })).toThrow("failed closed");
   });
 });
 
@@ -212,4 +281,41 @@ function uuidFor(participantNumber, value) {
   return `${participantNumber.toString(16).padStart(8, "0")}-0000-4000-8000-${value
     .toString(16)
     .padStart(12, "0")}`;
+}
+
+function createSafeNetworkAudit(slot) {
+  return {
+    captureStartedAt: "2026-07-30T15:00:00.000Z",
+    captureEndedAt: "2026-07-30T15:00:09.000Z",
+    downloadCount: 0,
+    inFlightRequestCount: 0,
+    invalidMethodCount: 0,
+    invalidRequestUrlCount: 0,
+    invalidWebsocketUrlCount: 0,
+    localRequestCount: 1,
+    localWebsocketCount: 0,
+    networkGatePassed: true,
+    nonLocalRequestCount: 0,
+    nonLocalWebsocketCount: 0,
+    observerErrorCount: 0,
+    requestCount: 1,
+    requestFailedCount: 0,
+    requestFinishedCount: 1,
+    requestRecords: [{
+      context_slot: slot,
+      context_request_sequence: 1,
+      method: "GET",
+      resource_type: "document",
+      destination_class: "same_origin",
+      terminal_outcome: "finished",
+      response_status: 200,
+    }],
+    routeGuardInvalidRequestCount: 0,
+    routeGuardLocalRequestCount: 1,
+    routeGuardNonLocalRequestCount: 0,
+    routeGuardRequestCount: 1,
+    resourceTypeCounts: { document: 1 },
+    serviceWorkerCount: 0,
+    websocketCount: 0,
+  };
 }

@@ -45,11 +45,17 @@ if (!researchUrl || !productUrl) {
   );
 }
 
-const manifest = JSON.parse(await readFile(options.manifest, "utf8"));
+const manifestRaw = await readFile(options.manifest, "utf8");
+const manifest = JSON.parse(manifestRaw);
 const observed = JSON.parse(await readFile(options.observedVisits, "utf8"));
 const transport = JSON.parse(await readFile(options.transportSummary, "utf8"));
 assertManifestShape(manifest, observed);
 const transportValidation = validateTransportSummary(transport);
+const browserNetworkValidation = await readBrowserNetworkSummary(
+  options.browserNetworkSummary,
+  manifest,
+  sha256(manifestRaw),
+);
 const runtimeBuildAttestation = await readRuntimeBuildAttestation(
   options.runtimeBuildAttestation,
   manifest,
@@ -396,18 +402,24 @@ try {
     externalLrsAttestation,
     { startedTimes, receivedTimes },
   );
+  const browserNetworkWindowGate = validateBrowserNetworkWindow(
+    browserNetworkValidation,
+    { startedTimes, receivedTimes },
+  );
   const fullBrowserEvidenceGate = coreDataGate
     && physicalIsolationGate
     && transportIdentity.verified
     && sourceProvenance.sourceReproducibleFromCommit
     && runtimeBuildGate.verified
+    && browserNetworkValidation.verified
+    && browserNetworkWindowGate
     && externalLrsContactGate.verified
     && externalLrsContactGate.externalLrsContacted === false
     && options.applicationMode === "production-build";
-  const evidenceStatus = fullBrowserEvidenceGate ? "pass" : "limited-pass";
+  const evidenceStatus = fullBrowserEvidenceGate ? "pass" : "failed-closed";
 
   const report = {
-    evidence_schema_version: 3,
+    evidence_schema_version: 4,
     evidence_status: evidenceStatus,
     generated_at: new Date().toISOString(),
     mode: "synthetic-research-browser-rehearsal",
@@ -457,6 +469,8 @@ try {
       ai_latency_coverage_gate_passed: aiLatencyCoverageGate,
       connectivity_recovery_gate_passed: connectivityRecoveryGate,
       aggregate_transport_gate_passed: transportValidation.aggregateGatePassed,
+      browser_context_network_gate_passed:
+        browserNetworkValidation.verified && browserNetworkWindowGate,
       transport_per_route_count_gate_passed:
         transportValidation.perRouteCountGatePassed,
       transport_event_identity_binding_verified: transportIdentity.verified,
@@ -482,6 +496,33 @@ try {
       raw_trace_retained: transport.source_trace_retained,
       raw_playwright_internal_artifacts_retained:
         transport.raw_playwright_internal_artifacts_retained,
+    },
+    browser_context_network_attestation: {
+      status: browserNetworkValidation.status,
+      verified: browserNetworkValidation.verified,
+      summary_sha256: browserNetworkValidation.summarySha256,
+      capture_scope: browserNetworkValidation.captureScope,
+      capture_started_at: browserNetworkValidation.captureStartedAt,
+      capture_ended_at: browserNetworkValidation.captureEndedAt,
+      capture_window_covers_visits_and_events: browserNetworkWindowGate,
+      participant_context_count: browserNetworkValidation.participantContextCount,
+      total_request_count: browserNetworkValidation.totalRequestCount,
+      local_request_count: browserNetworkValidation.localRequestCount,
+      non_local_request_count: browserNetworkValidation.nonLocalRequestCount,
+      request_finished_count: browserNetworkValidation.requestFinishedCount,
+      request_failed_count: browserNetworkValidation.requestFailedCount,
+      route_guard_request_count: browserNetworkValidation.routeGuardRequestCount,
+      route_guard_coverage_match: browserNetworkValidation.routeGuardCoverageMatch,
+      websocket_count: browserNetworkValidation.websocketCount,
+      service_worker_count: browserNetworkValidation.serviceWorkerCount,
+      download_count: browserNetworkValidation.downloadCount,
+      raw_request_urls_retained: browserNetworkValidation.rawRequestUrlsRetained,
+      request_headers_retained: browserNetworkValidation.requestHeadersRetained,
+      request_bodies_retained: browserNetworkValidation.requestBodiesRetained,
+      response_bodies_retained: browserNetworkValidation.responseBodiesRetained,
+      websocket_frames_retained: browserNetworkValidation.websocketFramesRetained,
+      download_files_retained: browserNetworkValidation.downloadFilesRetained,
+      cookies_retained: browserNetworkValidation.cookiesRetained,
     },
     event_names: eventNames,
     outcomes,
@@ -600,11 +641,12 @@ try {
             ? "The retained network attestation observed external LRS contact during the rehearsal window."
             : "The retained network attestation observed no external LRS contact during the rehearsal window; provider isolation and deletion remain external gates."]
         : ["No clean-store provider isolation, zero-baseline, delivery, or physical-deletion receipt was verified; external LRS contact remains not_verified without a retained network attestation."]),
+      "The browser-context HTTP(S)/WebSocket audit and app-container packet capture are complementary scopes; they do not claim host Chromium background DNS, QUIC, WebRTC, or other browser-process packet capture.",
     ],
     secrets: "redacted",
   };
 
-  if (!coreDataGate || !physicalIsolationGate) {
+  if (!fullBrowserEvidenceGate) {
     throw new Error("AAIS browser rehearsal reconciliation failed closed.");
   }
   await writeEvidenceFile(options.output, report);
@@ -616,6 +658,7 @@ try {
     sourceReproducibleFromCommit: sourceProvenance.sourceReproducibleFromCommit,
     runtimeBuildAttestation: runtimeBuildGate.status,
     externalLrsContactAttestation: externalLrsContactGate.status,
+    browserContextNetworkAttestation: browserNetworkValidation.status,
     expected: expectedCount,
     postgres: events.length,
     lrsEligible: eligibleCount,
@@ -638,6 +681,7 @@ function readOptions(args) {
     "--manifest",
     "--observed-visits",
     "--transport-summary",
+    "--browser-network-summary",
     "--output",
     "--application-mode",
   ];
@@ -656,6 +700,7 @@ function readOptions(args) {
     manifest: path.resolve(values.get("--manifest")),
     observedVisits: path.resolve(values.get("--observed-visits")),
     transportSummary: path.resolve(values.get("--transport-summary")),
+    browserNetworkSummary: path.resolve(values.get("--browser-network-summary")),
     output: path.resolve(values.get("--output")),
     applicationMode,
     lrsCounterUrl: values.get("--lrs-counter-url") ?? "http://127.0.0.1:33219/count",
@@ -867,6 +912,222 @@ export function validateTransportSummary(transport) {
     perRouteCountGatePassed,
     routeCounts,
   };
+}
+
+export async function readBrowserNetworkSummary(
+  filePath,
+  manifest,
+  manifestSha256,
+) {
+  if (!filePath) {
+    throw new Error("AAIS browser-context network summary is required.");
+  }
+  const raw = await readFile(filePath, "utf8");
+  const value = JSON.parse(raw);
+  return validateBrowserNetworkSummary(
+    value,
+    manifest,
+    manifestSha256,
+    sha256(raw),
+  );
+}
+
+export function validateBrowserNetworkSummary(
+  value,
+  manifest,
+  manifestSha256,
+  summarySha256 = "0".repeat(64),
+) {
+  const keys = [
+    "artifact_type", "browser_engine", "browser_network_gate_passed",
+    "capture_ended_at", "capture_scope", "capture_started_at", "context_gate_pass_count",
+    "cookies_retained", "download_count", "download_files_retained", "download_policy",
+    "environment", "evidence_schema_version", "external_origin_hash_count",
+    "generated_at", "http_policy", "in_flight_request_count", "invalid_method_count",
+    "invalid_request_url_count", "invalid_websocket_url_count", "local_origin_sha256",
+    "local_request_count", "local_websocket_count", "lrs_namespace", "manifest_sha256",
+    "non_local_request_count", "non_local_websocket_count", "observer_error_count",
+    "participant_context_count", "project_id", "raw_playwright_artifacts_retained",
+    "raw_request_urls_retained", "request_bodies_retained", "request_failed_count",
+    "request_finished_count", "request_headers_retained", "request_records",
+    "request_resource_type_counts", "response_bodies_retained",
+    "route_guard_coverage_match", "route_guard_invalid_request_count",
+    "route_guard_local_request_count", "route_guard_non_local_request_count",
+    "route_guard_request_count", "secrets", "service_worker_count",
+    "service_worker_policy", "source", "study_id", "total_request_count",
+    "websocket_count", "websocket_frames_retained", "websocket_policy",
+  ];
+  const integerFields = [
+    "participant_context_count", "context_gate_pass_count", "service_worker_count",
+    "total_request_count", "local_request_count", "non_local_request_count",
+    "invalid_request_url_count", "invalid_method_count", "request_finished_count",
+    "request_failed_count", "in_flight_request_count", "route_guard_request_count",
+    "route_guard_local_request_count", "route_guard_non_local_request_count",
+    "route_guard_invalid_request_count", "websocket_count", "local_websocket_count",
+    "non_local_websocket_count", "invalid_websocket_url_count", "download_count",
+    "observer_error_count", "external_origin_hash_count",
+  ];
+  const falseFields = [
+    "raw_request_urls_retained", "request_headers_retained", "request_bodies_retained",
+    "response_bodies_retained", "websocket_frames_retained", "download_files_retained",
+    "cookies_retained", "raw_playwright_artifacts_retained",
+  ];
+  if (!isPlainObject(value)
+    || !hasExactKeys(value, keys)
+    || value.evidence_schema_version !== 1
+    || value.artifact_type !== "aais-browser-context-network-audit"
+    || value.capture_scope
+      !== "playwright-observable-http(s)-requests-and-routed-websocket-attempts-in-three-isolated-contexts"
+    || value.source
+      !== "Playwright BrowserContext request, response, requestfinished, requestfailed, page, route, and routed-WebSocket lifecycle with service workers blocked; every non-local HTTP(S) route is aborted before egress."
+    || value.browser_engine !== "chromium"
+    || value.http_policy !== "exact-base-origin-only-route-guard"
+    || value.websocket_policy !== "all-websocket-attempts-blocked-zero-expected"
+    || value.service_worker_policy !== "blocked"
+    || value.download_policy !== "forbidden"
+    || value.secrets !== "redacted"
+    || !isIsoDate(value.generated_at)
+    || !isIsoDate(value.capture_started_at)
+    || !isIsoDate(value.capture_ended_at)
+    || new Date(value.capture_started_at) > new Date(value.capture_ended_at)
+    || new Date(value.capture_ended_at) > new Date(value.generated_at)
+    || value.project_id !== manifest.project_id
+    || value.study_id !== manifest.study_id
+    || value.environment !== manifest.environment
+    || value.lrs_namespace !== manifest.lrs_namespace
+    || value.manifest_sha256 !== manifestSha256
+    || !/^[a-f0-9]{64}$/.test(value.local_origin_sha256)
+    || !/^[a-f0-9]{64}$/.test(summarySha256)
+    || integerFields.some((field) => !Number.isInteger(value[field]) || value[field] < 0)
+    || falseFields.some((field) => value[field] !== false)
+    || value.browser_network_gate_passed !== true
+    || value.route_guard_coverage_match !== true) {
+    throw new Error("AAIS browser-context network summary is invalid.");
+  }
+  const participantCount = manifest.participant_count;
+  if (value.participant_context_count !== participantCount
+    || value.context_gate_pass_count !== participantCount
+    || value.total_request_count < participantCount
+    || value.local_request_count !== value.total_request_count
+    || value.non_local_request_count !== 0
+    || value.invalid_request_url_count !== 0
+    || value.invalid_method_count !== 0
+    || value.request_finished_count + value.request_failed_count
+      !== value.total_request_count
+    || value.request_failed_count !== 0
+    || value.in_flight_request_count !== 0
+    || value.route_guard_request_count !== value.total_request_count
+    || value.route_guard_local_request_count !== value.total_request_count
+    || value.route_guard_non_local_request_count !== 0
+    || value.route_guard_invalid_request_count !== 0
+    || value.websocket_count !== 0
+    || value.local_websocket_count !== 0
+    || value.non_local_websocket_count !== 0
+    || value.invalid_websocket_url_count !== 0
+    || value.service_worker_count !== 0
+    || value.download_count !== 0
+    || value.observer_error_count !== 0
+    || value.external_origin_hash_count !== 0) {
+    throw new Error("AAIS browser-context network gate failed closed.");
+  }
+  if (!isPlainObject(value.request_resource_type_counts)
+    || !Array.isArray(value.request_records)
+    || value.request_records.length !== value.total_request_count) {
+    throw new Error("AAIS browser-context request ledger is invalid.");
+  }
+  const allowedMethods = new Set([
+    "DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT",
+  ]);
+  const recordKeys = [
+    "context_request_sequence", "context_slot", "destination_class", "method",
+    "resource_type", "response_status", "sequence", "terminal_outcome",
+  ];
+  const sequenceBySlot = new Map();
+  const resourceCountsFromRecords = new Map();
+  let finishedRecords = 0;
+  let failedRecords = 0;
+  for (let index = 0; index < value.request_records.length; index += 1) {
+    const record = value.request_records[index];
+    const expectedContextSequence = (sequenceBySlot.get(record?.context_slot) ?? 0) + 1;
+    if (!isPlainObject(record)
+      || !hasExactKeys(record, recordKeys)
+      || record.sequence !== index + 1
+      || !/^P[1-5]$/.test(record.context_slot)
+      || record.context_request_sequence !== expectedContextSequence
+      || !allowedMethods.has(record.method)
+      || !/^[a-z][a-z-]{0,31}$/.test(record.resource_type)
+      || record.destination_class !== "same_origin"
+      || !["finished", "failed"].includes(record.terminal_outcome)
+      || record.terminal_outcome !== "finished"
+      || !Number.isInteger(record.response_status)
+      || record.response_status < 100
+      || record.response_status >= 400) {
+      throw new Error("AAIS browser-context request ledger is invalid.");
+    }
+    sequenceBySlot.set(record.context_slot, record.context_request_sequence);
+    resourceCountsFromRecords.set(
+      record.resource_type,
+      (resourceCountsFromRecords.get(record.resource_type) ?? 0) + 1,
+    );
+    if (record.terminal_outcome === "finished") finishedRecords += 1;
+    else failedRecords += 1;
+  }
+  const expectedSlots = manifest.participants.map((participant) => participant.slot).sort();
+  if (JSON.stringify([...sequenceBySlot.keys()].sort()) !== JSON.stringify(expectedSlots)
+    || finishedRecords !== value.request_finished_count
+    || failedRecords !== value.request_failed_count
+    || stableJson(Object.fromEntries([...resourceCountsFromRecords.entries()].sort()))
+      !== stableJson(value.request_resource_type_counts)) {
+    throw new Error("AAIS browser-context request ledger does not reconcile.");
+  }
+  return {
+    status: "verified",
+    verified: true,
+    summarySha256,
+    captureScope: value.capture_scope,
+    captureStartedAt: value.capture_started_at,
+    captureEndedAt: value.capture_ended_at,
+    participantContextCount: value.participant_context_count,
+    totalRequestCount: value.total_request_count,
+    localRequestCount: value.local_request_count,
+    nonLocalRequestCount: value.non_local_request_count,
+    requestFinishedCount: value.request_finished_count,
+    requestFailedCount: value.request_failed_count,
+    routeGuardRequestCount: value.route_guard_request_count,
+    routeGuardCoverageMatch: value.route_guard_coverage_match,
+    websocketCount: value.websocket_count,
+    serviceWorkerCount: value.service_worker_count,
+    downloadCount: value.download_count,
+    rawRequestUrlsRetained: value.raw_request_urls_retained,
+    requestHeadersRetained: value.request_headers_retained,
+    requestBodiesRetained: value.request_bodies_retained,
+    responseBodiesRetained: value.response_bodies_retained,
+    websocketFramesRetained: value.websocket_frames_retained,
+    downloadFilesRetained: value.download_files_retained,
+    cookiesRetained: value.cookies_retained,
+  };
+}
+
+export function validateBrowserNetworkWindow(summary, timeWindow) {
+  if (!summary?.verified
+    || !Array.isArray(timeWindow?.startedTimes)
+    || !Array.isArray(timeWindow?.receivedTimes)
+    || timeWindow.startedTimes.length < 1
+    || timeWindow.receivedTimes.length < 1) {
+    return false;
+  }
+  const firstObservedAt = [
+    ...timeWindow.startedTimes,
+    ...timeWindow.receivedTimes,
+  ].map((value) => new Date(value).getTime()).sort((left, right) => left - right)[0];
+  const lastObservedAt = [
+    ...timeWindow.startedTimes,
+    ...timeWindow.receivedTimes,
+  ].map((value) => new Date(value).getTime()).sort((left, right) => left - right).at(-1);
+  return Number.isFinite(firstObservedAt)
+    && Number.isFinite(lastObservedAt)
+    && new Date(summary.captureStartedAt).getTime() <= firstObservedAt
+    && new Date(summary.captureEndedAt).getTime() >= lastObservedAt;
 }
 
 export function compareTransportAcknowledgements(acknowledgements, events) {
@@ -1387,6 +1648,10 @@ function normalizeInstant(value) {
 
 function stableJson(value) {
   return JSON.stringify(sortJsonValue(value));
+}
+
+function sha256(value) {
+  return createHash("sha256").update(value).digest("hex");
 }
 
 function sortJsonValue(value) {

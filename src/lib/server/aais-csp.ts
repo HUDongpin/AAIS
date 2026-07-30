@@ -15,9 +15,11 @@ export function createAaisContentSecurityPolicy(input: {
   const env = input.env ?? process.env;
   const nonce = input.nonce?.trim();
   const isProduction = isAaisProductionRuntime(env);
+  const isResearch = env.AAIS_RESEARCH_MODE?.trim().toLowerCase() === "true"
+    || env.AAIS_RESEARCH_REQUIRED?.trim().toLowerCase() === "true";
   const scriptSources = ["'self'"];
   const styleSources = ["'self'"];
-  const connectSources = ["'self'", "https:"];
+  const connectSources = isResearch ? ["'self'"] : ["'self'", "https:"];
 
   if (nonce) {
     scriptSources.push(`'nonce-${nonce}'`, "'strict-dynamic'");
@@ -32,7 +34,9 @@ export function createAaisContentSecurityPolicy(input: {
     if (nonce) {
       styleSources.push("'unsafe-inline'");
     }
-    connectSources.push("http:", "ws:", "wss:");
+    if (!isResearch) {
+      connectSources.push("http:", "ws:", "wss:");
+    }
   }
 
   return [
@@ -40,7 +44,7 @@ export function createAaisContentSecurityPolicy(input: {
     `script-src ${scriptSources.join(" ")}`,
     `style-src ${styleSources.join(" ")}`,
     "img-src 'self' data: blob:",
-    "font-src 'self' data: https://cdn.prod.website-files.com",
+    "font-src 'self' data:",
     `connect-src ${connectSources.join(" ")}`,
     "object-src 'none'",
     "frame-ancestors 'none'",
