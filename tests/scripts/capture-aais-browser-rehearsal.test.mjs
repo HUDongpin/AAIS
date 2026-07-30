@@ -147,7 +147,7 @@ describe("AAIS 22-event actual-UI browser capture harness", () => {
       expect(source).not.toContain(forbiddenApi);
     }
     expect(source).toContain("acceptDownloads: false");
-    expect(source).toContain('page.waitForEvent("download")');
+    expect(source).toContain('popup.waitForLoadState("domcontentloaded")');
     expect(source).toContain('serviceWorkers: "block"');
     expect(source).toContain('context.routeWebSocket("**/*"');
     expect(source).toContain("await route.fallback()");
@@ -198,10 +198,7 @@ describe("AAIS 22-event actual-UI browser capture harness", () => {
       route_guard_coverage_match: true,
       websocket_count: 0,
       service_worker_count: 0,
-      download_count: 1,
-      expected_download_count: 1,
-      download_policy:
-        "exactly-one-p1-synthetic-download-trigger-with-playwright-file-retention-disabled",
+      download_count: 0,
       browser_network_gate_passed: true,
       raw_request_urls_retained: false,
       request_headers_retained: false,
@@ -218,33 +215,35 @@ describe("AAIS 22-event actual-UI browser capture harness", () => {
       manifestSha256: "a".repeat(64),
       participantRuns,
       ...scope,
-    })).toThrow("failed closed");
+    })).toThrow(/failed closed \(P1: .*non_local=1/);
+
+    const failedScript = createParticipantRuns(createManifest()).map((run, index) => ({
+      ...run,
+      browserNetworkAudit: createSafeNetworkAudit(`P${index + 1}`),
+    }));
+    failedScript[0].browserNetworkAudit.requestRecords[0].response_status = 404;
+    failedScript[0].browserNetworkAudit.networkGatePassed = false;
+    expect(() => buildBrowserNetworkSummary({
+      baseUrl,
+      generatedAt: "2026-07-30T15:00:10.000Z",
+      manifestSha256: "a".repeat(64),
+      participantRuns: failedScript,
+      ...scope,
+    })).toThrow(/non_success=.*response_status.*404/);
 
     const unexpectedDownload = createParticipantRuns(createManifest()).map((run, index) => ({
       ...run,
       browserNetworkAudit: createSafeNetworkAudit(`P${index + 1}`),
     }));
-    unexpectedDownload[1].browserNetworkAudit.downloadCount = 1;
+    unexpectedDownload[0].browserNetworkAudit.downloadCount = 1;
+    unexpectedDownload[0].browserNetworkAudit.networkGatePassed = false;
     expect(() => buildBrowserNetworkSummary({
       baseUrl,
       generatedAt: "2026-07-30T15:00:10.000Z",
       manifestSha256: "a".repeat(64),
       participantRuns: unexpectedDownload,
       ...scope,
-    })).toThrow("failed closed");
-
-    const missingDownload = createParticipantRuns(createManifest()).map((run, index) => ({
-      ...run,
-      browserNetworkAudit: createSafeNetworkAudit(`P${index + 1}`),
-    }));
-    missingDownload[0].browserNetworkAudit.downloadCount = 0;
-    expect(() => buildBrowserNetworkSummary({
-      baseUrl,
-      generatedAt: "2026-07-30T15:00:10.000Z",
-      manifestSha256: "a".repeat(64),
-      participantRuns: missingDownload,
-      ...scope,
-    })).toThrow("failed closed");
+    })).toThrow(/download=1/);
   });
 });
 
@@ -314,12 +313,10 @@ function uuidFor(participantNumber, value) {
 }
 
 function createSafeNetworkAudit(slot) {
-  const expectedDownloadCount = slot === "P1" ? 1 : 0;
   return {
     captureStartedAt: "2026-07-30T15:00:00.000Z",
     captureEndedAt: "2026-07-30T15:00:09.000Z",
-    downloadCount: expectedDownloadCount,
-    expectedDownloadCount,
+    downloadCount: 0,
     inFlightRequestCount: 0,
     invalidMethodCount: 0,
     invalidRequestUrlCount: 0,

@@ -101,12 +101,16 @@ public packets and zero declared-target packets.
 The browser driver also writes `browser-network-summary.json`. It blocks service
 workers and WebSockets, applies an exact-base-origin HTTP(S) route guard, and
 retains only a lifecycle-complete ledger of safe request classifications. The
-declared full-coverage UI flow must causally produce exactly one synthetic
-download trigger in P1 and zero in P2/P3 while Playwright download-file
-retention remains disabled. It does not retain URLs, paths, queries, headers,
-cookies, bodies, frames, download files or metadata, or raw Playwright artifacts. This browser-context audit complements
+synthetic save picker exercises the declared download UI outcomes without
+creating a browser download file. It does not retain URLs, paths, queries,
+headers, cookies, bodies, frames, downloads, or raw Playwright artifacts. This browser-context audit complements
 the app-network packet capture; neither artifact claims host-level Chromium
 background DNS, QUIC, WebRTC, or WebTransport packet coverage.
+
+Research activation also suppresses Vercel Web Analytics at the root layout,
+so `/_vercel/insights/script.js` is neither rendered nor requested during a
+study. A missing or failed analytics script is not an allowed network-audit
+exception.
 
 Finally pass the runtime, browser-context, and app-network evidence to:
 

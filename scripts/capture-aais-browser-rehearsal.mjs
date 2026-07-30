@@ -712,9 +712,7 @@ async function driveFullCoverageParticipant({ context, displayName, page }) {
   await editor.click();
   await page.getByRole("button", { name: "加粗" }).click();
   await waitForCaptureCount(page, ++expectedCount);
-  const downloadPromise = page.waitForEvent("download");
   await page.getByRole("button", { name: "下载到本地" }).click();
-  await downloadPromise;
   expectedCount += 4;
   await waitForCaptureCount(page, expectedCount);
   await page.getByRole("button", { name: "保存并关闭" }).click();
@@ -743,6 +741,7 @@ async function driveFullCoverageParticipant({ context, displayName, page }) {
   const popupPromise = page.waitForEvent("popup");
   await page.getByRole("link", { name: "Synthetic research reference" }).click();
   const popup = await popupPromise;
+  await popup.waitForLoadState("domcontentloaded");
   await popup.close();
   await waitForCaptureCount(page, ++expectedCount);
 
@@ -1227,7 +1226,6 @@ export function classifyBrowserNetworkUrl(value, allowedOrigin) {
 
 function installBrowserNetworkAudit(context, baseUrl, slot) {
   const allowedOrigin = new URL(baseUrl).origin;
-  const expectedDownloadCount = slot === "P1" ? 1 : 0;
   const inFlight = new Set();
   const recordByRequest = new WeakMap();
   const requestRecords = [];
@@ -1384,13 +1382,12 @@ function installBrowserNetworkAudit(context, baseUrl, slot) {
         && nonLocalWebsocketCount === 0
         && invalidWebsocketUrlCount === 0
         && serviceWorkerCount === 0
-        && downloadCount === expectedDownloadCount
+        && downloadCount === 0
         && observerErrorCount === 0;
       return {
         captureStartedAt,
         captureEndedAt,
         downloadCount,
-        expectedDownloadCount,
         inFlightRequestCount: inFlight.size,
         invalidMethodCount,
         invalidRequestUrlCount,
@@ -1452,8 +1449,7 @@ export function buildBrowserNetworkSummary({
   const numericFields = [
     "requestCount", "localRequestCount", "nonLocalRequestCount",
     "invalidRequestUrlCount", "invalidMethodCount", "requestFinishedCount",
-    "requestFailedCount", "downloadCount", "expectedDownloadCount",
-    "observerErrorCount",
+    "requestFailedCount", "downloadCount", "observerErrorCount",
     "routeGuardRequestCount", "routeGuardLocalRequestCount",
     "routeGuardNonLocalRequestCount", "routeGuardInvalidRequestCount",
     "inFlightRequestCount", "websocketCount", "localWebsocketCount",
@@ -1469,7 +1465,6 @@ export function buildBrowserNetworkSummary({
   for (let index = 0; index < audits.length; index += 1) {
     const audit = audits[index];
     const expectedSlot = `P${index + 1}`;
-    const expectedDownloadCount = expectedSlot === "P1" ? 1 : 0;
     const recordShapeIsSafe = Array.isArray(audit.requestRecords)
       && audit.requestRecords.length === audit.requestCount
       && audit.requestRecords.every((record, recordIndex) =>
@@ -1515,10 +1510,37 @@ export function buildBrowserNetworkSummary({
       || audit.nonLocalWebsocketCount !== 0
       || audit.invalidWebsocketUrlCount !== 0
       || audit.serviceWorkerCount !== 0
-      || audit.expectedDownloadCount !== expectedDownloadCount
-      || audit.downloadCount !== expectedDownloadCount
+      || audit.downloadCount !== 0
       || audit.observerErrorCount !== 0) {
-      throw new Error("AAIS browser network audit failed closed.");
+      throw new Error(
+        `AAIS browser network audit failed closed (${expectedSlot}: ${[
+          `context_gate=${audit.networkGatePassed === true}`,
+          `record_shape=${recordShapeIsSafe}`,
+          `requests=${safeAuditCount(audit.requestCount)}`,
+          `local=${safeAuditCount(audit.localRequestCount)}`,
+          `non_local=${safeAuditCount(audit.nonLocalRequestCount)}`,
+          `finished=${safeAuditCount(audit.requestFinishedCount)}`,
+          `failed=${safeAuditCount(audit.requestFailedCount)}`,
+          `in_flight=${safeAuditCount(audit.inFlightRequestCount)}`,
+          `route_guard=${safeAuditCount(audit.routeGuardRequestCount)}`,
+          `websocket=${safeAuditCount(audit.websocketCount)}`,
+          `service_worker=${safeAuditCount(audit.serviceWorkerCount)}`,
+          `download=${safeAuditCount(audit.downloadCount)}`,
+          `observer_error=${safeAuditCount(audit.observerErrorCount)}`,
+          `non_success=${JSON.stringify(audit.requestRecords
+            .filter((record) => record.terminal_outcome !== "finished"
+              || !Number.isInteger(record.response_status)
+              || record.response_status < 100
+              || record.response_status >= 400)
+            .map((record) => ({
+              sequence: record.context_request_sequence,
+              method: record.method,
+              resource_type: record.resource_type,
+              terminal_outcome: record.terminal_outcome,
+              response_status: record.response_status,
+            })))}`,
+        ].join(", ")}).`,
+      );
     }
   }
   const total = (field) => audits.reduce((sum, audit) => sum + audit[field], 0);
@@ -1581,9 +1603,7 @@ export function buildBrowserNetworkSummary({
     non_local_websocket_count: total("nonLocalWebsocketCount"),
     invalid_websocket_url_count: total("invalidWebsocketUrlCount"),
     download_count: total("downloadCount"),
-    expected_download_count: total("expectedDownloadCount"),
-    download_policy:
-      "exactly-one-p1-synthetic-download-trigger-with-playwright-file-retention-disabled",
+    download_policy: "forbidden",
     observer_error_count: total("observerErrorCount"),
     request_resource_type_counts: Object.fromEntries(
       Object.entries(resourceTypeCounts).sort(([left], [right]) =>
@@ -1603,6 +1623,10 @@ export function buildBrowserNetworkSummary({
     raw_playwright_artifacts_retained: false,
     secrets: "redacted",
   };
+}
+
+function safeAuditCount(value) {
+  return Number.isInteger(value) && value >= 0 ? value : -1;
 }
 
 function isIsoDate(value) {
