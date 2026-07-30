@@ -33,9 +33,10 @@ describe("AAIS controlled researcher export attester", () => {
     const fixture = await createFixture();
     try {
       const fetchCalls = [];
+      const database = createDatabase(fixture);
       const receipt = await attestAaisControlledExports({
         ...fixture.input,
-        database: createDatabase(fixture),
+        database,
         env: createEnv(),
         fetchImpl: createFetch(fixture, fetchCalls),
         now: () => fixedNow,
@@ -83,6 +84,10 @@ describe("AAIS controlled researcher export attester", () => {
       expect(retained).not.toContain(actorFingerprint);
       expect(retained).not.toContain(sessionSecret);
       expect(retained).not.toContain(fingerprintKeyBase64);
+      const auditQuery = database.queries.find((sql) =>
+        sql.toLowerCase().includes("from aais_research_export_audit"));
+      expect(auditQuery).toContain("from jsonb_object_keys(filters)");
+      expect(auditQuery).not.toContain("jsonb_object_length");
     } finally {
       await fixture.cleanup();
     }
@@ -430,8 +435,11 @@ function createDatabase(fixture, options = {}) {
     detail_safe: true,
   }));
   let transactionOpen = false;
+  const queries = [];
   return {
+    queries,
     async query(sql, params) {
+      queries.push(String(sql));
       const normalized = String(sql).trim().toLowerCase();
       if (normalized === "show transaction_read_only") {
         return { rows: [{

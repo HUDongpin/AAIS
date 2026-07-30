@@ -230,7 +230,8 @@ export async function attestAaisControlledExports(input) {
               actor_fingerprint, purpose, outcome, export_format,
               filters->>'studyRunId' as study_run_id,
               (filters->>'limit')::integer as export_limit,
-              jsonb_object_length(filters) as filter_key_count,
+              (select count(*)::integer from jsonb_object_keys(filters))
+                as filter_key_count,
               created_at, retention_due_at
          from aais_research_export_audit
         where project_id = $1 and study_id = $2 and environment = $3
