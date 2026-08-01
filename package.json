@@ -22,6 +22,8 @@
     "study:reconcile-browser": "node -- scripts/reconcile-aais-browser-rehearsal.mjs",
     "study:attest-runtime": "node -- scripts/attest-aais-runtime-build.mjs",
     "study:attest-network": "node -- scripts/attest-aais-external-lrs-network.mjs",
+    "study:prepare-mainland-test": "node -- scripts/generate-aais-mainland-test-profile.mjs",
+    "study:run-mainland-test-lrs": "node -- scripts/run-aais-mainland-test-lrs.mjs",
     "study:verify-governance-evidence": "node -- scripts/verify-aais-research-governance-evidence.mjs",
     "verify:postgres-restore": "node -- scripts/verify-postgres-restore.mjs",
     "hygiene:check": "node -- scripts/check-repo-hygiene.mjs",
