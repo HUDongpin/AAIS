@@ -43,6 +43,7 @@ export function createAaisContentSecurityPolicy(input: {
     "default-src 'self'",
     `script-src ${scriptSources.join(" ")}`,
     `style-src ${styleSources.join(" ")}`,
+    "style-src-attr 'none'",
     "img-src 'self' data: blob:",
     "font-src 'self' data:",
     `connect-src ${connectSources.join(" ")}`,

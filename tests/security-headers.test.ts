@@ -34,6 +34,7 @@ describe("AAIS Next security headers", () => {
     expect(policy).toContain("default-src 'self'");
     expect(policy).toContain("script-src 'self' 'nonce-test-nonce' 'strict-dynamic'");
     expect(policy).toContain("style-src 'self' 'nonce-test-nonce'");
+    expect(policy).toContain("style-src-attr 'none'");
     expect(policy).toContain("font-src 'self' data:");
     expect(policy).not.toContain("cdn.prod.website-files.com");
     expect(policy).toContain("frame-ancestors 'none'");
@@ -79,6 +80,25 @@ describe("AAIS Next security headers", () => {
     expect(css).not.toContain("cdn.prod.website-files.com");
   });
 
+  it("keeps production UI surfaces free of CSP-blocked inline style writes", async () => {
+    const sourcePaths = [
+      "src/components/pages/login-page.tsx",
+      "src/components/pages/login/login-design.tsx",
+      "src/components/pages/learning-page.tsx",
+      "src/components/pages/learning/document-editor.tsx",
+      "src/components/pages/learning/document-editor-dom.ts",
+      "src/components/pages/learning/learning-top-bar.tsx",
+      "src/components/pages/learning/use-content-panel-resize.ts",
+    ];
+
+    for (const sourcePath of sourcePaths) {
+      const source = await readFile(path.join(process.cwd(), sourcePath), "utf8");
+      expect(source, sourcePath).not.toMatch(/\bstyle\s*=\s*\{/);
+      expect(source, sourcePath).not.toMatch(/\.style\.[A-Za-z_$][\w$]*\s*=(?!=)/);
+      expect(source, sourcePath).not.toMatch(/setAttribute\(\s*["']style["']/);
+    }
+  });
+
   it("sets per-request nonce CSP through Next middleware", () => {
     const response = middleware(new Request("http://localhost/login") as never);
     const policy = response.headers.get("content-security-policy") ?? "";
@@ -87,5 +107,6 @@ describe("AAIS Next security headers", () => {
     expect(policy).toContain("script-src 'self' 'nonce-");
     expect(policy).toContain("'strict-dynamic'");
     expect(policy).toContain("style-src 'self' 'nonce-");
+    expect(policy).toContain("style-src-attr 'none'");
   });
 });

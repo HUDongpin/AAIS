@@ -204,8 +204,8 @@ describe("AAIS LearningPage", () => {
 
     expect(pageRoot.className).toContain("bg-[#fcfcfc]");
     expect(pageRoot.className).toContain("text-[#0e0e0e]");
-    expect(pageRoot.style.fontFamily).toContain("Anthropic Serif");
-    expect(pageRoot.style.fontFamily).toContain("Georgia");
+    expect(pageRoot.className).toContain("aais-learning-serif");
+    expect(pageRoot.getAttribute("style")).toBeNull();
     expect(shell.className).toContain("bg-[#fcfcfc]");
     expect(composer?.className).toContain("from-[#fcfcfc]");
     expect(composer?.className).toContain("via-[#fcfcfc]");
@@ -222,7 +222,8 @@ describe("AAIS LearningPage", () => {
     expect(header.className).toContain("text-[#0e0e0e]");
     expect(header.className).not.toContain("bg-[#eeebe2]");
     expect(header.className).not.toContain("bg-[#11142a]");
-    expect(header.style.fontFamily).toContain("Anthropic Sans");
+    expect(header.className).toContain("aais-learning-navigation");
+    expect(header.getAttribute("style")).toBeNull();
     expect(accountButton.className).toContain("text-[#0e0e0e]");
     expect(accountButton.className).not.toContain("text-white");
   });
@@ -2017,7 +2018,7 @@ describe("AAIS LearningPage", () => {
       toJSON: () => ({}),
     });
 
-    expect(splitLayout.style.getPropertyValue("--content-panel-width")).toBe("600px");
+    expect(splitLayout.getAttribute("data-content-panel-width")).toBe("600");
 
     fireEvent.pointerDown(divider, {
       clientX: 900,
@@ -2031,14 +2032,14 @@ describe("AAIS LearningPage", () => {
       pointerId: 1,
     });
 
-    expect(splitLayout.style.getPropertyValue("--content-panel-width")).toBe("440px");
+    expect(splitLayout.getAttribute("data-content-panel-width")).toBe("440");
     expect(divider.getAttribute("aria-valuenow")).toBe("440");
 
     fireEvent.keyDown(divider, {
       key: "ArrowRight",
     });
 
-    expect(splitLayout.style.getPropertyValue("--content-panel-width")).toBe("416px");
+    expect(splitLayout.getAttribute("data-content-panel-width")).toBe("416");
   });
 
   it("gates pointer and keyboard resize before either width mutation", () => {
@@ -2063,7 +2064,7 @@ describe("AAIS LearningPage", () => {
     fireEvent.pointerUp(document, { pointerId: 7 });
     fireEvent.keyDown(divider, { key: "ArrowRight" });
 
-    expect(splitLayout.style.getPropertyValue("--content-panel-width")).toBe("600px");
+    expect(splitLayout.getAttribute("data-content-panel-width")).toBe("600");
     const resizeAdmissions = telemetryMocks.admit.mock.calls
       .map(([event]) => event)
       .filter((event) => event.eventName === "panel_resize_completed");
@@ -2091,7 +2092,9 @@ describe("AAIS LearningPage", () => {
     expect(boldButton.getAttribute("aria-pressed")).toBe("false");
     expect(screen.getByRole("button", { name: "左对齐" }).getAttribute("aria-pressed")).toBe("true");
     expect(artifactInput.getAttribute("contenteditable")).toBe("true");
-    expect((artifactInput as HTMLElement).style.fontSize).toBe("17px");
+    expect(artifactInput.getAttribute("data-font-family")).toBe("serif");
+    expect(artifactInput.getAttribute("data-font-size")).toBe("17");
+    expect(artifactInput.getAttribute("style")).toBeNull();
     expect(artifactInput.className).toContain("leading-7");
   });
 
@@ -2111,7 +2114,7 @@ describe("AAIS LearningPage", () => {
         value: "serif",
       },
     });
-    expect((artifactInput as HTMLElement).style.fontFamily).toContain("Georgia");
+    expect(artifactInput.getAttribute("data-font-family")).toBe("serif");
     expect(execCommand).toHaveBeenCalledWith(
       "fontName",
       false,
@@ -2123,7 +2126,7 @@ describe("AAIS LearningPage", () => {
         value: "24",
       },
     });
-    expect((artifactInput as HTMLElement).style.fontSize).toBe("24px");
+    expect(artifactInput.getAttribute("data-font-size")).toBe("24");
 
     fireEvent.click(screen.getByRole("button", { name: "加粗" }));
     fireEvent.click(screen.getByRole("button", { name: "斜体" }));
@@ -2140,9 +2143,9 @@ describe("AAIS LearningPage", () => {
     expect(execCommand).toHaveBeenCalledWith("bold", false, undefined);
     expect(execCommand).toHaveBeenCalledWith("italic", false, undefined);
     expect(execCommand).toHaveBeenCalledWith("underline", false, undefined);
-    expect(execCommand).toHaveBeenCalledWith("justifyLeft", false, undefined);
-    expect(execCommand).toHaveBeenCalledWith("justifyCenter", false, undefined);
-    expect(execCommand).toHaveBeenCalledWith("justifyRight", false, undefined);
+    expect(execCommand).not.toHaveBeenCalledWith("justifyLeft", false, undefined);
+    expect(execCommand).not.toHaveBeenCalledWith("justifyCenter", false, undefined);
+    expect(execCommand).not.toHaveBeenCalledWith("justifyRight", false, undefined);
     expect(execCommand).toHaveBeenCalledWith("insertUnorderedList", false);
     expect(execCommand).toHaveBeenCalledWith("insertOrderedList", false);
     expect(execCommand).toHaveBeenCalledWith("formatBlock", false, "<h1>");
@@ -2162,7 +2165,7 @@ describe("AAIS LearningPage", () => {
     fireEvent.change(screen.getByLabelText("字号"), { target: { value: "24" } });
     fireEvent.click(screen.getByRole("button", { name: "加粗" }));
 
-    expect((artifactInput as HTMLElement).style.fontSize).toBe("17px");
+    expect(artifactInput.getAttribute("data-font-size")).toBe("17");
     expect(execCommand).not.toHaveBeenCalled();
     const formatAdmissions = telemetryMocks.admit.mock.calls
       .map(([event]) => event)
@@ -2194,7 +2197,7 @@ describe("AAIS LearningPage", () => {
     fireEvent.click(screen.getByRole("button", { name: "居中" }));
 
     expect(artifactInput.innerHTML).toContain("<strong><em>需要保留格式</em></strong>");
-    expect((artifactInput.querySelector("p") as HTMLParagraphElement).style.textAlign).toBe("center");
+    expect(artifactInput.querySelector("p")?.getAttribute("align")).toBe("center");
     expect(screen.getByRole("button", { name: "加粗" }).getAttribute("aria-pressed")).toBe("true");
     expect(screen.getByRole("button", { name: "斜体" }).getAttribute("aria-pressed")).toBe("true");
     expect(screen.getByRole("button", { name: "居中" }).getAttribute("aria-pressed")).toBe("true");
@@ -2248,7 +2251,7 @@ describe("AAIS LearningPage", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "右对齐" }));
 
-    expect(Array.from(paragraphs).map((paragraph) => paragraph.style.textAlign)).toEqual([
+    expect(Array.from(paragraphs).map((paragraph) => paragraph.getAttribute("align"))).toEqual([
       "right",
       "right",
     ]);

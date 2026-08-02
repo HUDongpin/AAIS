@@ -64,6 +64,58 @@ body {
   font-family: Arial, Helvetica, sans-serif;
 }
 
+.aais-login-serif {
+  font-family: "Anthropic Serif", Georgia, "Times New Roman", "Noto Serif SC", "Songti SC", serif;
+}
+
+.aais-learning-serif {
+  font-family: "Anthropic Serif", "Tiempos Text", Georgia, "Times New Roman", "Songti SC", "SimSun", serif;
+}
+
+.aais-learning-navigation {
+  font-family: "Anthropic Sans", Arial, "Helvetica Neue", "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+
+.aais-document-editor[data-font-family="system"] {
+  font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+.aais-document-editor[data-font-family="serif"] {
+  font-family: "Anthropic Serif", "Tiempos Text", Georgia, "Times New Roman", "Songti SC", "SimSun", serif;
+}
+
+.aais-document-editor[data-font-family="mono"] {
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+}
+
+.aais-document-editor[data-font-size="17"] {
+  font-size: 17px;
+}
+
+.aais-document-editor[data-font-size="20"] {
+  font-size: 20px;
+}
+
+.aais-document-editor[data-font-size="24"] {
+  font-size: 24px;
+}
+
+.aais-document-editor[data-font-size="28"] {
+  font-size: 28px;
+}
+
+body[data-aais-panel-resizing="true"] {
+  cursor: col-resize;
+  user-select: none;
+}
+
+@media (min-width: 64rem) {
+  .aais-learning-split-layout {
+    grid-template-columns: minmax(0, 1fr) 8px 600px;
+    grid-template-columns: minmax(0, 1fr) 8px attr(data-content-panel-width px, 600px);
+  }
+}
+
 button,
 a,
 input,

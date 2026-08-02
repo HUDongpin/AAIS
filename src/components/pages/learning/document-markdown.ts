@@ -163,7 +163,15 @@ export function sanitizeEditorHtml(value: string) {
   template.content.querySelectorAll("script, style").forEach((element) => element.remove());
   template.content.querySelectorAll("*").forEach((element) => {
     Array.from(element.attributes).forEach((attribute) => {
-      if (attribute.name.toLowerCase().startsWith("on")) {
+      const attributeName = attribute.name.toLowerCase();
+      if (attributeName.startsWith("on") || attributeName === "style") {
+        element.removeAttribute(attribute.name);
+        return;
+      }
+      if (
+        attributeName === "align"
+        && !["left", "center", "right"].includes(attribute.value.toLowerCase())
+      ) {
         element.removeAttribute(attribute.name);
       }
     });

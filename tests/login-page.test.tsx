@@ -5,6 +5,10 @@ import {
   metadata as loginRouteMetadata,
 } from "@/app/login/page";
 import { LoginPage } from "@/components/pages/login-page";
+import {
+  LoginDesignDeck,
+  loginDeckCards,
+} from "@/components/pages/login/login-design";
 
 const replace = vi.fn();
 const telemetryMocks = vi.hoisted(() => ({
@@ -44,6 +48,15 @@ vi.mock("next/image", () => ({
 vi.mock("@/lib/client/aais-research-telemetry", () => ({
   clearAaisResearchTelemetryForActor: telemetryMocks.clear,
 }));
+
+describe("login design CSP compatibility", () => {
+  it("renders dormant illustration cards without inline style attributes", () => {
+    const { container } = render(<LoginDesignDeck cards={loginDeckCards} />);
+
+    expect(container.querySelector("[style]")).toBeNull();
+    expect(container.querySelectorAll("img")).toHaveLength(loginDeckCards.length);
+  });
+});
 
 afterEach(() => {
   replace.mockReset();
@@ -345,8 +358,8 @@ describe("AAIS LoginPage", () => {
     const { container } = render(<LoginPage />);
     const pageRoot = container.firstElementChild as HTMLElement;
 
-    expect(pageRoot.style.fontFamily).toContain("Anthropic Serif");
-    expect(pageRoot.style.fontFamily).toContain("Georgia");
+    expect(pageRoot.className).toContain("aais-login-serif");
+    expect(pageRoot.getAttribute("style")).toBeNull();
     expect(screen.getAllByText("CAAIS")).toHaveLength(1);
     expect(screen.getAllByText("Cognitive Apprenticeship AI System")).toHaveLength(1);
     expect(screen.queryByText("AAIS")).toBeNull();

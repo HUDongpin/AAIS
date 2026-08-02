@@ -1,5 +1,4 @@
 import type { ReactNode } from "react";
-import Image from "next/image";
 import {
   Brain,
   GraduationCap,
@@ -153,7 +152,7 @@ export function LoginMobileDesignCarousel({ cards }: { cards: LoginDeckCard[] })
     <div className="-mx-5 mb-8 overflow-x-auto px-5 pb-3 lg:hidden" aria-label="CAAIS login illustration cards">
       <div className="flex w-max snap-x gap-4">
         {cards.map((card) => (
-          <div key={card.id} className="w-[376px] shrink-0 snap-center" style={{ aspectRatio: "376 / 520" }}>
+          <div key={card.id} className="aspect-[376/520] w-[376px] shrink-0 snap-center">
             <LoginDesignCard card={card} />
           </div>
         ))}
@@ -164,7 +163,7 @@ export function LoginMobileDesignCarousel({ cards }: { cards: LoginDeckCard[] })
 
 export function LoginDesignDeck({ cards }: { cards: LoginDeckCard[] }) {
   return (
-    <div className="relative w-full max-w-[930px]" style={{ aspectRatio: "766 / 520" }}>
+    <div className="relative aspect-[766/520] w-full max-w-[930px]">
       <div className="grid h-full grid-cols-2 gap-[14px]">
         {cards.map((card) => (
           <LoginDesignCard key={card.id} card={card} />
@@ -190,14 +189,16 @@ function LoginDesignCard({ card }: { card: LoginDeckCard }) {
 
       <div className="relative z-20 mt-6 grid min-h-0 flex-1 grid-rows-[minmax(0,1fr)_auto] gap-3 2xl:mt-7 2xl:gap-4">
         <div className="relative overflow-hidden rounded-[10px] border border-[#dfebfb] bg-[#f7fbff] shadow-[inset_0_1px_0_rgba(255,255,255,0.82)]">
-          <Image
+          {/* Native image avoids framework-generated inline styles under the strict CSP. */}
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
             src={card.assetSrc}
             alt={card.assetAlt}
-            fill
-            sizes="300px"
-            priority
-            unoptimized
-            className="object-contain object-center"
+            width={320}
+            height={240}
+            loading="eager"
+            decoding="async"
+            className="h-full w-full object-contain object-center"
           />
         </div>
 

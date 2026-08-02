@@ -168,7 +168,6 @@ export function DocumentEditor({
 
   function runAlignmentCommand(
     formatId: string,
-    command: string,
     alignment: EditorAlignment,
   ) {
     if (!admitEditorFormat(formatId)) {
@@ -176,21 +175,11 @@ export function DocumentEditor({
     }
     const editor = editorRef.current;
     restoreEditorSelection();
-    const previousHtml = editor?.innerHTML;
-    const commandApplied =
-      typeof document.execCommand === "function" &&
-      document.execCommand(command, false, undefined);
-
-    if (
-      !commandApplied
-      || (editor?.innerHTML === previousHtml && queryEditorCommandState(command) !== true)
-    ) {
-      applyAlignmentFallback(
-        editor,
-        getEditorRange() ?? editorSelectionRef.current,
-        alignment,
-      );
-    }
+    applyAlignmentFallback(
+      editor,
+      getEditorRange() ?? editorSelectionRef.current,
+      alignment,
+    );
     syncEditorValue();
     saveEditorSelection();
   }
@@ -272,11 +261,6 @@ export function DocumentEditor({
 
   const toolbarButtonClass =
     "inline-flex h-10 min-w-10 items-center justify-center px-3 text-base outline-none transition hover:bg-white aria-pressed:bg-[#e8ecff] aria-pressed:text-[#324fd6] focus-visible:ring-2 focus-visible:ring-[#536de8]";
-  const editorFontStyle = {
-    fontFamily: documentFontFamilyStyles[fontFamily],
-    fontSize: `${fontSize}px`,
-  };
-
   return (
     <section className="px-3 py-4">
       <input
@@ -334,9 +318,9 @@ export function DocumentEditor({
           <EditorButton label="加粗" pressed={formatState.bold} className={`${toolbarButtonClass} font-bold`} onMouseDown={keepEditorSelection} onClick={() => runInlineCommand("bold", "bold", "strong")}>B</EditorButton>
           <EditorButton label="斜体" pressed={formatState.italic} className={`${toolbarButtonClass} italic`} onMouseDown={keepEditorSelection} onClick={() => runInlineCommand("italic", "italic", "em")}>I</EditorButton>
           <EditorButton label="下划线" pressed={formatState.underline} className={`${toolbarButtonClass} underline`} onMouseDown={keepEditorSelection} onClick={() => runInlineCommand("underline", "underline", "u")}>U</EditorButton>
-          <EditorButton label="左对齐" pressed={formatState.alignment === "left"} className={toolbarButtonClass} onMouseDown={keepEditorSelection} onClick={() => runAlignmentCommand("align_left", "justifyLeft", "left")}>L</EditorButton>
-          <EditorButton label="居中" pressed={formatState.alignment === "center"} className={toolbarButtonClass} onMouseDown={keepEditorSelection} onClick={() => runAlignmentCommand("align_center", "justifyCenter", "center")}>C</EditorButton>
-          <EditorButton label="右对齐" pressed={formatState.alignment === "right"} className={toolbarButtonClass} onMouseDown={keepEditorSelection} onClick={() => runAlignmentCommand("align_right", "justifyRight", "right")}>R</EditorButton>
+          <EditorButton label="左对齐" pressed={formatState.alignment === "left"} className={toolbarButtonClass} onMouseDown={keepEditorSelection} onClick={() => runAlignmentCommand("align_left", "left")}>L</EditorButton>
+          <EditorButton label="居中" pressed={formatState.alignment === "center"} className={toolbarButtonClass} onMouseDown={keepEditorSelection} onClick={() => runAlignmentCommand("align_center", "center")}>C</EditorButton>
+          <EditorButton label="右对齐" pressed={formatState.alignment === "right"} className={toolbarButtonClass} onMouseDown={keepEditorSelection} onClick={() => runAlignmentCommand("align_right", "right")}>R</EditorButton>
         </div>
         <div className="mt-3 flex flex-wrap items-center gap-3">
           <EditorButton label="项目符号" pressed={formatState.list === "ul"} className={toolbarButtonClass} onMouseDown={keepEditorSelection} onClick={() => runListCommand("insertUnorderedList", "ul")}>=</EditorButton>
@@ -367,8 +351,9 @@ export function DocumentEditor({
           onKeyUp={saveEditorSelection}
           onMouseUp={saveEditorSelection}
           onBlur={onArtifactBlur}
-          style={editorFontStyle}
-          className="min-h-[404px] w-full resize-none overflow-y-auto rounded-lg border border-[#e5e5e5] bg-white p-4 leading-7 text-[#333333] outline-none focus:border-[#536de8]"
+          data-font-family={fontFamily}
+          data-font-size={fontSize}
+          className="aais-document-editor min-h-[404px] w-full resize-none overflow-y-auto rounded-lg border border-[#e5e5e5] bg-white p-4 leading-7 text-[#333333] outline-none focus:border-[#536de8]"
         />
       </div>
     </section>

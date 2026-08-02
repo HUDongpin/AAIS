@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useRef, useState, type CSSProperties } from "react";
-import { anthropicLearningFontFamily, artifactSaveDebounceMs } from "@/components/pages/learning/learning-page-constants";
+import { useEffect, useRef, useState } from "react";
+import { artifactSaveDebounceMs } from "@/components/pages/learning/learning-page-constants";
 import { ContentResizeSeparator, ContentSidePanel } from "@/components/pages/learning/content-side-panel";
 import { GuidePanel } from "@/components/pages/learning/guide-panel";
 import { LearningAccountFeedback, LearningTopBar } from "@/components/pages/learning/learning-top-bar";
@@ -404,8 +404,7 @@ function LearningWorkbench({ actor }: { actor: LearningPageActor }) {
 
   return (
     <div
-      className="min-h-[100dvh] bg-[#fcfcfc] text-[#0e0e0e]"
-      style={{ fontFamily: anthropicLearningFontFamily }}
+      className="aais-learning-serif min-h-[100dvh] bg-[#fcfcfc] text-[#0e0e0e]"
     >
       <main
         data-testid="learning-shell"
@@ -436,12 +435,8 @@ function LearningWorkbench({ actor }: { actor: LearningPageActor }) {
         <div
           ref={splitLayoutRef}
           data-testid="learning-split-layout"
-          style={
-            {
-              "--content-panel-width": `${contentPanelWidth}px`,
-            } as CSSProperties
-          }
-          className="grid min-h-0 flex-1 lg:grid-cols-[minmax(0,1fr)_8px_var(--content-panel-width)] lg:overflow-hidden"
+          data-content-panel-width={Math.round(contentPanelWidth)}
+          className="aais-learning-split-layout grid min-h-0 flex-1 lg:overflow-hidden"
         >
           <GuidePanel
             addGuideFiles={(files) => { void addGuideFiles(files); }}
