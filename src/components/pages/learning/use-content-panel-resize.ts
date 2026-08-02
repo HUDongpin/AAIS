@@ -77,14 +77,15 @@ export function useContentPanelResize() {
     resizeContentPanelFromClientX(event.clientX);
     let finalWidth = nextWidth;
 
-    const previousCursor = document.body.style.cursor;
-    const previousUserSelect = document.body.style.userSelect;
-    document.body.style.cursor = "col-resize";
-    document.body.style.userSelect = "none";
+    const previousResizeState = document.body.getAttribute("data-aais-panel-resizing");
+    document.body.setAttribute("data-aais-panel-resizing", "true");
 
     function stopResize(stopEvent: PointerEvent) {
-      document.body.style.cursor = previousCursor;
-      document.body.style.userSelect = previousUserSelect;
+      if (previousResizeState === null) {
+        document.body.removeAttribute("data-aais-panel-resizing");
+      } else {
+        document.body.setAttribute("data-aais-panel-resizing", previousResizeState);
+      }
       document.removeEventListener("pointermove", handlePointerMove);
       document.removeEventListener("pointerup", stopResize);
       document.removeEventListener("pointercancel", stopResize);

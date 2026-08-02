@@ -1,5 +1,4 @@
 import { DownloadSimple, SignOut, Sparkle, Trash } from "@phosphor-icons/react";
-import { anthropicNavigationFontFamily } from "@/components/pages/learning/learning-page-constants";
 
 export function LearningTopBar({
   accountMenuOpen,
@@ -22,8 +21,7 @@ export function LearningTopBar({
 }) {
   return (
     <header
-      className="flex h-11 shrink-0 items-center justify-between border-b border-[#ececeb] bg-[#fcfcfb] px-3 text-[#0e0e0e]"
-      style={{ fontFamily: anthropicNavigationFontFamily }}
+      className="aais-learning-navigation flex h-11 shrink-0 items-center justify-between border-b border-[#ececeb] bg-[#fcfcfb] px-3 text-[#0e0e0e]"
     >
       <div className="flex min-w-0 items-center gap-2">
         <span

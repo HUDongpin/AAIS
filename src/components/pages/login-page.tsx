@@ -14,7 +14,6 @@ import { getAaisApiErrorMessage } from "@/lib/client/aais-api-error";
 import { clearAaisResearchTelemetryForActor } from "@/lib/client/aais-research-telemetry";
 import {
   loginCopyByLocale,
-  loginSerifFontFamily,
   type LoginLocale,
 } from "@/components/pages/login/login-design";
 
@@ -271,8 +270,7 @@ export function LoginPage({ trialLoginEnabled = true }: LoginPageProps) {
 
   return (
     <div
-      className="min-h-[100dvh] overflow-hidden bg-[#fbfdff] text-[#151a32]"
-      style={{ fontFamily: loginSerifFontFamily }}
+      className="aais-login-serif min-h-[100dvh] overflow-hidden bg-[#fbfdff] text-[#151a32]"
       data-trial-login={trialLoginEnabled ? "enabled" : "disabled"}
       data-locale={locale}
       lang={locale}

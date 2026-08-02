@@ -106,13 +106,13 @@ export function applyAlignmentFallback(
   const targetBlocks = getSelectedEditableBlocks(editor, range);
   if (targetBlocks.length) {
     targetBlocks.forEach((block) => {
-      block.style.textAlign = alignment;
+      block.setAttribute("align", alignment);
     });
     return;
   }
 
   const paragraph = document.createElement("p");
-  paragraph.style.textAlign = alignment;
+  paragraph.setAttribute("align", alignment);
   while (editor.firstChild) {
     paragraph.appendChild(editor.firstChild);
   }
