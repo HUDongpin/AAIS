@@ -27,7 +27,7 @@ export const guideQuickStarts: GuideQuickStart[] = [
   },
   {
     id: "expert_model",
-    label: "看 A2 专家如何思考",
+    label: "开始示范",
     prompt: "@专家智能体 请示范一次元认知思考过程。",
   },
   {

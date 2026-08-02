@@ -62,7 +62,12 @@ export function useLearningAccount({
     setLoggingOut(true);
     setAccountStatus("正在退出...");
     setAccountError("");
-    const telemetryFlushed = await flushResearchTelemetryBeforeActorClear();
+    // Ordinary (non-research) sessions must not be gated by a research queue.
+    // A non-null context is the fail-closed proof that this logout belongs to a
+    // validated formal-research visit and therefore requires a complete flush.
+    const telemetryFlushed = researchLogout
+      ? await flushResearchTelemetryBeforeActorClear()
+      : true;
     if (telemetryActorGeneration !== captureAaisResearchActorGeneration()) {
       setLoggingOut(false);
       return;

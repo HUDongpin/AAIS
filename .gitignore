@@ -13,6 +13,8 @@ All API Keys.docx
 .env*.local
 output/
 test-results/
+tmp/
+20260712_AAIS_bug detection_dialogue turns_Claude and Peter.md
 technical-review/.codex-render/
 technical-review/.codex-work/
 aais-load-sanity*.json

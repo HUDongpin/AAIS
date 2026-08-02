@@ -63,6 +63,16 @@ describe("AAIS LoginPage", () => {
     expect(screen.getByRole("alert").textContent).toContain(
       "不要将本次实验标记为完成",
     );
+
+    fireEvent.change(screen.getByRole("combobox", { name: "语言" }), {
+      target: {
+        value: "en-US",
+      },
+    });
+
+    expect(screen.getByRole("alert").textContent).toContain(
+      "do not mark this session complete",
+    );
   });
   it("keeps the login route dynamic so runtime auth-mode changes are honored", () => {
     expect(loginRouteDynamic).toBe("force-dynamic");
@@ -70,6 +80,71 @@ describe("AAIS LoginPage", () => {
       title: "CAAIS",
       description: "Cognitive Apprenticeship AI System",
     });
+  });
+
+  it("switches the login controls between Chinese and English and records the choice", () => {
+    const { container } = render(<LoginPage />);
+
+    const languageSelector = screen.getByRole("combobox", { name: "语言" }) as HTMLSelectElement;
+    expect(languageSelector.value).toBe("zh-CN");
+
+    fireEvent.change(languageSelector, {
+      target: {
+        value: "en-US",
+      },
+    });
+
+    expect(screen.getByRole("heading", { name: "Welcome to CAAIS" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Account and password" }).getAttribute("aria-pressed"))
+      .toBe("true");
+    expect(screen.getByLabelText("Account")).toBeTruthy();
+    expect(screen.getByLabelText("Password")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Sign in" })).toBeTruthy();
+    expect((container.firstElementChild as HTMLElement).lang).toBe("en-US");
+    expect(window.localStorage.getItem("aais_login_locale")).toBe("en-US");
+    expect(new URL(window.location.href).searchParams.get("lang")).toBe("en-US");
+  });
+
+  it("restores a previously selected login language when the URL has no language override", async () => {
+    window.localStorage.setItem("aais_login_locale", "en-US");
+
+    const { container } = render(<LoginPage />);
+
+    await waitFor(() => {
+      expect(screen.getByRole("heading", { name: "Welcome to CAAIS" })).toBeTruthy();
+    });
+    expect(screen.getByRole("combobox", { name: "Language" })).toHaveProperty("value", "en-US");
+    expect((container.firstElementChild as HTMLElement).lang).toBe("en-US");
+  });
+
+  it("exposes account login and forgot password as working accessible mode controls", async () => {
+    render(<LoginPage />);
+
+    const accountLogin = screen.getByRole("button", { name: "账号密码登录" });
+    const forgotPassword = screen.getByRole("button", { name: "忘记密码？" });
+
+    expect(accountLogin.getAttribute("aria-pressed")).toBe("true");
+    expect(accountLogin.getAttribute("aria-controls")).toBe("aais-account-login-form");
+    expect(forgotPassword.getAttribute("aria-pressed")).toBe("false");
+
+    fireEvent.click(forgotPassword);
+
+    expect(accountLogin.getAttribute("aria-pressed")).toBe("false");
+    expect(forgotPassword.getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByLabelText("账号邮箱")).toBeTruthy();
+    expect(screen.queryByLabelText("账号")).toBeNull();
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByLabelText("账号邮箱")));
+
+    fireEvent.click(screen.getByRole("button", { name: "发送重置邮件" }));
+    const alert = screen.getByRole("alert");
+    expect(alert.textContent).toBe("请输入账号邮箱。");
+    expect(alert.getAttribute("aria-live")).toBe("assertive");
+
+    fireEvent.click(accountLogin);
+
+    expect(accountLogin.getAttribute("aria-pressed")).toBe("true");
+    expect(forgotPassword.getAttribute("aria-pressed")).toBe("false");
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByLabelText("账号")));
   });
 
   it("temporarily hides the enterprise SSO entry", () => {
@@ -88,7 +163,7 @@ describe("AAIS LoginPage", () => {
     const { container } = render(<LoginPage trialLoginEnabled={false} />);
 
     expect(screen.getByRole("main", {
-      name: "欢迎来到 CAAIS：专注 Cognitive Apprenticeship 的智能学习平台",
+      name: "欢迎来到 CAAIS",
     })).toBeTruthy();
     expect(screen.queryByRole("link", { name: "使用机构 SSO 登录" })).toBeNull();
     expect((container.firstElementChild as HTMLElement).dataset.trialLogin).toBe("disabled");
@@ -153,6 +228,7 @@ describe("AAIS LoginPage", () => {
     const busyButton = screen.getByRole("button", { name: "登录中..." }) as HTMLButtonElement;
     expect(busyButton.disabled).toBe(true);
     expect(screen.getByLabelText("账号").closest("form")?.getAttribute("aria-busy")).toBe("true");
+    expect((screen.getByRole("combobox", { name: "语言" }) as HTMLSelectElement).disabled).toBe(true);
 
     authResponse.resolve(Response.json({
       redirectTarget: "/learning",
@@ -271,21 +347,21 @@ describe("AAIS LoginPage", () => {
 
     expect(pageRoot.style.fontFamily).toContain("Anthropic Serif");
     expect(pageRoot.style.fontFamily).toContain("Georgia");
-    expect(screen.getAllByText("CAAIS")).toHaveLength(2);
-    expect(screen.getAllByText("Cognitive Apprenticeship AI System")).toHaveLength(2);
+    expect(screen.getAllByText("CAAIS")).toHaveLength(1);
+    expect(screen.getAllByText("Cognitive Apprenticeship AI System")).toHaveLength(1);
     expect(screen.queryByText("AAIS")).toBeNull();
     expect(screen.queryByText("AAIS 学习端")).toBeNull();
     expect(screen.queryByText("Apprenticeship AI system")).toBeNull();
     expect(screen.queryByText("Learning studio")).toBeNull();
     const welcomeHeading = screen.getByRole("heading", {
-      name: "欢迎来到 CAAIS：专注 Cognitive Apprenticeship 的智能学习平台",
+      name: "欢迎来到 CAAIS",
     });
     const welcomeHeadingClasses = welcomeHeading.className.split(/\s+/);
     expect(welcomeHeadingClasses).toContain("text-2xl");
     expect(welcomeHeadingClasses).toContain("sm:text-3xl");
     expect(welcomeHeadingClasses).not.toContain("text-3xl");
     expect(welcomeHeadingClasses).not.toContain("sm:text-4xl");
-    expect(screen.getAllByText(/Cognitive Apprenticeship/)).toHaveLength(3);
+    expect(screen.getAllByText(/Cognitive Apprenticeship/)).toHaveLength(1);
     expect(screen.queryByText("我的教学")).toBeNull();
     expect(screen.queryByText("课程广场")).toBeNull();
     const consentCheckbox = screen.getByRole("checkbox", { name: /用户协议和隐私政策/ }) as HTMLInputElement;

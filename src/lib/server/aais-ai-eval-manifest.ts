@@ -1,10 +1,19 @@
 import { readFileSync } from "node:fs";
+import qwen37MaxEvalManifest from "@/data/aais-ai-eval-qwen3.7-max.json";
 
 export type AaisAiEvalManifestStatus = "not-required" | "verified" | "missing" | "invalid" | "mismatch";
 
 export type AaisAiEvalManifestResult = {
   status: AaisAiEvalManifestStatus;
   issue?: "AAIS_AI_EVAL_MANIFEST";
+  evalVersion?: string;
+  source?: "configured" | "bundled";
+};
+
+export type AaisAiEvalApprovalResult = {
+  approved: boolean;
+  evalVersion: string | null;
+  manifest: AaisAiEvalManifestResult;
 };
 
 type AaisAiEvalManifest = {
@@ -42,6 +51,7 @@ type AaisAiEvalManifest = {
 
 const requiredAgentIds = ["A1", "A2", "A3", "A4"];
 const requiredCaModules = ["Modelling", "Coaching", "Scaffolding", "Fading", "Articulation", "Reflection"];
+const bundledManifests = [qwen37MaxEvalManifest as AaisAiEvalManifest];
 const requiredAgentContracts = {
   A1: {
     label: "导学智能体",
@@ -76,37 +86,103 @@ export function verifyAaisAiEvalManifest(input: {
       status: "not-required",
     };
   }
-  const manifest = readConfiguredManifest();
-  if (!manifest) {
-    return {
-      status: "missing",
-      issue: "AAIS_AI_EVAL_MANIFEST",
-    };
-  }
-  if (!isValidManifestShape(manifest)) {
+  const configuredManifestRequested = hasConfiguredManifestSource();
+  const configuredManifest = readConfiguredManifest();
+  if (configuredManifestRequested && !configuredManifest) {
     return {
       status: "invalid",
       issue: "AAIS_AI_EVAL_MANIFEST",
     };
   }
-  if (
-    manifest.evalVersion !== input.evalVersion
-    || manifest.provider !== input.provider
-    || manifest.model !== input.model
-    || manifest.status !== "passed"
-    || manifest.sampleCount <= 0
-    || manifest.blockedCount !== 0
-    || manifest.redaction.prompts !== "summarized"
-    || manifest.redaction.secrets !== "omitted"
-    || !isCompleteAgentEvidence(manifest.agentEvidence)
-  ) {
+  if (configuredManifest) {
+    if (!isValidManifestShape(configuredManifest)) {
+      return {
+        status: "invalid",
+        issue: "AAIS_AI_EVAL_MANIFEST",
+      };
+    }
+    if (manifestTargetsRequest(configuredManifest, input)) {
+      return isVerifiedManifest(configuredManifest, input)
+        ? verifiedManifestResult(configuredManifest, "configured")
+        : {
+            status: "mismatch",
+            issue: "AAIS_AI_EVAL_MANIFEST",
+          };
+    }
+  }
+  const bundledManifest = bundledManifests.find((manifest) =>
+    isVerifiedManifest(manifest, input));
+  if (bundledManifest) {
+    return verifiedManifestResult(bundledManifest, "bundled");
+  }
+  if (!configuredManifest) {
     return {
-      status: "mismatch",
+      status: "missing",
       issue: "AAIS_AI_EVAL_MANIFEST",
     };
   }
   return {
+    status: "mismatch",
+    issue: "AAIS_AI_EVAL_MANIFEST",
+  };
+}
+
+export function getAaisAiEvalApproval(input: {
+  required: boolean;
+  provider: "deterministic" | "openai-compatible";
+  model: string | null;
+}): AaisAiEvalApprovalResult {
+  const evalVersion = process.env.AAIS_AI_EVAL_VERSION?.trim() || null;
+  const manifest = verifyAaisAiEvalManifest({
+    ...input,
+    evalVersion,
+  });
+  return {
+    approved: !input.required || (
+      process.env.AAIS_AI_EVAL_APPROVED === "true"
+      && Boolean(evalVersion)
+      && manifest.status === "verified"
+    ),
+    evalVersion,
+    manifest,
+  };
+}
+
+function manifestTargetsRequest(
+  manifest: AaisAiEvalManifest,
+  input: Parameters<typeof verifyAaisAiEvalManifest>[0],
+) {
+  return manifest.evalVersion === input.evalVersion
+    && manifest.provider === input.provider
+    && manifest.model === input.model;
+}
+
+function isVerifiedManifest(
+  manifest: Partial<AaisAiEvalManifest> | null,
+  input: Parameters<typeof verifyAaisAiEvalManifest>[0],
+): manifest is AaisAiEvalManifest {
+  return Boolean(
+    isValidManifestShape(manifest)
+      && manifest.evalVersion === input.evalVersion
+      && manifest.provider === input.provider
+      && manifest.model === input.model
+      && manifest.status === "passed"
+      && manifest.sampleCount > 0
+      && manifest.blockedCount === 0
+      && manifest.redaction.prompts === "summarized"
+      && manifest.redaction.secrets === "omitted"
+      && isCompleteAgentEvidence(manifest.agentEvidence),
+  );
+}
+
+function verifiedManifestResult(
+  manifest: AaisAiEvalManifest,
+  source: NonNullable<AaisAiEvalManifestResult["source"]>,
+): AaisAiEvalManifestResult {
+  return {
     status: "verified",
+    evalVersion: manifest.evalVersion,
+    source,
   };
 }
 
@@ -164,6 +240,13 @@ function readConfiguredManifest() {
   }
   const manifestPath = process.env.AAIS_AI_EVAL_MANIFEST_PATH?.trim();
   return manifestPath ? readManifestPath(manifestPath) : null;
+}
+
+function hasConfiguredManifestSource() {
+  return Boolean(
+    process.env.AAIS_AI_EVAL_MANIFEST_JSON?.trim()
+    || process.env.AAIS_AI_EVAL_MANIFEST_PATH?.trim(),
+  );
 }
 
 function readManifestJson(value: string) {

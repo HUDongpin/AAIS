@@ -192,7 +192,7 @@ export function ContentSidePanel({
 
       {activeTab === "editor" && documentStatus ? (
         <p
-          className="border-b border-[#cce9d6] bg-[#effff4] px-3 py-2 text-sm font-semibold text-[#166534]"
+          className="relative z-10 min-h-9 shrink-0 break-words border-b border-[#cce9d6] bg-[#effff4] px-3 py-2 text-sm font-semibold leading-5 text-[#166534]"
           role="status"
           aria-live="polite"
           aria-atomic="true"
@@ -202,7 +202,7 @@ export function ContentSidePanel({
       ) : null}
       {activeTab === "editor" && documentError ? (
         <p
-          className="border-b border-[#f0b7c9] bg-[#fff1f5] px-3 py-2 text-sm font-semibold text-[#a12f56]"
+          className="relative z-10 min-h-9 shrink-0 break-words border-b border-[#f0b7c9] bg-[#fff1f5] px-3 py-2 text-sm font-semibold leading-5 text-[#a12f56]"
           role="alert"
           aria-live="assertive"
           aria-atomic="true"

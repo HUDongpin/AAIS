@@ -160,7 +160,9 @@ let memoryVisit: AaisResearchVisit | null = null;
 let memoryQueue: QueuedAaisResearchEvent[] = [];
 let actorGeneration = 0;
 let validatedVisitId: string | null = null;
-let telemetrySuspended = false;
+// Collection is opt-in. This prevents child mount effects from emitting an
+// event before the workspace boundary has established whether research is on.
+let telemetrySuspended = true;
 let terminalBlocked = false;
 let researchBoundaryRequired = false;
 let boundaryState: AaisResearchTelemetryBoundaryState = "initializing";
@@ -282,7 +284,13 @@ export function startAaisResearchTelemetry(
   }
   if (options.enabled === false) {
     terminalBlocked = false;
-    clearTelemetryActorState({ preserveDurableEvidence: true });
+    // The non-research workspace mounts before this passive boundary effect.
+    // Discard any event a child effect queued during that mount race: collection
+    // is disabled, so retaining it would both misclassify ordinary use and make
+    // the unrelated queue block logout.
+    clearTelemetryActorState({
+      preserveDurableEvidence: researchBoundaryRequired,
+    });
     setBoundaryState("ready");
     return () => {
       if (options.onBoundaryStateChange) {
@@ -774,10 +782,11 @@ export function isAaisResearchDisconnectError(error: unknown) {
 }
 
 export function resetAaisResearchTelemetryForTests(options: {
+  collectionEnabled?: boolean;
   preserveStorage?: boolean;
 } = {}) {
   actorGeneration += 1;
-  telemetrySuspended = false;
+  telemetrySuspended = options.collectionEnabled !== true;
   terminalBlocked = false;
   researchBoundaryRequired = false;
   boundaryState = "initializing";

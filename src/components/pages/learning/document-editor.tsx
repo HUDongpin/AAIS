@@ -12,6 +12,18 @@ import {
 import {
   toEditableHtml,
 } from "@/components/pages/learning/document-markdown";
+import {
+  applyAlignmentFallback,
+  applyHeadingFallback,
+  applyInlineFallback,
+  applyListFallback,
+  initialEditorFormatState,
+  queryEditorCommandState,
+  readEditorFormatState,
+  type EditorAlignment,
+  type EditorFormatState,
+  type EditorInlineTag,
+} from "@/components/pages/learning/document-editor-dom";
 import type {
   DocumentFontFamily,
   DocumentFontSize,
@@ -47,6 +59,7 @@ export function DocumentEditor({
   const [fontFamily, setFontFamily] = useState<DocumentFontFamily>("serif");
   const [fontSize, setFontSize] = useState<DocumentFontSize>("17");
   const [editorEmpty, setEditorEmpty] = useState(!artifactText.trim());
+  const [formatState, setFormatState] = useState<EditorFormatState>(initialEditorFormatState);
 
   useEffect(() => {
     const editor = editorRef.current;
@@ -87,9 +100,11 @@ export function DocumentEditor({
   }
 
   function saveEditorSelection() {
+    const editor = editorRef.current;
     const range = getEditorRange();
-    if (range) {
+    if (editor && range) {
       editorSelectionRef.current = range.cloneRange();
+      setFormatState(readEditorFormatState(range, editor));
     }
   }
 
@@ -126,11 +141,58 @@ export function DocumentEditor({
     saveEditorSelection();
   }
 
-  function runTrackedEditorCommand(formatId: string, command: string) {
+  function runInlineCommand(formatId: string, command: string, tagName: EditorInlineTag) {
     if (!admitEditorFormat(formatId)) {
       return;
     }
-    runEditorCommand(command);
+    const editor = editorRef.current;
+    restoreEditorSelection();
+    const previousHtml = editor?.innerHTML;
+    const commandApplied =
+      typeof document.execCommand === "function" &&
+      document.execCommand(command, false, undefined);
+
+    if (
+      !commandApplied
+      || (editor?.innerHTML === previousHtml && queryEditorCommandState(command) !== true)
+    ) {
+      applyInlineFallback(
+        editor,
+        getEditorRange() ?? editorSelectionRef.current,
+        tagName,
+      );
+    }
+    syncEditorValue();
+    saveEditorSelection();
+  }
+
+  function runAlignmentCommand(
+    formatId: string,
+    command: string,
+    alignment: EditorAlignment,
+  ) {
+    if (!admitEditorFormat(formatId)) {
+      return;
+    }
+    const editor = editorRef.current;
+    restoreEditorSelection();
+    const previousHtml = editor?.innerHTML;
+    const commandApplied =
+      typeof document.execCommand === "function" &&
+      document.execCommand(command, false, undefined);
+
+    if (
+      !commandApplied
+      || (editor?.innerHTML === previousHtml && queryEditorCommandState(command) !== true)
+    ) {
+      applyAlignmentFallback(
+        editor,
+        getEditorRange() ?? editorSelectionRef.current,
+        alignment,
+      );
+    }
+    syncEditorValue();
+    saveEditorSelection();
   }
 
   function runHeadingCommand(tagName: DocumentHeadingTag) {
@@ -146,7 +208,11 @@ export function DocumentEditor({
       document.execCommand("formatBlock", false, commandValue);
 
     if (!commandApplied || editor?.innerHTML === previousHtml) {
-      applyHeadingFallback(tagName);
+      applyHeadingFallback(
+        editor,
+        getEditorRange() ?? editorSelectionRef.current,
+        tagName,
+      );
     }
     syncEditorValue();
     saveEditorSelection();
@@ -164,65 +230,14 @@ export function DocumentEditor({
       document.execCommand(command, false);
 
     if (!commandApplied || editor?.innerHTML === previousHtml) {
-      applyListFallback(tagName);
+      applyListFallback(
+        editor,
+        getEditorRange() ?? editorSelectionRef.current,
+        tagName,
+      );
     }
     syncEditorValue();
     saveEditorSelection();
-  }
-
-  function applyHeadingFallback(tagName: DocumentHeadingTag) {
-    const editor = editorRef.current;
-    if (!editor) {
-      return;
-    }
-    const range = getEditorRange() ?? editorSelectionRef.current;
-    const targetBlock = range ? findEditableBlock(range.startContainer, editor) : null;
-    const heading = document.createElement(tagName);
-
-    if (targetBlock) {
-      heading.innerHTML = targetBlock.innerHTML || "<br>";
-      targetBlock.replaceWith(heading);
-      placeCaretAtEnd(heading);
-      return;
-    }
-
-    while (editor.firstChild) {
-      heading.appendChild(editor.firstChild);
-    }
-    if (!heading.childNodes.length) {
-      heading.appendChild(document.createElement("br"));
-    }
-    editor.appendChild(heading);
-    placeCaretAtEnd(heading);
-  }
-
-  function applyListFallback(tagName: DocumentListTag) {
-    const editor = editorRef.current;
-    if (!editor) {
-      return;
-    }
-    const range = getEditorRange() ?? editorSelectionRef.current;
-    const targetBlock = range ? findEditableBlock(range.startContainer, editor) : null;
-    const list = document.createElement(tagName);
-    const listItem = document.createElement("li");
-
-    if (targetBlock) {
-      listItem.innerHTML = targetBlock.innerHTML || "<br>";
-      list.appendChild(listItem);
-      targetBlock.replaceWith(list);
-      placeCaretAtEnd(listItem);
-      return;
-    }
-
-    while (editor.firstChild) {
-      listItem.appendChild(editor.firstChild);
-    }
-    if (!listItem.childNodes.length) {
-      listItem.appendChild(document.createElement("br"));
-    }
-    list.appendChild(listItem);
-    editor.appendChild(list);
-    placeCaretAtEnd(listItem);
   }
 
   function setEditorFontFamily(nextFontFamily: DocumentFontFamily) {
@@ -256,7 +271,7 @@ export function DocumentEditor({
   }
 
   const toolbarButtonClass =
-    "inline-flex h-10 min-w-10 items-center justify-center px-3 text-base outline-none transition hover:bg-white focus-visible:ring-2 focus-visible:ring-[#536de8]";
+    "inline-flex h-10 min-w-10 items-center justify-center px-3 text-base outline-none transition hover:bg-white aria-pressed:bg-[#e8ecff] aria-pressed:text-[#324fd6] focus-visible:ring-2 focus-visible:ring-[#536de8]";
   const editorFontStyle = {
     fontFamily: documentFontFamilyStyles[fontFamily],
     fontSize: `${fontSize}px`,
@@ -288,7 +303,11 @@ export function DocumentEditor({
         placeholder="输入标题..."
         className="h-12 w-full rounded-md border border-[#e7e7e7] px-4 text-[17px] text-[#333333] outline-none placeholder:text-[#b5b5b5] focus:border-[#536de8]"
       />
-      <div className="mt-3 rounded-lg border border-[#e7e7e7] bg-[#f8f8f8] p-3 text-base text-[#5a5a5a]">
+      <div
+        className="mt-3 rounded-lg border border-[#e7e7e7] bg-[#f8f8f8] p-3 text-base text-[#5a5a5a]"
+        role="toolbar"
+        aria-label="文档格式工具"
+      >
         <div className="flex flex-wrap items-center gap-3">
           <select
             aria-label="字体"
@@ -312,19 +331,19 @@ export function DocumentEditor({
               </option>
             ))}
           </select>
-          <EditorButton label="加粗" className={`${toolbarButtonClass} font-bold`} onMouseDown={keepEditorSelection} onClick={() => runTrackedEditorCommand("bold", "bold")}>B</EditorButton>
-          <EditorButton label="斜体" className={`${toolbarButtonClass} italic`} onMouseDown={keepEditorSelection} onClick={() => runTrackedEditorCommand("italic", "italic")}>I</EditorButton>
-          <EditorButton label="下划线" className={`${toolbarButtonClass} underline`} onMouseDown={keepEditorSelection} onClick={() => runTrackedEditorCommand("underline", "underline")}>U</EditorButton>
-          <EditorButton label="左对齐" className={toolbarButtonClass} onMouseDown={keepEditorSelection} onClick={() => runTrackedEditorCommand("align_left", "justifyLeft")}>L</EditorButton>
-          <EditorButton label="居中" className={toolbarButtonClass} onMouseDown={keepEditorSelection} onClick={() => runTrackedEditorCommand("align_center", "justifyCenter")}>C</EditorButton>
-          <EditorButton label="右对齐" className={toolbarButtonClass} onMouseDown={keepEditorSelection} onClick={() => runTrackedEditorCommand("align_right", "justifyRight")}>R</EditorButton>
+          <EditorButton label="加粗" pressed={formatState.bold} className={`${toolbarButtonClass} font-bold`} onMouseDown={keepEditorSelection} onClick={() => runInlineCommand("bold", "bold", "strong")}>B</EditorButton>
+          <EditorButton label="斜体" pressed={formatState.italic} className={`${toolbarButtonClass} italic`} onMouseDown={keepEditorSelection} onClick={() => runInlineCommand("italic", "italic", "em")}>I</EditorButton>
+          <EditorButton label="下划线" pressed={formatState.underline} className={`${toolbarButtonClass} underline`} onMouseDown={keepEditorSelection} onClick={() => runInlineCommand("underline", "underline", "u")}>U</EditorButton>
+          <EditorButton label="左对齐" pressed={formatState.alignment === "left"} className={toolbarButtonClass} onMouseDown={keepEditorSelection} onClick={() => runAlignmentCommand("align_left", "justifyLeft", "left")}>L</EditorButton>
+          <EditorButton label="居中" pressed={formatState.alignment === "center"} className={toolbarButtonClass} onMouseDown={keepEditorSelection} onClick={() => runAlignmentCommand("align_center", "justifyCenter", "center")}>C</EditorButton>
+          <EditorButton label="右对齐" pressed={formatState.alignment === "right"} className={toolbarButtonClass} onMouseDown={keepEditorSelection} onClick={() => runAlignmentCommand("align_right", "justifyRight", "right")}>R</EditorButton>
         </div>
         <div className="mt-3 flex flex-wrap items-center gap-3">
-          <EditorButton label="项目符号" className={toolbarButtonClass} onMouseDown={keepEditorSelection} onClick={() => runListCommand("insertUnorderedList", "ul")}>=</EditorButton>
-          <EditorButton label="编号列表" className={toolbarButtonClass} onMouseDown={keepEditorSelection} onClick={() => runListCommand("insertOrderedList", "ol")}>#</EditorButton>
-          <EditorButton label="一级标题" className={`${toolbarButtonClass} font-semibold`} onMouseDown={keepEditorSelection} onClick={() => runHeadingCommand("h1")}>H1</EditorButton>
-          <EditorButton label="二级标题" className={`${toolbarButtonClass} font-semibold`} onMouseDown={keepEditorSelection} onClick={() => runHeadingCommand("h2")}>H2</EditorButton>
-          <EditorButton label="三级标题" className={`${toolbarButtonClass} font-semibold`} onMouseDown={keepEditorSelection} onClick={() => runHeadingCommand("h3")}>H3</EditorButton>
+          <EditorButton label="项目符号" pressed={formatState.list === "ul"} className={toolbarButtonClass} onMouseDown={keepEditorSelection} onClick={() => runListCommand("insertUnorderedList", "ul")}>=</EditorButton>
+          <EditorButton label="编号列表" pressed={formatState.list === "ol"} className={toolbarButtonClass} onMouseDown={keepEditorSelection} onClick={() => runListCommand("insertOrderedList", "ol")}>#</EditorButton>
+          <EditorButton label="一级标题" pressed={formatState.heading === "h1"} className={`${toolbarButtonClass} font-semibold`} onMouseDown={keepEditorSelection} onClick={() => runHeadingCommand("h1")}>H1</EditorButton>
+          <EditorButton label="二级标题" pressed={formatState.heading === "h2"} className={`${toolbarButtonClass} font-semibold`} onMouseDown={keepEditorSelection} onClick={() => runHeadingCommand("h2")}>H2</EditorButton>
+          <EditorButton label="三级标题" pressed={formatState.heading === "h3"} className={`${toolbarButtonClass} font-semibold`} onMouseDown={keepEditorSelection} onClick={() => runHeadingCommand("h3")}>H3</EditorButton>
         </div>
       </div>
       <div className="relative mt-3">
@@ -344,6 +363,7 @@ export function DocumentEditor({
             syncEditorValue();
             saveEditorSelection();
           }}
+          onFocus={saveEditorSelection}
           onKeyUp={saveEditorSelection}
           onMouseUp={saveEditorSelection}
           onBlur={onArtifactBlur}
@@ -361,12 +381,14 @@ function EditorButton({
   label,
   onClick,
   onMouseDown,
+  pressed,
 }: {
   children: string;
   className: string;
   label: string;
   onClick: () => void;
   onMouseDown: (event: ReactMouseEvent<HTMLButtonElement>) => void;
+  pressed: boolean;
 }) {
   return (
     <button
@@ -375,48 +397,9 @@ function EditorButton({
       onClick={onClick}
       className={className}
       aria-label={label}
+      aria-pressed={pressed}
     >
       {children}
     </button>
   );
-}
-
-function findEditableBlock(node: Node, editor: HTMLElement) {
-  const blockTags = new Set([
-    "BLOCKQUOTE",
-    "DIV",
-    "H1",
-    "H2",
-    "H3",
-    "H4",
-    "H5",
-    "H6",
-    "LI",
-    "P",
-    "PRE",
-  ]);
-  let current =
-    node.nodeType === Node.ELEMENT_NODE
-      ? (node as HTMLElement)
-      : node.parentElement;
-
-  while (current && current !== editor) {
-    if (blockTags.has(current.tagName)) {
-      return current;
-    }
-    current = current.parentElement;
-  }
-  return null;
-}
-
-function placeCaretAtEnd(element: HTMLElement) {
-  const selection = window.getSelection();
-  if (!selection) {
-    return;
-  }
-  const range = document.createRange();
-  range.selectNodeContents(element);
-  range.collapse(false);
-  selection.removeAllRanges();
-  selection.addRange(range);
 }

@@ -1500,6 +1500,159 @@ describe("AAIS readiness route", () => {
     expect(JSON.stringify(body)).not.toContain("database-secret");
   });
 
+  it("uses bundled Qwen evaluation evidence when the configured manifest belongs to an older model", async () => {
+    vi.stubEnv("AAIS_SESSION_SECRET", "session-secret-that-must-not-leak");
+    vi.stubEnv("AAIS_TRIAL_ACCOUNTS_JSON", trialAccountConfig);
+    vi.stubEnv("DATABASE_URL", "postgres://aais:database-secret@ep-prod.us-east-1.aws.neon.tech/aais");
+    vi.stubEnv("CRON_SECRET", "cron-secret-that-must-not-leak");
+    vi.stubEnv("AAIS_READINESS_MODE", "traffic");
+    vi.stubEnv("AAIS_AI_PROVIDER", "qwen");
+    vi.stubEnv("DASHSCOPE_API_KEY", "dashscope-secret-that-must-not-leak");
+    vi.stubEnv("AAIS_AI_MODEL", "qwen3.7-max");
+    vi.stubEnv("AAIS_AI_EVAL_APPROVED", "true");
+    vi.stubEnv("AAIS_AI_EVAL_VERSION", "eval-2026-07-19-qwen3.7-max-v1");
+    vi.stubEnv("AAIS_AI_EVAL_MANIFEST_JSON", JSON.stringify(passingAiEvalManifest()));
+    const { GET } = await import("@/app/api/system/readiness/route");
+
+    const response = await GET();
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body).toMatchObject({
+      status: "ready",
+      readinessMode: "traffic",
+      checks: {
+        ai: {
+          status: "ok",
+          provider: "openai-compatible",
+          evalVersion: "eval-2026-07-19-qwen3.7-max-v1",
+          evalManifest: "verified",
+          evalSource: "bundled",
+          modelFingerprint: modelFingerprint("qwen3.7-max"),
+        },
+      },
+      issues: [],
+    });
+    expect(body.warnings).toEqual(expect.arrayContaining([
+      "LRS_ENDPOINT/LRS_USERNAME/LRS_PASSWORD",
+      "SENTRY_DSN/NEXT_PUBLIC_SENTRY_DSN",
+      "AAIS_UPTIME_LOGIN_CHECK_URL",
+      "AAIS_CRON_FAILURE_ALERTS_CONFIGURED",
+    ]));
+    expect(JSON.stringify(body)).not.toContain("dashscope-secret-that-must-not-leak");
+  });
+
+  it("rejects bundled Qwen evaluation evidence when the configured version is stale", async () => {
+    vi.stubEnv("AAIS_SESSION_SECRET", "session-secret-that-must-not-leak");
+    vi.stubEnv("AAIS_TRIAL_ACCOUNTS_JSON", trialAccountConfig);
+    vi.stubEnv("DATABASE_URL", "postgres://aais:database-secret@ep-prod.us-east-1.aws.neon.tech/aais");
+    vi.stubEnv("CRON_SECRET", "cron-secret-that-must-not-leak");
+    vi.stubEnv("AAIS_READINESS_MODE", "traffic");
+    vi.stubEnv("AAIS_AI_PROVIDER", "qwen");
+    vi.stubEnv("DASHSCOPE_API_KEY", "dashscope-secret-that-must-not-leak");
+    vi.stubEnv("AAIS_AI_MODEL", "qwen3.7-max");
+    vi.stubEnv("AAIS_AI_EVAL_APPROVED", "true");
+    vi.stubEnv("AAIS_AI_EVAL_VERSION", "eval-for-an-older-model");
+    vi.stubEnv("AAIS_AI_EVAL_MANIFEST_JSON", JSON.stringify(passingAiEvalManifest()));
+    const { GET } = await import("@/app/api/system/readiness/route");
+
+    const response = await GET();
+    const body = await response.json();
+
+    expect(response.status).toBe(503);
+    expect(body).toMatchObject({
+      status: "not_ready",
+      readinessMode: "traffic",
+      checks: {
+        ai: {
+          status: "blocked",
+          provider: "openai-compatible",
+          evalVersion: "eval-for-an-older-model",
+          evalManifest: "mismatch",
+          evalSource: null,
+          modelFingerprint: modelFingerprint("qwen3.7-max"),
+        },
+      },
+    });
+    expect(body.issues).toEqual(expect.arrayContaining([
+      "AAIS_AI_EVAL_APPROVED/AAIS_AI_EVAL_VERSION",
+      "AAIS_AI_EVAL_MANIFEST",
+    ]));
+    expect(JSON.stringify(body)).not.toContain("dashscope-secret-that-must-not-leak");
+  });
+
+  it("does not let bundled evidence override an explicit failed Qwen evaluation", async () => {
+    vi.stubEnv("AAIS_SESSION_SECRET", "session-secret-that-must-not-leak");
+    vi.stubEnv("AAIS_TRIAL_ACCOUNTS_JSON", trialAccountConfig);
+    vi.stubEnv("DATABASE_URL", "postgres://aais:database-secret@ep-prod.us-east-1.aws.neon.tech/aais");
+    vi.stubEnv("CRON_SECRET", "cron-secret-that-must-not-leak");
+    vi.stubEnv("AAIS_READINESS_MODE", "traffic");
+    vi.stubEnv("AAIS_AI_PROVIDER", "qwen");
+    vi.stubEnv("DASHSCOPE_API_KEY", "dashscope-secret-that-must-not-leak");
+    vi.stubEnv("AAIS_AI_MODEL", "qwen3.7-max");
+    vi.stubEnv("AAIS_AI_EVAL_APPROVED", "true");
+    vi.stubEnv("AAIS_AI_EVAL_VERSION", "eval-2026-07-19-qwen3.7-max-v1");
+    vi.stubEnv("AAIS_AI_EVAL_MANIFEST_JSON", JSON.stringify(passingAiEvalManifest({
+      evalVersion: "eval-2026-07-19-qwen3.7-max-v1",
+      model: "qwen3.7-max",
+      status: "failed",
+      blockedCount: 1,
+    })));
+    const { GET } = await import("@/app/api/system/readiness/route");
+
+    const response = await GET();
+    const body = await response.json();
+
+    expect(response.status).toBe(503);
+    expect(body.checks.ai).toMatchObject({
+      status: "blocked",
+      provider: "openai-compatible",
+      evalVersion: "eval-2026-07-19-qwen3.7-max-v1",
+      evalManifest: "mismatch",
+      evalSource: null,
+      modelFingerprint: modelFingerprint("qwen3.7-max"),
+    });
+    expect(body.issues).toEqual(expect.arrayContaining([
+      "AAIS_AI_EVAL_APPROVED/AAIS_AI_EVAL_VERSION",
+      "AAIS_AI_EVAL_MANIFEST",
+    ]));
+    expect(JSON.stringify(body)).not.toContain("dashscope-secret-that-must-not-leak");
+  });
+
+  it("blocks readiness when a configured production fallback lacks matching evaluation evidence", async () => {
+    vi.stubEnv("AAIS_SESSION_SECRET", "session-secret-that-must-not-leak");
+    vi.stubEnv("AAIS_TRIAL_ACCOUNTS_JSON", trialAccountConfig);
+    vi.stubEnv("DATABASE_URL", "postgres://aais:database-secret@ep-prod.us-east-1.aws.neon.tech/aais");
+    vi.stubEnv("CRON_SECRET", "cron-secret-that-must-not-leak");
+    vi.stubEnv("AAIS_READINESS_MODE", "traffic");
+    vi.stubEnv("AAIS_AI_PROVIDER", "qwen");
+    vi.stubEnv("DASHSCOPE_API_KEY", "dashscope-secret-that-must-not-leak");
+    vi.stubEnv("AAIS_AI_MODEL", "qwen3.7-max");
+    vi.stubEnv("AAIS_AI_EVAL_APPROVED", "true");
+    vi.stubEnv("AAIS_AI_EVAL_VERSION", "eval-2026-07-19-qwen3.7-max-v1");
+    vi.stubEnv("AAIS_AI_FALLBACK_ENDPOINT", "https://fallback.example.test/v1/chat/completions");
+    vi.stubEnv("AAIS_AI_FALLBACK_API_KEY", "fallback-secret-that-must-not-leak");
+    vi.stubEnv("AAIS_AI_FALLBACK_MODEL", "unevaluated-model");
+    const { GET } = await import("@/app/api/system/readiness/route");
+
+    const response = await GET();
+    const body = await response.json();
+
+    expect(response.status).toBe(503);
+    expect(body.checks.ai).toMatchObject({
+      status: "blocked",
+      provider: "openai-compatible",
+      evalVersion: "eval-2026-07-19-qwen3.7-max-v1",
+      evalManifest: "verified",
+      evalSource: "bundled",
+      modelFingerprint: modelFingerprint("qwen3.7-max"),
+    });
+    expect(body.issues).toEqual(expect.arrayContaining([
+      "AAIS_AI_FALLBACK_EVAL_MANIFEST",
+    ]));
+    expect(JSON.stringify(body)).not.toContain("fallback-secret-that-must-not-leak");
+  });
+
   it("accepts OIDC issuer discovery when explicit provider endpoints are not set", async () => {
     vi.stubEnv("AAIS_SESSION_SECRET", "session-secret-that-must-not-leak");
     vi.stubEnv("AAIS_TRIAL_LOGIN_ENABLED", "false");
@@ -1646,7 +1799,7 @@ describe("AAIS readiness route", () => {
     vi.stubEnv("NODE_ENV", "development");
     vi.stubEnv("AAIS_AI_PROVIDER", "qwen");
     vi.stubEnv("DASHSCOPE_API_KEY", "dashscope-secret-that-must-not-leak");
-    vi.stubEnv("AAIS_AI_MODEL", "qwen3.6-plus");
+    vi.stubEnv("AAIS_AI_MODEL", "qwen3.7-max");
     const { GET } = await import("@/app/api/system/readiness/route");
 
     const response = await GET();
@@ -1658,12 +1811,12 @@ describe("AAIS readiness route", () => {
       provider: "openai-compatible",
       evalVersion: null,
       evalManifest: "not-required",
-      modelFingerprint: modelFingerprint("qwen3.6-plus"),
+      modelFingerprint: modelFingerprint("qwen3.7-max"),
       runtimeProfile: {
         mode: "live",
         primary: {
           provider: "qwen",
-          modelFingerprint: modelFingerprint("qwen3.6-plus"),
+          modelFingerprint: modelFingerprint("qwen3.7-max"),
           thinkingMode: "disabled",
           timeoutMs: {
             configured: null,
@@ -1717,7 +1870,7 @@ describe("AAIS readiness route", () => {
       status: "blocked",
       provider: "openai-compatible",
       evalVersion: "eval-2026-06-30",
-      evalManifest: "missing",
+      evalManifest: "invalid",
     });
     expect(body.issues).toEqual(
       expect.arrayContaining(["AAIS_AI_EVAL_MANIFEST"]),

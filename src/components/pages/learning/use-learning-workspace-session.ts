@@ -21,18 +21,25 @@ export function useLearningWorkspaceSession() {
   const lastSavedArtifactLengthRef = useRef(0);
   const sessionGenerationRef = useRef(0);
 
-  function applySession(session: AaisClientSession) {
+  function applySession(
+    session: AaisClientSession,
+    { preserveArtifactText = false }: { preserveArtifactText?: boolean } = {},
+  ) {
     const nextTaskId = session.activeTaskId || defaultTaskId;
     setActiveTaskId(nextTaskId);
     const selectedTask =
       session.tasks?.find((task) => task.taskId === nextTaskId) ?? session.tasks?.[0];
-    setArtifactText(selectedTask?.artifactText ?? "");
+    if (!preserveArtifactText) {
+      setArtifactText(selectedTask?.artifactText ?? "");
+    }
     lastSavedArtifactLengthRef.current = selectedTask?.artifactText?.length ?? 0;
   }
 
   async function patchSession(body: LearningSessionPatchBody) {
     const session = await patchLearningSession(body);
-    applySession(session);
+    applySession(session, {
+      preserveArtifactText: body.action === "save-artifact",
+    });
     setBackendError("");
     return session;
   }

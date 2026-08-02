@@ -146,7 +146,7 @@ describe("AAIS LearningPage", () => {
     expect(screen.getByText(/邀请 A2 专家智能体示范思考/)).toBeTruthy();
     expect(screen.getByText(/@专家智能体/)).toBeTruthy();
     expect(screen.getByRole("button", { name: "明确学习目标" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "看 A2 专家如何思考" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "开始示范" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "我卡住了，给我支架" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "整理反思记录" })).toBeTruthy();
     expect(screen.getByText("内容展示")).toBeTruthy();
@@ -715,6 +715,8 @@ describe("AAIS LearningPage", () => {
 
     let status = screen.getByRole("status");
     expect(status.textContent).toBe("文档更改待保存。");
+    expect(status.className).toContain("shrink-0");
+    expect(status.className).toContain("break-words");
     expect(status.getAttribute("aria-live")).toBe("polite");
     expect(status.getAttribute("aria-atomic")).toBe("true");
 
@@ -763,6 +765,11 @@ describe("AAIS LearningPage", () => {
       actorGeneration: 34,
       outcome: "success",
     });
+
+    vi.useFakeTimers();
+    setRichEditorContent(artifactInput, "<p>下载完成后继续编辑</p>");
+    expect(screen.getByRole("status").textContent).toBe("文档更改待保存。");
+    expect(screen.queryByText("文档下载已准备。")).toBeNull();
   });
 
   it("announces autosave and local download failures in the document panel", async () => {
@@ -879,12 +886,7 @@ describe("AAIS LearningPage", () => {
     expect(logoutEvents).toEqual([
       expect.objectContaining({ outcome: "attempted" }),
     ]);
-    const deleteCallIndex = fetchMock.mock.calls.findIndex(([input, init]) =>
-      String(input) === "/api/auth/app-session" && init?.method === "DELETE"
-    );
-    expect(telemetryMocks.flush.mock.invocationCallOrder[0]).toBeLessThan(
-      fetchMock.mock.invocationCallOrder[deleteCallIndex],
-    );
+    expect(telemetryMocks.flush).not.toHaveBeenCalled();
     expect(telemetryMocks.clearActor).toHaveBeenCalledTimes(1);
     expect(window.localStorage.getItem("aais_student_id")).toBeNull();
     expect(window.localStorage.getItem("aais_display_name")).toBeNull();
@@ -1078,6 +1080,13 @@ describe("AAIS LearningPage", () => {
 
   it("abandons a stale logout continuation after the actor generation changes", async () => {
     const telemetryFlush = createDeferred<void>();
+    telemetryMocks.logoutContext = {
+      expectedVisitId: "10000000-0000-4000-8000-000000000071",
+      failureClientEventId: "10000000-0000-4000-8000-000000000072",
+      finalClientTime: "2026-08-01T10:00:00.000Z",
+      operationId: "replaced-by-hook-operation",
+      successClientEventId: "10000000-0000-4000-8000-000000000073",
+    };
     telemetryMocks.flush.mockImplementation(async () => {
       await telemetryFlush.promise;
       return undefined;
@@ -1186,7 +1195,17 @@ describe("AAIS LearningPage", () => {
 
     render(<LearningPage />);
 
-    fireEvent.click(screen.getByRole("button", { name: "看 A2 专家如何思考" }));
+    fireEvent.click(screen.getByRole("button", { name: "开始示范" }));
+
+    await waitFor(() => {
+      const guideRequest = fetchMock.mock.calls.find(([input, init]) =>
+        String(input) === "/api/learning/ai-guide" && init?.method === "POST"
+      );
+      expect(JSON.parse(String(guideRequest?.[1]?.body))).toMatchObject({
+        learnerInput: "@专家智能体 请示范一次元认知思考过程。",
+        targetAgentIds: ["A2"],
+      });
+    });
 
     const a2Avatar = await screen.findByRole("img", {
       name: "A2 专家智能体大学教育风格头像",
@@ -1890,9 +1909,10 @@ describe("AAIS LearningPage", () => {
 
   it("rejects oversized guide attachments inline before sending them", async () => {
     const fetchMock = installGuideFetchMock();
-    const oversized = new File(["x".repeat(2 * 1024 * 1024 + 1)], "too-large.txt", {
+    const oversized = new File(["x"], "too-large.txt", {
       type: "text/plain",
     });
+    Object.defineProperty(oversized, "size", { value: 20 * 1024 * 1024 + 1 });
 
     render(<LearningPage />);
 
@@ -1902,7 +1922,7 @@ describe("AAIS LearningPage", () => {
       },
     });
 
-    expect(await screen.findByText("文件 too-large.txt 超过 2 MB。")).toBeTruthy();
+    expect(await screen.findByText("文件 too-large.txt 超过 20 MB 上传上限。")).toBeTruthy();
     expect(screen.queryByText("too-large.txt")).toBeNull();
     expect(fetchMock).not.toHaveBeenCalledWith(
       "/api/learning/ai-guide",
@@ -2061,12 +2081,15 @@ describe("AAIS LearningPage", () => {
     const boldButton = screen.getByRole("button", { name: "加粗" });
     const artifactInput = screen.getByLabelText("在这里写下任务理解、计划、执行过程或最终产出。");
 
+    expect(screen.getByRole("toolbar", { name: "文档格式工具" })).toBeTruthy();
     expect(titleInput.className).toContain("h-12");
     expect(titleInput.className).toContain("text-[17px]");
     expect(fontSelect.className).toContain("h-10");
     expect(fontSelect.className).toContain("text-base");
     expect(boldButton.className).toContain("h-10");
     expect(boldButton.className).toContain("text-base");
+    expect(boldButton.getAttribute("aria-pressed")).toBe("false");
+    expect(screen.getByRole("button", { name: "左对齐" }).getAttribute("aria-pressed")).toBe("true");
     expect(artifactInput.getAttribute("contenteditable")).toBe("true");
     expect((artifactInput as HTMLElement).style.fontSize).toBe("17px");
     expect(artifactInput.className).toContain("leading-7");
@@ -2146,6 +2169,90 @@ describe("AAIS LearningPage", () => {
       .filter((event) => event.eventName === "editor_format_applied");
     expect(formatAdmissions).toHaveLength(2);
     expect(formatAdmissions.every((event) => event.outcome === "success")).toBe(true);
+  });
+
+  it("applies inline and alignment formatting with accessible pressed states when browser commands fail", () => {
+    Object.defineProperty(document, "execCommand", {
+      configurable: true,
+      value: vi.fn(() => false),
+    });
+    render(<LearningPage />);
+    fireEvent.click(screen.getByRole("button", { name: "文档编辑" }));
+    const artifactInput = screen.getByRole("textbox", {
+      name: "在这里写下任务理解、计划、执行过程或最终产出。",
+    });
+    setRichEditorContent(artifactInput, "<p>需要保留格式</p>");
+    const paragraph = artifactInput.querySelector("p") as HTMLParagraphElement;
+    const range = document.createRange();
+    range.selectNodeContents(paragraph);
+    window.getSelection()?.removeAllRanges();
+    window.getSelection()?.addRange(range);
+    fireEvent.mouseUp(artifactInput);
+
+    fireEvent.click(screen.getByRole("button", { name: "加粗" }));
+    fireEvent.click(screen.getByRole("button", { name: "斜体" }));
+    fireEvent.click(screen.getByRole("button", { name: "居中" }));
+
+    expect(artifactInput.innerHTML).toContain("<strong><em>需要保留格式</em></strong>");
+    expect((artifactInput.querySelector("p") as HTMLParagraphElement).style.textAlign).toBe("center");
+    expect(screen.getByRole("button", { name: "加粗" }).getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByRole("button", { name: "斜体" }).getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByRole("button", { name: "居中" }).getAttribute("aria-pressed")).toBe("true");
+  });
+
+  it("removes inline formatting only from the selected text while preserving selection", () => {
+    Object.defineProperty(document, "execCommand", {
+      configurable: true,
+      value: vi.fn(() => false),
+    });
+    render(<LearningPage />);
+    fireEvent.click(screen.getByRole("button", { name: "文档编辑" }));
+    const artifactInput = screen.getByRole("textbox", {
+      name: "在这里写下任务理解、计划、执行过程或最终产出。",
+    });
+    setRichEditorContent(artifactInput, "<p><strong>abcdef</strong></p>");
+    const textNode = artifactInput.querySelector("strong")?.firstChild as Text;
+    const range = document.createRange();
+    range.setStart(textNode, 2);
+    range.setEnd(textNode, 4);
+    window.getSelection()?.removeAllRanges();
+    window.getSelection()?.addRange(range);
+    fireEvent.mouseUp(artifactInput);
+
+    expect(screen.getByRole("button", { name: "加粗" }).getAttribute("aria-pressed")).toBe("true");
+    fireEvent.click(screen.getByRole("button", { name: "加粗" }));
+
+    expect(artifactInput.innerHTML).toBe("<p><strong>ab</strong>cd<strong>ef</strong></p>");
+    expect(window.getSelection()?.toString()).toBe("cd");
+    expect(screen.getByRole("button", { name: "加粗" }).getAttribute("aria-pressed")).toBe("false");
+  });
+
+  it("applies alignment fallback to every block intersecting the selection", () => {
+    Object.defineProperty(document, "execCommand", {
+      configurable: true,
+      value: vi.fn(() => false),
+    });
+    render(<LearningPage />);
+    fireEvent.click(screen.getByRole("button", { name: "文档编辑" }));
+    const artifactInput = screen.getByRole("textbox", {
+      name: "在这里写下任务理解、计划、执行过程或最终产出。",
+    });
+    setRichEditorContent(artifactInput, "<p>第一段</p><p>第二段</p>");
+    const paragraphs = artifactInput.querySelectorAll("p");
+    const range = document.createRange();
+    range.setStart(paragraphs[0].firstChild as Text, 0);
+    range.setEnd(paragraphs[1].firstChild as Text, paragraphs[1].textContent?.length ?? 0);
+    window.getSelection()?.removeAllRanges();
+    window.getSelection()?.addRange(range);
+    fireEvent.mouseUp(artifactInput);
+
+    fireEvent.click(screen.getByRole("button", { name: "右对齐" }));
+
+    expect(Array.from(paragraphs).map((paragraph) => paragraph.style.textAlign)).toEqual([
+      "right",
+      "right",
+    ]);
+    expect(screen.getByRole("button", { name: "右对齐" }).getAttribute("aria-pressed")).toBe("true");
   });
 
   it("formats H1, H2, and H3 even when the browser command does not mutate the editor", () => {
@@ -2371,6 +2478,62 @@ describe("AAIS LearningPage", () => {
       taskId: "training_task_1",
       artifactText: "abc",
     });
+  });
+
+  it("keeps newer rich text intact and queues its save while an older save is in flight", async () => {
+    setCsrfCookie();
+    const firstSaveResponse = createDeferred<Response>();
+    const secondSaveResponse = createDeferred<Response>();
+    let saveRequestCount = 0;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.startsWith("/api/learning/session") && (!init || init.method === "GET")) {
+        return Response.json({ session: createClientSessionFixture("") });
+      }
+      if (url === "/api/learning/session" && init?.method === "PATCH") {
+        saveRequestCount += 1;
+        return saveRequestCount === 1
+          ? firstSaveResponse.promise
+          : secondSaveResponse.promise;
+      }
+      return Response.json({ ok: true });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<LearningPage />);
+    fireEvent.click(screen.getByRole("button", { name: "文档编辑" }));
+    const artifactInput = await screen.findByRole("textbox", {
+      name: "在这里写下任务理解、计划、执行过程或最终产出。",
+    });
+    const firstHtml = "<p><strong>第一版</strong></p>";
+    const latestHtml = "<p><strong>第一版</strong><em>，继续输入第二版</em></p>";
+
+    setRichEditorContent(artifactInput, firstHtml);
+    fireEvent.blur(artifactInput);
+    expect(getPatchCalls(fetchMock)).toHaveLength(1);
+
+    setRichEditorContent(artifactInput, latestHtml);
+    fireEvent.blur(artifactInput);
+    expect(getPatchCalls(fetchMock)).toHaveLength(1);
+    expect(screen.getByRole("status").textContent).toBe("正在保存文档，最新更改已排队。");
+
+    firstSaveResponse.resolve(Response.json({
+      session: createClientSessionFixture(firstHtml),
+    }));
+
+    await waitFor(() => {
+      expect(getPatchCalls(fetchMock)).toHaveLength(2);
+    });
+    expect(artifactInput.innerHTML).toBe(latestHtml);
+    expect(JSON.parse(String(getPatchCalls(fetchMock)[1][1]?.body))).toMatchObject({
+      action: "save-artifact",
+      artifactText: latestHtml,
+    });
+
+    secondSaveResponse.resolve(Response.json({
+      session: createClientSessionFixture(latestHtml),
+    }));
+    await screen.findByText("文档已保存。");
+    expect(artifactInput.innerHTML).toBe(latestHtml);
   });
 
   it("flushes a pending artifact save when the learner leaves the editor", async () => {

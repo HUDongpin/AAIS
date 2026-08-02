@@ -15,7 +15,9 @@ import {
   studentRuntimeMaxTokens,
   type AaisAiRuntimeProfile,
   type AaisAiRuntimeProviderCandidate,
+  type AaisAiRuntimeProviderName,
 } from "@/lib/ai/aais-ai-runtime-config";
+import { getAaisAiEvalApproval } from "@/lib/server/aais-ai-eval-manifest";
 
 type AaisProviderWorkspaceState = {
   currentStep: string;
@@ -77,6 +79,7 @@ type OpenAiCompatibleProviderInput = {
   endpoint: string;
   apiKey: string;
   model: string;
+  provider?: AaisAiRuntimeProviderName;
   thinkingMode?: "disabled";
   fetchImpl?: typeof fetch;
   timeoutMs?: number;
@@ -132,15 +135,24 @@ const guardrailPolicy = "aais-age-appropriate-output-v1" as const;
 
 export function createConfiguredAaisModelProvider(): AaisModelProvider {
   const runtimeConfig = readAaisAiRuntimeConfig();
-  if (runtimeConfig.primary && isLiveProviderApprovedForRuntime()) {
-    if (runtimeConfig.fallback) {
+  if (runtimeConfig.primary && isLiveProviderApprovedForRuntime(runtimeConfig.primary.model)) {
+    const fallbackApproved = runtimeConfig.fallback
+      ? isLiveProviderApprovedForRuntime(runtimeConfig.fallback.model)
+      : false;
+    const runtimeProfile = runtimeConfig.fallback && !fallbackApproved
+      ? {
+          ...runtimeConfig.profile,
+          fallback: null,
+        }
+      : runtimeConfig.profile;
+    if (runtimeConfig.fallback && fallbackApproved) {
       return createOpenAiCompatibleAaisProviderChain({
-        primary: toOpenAiCompatibleCandidate(runtimeConfig.primary, runtimeConfig.profile),
-        fallback: toOpenAiCompatibleCandidate(runtimeConfig.fallback, runtimeConfig.profile),
+        primary: toOpenAiCompatibleCandidate(runtimeConfig.primary, runtimeProfile),
+        fallback: toOpenAiCompatibleCandidate(runtimeConfig.fallback, runtimeProfile),
       });
     }
     return createOpenAiCompatibleAaisProvider(
-      toOpenAiCompatibleCandidate(runtimeConfig.primary, runtimeConfig.profile),
+      toOpenAiCompatibleCandidate(runtimeConfig.primary, runtimeProfile),
     );
   }
   return createDeterministicAaisProvider(runtimeConfig.profile);
@@ -378,7 +390,7 @@ async function callOpenAiCompatibleProvider(
         model: input.model,
         temperature: 0.2,
         max_tokens: input.maxTokens ?? studentRuntimeMaxTokens,
-        ...(input.thinkingMode === "disabled" ? { thinking: { type: "disabled" } } : {}),
+        ...createThinkingModePayload(input),
         messages: [
           {
             role: "system",
@@ -443,6 +455,7 @@ function toOpenAiCompatibleCandidate(
     endpoint: candidate.endpoint,
     apiKey: candidate.apiKey,
     model: candidate.model,
+    provider: candidate.profile.provider,
     thinkingMode: candidate.thinkingMode,
     timeoutMs: candidate.timeoutMs,
     maxRetries: candidate.maxRetries,
@@ -501,12 +514,24 @@ function isProviderFailureReason(value: unknown): value is AaisProviderFailureRe
   ].includes(String(value));
 }
 
-function isLiveProviderApprovedForRuntime() {
-  if (!isProductionRuntime()) {
-    return true;
+function createThinkingModePayload(input: OpenAiCompatibleProviderInput) {
+  if (
+    input.thinkingMode === "disabled"
+    && (input.provider === "qwen" || input.provider === "dashscope")
+  ) {
+    return {
+      enable_thinking: false,
+    };
   }
-  return process.env.AAIS_AI_EVAL_APPROVED === "true"
-    && Boolean(process.env.AAIS_AI_EVAL_VERSION?.trim());
+  return {};
+}
+
+function isLiveProviderApprovedForRuntime(model: string) {
+  return getAaisAiEvalApproval({
+    required: isProductionRuntime(),
+    provider: "openai-compatible",
+    model,
+  }).approved;
 }
 
 function evaluateAaisModelOutput(text: string): AaisModelRuntime["guardrail"] {

@@ -16,7 +16,7 @@ import {
 } from "@/lib/server/aais-learning-store";
 import { getAaisTrialAccountConfigurationStatus } from "@/lib/server/aais-trial-accounts";
 import {
-  verifyAaisAiEvalManifest,
+  getAaisAiEvalApproval,
   type AaisAiEvalManifestStatus,
 } from "@/lib/server/aais-ai-eval-manifest";
 import {
@@ -119,6 +119,7 @@ export type AaisReadinessReport = {
       provider: "deterministic" | "openai-compatible";
       evalVersion: string | null;
       evalManifest: AaisAiEvalManifestStatus;
+      evalSource: "configured" | "bundled" | null;
       modelFingerprint: string | null;
       runtimeProfile: AaisAiRuntimeProfile;
     };
@@ -215,16 +216,25 @@ export async function getAaisReadinessReport(now = new Date()): Promise<AaisRead
   const ssoOnlyRequired = production && trialAccounts.status === "disabled";
   const aiRuntimeConfig = readAaisAiRuntimeConfig();
   const aiModel = aiRuntimeConfig.primary?.model ?? null;
+  const aiFallbackModel = aiRuntimeConfig.fallback?.model ?? null;
   const aiProvider = aiRuntimeConfig.profile.mode === "live" ? "openai-compatible" : "deterministic";
   const aiModelFingerprint = aiRuntimeConfig.profile.primary?.modelFingerprint ?? null;
-  const aiEvalVersion = process.env.AAIS_AI_EVAL_VERSION?.trim() || null;
-  const aiApproved = process.env.AAIS_AI_EVAL_APPROVED === "true" && Boolean(aiEvalVersion);
-  const aiEvalManifest = verifyAaisAiEvalManifest({
+  const aiEvalApproval = getAaisAiEvalApproval({
     required: production && aiProvider === "openai-compatible",
-    evalVersion: aiEvalVersion,
     provider: aiProvider,
     model: aiModel,
   });
+  const aiFallbackEvalApproval = aiFallbackModel
+    ? getAaisAiEvalApproval({
+        required: production && aiProvider === "openai-compatible",
+        provider: aiProvider,
+        model: aiFallbackModel,
+      })
+    : null;
+  const aiEvalVersion = aiEvalApproval.evalVersion;
+  const aiEvalManifest = aiEvalApproval.manifest;
+  const aiApproved = aiEvalApproval.approved
+    && (aiFallbackEvalApproval?.approved ?? true);
   const release = getAaisReleaseMetadata();
   const research = await getAaisResearchReadinessStatus(now);
   const researchIsolationRequired = requiresAaisResearchDataPlaneIsolation();
@@ -265,8 +275,16 @@ export async function getAaisReadinessReport(now = new Date()): Promise<AaisRead
   if (ssoOnlyRequired && oidcConfig.configured && !oidcRoleMapping.configured) {
     issues.push("AAIS_OIDC_ROLE_MAPPING");
   }
-  if (production && aiProvider === "openai-compatible" && !aiApproved) {
+  if (production && aiProvider === "openai-compatible" && !aiEvalApproval.approved) {
     issues.push("AAIS_AI_EVAL_APPROVED/AAIS_AI_EVAL_VERSION");
+  }
+  if (
+    production
+    && aiProvider === "openai-compatible"
+    && aiFallbackEvalApproval
+    && !aiFallbackEvalApproval.approved
+  ) {
+    issues.push("AAIS_AI_FALLBACK_EVAL_MANIFEST");
   }
   if (production && aiProvider === "openai-compatible" && aiEvalManifest.issue) {
     issues.push(aiEvalManifest.issue);
@@ -400,6 +418,7 @@ export async function getAaisReadinessReport(now = new Date()): Promise<AaisRead
         provider: aiProvider,
         evalVersion: aiProvider === "openai-compatible" ? aiEvalVersion : null,
         evalManifest: aiEvalManifest.status,
+        evalSource: aiEvalManifest.source ?? null,
         modelFingerprint: aiModelFingerprint,
         runtimeProfile: aiRuntimeConfig.profile,
       },

@@ -1,10 +1,14 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   AaisAuthTokenError,
   AaisUserNotFoundError,
   createAaisUserStore,
 } from "@/lib/server/aais-users";
 import type { AaisDatabaseClient } from "@/lib/server/aais-learning-store";
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
 
 describe("AAIS database users", () => {
   it("invites users, stores only hashed tokens/passwords, and supports password resets", async () => {
@@ -100,6 +104,64 @@ describe("AAIS database users", () => {
       email: "missing@example.test",
       createdBy: "self-service",
     })).resolves.toBeNull();
+  });
+
+  it("delivers a self-service password reset through the configured email provider", async () => {
+    vi.stubEnv("RESEND_API_KEY", "resend-test-key");
+    vi.stubEnv("AAIS_AUTH_EMAIL_FROM", "CAAIS <no-reply@example.test>");
+    const database = new FakeUserDatabase();
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      void input;
+      void init;
+      return Response.json({ id: "email-1" });
+    });
+    const store = createAaisUserStore({
+      appBaseUrl: "https://aais.example.test",
+      database,
+      fetchImpl: fetchMock as typeof fetch,
+      now: () => new Date("2026-07-09T00:00:00.000Z"),
+    });
+
+    const invite = await store.createInvite({
+      email: "teacher@example.test",
+      displayName: "Teacher A",
+      role: "teacher",
+      createdBy: "admin-1",
+    });
+    await store.setPasswordWithToken({
+      token: invite.token,
+      password: "teacher-password-1",
+    });
+    fetchMock.mockClear();
+
+    const reset = await store.createPasswordReset({
+      email: "teacher@example.test",
+      createdBy: "self-service",
+    });
+
+    expect(reset?.delivery).toEqual({
+      status: "sent",
+      provider: "resend",
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://api.resend.com/emails",
+      expect.objectContaining({
+        method: "POST",
+        headers: {
+          authorization: "Bearer resend-test-key",
+          "content-type": "application/json",
+        },
+      }),
+    );
+    const payload = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
+    expect(payload).toMatchObject({
+      from: "CAAIS <no-reply@example.test>",
+      to: "teacher@example.test",
+      subject: "AAIS password reset",
+    });
+    expect(payload.text).toContain(reset?.resetUrl);
+    expect(JSON.stringify([...database.tokens.values()])).not.toContain(reset?.token);
   });
 
   it("updates user access and reports missing users", async () => {

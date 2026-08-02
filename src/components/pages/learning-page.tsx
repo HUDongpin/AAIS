@@ -9,6 +9,7 @@ import { useLearningAccount } from "@/components/pages/learning/use-learning-acc
 import { useContentPanelResize } from "@/components/pages/learning/use-content-panel-resize";
 import { useLearningGuide } from "@/components/pages/learning/use-learning-guide";
 import { useLearningWorkspaceSession } from "@/components/pages/learning/use-learning-workspace-session";
+import { clientNowMs, createArtifactSaveEventDetail, isUserCancelledFilePicker, type PendingArtifactSave } from "@/components/pages/learning/client-helpers";
 import {
   LearningResearchWorkspaceBoundary,
   type LearningResearchBoundary,
@@ -55,10 +56,8 @@ function LearningWorkbench({ actor }: { actor: LearningPageActor }) {
   const [documentDownloadStatus, setDocumentDownloadStatus] = useState("");
   const [documentDownloadError, setDocumentDownloadError] = useState("");
   const artifactSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const pendingArtifactSaveRef = useRef<{
-    taskId: string;
-    value: string;
-  } | null>(null);
+  const artifactSaveInFlightRef = useRef(false);
+  const pendingArtifactSaveRef = useRef<PendingArtifactSave | null>(null);
   const {
     activeTaskId,
     artifactText,
@@ -142,19 +141,20 @@ function LearningWorkbench({ actor }: { actor: LearningPageActor }) {
     if (!pending) {
       return true;
     }
+    if (artifactSaveInFlightRef.current) {
+      setArtifactSaveStatus("正在保存文档，最新更改已排队。");
+      return true;
+    }
     const operationId = createAaisResearchOperationId("artifact-save");
     const telemetryActorGeneration = captureAaisResearchActorGeneration();
     const startedAt = clientNowMs();
     const previousCharacters = lastSavedArtifactLengthRef.current;
-    const eventDetail = {
-      operation_id: operationId,
-      task_id: pending.taskId,
+    const eventDetail = createArtifactSaveEventDetail({
+      operationId,
+      pending,
+      previousCharacters,
       trigger,
-      previous_characters: previousCharacters,
-      current_characters: pending.value.length,
-      delta_characters: pending.value.length - previousCharacters,
-      artifact_length: pending.value.length,
-    };
+    });
     if (!admitAaisResearchAction({
       actorGeneration: telemetryActorGeneration,
       eventName: "document_artifact_save",
@@ -166,6 +166,7 @@ function LearningWorkbench({ actor }: { actor: LearningPageActor }) {
       return false;
     }
     pendingArtifactSaveRef.current = null;
+    artifactSaveInFlightRef.current = true;
     setArtifactSaveBusy(true);
     setArtifactSaveStatus("正在保存文档...");
     setArtifactSaveError("");
@@ -176,7 +177,9 @@ function LearningWorkbench({ actor }: { actor: LearningPageActor }) {
     })
       .then(() => {
         lastSavedArtifactLengthRef.current = pending.value.length;
-        setArtifactSaveStatus("文档已保存。");
+        if (!pendingArtifactSaveRef.current) {
+          setArtifactSaveStatus("文档已保存。");
+        }
         recordAaisResearchEvent({
           actorGeneration: telemetryActorGeneration,
           eventName: "document_artifact_save",
@@ -202,7 +205,11 @@ function LearningWorkbench({ actor }: { actor: LearningPageActor }) {
         });
       })
       .finally(() => {
+        artifactSaveInFlightRef.current = false;
         setArtifactSaveBusy(false);
+        if (pendingArtifactSaveRef.current) {
+          flushPendingArtifactSave("queued");
+        }
       });
     return true;
   }
@@ -224,6 +231,8 @@ function LearningWorkbench({ actor }: { actor: LearningPageActor }) {
   }
 
   function recordArtifact(value: string) {
+    setDocumentDownloadStatus("");
+    setDocumentDownloadError("");
     setArtifactText(value);
     scheduleArtifactSave(activeTaskId, value);
   }
@@ -487,12 +496,4 @@ function LearningWorkbench({ actor }: { actor: LearningPageActor }) {
       </main>
     </div>
   );
-}
-
-function clientNowMs() {
-  return typeof performance !== "undefined" ? performance.now() : Date.now();
-}
-
-function isUserCancelledFilePicker(error: unknown) {
-  return error instanceof Error && error.name === "AbortError";
 }

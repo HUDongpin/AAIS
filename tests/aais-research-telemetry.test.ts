@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   admitAaisResearchAction,
   captureAaisResearchActorGeneration,
@@ -15,6 +15,12 @@ import {
 const visitStorageKey = "aais_research_visit_v1";
 const queueStorageKey = "aais_research_event_queue_v1";
 const terminalStorageKey = "aais_research_terminal_boundary_v1";
+
+beforeEach(() => {
+  // Most tests exercise the low-level recorder directly. Production remains
+  // opt-in and is covered explicitly by the disabled-boundary regression.
+  resetAaisResearchTelemetryForTests({ collectionEnabled: true });
+});
 
 afterEach(() => {
   vi.useRealTimers();
@@ -33,6 +39,31 @@ describe("AAIS research telemetry client", () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
     const boundaryStates: string[] = [];
+
+    // Child passive effects run before the parent boundary effect. Reproduce
+    // that mount ordering so disabled telemetry must remove the early event.
+    resetAaisResearchTelemetryForTests();
+    const mountRaceEvent = recordAaisResearchEvent({
+      eventName: "workspace_session_load",
+      outcome: "attempted",
+      detail: {
+        operation_id: createAaisResearchOperationId("session-load"),
+        trigger: "page_mount",
+      },
+    });
+    expect(mountRaceEvent).toBeNull();
+    expect(window.localStorage.getItem(queueStorageKey)).toBeNull();
+    window.localStorage.setItem(queueStorageKey, JSON.stringify([{
+      clientEventId: "10000000-0000-4000-8000-000000000099",
+      eventName: "workspace_session_load",
+      outcome: "attempted",
+      clientTime: "2026-08-01T10:00:00.000Z",
+      detail: {
+        operation_id: "session-load-stale",
+        trigger: "page_mount",
+      },
+    }]));
+
     const stop = startAaisResearchTelemetry({
       enabled: false,
       required: false,
@@ -44,6 +75,11 @@ describe("AAIS research telemetry client", () => {
       outcome: "success",
       detail: { tab_id: "editor" },
     })).toBe(true);
+    expect(recordAaisResearchEvent({
+      eventName: "content_item_opened",
+      outcome: "success",
+      detail: { content_id: "theory" },
+    })).toBeNull();
     await flushAaisResearchTelemetry();
 
     expect(boundaryStates.at(-1)).toBe("ready");

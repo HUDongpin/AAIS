@@ -10,7 +10,9 @@ export const aaisGuideFileAccept =
 
 export async function readAaisGuideFileAttachment(file: File): Promise<AaisGuideAttachment> {
   if (file.size > aaisGuideAttachmentLimits.maxFileSizeBytes) {
-    throw new Error(`文件 ${file.name} 超过 2 MB。`);
+    throw new Error(
+      `文件 ${file.name} 超过 ${aaisGuideAttachmentLimits.maxFileSizeMiB} MB 上传上限。`,
+    );
   }
 
   const mediaType = inferGuideAttachmentMediaType(file);
@@ -21,8 +23,10 @@ export async function readAaisGuideFileAttachment(file: File): Promise<AaisGuide
   const extractedText =
     mediaType === "application/pdf"
       ? await extractPdfText(file)
-      : await file.text();
-  const normalizedText = extractedText.trim();
+      : await extractTextFile(file);
+  const normalizedText = extractedText
+    .trim()
+    .slice(0, aaisGuideAttachmentLimits.maxExtractedTextCharacters);
   if (!normalizedText) {
     throw new Error(`文件 ${file.name} 没有可读取文本。`);
   }
@@ -33,6 +37,13 @@ export async function readAaisGuideFileAttachment(file: File): Promise<AaisGuide
     sizeBytes: file.size,
     extractedText: normalizedText,
   };
+}
+
+async function extractTextFile(file: File) {
+  const readableFile = file.size > aaisGuideAttachmentLimits.maxTextReadBytes
+    ? file.slice(0, aaisGuideAttachmentLimits.maxTextReadBytes)
+    : file;
+  return readableFile.text();
 }
 
 function inferGuideAttachmentMediaType(file: File): AaisGuideAttachmentMediaType | null {
@@ -58,23 +69,48 @@ function inferGuideAttachmentMediaType(file: File): AaisGuideAttachmentMediaType
 }
 
 async function extractPdfText(file: File) {
-  const pdfjs = await import("pdfjs-dist");
-  const pdf = await pdfjs.getDocument({
+  // PDF.js' bundler entry creates the module worker that its generic entry
+  // deliberately leaves unconfigured.
+  const pdfjs = await import("pdfjs-dist/webpack.mjs") as typeof import("pdfjs-dist");
+  const loadingTask = pdfjs.getDocument({
     data: new Uint8Array(await file.arrayBuffer()),
+    useWasm: false,
     useWorkerFetch: false,
-  }).promise;
-  const pages: string[] = [];
+  });
 
-  for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
-    const page = await pdf.getPage(pageNumber);
-    const textContent = await page.getTextContent();
-    pages.push(
-      textContent.items
+  try {
+    const pdf = await loadingTask.promise;
+    let extractedText = "";
+    const pageLimit = Math.min(pdf.numPages, aaisGuideAttachmentLimits.maxPdfPagesToScan);
+
+    for (let pageNumber = 1; pageNumber <= pageLimit; pageNumber += 1) {
+      const page = await pdf.getPage(pageNumber);
+      const textContent = await page.getTextContent();
+      const pageText = textContent.items
         .map((item) => ("str" in item ? item.str : ""))
         .filter(Boolean)
-        .join(" "),
-    );
-  }
+        .join(" ")
+        .trim();
+      if (!pageText) {
+        continue;
+      }
 
-  return pages.join("\n\n");
+      const separator = extractedText ? "\n\n" : "";
+      const remainingCharacters =
+        aaisGuideAttachmentLimits.maxExtractedTextCharacters
+        - extractedText.length
+        - separator.length;
+      if (remainingCharacters <= 0) {
+        break;
+      }
+      extractedText += separator + pageText.slice(0, remainingCharacters);
+      if (extractedText.length >= aaisGuideAttachmentLimits.maxExtractedTextCharacters) {
+        break;
+      }
+    }
+
+    return extractedText;
+  } finally {
+    await loadingTask.destroy();
+  }
 }
