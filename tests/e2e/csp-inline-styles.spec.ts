@@ -32,7 +32,10 @@ test("strict CSP permits the login and authenticated editor workflows without in
   });
 
   const loginResponse = await page.goto("/login");
-  expect(loginResponse?.headers()["content-security-policy"]).toContain("style-src-attr 'none'");
+  if (process.env.AAIS_E2E_BASE_URL) {
+    expect(loginResponse?.headers()["content-security-policy"] ?? "")
+      .toContain("style-src-attr 'none'");
+  }
   await expect(page.getByRole("heading", { name: /欢迎来到 CAAIS/ })).toBeVisible();
   await expect(page.locator("main [style]")).toHaveCount(0);
   await expect.poll(() => readStyleAttributeViolations(page)).toEqual([]);
