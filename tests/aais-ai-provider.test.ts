@@ -4,6 +4,7 @@ import {
   createOpenAiCompatibleAaisProvider,
 } from "@/lib/ai/aais-ai-provider";
 import { aaisCognitiveApprenticeshipBackground } from "@/data/aais";
+import { getAaisAiEvalApproval } from "@/lib/server/aais-ai-eval-manifest";
 
 afterEach(() => {
   vi.unstubAllEnvs();
@@ -276,7 +277,8 @@ describe("AAIS governed AI provider", () => {
     );
     const payload = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
     expect(payload.model).toBe("qwen3.7-max");
-    expect(payload.thinking).toEqual({ type: "disabled" });
+    expect(payload.enable_thinking).toBe(false);
+    expect(payload).not.toHaveProperty("thinking");
     expect(fetchMock.mock.calls[0]?.[1]?.headers).toMatchObject({
       authorization: "Bearer dashscope-secret-key",
     });
@@ -335,6 +337,144 @@ describe("AAIS governed AI provider", () => {
     });
   });
 
+  it("keeps production on deterministic fallback when the configured evaluation version is stale", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("AAIS_AI_PROVIDER", "qwen");
+    vi.stubEnv("DASHSCOPE_API_KEY", "dashscope-secret-key");
+    vi.stubEnv("AAIS_AI_MODEL", "qwen3.7-max");
+    vi.stubEnv("AAIS_AI_EVAL_APPROVED", "true");
+    vi.stubEnv("AAIS_AI_EVAL_VERSION", "eval-for-an-older-model");
+    const fetchMock = vi.fn<typeof fetch>();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const provider = createConfiguredAaisModelProvider();
+    const result = await provider.generate({
+      agentId: "A1",
+      label: "导学智能体",
+      locale: "zh-CN",
+      phase: "training",
+      taskId: "training_task_1",
+      learnerInput: "我应该如何开始？",
+      workspaceState: {
+        currentStep: "guide",
+      },
+      fallbackText: "本地 fallback",
+    });
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(result.runtime).toMatchObject({
+      provider: "deterministic",
+      status: "fallback",
+    });
+  });
+
+  it("fails closed instead of hiding a malformed configured manifest behind bundled evidence", () => {
+    vi.stubEnv("AAIS_AI_EVAL_APPROVED", "true");
+    vi.stubEnv("AAIS_AI_EVAL_VERSION", "eval-2026-07-19-qwen3.7-max-v1");
+    vi.stubEnv("AAIS_AI_EVAL_MANIFEST_JSON", "{not-valid-json");
+
+    expect(getAaisAiEvalApproval({
+      required: true,
+      provider: "openai-compatible",
+      model: "qwen3.7-max",
+    })).toEqual({
+      approved: false,
+      evalVersion: "eval-2026-07-19-qwen3.7-max-v1",
+      manifest: {
+        status: "invalid",
+        issue: "AAIS_AI_EVAL_MANIFEST",
+      },
+    });
+  });
+
+  it("enables production Qwen only when the configured version matches bundled evaluation evidence", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("AAIS_AI_PROVIDER", "qwen");
+    vi.stubEnv("DASHSCOPE_API_KEY", "dashscope-secret-key");
+    vi.stubEnv("AAIS_AI_MODEL", "qwen3.7-max");
+    vi.stubEnv("AAIS_AI_EVAL_APPROVED", "true");
+    vi.stubEnv("AAIS_AI_EVAL_VERSION", "eval-2026-07-19-qwen3.7-max-v1");
+    const fetchMock = vi.fn<typeof fetch>(async () =>
+      Response.json({
+        choices: [
+          {
+            message: {
+              content: "Qwen live guide response",
+            },
+          },
+        ],
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const provider = createConfiguredAaisModelProvider();
+    const result = await provider.generate({
+      agentId: "A1",
+      label: "导学智能体",
+      locale: "zh-CN",
+      phase: "training",
+      taskId: "training_task_1",
+      learnerInput: "请帮我明确目标。",
+      workspaceState: {
+        currentStep: "guide",
+      },
+      fallbackText: "本地 fallback",
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(result.runtime).toMatchObject({
+      provider: "openai-compatible",
+      model: "qwen3.7-max",
+      status: "ok",
+    });
+  });
+
+  it("excludes an unevaluated live fallback from the production provider chain", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("AAIS_AI_PROVIDER", "qwen");
+    vi.stubEnv("DASHSCOPE_API_KEY", "dashscope-secret-key");
+    vi.stubEnv("AAIS_AI_MODEL", "qwen3.7-max");
+    vi.stubEnv("AAIS_AI_EVAL_APPROVED", "true");
+    vi.stubEnv("AAIS_AI_EVAL_VERSION", "eval-2026-07-19-qwen3.7-max-v1");
+    vi.stubEnv("AAIS_AI_FALLBACK_ENDPOINT", "https://fallback.example.test/v1/chat/completions");
+    vi.stubEnv("AAIS_AI_FALLBACK_API_KEY", "fallback-secret-key");
+    vi.stubEnv("AAIS_AI_FALLBACK_MODEL", "unevaluated-model");
+    const fetchMock = vi.fn<typeof fetch>(async () =>
+      new Response("primary unavailable", { status: 503 }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const provider = createConfiguredAaisModelProvider();
+    const result = await provider.generate({
+      agentId: "A1",
+      label: "导学智能体",
+      locale: "zh-CN",
+      phase: "training",
+      taskId: "training_task_1",
+      learnerInput: "请帮我明确目标。",
+      workspaceState: {
+        currentStep: "guide",
+      },
+      fallbackText: "本地 fallback",
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls.every(([url]) =>
+      String(url).includes("dashscope.aliyuncs.com"))).toBe(true);
+    expect(result).toMatchObject({
+      text: "本地 fallback",
+      runtime: {
+        provider: "openai-compatible",
+        model: "qwen3.7-max",
+        status: "fallback",
+        runtimeProfile: {
+          fallback: null,
+        },
+      },
+    });
+    expect(JSON.stringify(result)).not.toContain("fallback-secret-key");
+  });
+
   it("blocks unsafe provider content and returns fallback without leaking the unsafe text", async () => {
     const fetchMock = vi.fn<typeof fetch>(async () =>
       Response.json({
@@ -382,7 +522,7 @@ describe("AAIS governed AI provider", () => {
     expect(JSON.stringify(result)).not.toContain("super-secret-value");
   });
 
-  it("sends an optional disabled-thinking payload for providers that require non-thinking chat output", async () => {
+  it("sends the Qwen-specific disabled-thinking parameter at the request-body top level", async () => {
     const fetchMock = vi.fn<typeof fetch>(async () =>
       Response.json({
         choices: [
@@ -397,7 +537,8 @@ describe("AAIS governed AI provider", () => {
     const provider = createOpenAiCompatibleAaisProvider({
       endpoint: "https://ai.example.test/v1/chat/completions",
       apiKey: "secret-api-key",
-      model: "enterprise-model",
+      model: "qwen3.7-max",
+      provider: "qwen",
       fetchImpl: fetchMock,
       timeoutMs: 1000,
       maxRetries: 0,
@@ -418,7 +559,8 @@ describe("AAIS governed AI provider", () => {
     });
 
     const payload = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
-    expect(payload.thinking).toEqual({ type: "disabled" });
+    expect(payload.enable_thinking).toBe(false);
+    expect(payload).not.toHaveProperty("thinking");
   });
 
   it("sends the Cognitive Apprenticeship background in the redacted model context", async () => {

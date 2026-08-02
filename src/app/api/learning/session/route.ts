@@ -14,6 +14,17 @@ import {
   createAaisApiErrorResponse,
   isAaisApiRouteError,
 } from "@/lib/server/aais-api-error";
+import {
+  AaisResearchConfigurationError,
+  AaisResearchDisabledError,
+} from "@/lib/server/aais-research-contract";
+import { getAaisResearchErrorResponseInput } from "@/lib/server/aais-research-api";
+import { acquireAaisResearchRawTextWriteLeaseIfRequired } from "@/lib/server/aais-research-raw-text";
+import {
+  AaisResearchAuthorizationError,
+  AaisResearchVisitInactiveError,
+  AaisResearchVisitNotFoundError,
+} from "@/lib/server/aais-research-store";
 
 export async function GET(request: Request) {
   try {
@@ -45,52 +56,57 @@ export async function PATCH(request: Request) {
     const actor = await requireAaisSessionActor(request);
     const studentId = actor.id;
     requireAaisCsrf(request, studentId);
-    if (body?.action === "select-stage") {
-      const session = await store.selectStage(studentId, requireString(body.stageId, "stageId"));
-      return jsonSession(session, actor.role);
-    }
-    if (body?.action === "select-task") {
-      const session = await store.selectTask(studentId, requireString(body.taskId, "taskId"));
-      return jsonSession(session, actor.role);
-    }
-    if (body?.action === "complete-task") {
-      const session = await store.completeTask(studentId, requireString(body.taskId, "taskId"));
-      return jsonSession(session, actor.role);
-    }
-    if (body?.action === "save-artifact") {
-      const session = await store.saveArtifact(
-        studentId,
-        requireString(body.taskId, "taskId"),
-        body.artifactText ?? "",
-      );
-      return jsonSession(session, actor.role);
-    }
-    if (body?.action === "save-self-report") {
-      const session = await store.saveSelfReport(
-        studentId,
-        requireString(body.taskId, "taskId"),
-        body.selfReport ?? "",
-      );
-      return jsonSession(session, actor.role);
-    }
-    if (body?.action === "record-ai-acceptance") {
-      const session = await store.recordAiAcceptance(
-        studentId,
-        requireString(body.taskId, "taskId"),
-        {
-          accepted: body.accepted === true,
-          messageId: body.messageId,
-          reason: body.reason,
-        },
-      );
-      return jsonSession(session, actor.role);
-    }
+    const rawTextWriteLease = await acquireAaisResearchRawTextWriteLeaseIfRequired(actor);
+    try {
+      if (body?.action === "select-stage") {
+        const session = await store.selectStage(studentId, requireString(body.stageId, "stageId"));
+        return jsonSession(session, actor.role);
+      }
+      if (body?.action === "select-task") {
+        const session = await store.selectTask(studentId, requireString(body.taskId, "taskId"));
+        return jsonSession(session, actor.role);
+      }
+      if (body?.action === "complete-task") {
+        const session = await store.completeTask(studentId, requireString(body.taskId, "taskId"));
+        return jsonSession(session, actor.role);
+      }
+      if (body?.action === "save-artifact") {
+        const session = await store.saveArtifact(
+          studentId,
+          requireString(body.taskId, "taskId"),
+          body.artifactText ?? "",
+        );
+        return jsonSession(session, actor.role);
+      }
+      if (body?.action === "save-self-report") {
+        const session = await store.saveSelfReport(
+          studentId,
+          requireString(body.taskId, "taskId"),
+          body.selfReport ?? "",
+        );
+        return jsonSession(session, actor.role);
+      }
+      if (body?.action === "record-ai-acceptance") {
+        const session = await store.recordAiAcceptance(
+          studentId,
+          requireString(body.taskId, "taskId"),
+          {
+            accepted: body.accepted === true,
+            messageId: body.messageId,
+            reason: body.reason,
+          },
+        );
+        return jsonSession(session, actor.role);
+      }
 
-    return createAaisApiErrorResponse({
-      code: "AAIS_SESSION_UNSUPPORTED_ACTION",
-      message: "Unsupported AAIS session action.",
-      status: 400,
-    });
+      return createAaisApiErrorResponse({
+        code: "AAIS_SESSION_UNSUPPORTED_ACTION",
+        message: "Unsupported AAIS session action.",
+        status: 400,
+      });
+    } finally {
+      await rawTextWriteLease?.release();
+    }
   } catch (error) {
     return jsonError(error, 400);
   }
@@ -98,7 +114,7 @@ export async function PATCH(request: Request) {
 
 function jsonSession(
   session: Awaited<ReturnType<ReturnType<typeof getAaisLearningStore>["getOrCreateSession"]>>,
-  role: "student" | "teacher" | "admin",
+  role: "student" | "teacher" | "researcher" | "admin",
 ) {
   return NextResponse.json({
     session,
@@ -145,6 +161,15 @@ function getErrorResponseInput(error: unknown, fallback: number) {
       message: "AAIS CSRF token is required.",
       status: 403,
     };
+  }
+  if (
+    error instanceof AaisResearchAuthorizationError
+    || error instanceof AaisResearchVisitInactiveError
+    || error instanceof AaisResearchVisitNotFoundError
+    || error instanceof AaisResearchConfigurationError
+    || error instanceof AaisResearchDisabledError
+  ) {
+    return getAaisResearchErrorResponseInput(error, "/api/learning/session");
   }
   if (isAaisLearningStorageConfigurationError(error)) {
     return {

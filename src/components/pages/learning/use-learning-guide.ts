@@ -7,8 +7,16 @@ import {
 import { normalizeAaisGuideTargetAgentIds } from "@/lib/ai/aais-guide-targets";
 import { readAaisGuideFileAttachment } from "@/lib/client/aais-guide-file-reader";
 import {
+  admitAaisResearchAction,
+  captureAaisResearchActorGeneration,
+  classifyAaisResearchClientError,
+  createAaisResearchOperationId,
+  isAaisResearchDisconnectError,
+  recordAaisResearchEvent,
+} from "@/lib/client/aais-research-telemetry";
+import {
+  createInitialGuideMessages,
   guideAttachmentOnlyPrompt,
-  initialGuideMessages,
 } from "@/components/pages/learning/learning-page-constants";
 import {
   getVisibleGuideTurns,
@@ -21,6 +29,7 @@ import {
 import type {
   GuideClientAttachment,
   GuideMessage,
+  GuideQuickStart,
 } from "@/components/pages/learning/learning-page-types";
 import {
   guideStreamDoneText,
@@ -33,20 +42,26 @@ import {
   type GuideResponseBody,
   type GuideStreamProgress,
 } from "@/components/pages/learning/guide-stream";
-
 type UseLearningGuideInput = {
   activeTaskId: string;
   artifactText: string;
+  displayName: string;
   studentId: string;
 };
-
+type GuideSubmissionOptions = {
+  source?: "typed" | "quick_start";
+  quickStartId?: GuideQuickStart["id"];
+};
 export function useLearningGuide({
   activeTaskId,
   artifactText,
+  displayName,
   studentId,
 }: UseLearningGuideInput) {
   const [guideDraft, setGuideDraft] = useState("");
-  const [guideMessages, setGuideMessages] = useState<GuideMessage[]>(initialGuideMessages);
+  const [guideMessages, setGuideMessages] = useState<GuideMessage[]>(() =>
+    createInitialGuideMessages(displayName)
+  );
   const [guideBusy, setGuideBusy] = useState(false);
   const [guideError, setGuideError] = useState("");
   const [guideAttachmentBusy, setGuideAttachmentBusy] = useState(false);
@@ -59,21 +74,73 @@ export function useLearningGuide({
   const hasGuideDraft = guideDraft.trim().length > 0;
   const hasGuideSubmission = hasGuideDraft || guideAttachments.length > 0;
 
-  async function submitGuideQuestion(rawQuestion: string) {
+  async function submitGuideQuestion(
+    rawQuestion: string,
+    options: GuideSubmissionOptions = {},
+  ) {
+    if (guideBusy || guideAttachmentBusy) {
+      return;
+    }
+    const telemetryActorGeneration = captureAaisResearchActorGeneration();
+    const operationId = createAaisResearchOperationId("ai-guide");
+    const startedAt = clientNowMs();
+    const rawPromptLength = rawQuestion.trim().length;
+    const inputMode = options.source === "quick_start"
+      ? "quick_start"
+      : rawPromptLength
+        ? "typed"
+        : "attachment_only";
+    const baseEventDetail = {
+      operation_id: operationId,
+      task_id: activeTaskId,
+      input_mode: inputMode,
+      prompt_length: rawPromptLength,
+      attachment_count: guideAttachments.length,
+      has_attachments: guideAttachments.length > 0,
+      ...(options.quickStartId ? { quick_start_id: options.quickStartId } : {}),
+    };
+
     const attachments = guideAttachments.map(toGuideAttachmentPayload);
     let boundedAttachments: AaisGuideAttachment[] = [];
     try {
       boundedAttachments = normalizeAaisGuideAttachments(attachments);
     } catch (error) {
+      if (!admitAaisResearchAction({
+        eventName: "ai_guide_submit",
+        outcome: "failure",
+        actorGeneration: telemetryActorGeneration,
+        detail: {
+          ...baseEventDetail,
+          error_kind: "attachment_validation",
+        },
+      })) {
+        return;
+      }
       setGuideAttachmentError(error instanceof Error ? error.message : "上传文件不可用。");
       return;
     }
     const question = rawQuestion.trim() || (boundedAttachments.length ? guideAttachmentOnlyPrompt : "");
-    if (guideBusy || guideAttachmentBusy) {
+    if (!question) {
+      if (!admitAaisResearchAction({
+        eventName: "ai_guide_submit",
+        outcome: "failure",
+        actorGeneration: telemetryActorGeneration,
+        detail: {
+          ...baseEventDetail,
+          error_kind: "validation",
+        },
+      })) {
+        return;
+      }
+      setGuideError("请输入你的想法后再发送。");
       return;
     }
-    if (!question) {
-      setGuideError("请输入你的想法后再发送。");
+    if (!admitAaisResearchAction({
+      eventName: "ai_guide_submit",
+      outcome: "attempted",
+      actorGeneration: telemetryActorGeneration,
+      detail: baseEventDetail,
+    })) {
       return;
     }
 
@@ -97,6 +164,8 @@ export function useLearningGuide({
     setGuideError("");
     setGuideAttachmentError("");
     setGuideBusy(true);
+    let attemptNumber = 1;
+    let retryReason: string | undefined;
 
     try {
       const requestInit = {
@@ -120,10 +189,42 @@ export function useLearningGuide({
           },
         }),
       };
-      const body = await requestGuideResponse(requestInit, assistantId);
+      const body = await requestGuideResponse(requestInit, assistantId, () => {
+        attemptNumber = 2;
+        retryReason = "stream_protocol_fallback";
+        return admitAaisResearchAction({
+          eventName: "ai_guide_submit",
+          outcome: "retry",
+          actorGeneration: telemetryActorGeneration,
+          latencyMs: clientNowMs() - startedAt,
+          detail: {
+            ...baseEventDetail,
+            attempt_number: attemptNumber,
+            retry_reason: retryReason,
+          },
+        });
+      });
       applyGuideResponse(assistantId, body);
       setGuideAttachments([]);
-    } catch {
+      recordAaisResearchEvent({
+        eventName: "ai_guide_submit",
+        outcome: "success",
+        actorGeneration: telemetryActorGeneration,
+        latencyMs: clientNowMs() - startedAt,
+        detail: {
+          ...baseEventDetail,
+          target_agent_count: targetAgentIds?.length ?? 2,
+          agent_count: getVisibleGuideTurns(body.turns).length,
+          fallback: body.orchestration?.runtime?.timings?.fallback === true,
+          ...(attemptNumber > 1
+            ? {
+                attempt_number: attemptNumber,
+                retry_reason: retryReason,
+              }
+            : {}),
+        },
+      });
+    } catch (error) {
       setGuideMessages((current) =>
         current.map((message) =>
           message.id === assistantId
@@ -138,6 +239,23 @@ export function useLearningGuide({
         ),
       );
       setGuideError("智能服务暂时不可用，已保留你的问题。");
+      recordAaisResearchEvent({
+        eventName: "ai_guide_submit",
+        outcome: isAaisResearchDisconnectError(error) ? "disconnected" : "failure",
+        actorGeneration: telemetryActorGeneration,
+        latencyMs: clientNowMs() - startedAt,
+        detail: {
+          ...baseEventDetail,
+          error_kind: classifyAaisResearchClientError(error),
+          target_agent_count: targetAgentIds?.length ?? 2,
+          ...(attemptNumber > 1
+            ? {
+                attempt_number: attemptNumber,
+                retry_reason: retryReason,
+              }
+            : {}),
+        },
+      });
     } finally {
       setGuideBusy(false);
     }
@@ -146,6 +264,7 @@ export function useLearningGuide({
   async function requestGuideResponse(
     requestInit: RequestInit,
     assistantId: string,
+    onTransportRetry: () => boolean,
   ): Promise<GuideResponseBody> {
     const streamResponse = await fetchGuideRequest(requestInit, { stream: true });
     if (isGuideEventStreamResponse(streamResponse)) {
@@ -160,6 +279,9 @@ export function useLearningGuide({
       return streamedJsonBody;
     }
 
+    if (!onTransportRetry()) {
+      throw new Error("AAIS research telemetry blocked the guide retry.");
+    }
     const response = await fetchGuideRequest(requestInit);
     const body = await readGuideJsonBody(response);
     validateGuideResponse(response, body);
@@ -235,13 +357,46 @@ export function useLearningGuide({
     if (!selectedFiles.length) {
       return;
     }
-    setGuideAttachmentError("");
+    const telemetryActorGeneration = captureAaisResearchActorGeneration();
+    const operationId = createAaisResearchOperationId("attachment-add");
+    const startedAt = clientNowMs();
+    const controlledMimeType = selectedFiles.length === 1
+      ? getControlledResearchMimeType(selectedFiles[0]?.type)
+      : undefined;
+    const eventDetail = {
+      operation_id: operationId,
+      task_id: activeTaskId,
+      file_count: selectedFiles.length,
+      total_size_bytes: selectedFiles.reduce((total, file) => total + file.size, 0),
+      ...(controlledMimeType ? { mime_type: controlledMimeType } : {}),
+    };
 
     if (guideAttachments.length + selectedFiles.length > aaisGuideAttachmentLimits.maxFiles) {
+      if (!admitAaisResearchAction({
+        actorGeneration: telemetryActorGeneration,
+        eventName: "guide_attachment_add",
+        outcome: "failure",
+        latencyMs: clientNowMs() - startedAt,
+        detail: {
+          ...eventDetail,
+          error_kind: "file_count_limit",
+        },
+      })) {
+        return;
+      }
       setGuideAttachmentError(`一次最多上传 ${aaisGuideAttachmentLimits.maxFiles} 个文件。`);
       return;
     }
+    if (!admitAaisResearchAction({
+      actorGeneration: telemetryActorGeneration,
+      eventName: "guide_attachment_add",
+      outcome: "attempted",
+      detail: eventDetail,
+    })) {
+      return;
+    }
 
+    setGuideAttachmentError("");
     setGuideAttachmentBusy(true);
     try {
       const nextAttachments = await Promise.all(
@@ -261,14 +416,48 @@ export function useLearningGuide({
         })),
       );
       setGuideError("");
+      recordAaisResearchEvent({
+        actorGeneration: telemetryActorGeneration,
+        eventName: "guide_attachment_add",
+        outcome: "success",
+        latencyMs: clientNowMs() - startedAt,
+        detail: eventDetail,
+      });
     } catch (error) {
       setGuideAttachmentError(error instanceof Error ? error.message : "文件未能读取。");
+      recordAaisResearchEvent({
+        actorGeneration: telemetryActorGeneration,
+        eventName: "guide_attachment_add",
+        outcome: "failure",
+        latencyMs: clientNowMs() - startedAt,
+        detail: {
+          ...eventDetail,
+          error_kind: "file_read_failed",
+        },
+      });
     } finally {
       setGuideAttachmentBusy(false);
     }
   }
 
   function removeGuideAttachment(attachmentId: string) {
+    const attachment = guideAttachments.find((candidate) => candidate.id === attachmentId);
+    if (!admitAaisResearchAction({
+      eventName: "guide_attachment_removed",
+      outcome: "success",
+      detail: {
+        operation_id: createAaisResearchOperationId("attachment-remove"),
+        task_id: activeTaskId,
+        ...(attachment
+          ? {
+              mime_type: attachment.mediaType,
+              size_bytes: attachment.sizeBytes,
+            }
+          : {}),
+      },
+    })) {
+      return;
+    }
     setGuideAttachments((current) =>
       current.filter((attachment) => attachment.id !== attachmentId),
     );
@@ -292,4 +481,18 @@ export function useLearningGuide({
     setGuideError,
     submitGuideQuestion,
   };
+}
+
+function clientNowMs() {
+  return typeof performance !== "undefined" ? performance.now() : Date.now();
+}
+
+function getControlledResearchMimeType(value: string | undefined) {
+  const normalized = value?.trim().toLowerCase();
+  return normalized === "text/plain"
+    || normalized === "text/markdown"
+    || normalized === "text/csv"
+    || normalized === "application/pdf"
+    ? normalized
+    : undefined;
 }

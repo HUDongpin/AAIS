@@ -4,17 +4,16 @@ import { describe, expect, it } from "vitest";
 
 const pageTreeRoot = path.join(process.cwd(), "src", "components", "pages");
 const learningTreeRoot = path.join(pageTreeRoot, "learning");
+const learningSourceFiles = [
+  path.join(pageTreeRoot, "learning-page.tsx"),
+  ...readdirSync(learningTreeRoot)
+    .filter((fileName) => /\.(ts|tsx)$/.test(fileName))
+    .map((fileName) => path.join(learningTreeRoot, fileName)),
+];
 
 describe("learning page architecture", () => {
   it("keeps the learning page tree split into sub-500-line modules", () => {
-    const sourceFiles = [
-      path.join(pageTreeRoot, "learning-page.tsx"),
-      ...readdirSync(learningTreeRoot)
-        .filter((fileName) => /\.(ts|tsx)$/.test(fileName))
-        .map((fileName) => path.join(learningTreeRoot, fileName)),
-    ];
-
-    const oversizedFiles = sourceFiles
+    const oversizedFiles = learningSourceFiles
       .map((filePath) => ({
         filePath,
         lines: readFileSync(filePath, "utf8").split("\n").length,
@@ -25,12 +24,16 @@ describe("learning page architecture", () => {
   });
 
   it("keeps session API calls behind the typed learning-session client", () => {
-    const learningPage = readFileSync(path.join(pageTreeRoot, "learning-page.tsx"), "utf8");
-    const sessionClient = readFileSync(path.join(learningTreeRoot, "learning-session-client.ts"), "utf8");
+    const sessionClientPath = path.join(learningTreeRoot, "learning-session-client.ts");
+    const sessionClient = readFileSync(sessionClientPath, "utf8");
+    const sessionConsumers = learningSourceFiles
+      .filter((filePath) => filePath !== sessionClientPath)
+      .map((filePath) => readFileSync(filePath, "utf8"))
+      .join("\n");
 
-    expect(learningPage).toContain("learning-session-client");
-    expect(learningPage).not.toContain("\"/api/learning/session\"");
-    expect(learningPage).not.toContain("\"/api/auth/app-session\"");
+    expect(sessionConsumers).toContain("learning-session-client");
+    expect(sessionConsumers).not.toContain("\"/api/learning/session\"");
+    expect(sessionConsumers).not.toContain("\"/api/auth/app-session\"");
     expect(sessionClient).toContain("fetchLearningSession");
     expect(sessionClient).toContain("patchLearningSession");
     expect(sessionClient).toContain("deleteAaisAppSession");

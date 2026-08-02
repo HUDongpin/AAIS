@@ -82,6 +82,13 @@ function getErrorResponseInput(error: unknown) {
       status: 409,
     };
   }
+  if (error instanceof Error && error.message.startsWith("Task ") && error.message.endsWith(" is locked")) {
+    return {
+      code: "AAIS_TASK_LOCKED",
+      message: "AAIS task is locked.",
+      status: 400,
+    };
+  }
   if (error instanceof Error && error.message === "A1 scaffolding is only available in practice tasks") {
     return {
       code: "AAIS_SCAFFOLD_PRACTICE_ONLY",

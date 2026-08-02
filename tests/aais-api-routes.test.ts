@@ -550,6 +550,84 @@ describe("AAIS learning API routes", () => {
     expect(serializedSession).not.toContain("attachments");
   });
 
+  it("rejects attachments before provider or session persistence in research mode", async () => {
+    vi.stubEnv("AAIS_RESEARCH_MODE", "true");
+    vi.resetModules();
+    const guideRoute = await import("@/app/api/learning/ai-guide/route");
+
+    const response = await guideRoute.POST(
+      new Request("http://localhost/api/learning/ai-guide", {
+        method: "POST",
+        headers: {
+          cookie: createAuthedCookie("S001"),
+          "x-aais-csrf": createAaisCsrfToken("S001"),
+        },
+        body: JSON.stringify({
+          phase: "training",
+          taskId: "training_task_1",
+          learnerInput: "请看文件。",
+          workspaceState: {
+            currentStep: "guide",
+            attachments: [{
+              name: "private-notes.txt",
+              mediaType: "text/plain",
+              sizeBytes: 18,
+              extractedText: "private raw text",
+            }],
+          },
+        }),
+      }),
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(400);
+    expect(body.error).toEqual({
+      code: "AAIS_RESEARCH_ATTACHMENT_PROHIBITED",
+      message: "Attachments are disabled for this research study.",
+    });
+    expect(JSON.stringify(body)).not.toContain("private-notes");
+    expect(JSON.stringify(body)).not.toContain("private raw text");
+  });
+
+  it("blocks direct AI provider input when research is required but mode is disabled", async () => {
+    vi.stubEnv("AAIS_RESEARCH_REQUIRED", "true");
+    vi.stubEnv("AAIS_RESEARCH_MODE", "false");
+    vi.resetModules();
+    const graphMock = vi.fn();
+    vi.doMock("@/lib/ai/orchestration/aais-learning-guide-graph", () => ({
+      runAaisLearningGuideGraph: graphMock,
+    }));
+    const guideRoute = await import("@/app/api/learning/ai-guide/route");
+    const rawInput = "required sentinel must not reach the provider";
+
+    const response = await guideRoute.POST(
+      new Request("http://localhost/api/learning/ai-guide", {
+        method: "POST",
+        headers: {
+          cookie: createAuthedCookie("S001"),
+          "x-aais-csrf": createAaisCsrfToken("S001"),
+        },
+        body: JSON.stringify({
+          phase: "training",
+          taskId: "training_task_1",
+          learnerInput: rawInput,
+          workspaceState: {
+            currentStep: "guide",
+          },
+        }),
+      }),
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(503);
+    expect(body.error).toEqual({
+      code: "AAIS_RESEARCH_MODE_REQUIRED",
+      message: "AAIS research collection is required but not enabled.",
+    });
+    expect(graphMock).not.toHaveBeenCalled();
+    expect(JSON.stringify(body)).not.toContain(rawInput);
+  });
+
   it("rejects invalid guide attachment payloads", async () => {
     vi.resetModules();
     const guideRoute = await import("@/app/api/learning/ai-guide/route");
@@ -1077,6 +1155,47 @@ describe("AAIS learning API routes", () => {
       },
     });
     expect(JSON.stringify(body)).not.toContain("test-session-secret");
+  });
+
+  it("rejects completing a locked task through the session route", async () => {
+    const sessionRoute = await import("@/app/api/learning/session/route");
+    const s001Cookie = createAuthedCookie("S001");
+
+    // A brand-new learner may not complete practice_task_3 (locked) directly —
+    // this would otherwise bypass server-side sequencing and inflate analytics.
+    const response = await sessionRoute.PATCH(
+      new Request("http://localhost/api/learning/session", {
+        method: "PATCH",
+        headers: {
+          cookie: s001Cookie,
+          "x-aais-csrf": createAaisCsrfToken("S001"),
+        },
+        body: JSON.stringify({
+          action: "complete-task",
+          taskId: "practice_task_3",
+        }),
+      }),
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(400);
+    expect(body.error).toEqual({
+      code: "AAIS_TASK_LOCKED",
+      message: "AAIS task is locked.",
+    });
+
+    // The locked task must remain uncompleted after the rejected request.
+    const sessionResponse = await sessionRoute.GET(
+      new Request("http://localhost/api/learning/session", {
+        headers: { cookie: s001Cookie },
+      }),
+    );
+    const sessionBody = await sessionResponse.json();
+    expect(
+      sessionBody.session.tasks.find(
+        (task: { taskId: string }) => task.taskId === "practice_task_3",
+      )?.status,
+    ).toBe("locked");
   });
 
   it("serves cohort analytics only to teacher or admin sessions", async () => {

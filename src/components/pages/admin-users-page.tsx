@@ -11,7 +11,7 @@ import {
 import { Header } from "@/components/layout/header";
 import { getAaisApiErrorMessage } from "@/lib/client/aais-api-error";
 
-type AaisUserRole = "student" | "teacher" | "admin";
+type AaisUserRole = "student" | "teacher" | "researcher" | "admin";
 type AaisUserStatus = "invited" | "active" | "disabled";
 
 type AaisUserListItem = {
@@ -60,6 +60,7 @@ type ActiveUserAction = {
 const roleLabels: Record<AaisUserRole, string> = {
   student: "Student",
   teacher: "Teacher",
+  researcher: "Researcher",
   admin: "Admin",
 };
 

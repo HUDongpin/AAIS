@@ -1,5 +1,40 @@
 import { guideRequestTimeoutMs } from "@/components/pages/learning/learning-page-constants";
 
+export type PendingArtifactSave = {
+  taskId: string;
+  value: string;
+};
+
+export function createArtifactSaveEventDetail({
+  operationId,
+  pending,
+  previousCharacters,
+  trigger,
+}: {
+  operationId: string;
+  pending: PendingArtifactSave;
+  previousCharacters: number;
+  trigger: string;
+}) {
+  return {
+    operation_id: operationId,
+    task_id: pending.taskId,
+    trigger,
+    previous_characters: previousCharacters,
+    current_characters: pending.value.length,
+    delta_characters: pending.value.length - previousCharacters,
+    artifact_length: pending.value.length,
+  };
+}
+
+export function clientNowMs() {
+  return typeof performance !== "undefined" ? performance.now() : Date.now();
+}
+
+export function isUserCancelledFilePicker(error: unknown) {
+  return error instanceof Error && error.name === "AbortError";
+}
+
 export async function fetchGuideRequest(
   init: RequestInit,
   options: { stream?: boolean } = {},
@@ -18,21 +53,6 @@ export async function fetchGuideRequest(
   } finally {
     clearTimeout(timeout);
   }
-}
-
-export function getInitialStudentId() {
-  if (typeof window === "undefined") {
-    return "S001";
-  }
-  try {
-    const storedStudentId = window.localStorage.getItem("aais_student_id");
-    if (storedStudentId) {
-      return storedStudentId;
-    }
-  } catch {
-    // Cookie fallback still works when storage is unavailable.
-  }
-  return readClientCookie("aais_student_id") || "S001";
 }
 
 export function getAaisCsrfHeader(): Record<string, string> {

@@ -84,6 +84,7 @@ describe("AdminUsersPage", () => {
     render(<AdminUsersPage />);
 
     await screen.findByText("teacher@example.test");
+    expect(screen.getAllByRole("option", { name: "Researcher" }).length).toBeGreaterThan(0);
     fireEvent.change(screen.getByLabelText("Email"), {
       target: {
         value: "new@example.test",

@@ -10,6 +10,7 @@ import {
   getAaisDatabaseConfiguration,
   probeAaisLearningStorage,
   requeueAaisPersistentLrsDeadLetters,
+  type AaisDatabaseClient,
 } from "@/lib/server/aais-learning-store";
 import * as lrsClient from "@/lib/server/aais-lrs-client";
 import type { AaisEvent } from "@/data/aais";
@@ -24,6 +25,8 @@ afterEach(async () => {
   delete process.env.LRS_ENDPOINT;
   delete process.env.LRS_USERNAME;
   delete process.env.LRS_PASSWORD;
+  delete process.env.AAIS_RESEARCH_MODE;
+  delete process.env.AAIS_RESEARCH_REQUIRED;
   delete process.env.AAIS_DATABASE_DRIVER;
   delete process.env.AAIS_DATABASE_URL;
   delete process.env.DATABASE_URL;
@@ -95,6 +98,38 @@ describe("AAIS backend learning store", () => {
     expect(practiceTwo.activeTaskId).toBe("practice_task_2");
   });
 
+  it("rejects every learner mutation targeting a locked task", async () => {
+    const store = createAaisLearningStore({ rootDir: tempDir });
+    await store.getOrCreateSession("S001");
+
+    // A brand-new learner has only training_task_1 active; every practice task is
+    // locked until its prerequisite is completed. None of these mutations may act on
+    // a locked task, otherwise sequencing (and cohort analytics) can be bypassed.
+    await expect(store.completeTask("S001", "practice_task_2")).rejects.toThrow(
+      "Task practice_task_2 is locked",
+    );
+    await expect(store.saveArtifact("S001", "practice_task_2", "x")).rejects.toThrow(
+      "Task practice_task_2 is locked",
+    );
+    await expect(store.saveSelfReport("S001", "practice_task_2", "x")).rejects.toThrow(
+      "Task practice_task_2 is locked",
+    );
+    await expect(
+      store.requestScaffold("S001", "practice_task_2", "stage-checklist"),
+    ).rejects.toThrow("Task practice_task_2 is locked");
+    await expect(
+      store.recordAiAcceptance("S001", "practice_task_2", { accepted: true }),
+    ).rejects.toThrow("Task practice_task_2 is locked");
+
+    const session = await store.getOrCreateSession("S001");
+    expect(session.tasks.find((task) => task.taskId === "practice_task_2")?.status).toBe(
+      "locked",
+    );
+    expect(
+      session.tasks.filter((task) => task.status === "completed"),
+    ).toHaveLength(0);
+  });
+
   it("persists artifacts, self reports, scaffold counts, and exportable events", async () => {
     const store = createAaisLearningStore({ rootDir: tempDir });
     await store.completeTask("S001", "training_task_1");
@@ -130,6 +165,60 @@ describe("AAIS backend learning store", () => {
     expect(csv.contentType).toBe("text/csv;charset=utf-8");
     expect(csv.body).toContain("student_id,session_id,phase,task,agent,event,time,detail");
     expect(csv.body).toContain("practice_task_1");
+  });
+
+  it("deletes only restricted research raw text while preserving unrelated learner history", async () => {
+    const store = createAaisLearningStore({ rootDir: tempDir });
+    await store.saveArtifact("S001", "training_task_1", "研究作品原文");
+    await store.saveSelfReport("S001", "training_task_1", "研究自我报告原文");
+    await store.appendGuideExchange({
+      studentId: "S001",
+      phase: "training",
+      taskId: "training_task_1",
+      question: "研究 AI 提问原文",
+      answer: "研究 AI 回答原文",
+      turns: [{
+        agentId: "A1",
+        label: "导学智能体",
+        content: "研究 AI 分步回答原文",
+        actions: ["研究 AI 建议原文"],
+      }],
+      orchestration: {
+        graphId: "learning-ai-guide",
+        topologicalOrder: ["A1"],
+        threadId: "thread-1",
+      },
+    });
+    const before = await store.getOrCreateSession("S001");
+    const eventFacts = before.events.map((event) => JSON.stringify(event));
+    const taskStatuses = before.tasks.map((task) => [task.taskId, task.status]);
+
+    await expect(store.deleteRestrictedResearchRawText("S001")).resolves.toMatchObject({
+      studentId: "S001",
+      storageMode: "file",
+      learnerRecordFound: true,
+      rawTextDeleted: true,
+      unrelatedProductHistoryPreserved: true,
+      secrets: "redacted",
+    });
+
+    const reloaded = await createAaisLearningStore({ rootDir: tempDir })
+      .getOrCreateSession("S001");
+    expect(reloaded.tasks.every((task) =>
+      task.artifactText === "" && task.selfReport === ""
+    )).toBe(true);
+    expect(reloaded.guideMessages.every((message) => message.text === "")).toBe(true);
+    expect(reloaded.guideMessages.flatMap((message) => message.turns ?? []).every((turn) =>
+      turn.content === "" && turn.actions.length === 0
+    )).toBe(true);
+    expect(reloaded.events.map((event) => JSON.stringify(event))).toEqual(eventFacts);
+    expect(reloaded.tasks.map((task) => [task.taskId, task.status])).toEqual(taskStatuses);
+    expect(reloaded.guideMessages.map((message) => [message.id, message.kind, message.time]))
+      .toEqual(before.guideMessages.map((message) => [message.id, message.kind, message.time]));
+    expect(JSON.stringify(reloaded)).not.toContain("研究作品原文");
+    expect(JSON.stringify(reloaded)).not.toContain("研究自我报告原文");
+    expect(JSON.stringify(reloaded)).not.toContain("研究 AI 提问原文");
+    expect(JSON.stringify(reloaded)).not.toContain("研究 AI 回答原文");
   });
 
   it("persists first and mirrors learning events to LRS through the async delivery queue", async () => {
@@ -367,6 +456,75 @@ describe("AAIS backend learning store", () => {
     expect(missingUsersDatabase.queries.map((query) => query.sql).join("\n")).not.toMatch(/create table|alter table/i);
   });
 
+  it("atomically reserves the durable daily guide budget and rejects once exhausted", async () => {
+    const database = createFakeDatabaseClient();
+    const store = createAaisLearningStore({ database });
+
+    const first = await store.reserveDailyGuideRequest({ studentId: "S001", limit: 2 });
+    const second = await store.reserveDailyGuideRequest({ studentId: "S001", limit: 2 });
+    const third = await store.reserveDailyGuideRequest({ studentId: "S001", limit: 2 });
+
+    expect(first).toMatchObject({ status: "reserved", limit: 2, used: 1, remaining: 1 });
+    expect(second).toMatchObject({ status: "reserved", limit: 2, used: 2, remaining: 0 });
+    expect(third).toMatchObject({ status: "exhausted", limit: 2, used: 2, remaining: 0 });
+
+    // A different learner has an independent daily counter.
+    const other = await store.reserveDailyGuideRequest({ studentId: "S002", limit: 2 });
+    expect(other).toMatchObject({ status: "reserved", used: 1 });
+
+    // The guarded upsert only increments while under the limit — the exhausted
+    // attempt must not have advanced the counter past the cap.
+    const usageQueries = database.queries.filter((query) =>
+      /aais_ai_guide_daily_usage/i.test(query.sql),
+    );
+    expect(usageQueries.some((query) => /where aais_ai_guide_daily_usage\.used < \$4/i.test(query.sql))).toBe(
+      true,
+    );
+  });
+
+  it("degrades to prompt-event counting when the durable usage table is missing", async () => {
+    const missingTableError = Object.assign(new Error("relation does not exist"), {
+      code: "42P01",
+    });
+    const database = {
+      async query(sql: string) {
+        if (/^insert into aais_ai_guide_daily_usage/i.test(sql.trim())) {
+          throw missingTableError;
+        }
+        if (/^select count\(\*\)::int as count\s+from aais_events/i.test(sql.trim())) {
+          return { rows: [{ count: 0 }] };
+        }
+        throw new Error(`Unexpected query: ${sql}`);
+      },
+    } as unknown as AaisDatabaseClient;
+    const store = createAaisLearningStore({ database });
+
+    const reservation = await store.reserveDailyGuideRequest({ studentId: "S001", limit: 3 });
+    expect(reservation).toMatchObject({ status: "reserved", limit: 3, used: 1, remaining: 2 });
+  });
+
+  it("falls back to per-process prompt-event counting when no database is configured", async () => {
+    const store = createAaisLearningStore({ rootDir: tempDir });
+
+    const first = await store.reserveDailyGuideRequest({ studentId: "S001", limit: 1 });
+    expect(first).toMatchObject({ status: "reserved", limit: 1, used: 1, remaining: 0 });
+
+    // Nothing has been persisted yet (the prompt event is written when the exchange
+    // is appended), so a follow-up reservation still sees head-room until an exchange
+    // lands. Simulate a completed exchange, then confirm the cap holds.
+    await store.appendGuideExchange({
+      studentId: "S001",
+      phase: "training",
+      taskId: "training_task_1",
+      question: "问题",
+      answer: "回答",
+      orchestration: { graphId: "g", topologicalOrder: ["A1"], threadId: "t" },
+    });
+
+    const afterExchange = await store.reserveDailyGuideRequest({ studentId: "S001", limit: 1 });
+    expect(afterExchange).toMatchObject({ status: "exhausted", limit: 1, used: 1, remaining: 0 });
+  });
+
   it("handles concurrent first-session creation without returning a write conflict", async () => {
     const database = createFakeDatabaseClient();
     const storeA = createAaisLearningStore({ database });
@@ -475,6 +633,118 @@ describe("AAIS backend learning store", () => {
     const postedStatements = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
     expect(postedStatements).toHaveLength(database.outboxRows.length);
     expect(JSON.stringify(result)).not.toContain("test-password");
+  });
+
+  it("keeps legacy product events, analytics, exports, and LRS disabled on a research deployment", async () => {
+    vi.stubEnv("AAIS_RESEARCH_REQUIRED", "true");
+    vi.stubEnv("LRS_ENDPOINT", "https://legacy-mixed.example/xapi");
+    vi.stubEnv("LRS_USERNAME", "legacy-user");
+    vi.stubEnv("LRS_PASSWORD", "legacy-password");
+    const database = createFakeDatabaseClient();
+    const fetchMock = vi.fn<typeof fetch>(async () => new Response(null, { status: 204 }));
+    const store = createAaisLearningStore({ database });
+
+    await store.getOrCreateSession("S001");
+    await store.saveArtifact("S001", "training_task_1", "restricted study artifact");
+
+    expect(database.eventRows).toEqual([]);
+    expect(database.outboxRows).toEqual([]);
+    expect(database.queries.some((query) => /^insert into aais_events/i.test(query.sql.trim()))).toBe(false);
+    expect(database.queries.some((query) => /^insert into aais_lrs_outbox/i.test(query.sql.trim()))).toBe(false);
+    expect(database.queries.some((query) => /^insert into aais_learner_sessions/i.test(query.sql.trim()))).toBe(true);
+    expect(database.queries.some((query) => /^insert into aais_learner_task_state/i.test(query.sql.trim()))).toBe(true);
+
+    await expect(flushAaisPersistentLrsOutbox({
+      database,
+      config: {
+        endpoint: "https://legacy-mixed.example/xapi",
+        username: "legacy-user",
+        password: "legacy-password",
+      },
+      fetchImpl: fetchMock as unknown as typeof fetch,
+    })).resolves.toEqual({
+      status: "not_configured",
+      sent: 0,
+      secrets: "redacted",
+    });
+    await expect(getAaisPersistentLrsOutboxStatus({ database })).resolves.toMatchObject({
+      mode: "research-isolated",
+      storage: "disabled",
+      configured: false,
+      total: 0,
+    });
+    await expect(store.exportEvents("S001", "json")).rejects.toThrow(
+      "Legacy product analytics and event exports are disabled",
+    );
+    await expect(store.getAnalytics("S001")).rejects.toThrow(
+      "Legacy product analytics and event exports are disabled",
+    );
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("dead-letters an unmappable outbox event instead of stalling every flush", async () => {
+    // An event with no xAPI verb mapping makes buildAaisXapiStatement throw. The
+    // persistent flush must treat that as a delivery failure (retry -> dead_letter),
+    // not let the throw stall the whole outbox forever.
+    const row = {
+      id: "outbox-poison",
+      status: "pending",
+      attempts: 0,
+      payload: {
+        student_id: "S001",
+        session_id: "session-poison",
+        phase: "practice",
+        task: "practice_task_1",
+        agent: "platform",
+        event: "totally_unmapped_event",
+        time: "2026-07-10T00:00:00.000Z",
+        detail: {},
+      },
+    };
+    let fetchCalled = false;
+    const database = {
+      async query(sql: string, params: unknown[] = []) {
+        const trimmed = sql.trim();
+        if (/^select id, payload, attempts/i.test(trimmed)) {
+          return {
+            rows: row.status === "pending" || row.status === "retry"
+              ? [{ id: row.id, payload: row.payload, attempts: row.attempts }]
+              : [],
+          };
+        }
+        if (/^update aais_lrs_outbox set status = \$1/i.test(trimmed)) {
+          row.status = String(params[0]);
+          row.attempts = Number(params[1]);
+          return { rows: [] };
+        }
+        throw new Error(`Unexpected query: ${sql}`);
+      },
+    } as unknown as AaisDatabaseClient;
+    const fetchImpl = (async () => {
+      fetchCalled = true;
+      return new Response(null, { status: 204 });
+    }) as unknown as typeof fetch;
+
+    const flushOnce = () =>
+      flushAaisPersistentLrsOutbox({
+        database,
+        config: { endpoint: "https://lrs.example.test/xapi", username: "u", password: "p" },
+        fetchImpl,
+        maxAttempts: 3,
+      });
+
+    // Flush must resolve (never reject) and move the poison row off 'pending'.
+    const first = await flushOnce();
+    expect(first).toMatchObject({ status: "partial", failed: 1 });
+    expect(row).toMatchObject({ status: "retry", attempts: 1 });
+
+    // Repeated flushes progress it to dead_letter instead of blocking forever.
+    await flushOnce();
+    await flushOnce();
+    expect(row).toMatchObject({ status: "dead_letter", attempts: 3 });
+
+    // The failure happened while building the statement, before any HTTP call.
+    expect(fetchCalled).toBe(false);
   });
 
   it("summarizes persistent LRS outbox status without exposing payloads", async () => {
@@ -1345,6 +1615,7 @@ function createFakeDatabaseClient() {
   }>();
   const events = new Map<string, FakeAaisEventRow>();
   const taskState = new Map<string, FakeLearnerTaskStateRow>();
+  const dailyGuideUsage = new Map<string, number>();
   const queries: Array<{ sql: string; params: unknown[] }> = [];
 
   return {
@@ -1518,6 +1789,25 @@ function createFakeDatabaseClient() {
         }
         this.outboxRows = Array.from(outbox.values());
         return { rows: [] };
+      }
+      if (/^insert into aais_ai_guide_daily_usage/i.test(sql.trim())) {
+        const key = `${String(params[0])}\0${String(params[1]).slice(0, 10)}`;
+        const limit = Number(params[3]);
+        const existing = dailyGuideUsage.get(key);
+        if (existing === undefined) {
+          dailyGuideUsage.set(key, 1);
+          return { rows: [{ used: 1 }] };
+        }
+        if (existing < limit) {
+          const used = existing + 1;
+          dailyGuideUsage.set(key, used);
+          return { rows: [{ used }] };
+        }
+        return { rows: [] };
+      }
+      if (/^select used\s+from aais_ai_guide_daily_usage/i.test(sql.trim())) {
+        const used = dailyGuideUsage.get(`${String(params[0])}\0${String(params[1]).slice(0, 10)}`);
+        return { rows: used === undefined ? [] : [{ used }] };
       }
       throw new Error(`Unexpected query: ${sql}`);
     },

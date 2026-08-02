@@ -17,7 +17,7 @@ type UserManagementBody = {
   action?: string;
   email?: string;
   displayName?: string;
-  role?: "student" | "teacher" | "admin";
+  role?: "student" | "teacher" | "researcher" | "admin";
   status?: "invited" | "active" | "disabled";
   userId?: string;
 } | null;
@@ -143,7 +143,12 @@ function requireString(value: string | undefined, label: string) {
 }
 
 function requireRole(value: string | undefined) {
-  if (value === "student" || value === "teacher" || value === "admin") {
+  if (
+    value === "student"
+    || value === "teacher"
+    || value === "researcher"
+    || value === "admin"
+  ) {
     return value;
   }
   throw new AaisApiRouteError({

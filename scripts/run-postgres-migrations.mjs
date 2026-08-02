@@ -134,6 +134,13 @@ export function getAaisMigrationDatabaseConfiguration(env = process.env) {
   });
 }
 
+export function getAaisResearchMigrationDatabaseConfiguration(env = process.env) {
+  const url = env.AAIS_RESEARCH_DATABASE_URL?.trim();
+  return url
+    ? { url, sourceEnv: "AAIS_RESEARCH_DATABASE_URL" }
+    : null;
+}
+
 function getRawPgDatabaseConfiguration(env, input) {
   const host = input.hostNames.map((name) => env[name]?.trim()).find(Boolean);
   const user = env[input.userName]?.trim();
@@ -294,6 +301,7 @@ function parseArgs(argv) {
   const options = {
     migrationsDir: defaultMigrationsDir,
     output: "",
+    research: false,
     help: false,
   };
   for (let index = 0; index < argv.length; index += 1) {
@@ -312,6 +320,10 @@ function parseArgs(argv) {
       index += 1;
       continue;
     }
+    if (arg === "--research") {
+      options.research = true;
+      continue;
+    }
     throw new Error(`Unknown AAIS migration argument: ${arg}`);
   }
   return options;
@@ -321,18 +333,28 @@ async function main() {
   const options = parseArgs(process.argv.slice(2));
   if (options.help) {
     process.stdout.write([
-      "Usage: npm run db:migrate -- [--migrations-dir <dir>] [--output <report.json>]",
+      "Usage: npm run db:migrate -- [--research] [--migrations-dir <dir>] [--output <report.json>]",
       "",
       "Applies tracked AAIS Postgres migrations and writes only redacted status summaries.",
+      "--research reads only AAIS_RESEARCH_DATABASE_URL and never falls back to the product database.",
       "",
     ].join("\n"));
     return;
   }
-  const config = getAaisMigrationDatabaseConfiguration();
+  const config = options.research
+    ? getAaisResearchMigrationDatabaseConfiguration()
+    : getAaisMigrationDatabaseConfiguration();
   if (!config) {
-    throw new Error("AAIS Postgres migrations require a configured Postgres database environment.");
+    throw new Error(options.research
+      ? "AAIS research migrations require AAIS_RESEARCH_DATABASE_URL."
+      : "AAIS Postgres migrations require a configured Postgres database environment.");
   }
-  const pool = createAaisMigrationDatabaseClient(config.url);
+  const pool = createAaisMigrationDatabaseClient(
+    config.url,
+    options.research
+      ? process.env.AAIS_RESEARCH_DATABASE_DRIVER
+      : process.env.AAIS_DATABASE_DRIVER,
+  );
   try {
     const migrations = await loadAaisPostgresMigrations(options.migrationsDir);
     const report = await runAaisPostgresMigrations({
@@ -358,8 +380,8 @@ async function main() {
   }
 }
 
-function createAaisMigrationDatabaseClient(databaseUrl) {
-  if (shouldUseNeonServerlessDriver(databaseUrl)) {
+function createAaisMigrationDatabaseClient(databaseUrl, configuredDriver) {
+  if (shouldUseNeonServerlessDriver(databaseUrl, configuredDriver)) {
     return createNeonServerlessMigrationDatabaseClient(databaseUrl);
   }
   return new Pool({ connectionString: databaseUrl });
@@ -391,8 +413,8 @@ function normalizeDatabaseQueryResult(result) {
   return { rows: [] };
 }
 
-function shouldUseNeonServerlessDriver(databaseUrl) {
-  const configuredDriver = process.env.AAIS_DATABASE_DRIVER?.trim().toLowerCase();
+function shouldUseNeonServerlessDriver(databaseUrl, configuredDriverValue) {
+  const configuredDriver = configuredDriverValue?.trim().toLowerCase();
   if (configuredDriver === "pg") {
     return false;
   }

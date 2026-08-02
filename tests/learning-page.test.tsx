@@ -1,11 +1,60 @@
 import { readFileSync } from "node:fs";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { LearningPage } from "@/components/pages/learning-page";
+import {
+  LearningPage as LearningPageComponent,
+  type LearningPageActor,
+  type LearningPageResearchBoundary,
+} from "@/components/pages/learning-page";
+import type {
+  AaisResearchLogoutContext,
+  AaisResearchTelemetryBoundaryState,
+  AaisResearchTelemetryStartOptions,
+} from "@/lib/client/aais-research-telemetry";
+
+const defaultLearningPageActor: LearningPageActor = {
+  id: "Bobie",
+  displayName: "Bobie",
+};
+
+function LearningPage({
+  actor = defaultLearningPageActor,
+  research = {
+    required: false,
+    initialVisit: null,
+  },
+}: {
+  actor?: LearningPageActor;
+  research?: LearningPageResearchBoundary;
+}) {
+  return <LearningPageComponent actor={actor} research={research} />;
+}
 
 const routerMocks = vi.hoisted(() => ({
   replace: vi.fn(),
 }));
+const browserNavigationMocks = vi.hoisted(() => ({
+  replace: vi.fn(),
+}));
+const telemetryMocks = vi.hoisted(() => {
+  const record = vi.fn();
+  return {
+    admit: vi.fn((event) => {
+      record(event);
+      return true;
+    }),
+    record,
+    start: vi.fn((options?: AaisResearchTelemetryStartOptions) => {
+      void options;
+      return () => undefined;
+    }),
+    clearActor: vi.fn(),
+    flush: vi.fn(async () => undefined),
+    actorGeneration: 0,
+    logoutContext: null as AaisResearchLogoutContext | null,
+    operationCounter: 0,
+  };
+});
 
 vi.mock("next/navigation", () => ({
   useRouter: () => ({
@@ -13,12 +62,53 @@ vi.mock("next/navigation", () => ({
   }),
 }));
 
+vi.mock("@/lib/client/aais-browser-navigation", () => ({
+  replaceAaisBrowserLocation: browserNavigationMocks.replace,
+}));
+
+vi.mock("@/lib/client/aais-research-telemetry", () => ({
+  admitAaisResearchAction: telemetryMocks.admit,
+  captureAaisResearchActorGeneration: () => telemetryMocks.actorGeneration,
+  classifyAaisResearchClientError: (error: { name?: string } | null) =>
+    error?.name === "AbortError" ? "timeout" : "request_failed",
+  clearAaisResearchTelemetryForActor: telemetryMocks.clearActor,
+  createAaisResearchLogoutContext: (operationId: string) => telemetryMocks.logoutContext
+    ? { ...telemetryMocks.logoutContext, operationId }
+    : null,
+  createAaisResearchOperationId: (prefix = "operation") => {
+    telemetryMocks.operationCounter += 1;
+    return `${prefix}-test-${telemetryMocks.operationCounter}`;
+  },
+  isAaisResearchDisconnectError: (error: { name?: string } | null) =>
+    error?.name === "AaisGuideStreamDisconnectedError",
+  flushAaisResearchTelemetry: telemetryMocks.flush,
+  getAaisResearchTelemetryPendingCount: () => 0,
+  recordAaisResearchEvent: telemetryMocks.record,
+  startAaisResearchTelemetry: telemetryMocks.start,
+}));
+
 afterEach(() => {
   vi.useRealTimers();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
   routerMocks.replace.mockReset();
+  browserNavigationMocks.replace.mockReset();
+  telemetryMocks.record.mockReset();
+  telemetryMocks.admit.mockReset();
+  telemetryMocks.admit.mockImplementation((event) => {
+    telemetryMocks.record(event);
+    return true;
+  });
+  telemetryMocks.start.mockReset();
+  telemetryMocks.start.mockImplementation(() => () => undefined);
+  telemetryMocks.clearActor.mockReset();
+  telemetryMocks.flush.mockReset();
+  telemetryMocks.flush.mockImplementation(async () => undefined);
+  telemetryMocks.actorGeneration = 0;
+  telemetryMocks.logoutContext = null;
+  telemetryMocks.operationCounter = 0;
   window.localStorage.clear();
+  window.sessionStorage.clear();
   document.cookie = "aais_csrf=; Max-Age=0; path=/";
 });
 
@@ -56,7 +146,7 @@ describe("AAIS LearningPage", () => {
     expect(screen.getByText(/邀请 A2 专家智能体示范思考/)).toBeTruthy();
     expect(screen.getByText(/@专家智能体/)).toBeTruthy();
     expect(screen.getByRole("button", { name: "明确学习目标" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "看 A2 专家如何思考" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "开始示范" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "我卡住了，给我支架" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "整理反思记录" })).toBeTruthy();
     expect(screen.getByText("内容展示")).toBeTruthy();
@@ -137,6 +227,91 @@ describe("AAIS LearningPage", () => {
     expect(accountButton.className).not.toContain("text-white");
   });
 
+  it("renders the server-provided app-session actor instead of stale browser identity", async () => {
+    vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>(() => undefined)));
+    window.localStorage.setItem("aais_student_id", "Bobie");
+    window.localStorage.setItem("aais_display_name", "Bobie");
+
+    render(
+      <LearningPage
+        actor={{
+          id: "Phoebe",
+          displayName: "Phoebe",
+        }}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: "Phoebe 账户菜单" })).toBeTruthy();
+    expect(screen.getByRole("img", { name: "Phoebe 原创英雄人脸头像" })).toBeTruthy();
+    expect(screen.getByText(/你好，Phoebe/)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Bobie 账户菜单" })).toBeNull();
+  });
+
+  it("does not mount the research workspace before telemetry reaches ready", () => {
+    vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>(() => undefined)));
+
+    render(<LearningPage research={createRequiredResearchBoundary()} />);
+
+    expect(screen.getByRole("main", { name: "AAIS 研究会话保护" })).toBeTruthy();
+    expect(screen.getByText("正在建立受控研究会话，请稍候。")).toBeTruthy();
+    expect(screen.queryByTestId("learning-shell")).toBeNull();
+    expect(screen.queryByRole("button", { name: "文档编辑" })).toBeNull();
+  });
+
+  it("keeps workspace state mounted but inert while offline or terminal", async () => {
+    vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>(() => undefined)));
+    let updateBoundary: ((state: AaisResearchTelemetryBoundaryState) => void) | undefined;
+    telemetryMocks.start.mockImplementation((options?: AaisResearchTelemetryStartOptions) => {
+      updateBoundary = options?.onBoundaryStateChange;
+      updateBoundary?.("ready");
+      return () => undefined;
+    });
+
+    render(<LearningPage research={createRequiredResearchBoundary()} />);
+    expect(await screen.findByTestId("learning-shell")).toBeTruthy();
+    const guideInput = screen.getByLabelText("向智能导学输入你的想法") as HTMLTextAreaElement;
+    fireEvent.change(guideInput, { target: { value: "保留的未提交草稿" } });
+
+    act(() => updateBoundary?.("offline-or-temporary"));
+    expect(screen.getByTestId("learning-shell")).toBeTruthy();
+    expect(screen.getByTestId("research-workspace-gate").hasAttribute("inert")).toBe(true);
+    expect(screen.getByTestId("research-workspace-gate").getAttribute("aria-hidden")).toBe("true");
+    expect(screen.getByText(/避免产生未记录操作/)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "明确学习目标" })).toBeNull();
+
+    act(() => updateBoundary?.("ready"));
+    expect(await screen.findByTestId("learning-shell")).toBeTruthy();
+    expect(screen.getByTestId("research-workspace-gate").hasAttribute("inert")).toBe(false);
+    expect((screen.getByLabelText("向智能导学输入你的想法") as HTMLTextAreaElement).value)
+      .toBe("保留的未提交草稿");
+
+    act(() => updateBoundary?.("terminal-blocked"));
+    expect(screen.getByTestId("learning-shell")).toBeTruthy();
+    expect(screen.getByTestId("research-workspace-gate").hasAttribute("inert")).toBe(true);
+    expect(screen.getByText(/本次研究会话不可继续/)).toBeTruthy();
+    expect(JSON.stringify(telemetryMocks.start.mock.calls)).not.toContain("原始学习文本");
+  });
+
+  it("offers a telemetry-independent safe exit from a blocked research boundary", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      expect(String(input)).toBe("/api/auth/app-session");
+      expect(init?.method).toBe("DELETE");
+      return new Response(null, { status: 204 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    telemetryMocks.start.mockImplementation((options?: AaisResearchTelemetryStartOptions) => {
+      options?.onBoundaryStateChange?.("terminal-blocked");
+      return () => undefined;
+    });
+
+    render(<LearningPage research={createRequiredResearchBoundary()} />);
+    fireEvent.click(await screen.findByRole("button", { name: "安全退出到登录页" }));
+
+    await waitFor(() => expect(routerMocks.replace).toHaveBeenCalledWith("/login"));
+    expect(telemetryMocks.clearActor).toHaveBeenCalledOnce();
+    expect(telemetryMocks.admit).not.toHaveBeenCalled();
+  });
+
   it("exports learner-owned privacy data from the account menu", async () => {
     let exportedJson = "";
     const write = vi.fn(async (blob: Blob) => {
@@ -191,7 +366,7 @@ describe("AAIS LearningPage", () => {
 
     await waitFor(() => expect(write).toHaveBeenCalledTimes(1));
     expect(showSaveFilePicker).toHaveBeenCalledWith(expect.objectContaining({
-      suggestedName: "aais-S001-learner-data.json",
+      suggestedName: "aais-Bobie-learner-data.json",
     }));
     expect(JSON.parse(exportedJson)).toMatchObject({
       exportScope: "learner-data",
@@ -231,6 +406,7 @@ describe("AAIS LearningPage", () => {
       return Response.json({ ok: true });
     });
     vi.stubGlobal("fetch", fetchMock);
+    telemetryMocks.actorGeneration = 11;
 
     render(<LearningPage />);
 
@@ -251,6 +427,7 @@ describe("AAIS LearningPage", () => {
       String(input) === "/api/learning/privacy" && !init?.method
     )).toHaveLength(1);
 
+    telemetryMocks.actorGeneration = 12;
     privacyResponse.resolve(Response.json({
       schemaVersion: 1,
       exportScope: "learner-data",
@@ -271,6 +448,10 @@ describe("AAIS LearningPage", () => {
     expect(write).toHaveBeenCalledTimes(1);
     expect(close).toHaveBeenCalledTimes(1);
     expect(screen.queryByRole("menu", { name: "Bobie 账户信息" })).toBeNull();
+    expect(getLastResearchEvent("learner_data_export")).toMatchObject({
+      actorGeneration: 11,
+      outcome: "success",
+    });
   });
 
   it("deletes learner-owned privacy data with confirmation and CSRF", async () => {
@@ -345,6 +526,7 @@ describe("AAIS LearningPage", () => {
       return Response.json({ ok: true });
     });
     vi.stubGlobal("fetch", fetchMock);
+    telemetryMocks.actorGeneration = 21;
 
     render(<LearningPage />);
 
@@ -354,6 +536,7 @@ describe("AAIS LearningPage", () => {
     expect(screen.getByRole("status").textContent).toBe("正在删除学习数据...");
     expect(screen.getByRole("menu", { name: "Bobie 账户信息" }).getAttribute("aria-busy")).toBe("true");
 
+    telemetryMocks.actorGeneration = 22;
     deleteResponse.resolve(Response.json(
       {
         error: {
@@ -370,6 +553,10 @@ describe("AAIS LearningPage", () => {
     });
     expect(screen.queryByText("正在删除学习数据...")).toBeNull();
     expect(screen.getByRole("menu", { name: "Bobie 账户信息" }).getAttribute("aria-busy")).toBe("false");
+    expect(getLastResearchEvent("learner_data_delete")).toMatchObject({
+      actorGeneration: 21,
+      outcome: "failure",
+    });
   });
 
   it("uses a white background for inactive content tabs", () => {
@@ -518,6 +705,7 @@ describe("AAIS LearningPage", () => {
       return Response.json({ ok: true });
     });
     vi.stubGlobal("fetch", fetchMock);
+    telemetryMocks.actorGeneration = 31;
 
     render(<LearningPage />);
 
@@ -527,10 +715,14 @@ describe("AAIS LearningPage", () => {
 
     let status = screen.getByRole("status");
     expect(status.textContent).toBe("文档更改待保存。");
+    expect(status.className).toContain("shrink-0");
+    expect(status.className).toContain("break-words");
     expect(status.getAttribute("aria-live")).toBe("polite");
     expect(status.getAttribute("aria-atomic")).toBe("true");
 
+    telemetryMocks.actorGeneration = 32;
     fireEvent.blur(artifactInput);
+    telemetryMocks.actorGeneration = 33;
 
     expect(screen.getByRole("status").textContent).toBe("正在保存文档...");
     expect(screen.getByLabelText("学习内容与文档").getAttribute("aria-busy")).toBe("true");
@@ -542,7 +734,12 @@ describe("AAIS LearningPage", () => {
 
     await screen.findByText("文档已保存。");
     expect(screen.getByLabelText("学习内容与文档").getAttribute("aria-busy")).toBe("false");
+    expect(getLastResearchEvent("document_artifact_save")).toMatchObject({
+      actorGeneration: 32,
+      outcome: "success",
+    });
 
+    telemetryMocks.actorGeneration = 34;
     fireEvent.click(screen.getByRole("button", { name: "下载到本地" }));
 
     const busyDownloadButton = screen.getByRole("button", { name: "下载中..." }) as HTMLButtonElement;
@@ -554,6 +751,7 @@ describe("AAIS LearningPage", () => {
     fireEvent.click(busyDownloadButton);
     expect(showSaveFilePicker).toHaveBeenCalledTimes(1);
 
+    telemetryMocks.actorGeneration = 35;
     fileHandleResponse.resolve({
       createWritable,
     });
@@ -563,6 +761,15 @@ describe("AAIS LearningPage", () => {
     expect(close).toHaveBeenCalledTimes(1);
     expect(screen.getByRole("button", { name: "下载到本地" })).toBeTruthy();
     expect(screen.getByLabelText("学习内容与文档").getAttribute("aria-busy")).toBe("false");
+    expect(getLastResearchEvent("document_download")).toMatchObject({
+      actorGeneration: 34,
+      outcome: "success",
+    });
+
+    vi.useFakeTimers();
+    setRichEditorContent(artifactInput, "<p>下载完成后继续编辑</p>");
+    expect(screen.getByRole("status").textContent).toBe("文档更改待保存。");
+    expect(screen.queryByText("文档下载已准备。")).toBeNull();
   });
 
   it("announces autosave and local download failures in the document panel", async () => {
@@ -672,9 +879,166 @@ describe("AAIS LearningPage", () => {
         && (init as RequestInit | undefined)?.credentials === "same-origin"
       ))).toBe(true);
     });
-    await waitFor(() => expect(routerMocks.replace).toHaveBeenCalledWith("/login"));
+    await waitFor(() => expect(browserNavigationMocks.replace).toHaveBeenCalledWith("/login"));
+    const logoutEvents = telemetryMocks.record.mock.calls
+      .map(([event]) => event)
+      .filter((event) => event.eventName === "account_logout");
+    expect(logoutEvents).toEqual([
+      expect.objectContaining({ outcome: "attempted" }),
+    ]);
+    expect(telemetryMocks.flush).not.toHaveBeenCalled();
+    expect(telemetryMocks.clearActor).toHaveBeenCalledTimes(1);
     expect(window.localStorage.getItem("aais_student_id")).toBeNull();
     expect(window.localStorage.getItem("aais_display_name")).toBeNull();
+  });
+
+  it("sends a visit-bound final research logout event before clearing the actor", async () => {
+    setCsrfCookie();
+    telemetryMocks.logoutContext = {
+      expectedVisitId: "10000000-0000-4000-8000-000000000001",
+      failureClientEventId: "10000000-0000-4000-8000-000000000002",
+      finalClientTime: "2026-07-30T10:00:00.000Z",
+      operationId: "replaced-by-hook-operation",
+      successClientEventId: "10000000-0000-4000-8000-000000000003",
+    };
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.startsWith("/api/learning/session") && (!init || init.method === "GET")) {
+        return Response.json({ session: createClientSessionFixture("") });
+      }
+      if (url === "/api/auth/app-session" && init?.method === "DELETE") {
+        const context = JSON.parse(String(init.body)).researchLogout;
+        return Response.json({
+          ok: true,
+          sessionRevoked: true,
+          researchLogout: {
+            clientEventId: context.successClientEventId,
+            visitId: context.expectedVisitId,
+          },
+        });
+      }
+      return Response.json({ ok: true });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<LearningPage />);
+    fireEvent.click(screen.getByRole("button", { name: "Bobie 账户菜单" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "退出" }));
+
+    await waitFor(() => expect(browserNavigationMocks.replace).toHaveBeenCalledWith("/login"));
+    const deleteCall = fetchMock.mock.calls.find(([input, init]) =>
+      String(input) === "/api/auth/app-session" && init?.method === "DELETE"
+    );
+    expect(deleteCall?.[1]).toMatchObject({
+      credentials: "same-origin",
+      headers: {
+        "content-type": "application/json",
+        "x-aais-csrf": "test-csrf-token",
+      },
+    });
+    expect(JSON.parse(String(deleteCall?.[1]?.body))).toEqual({
+      researchLogout: {
+        expectedVisitId: telemetryMocks.logoutContext.expectedVisitId,
+        failureClientEventId: telemetryMocks.logoutContext.failureClientEventId,
+        finalClientTime: telemetryMocks.logoutContext.finalClientTime,
+        operationId: expect.stringMatching(/^account-logout-test-/),
+        successClientEventId: telemetryMocks.logoutContext.successClientEventId,
+      },
+    });
+    expect(telemetryMocks.clearActor).toHaveBeenCalledOnce();
+  });
+
+  it("clears a revoked session but visibly preserves a missing final research acknowledgement", async () => {
+    setCsrfCookie();
+    telemetryMocks.logoutContext = {
+      expectedVisitId: "10000000-0000-4000-8000-000000000021",
+      failureClientEventId: "10000000-0000-4000-8000-000000000022",
+      finalClientTime: "2026-07-30T10:00:02.000Z",
+      operationId: "replaced-by-hook-operation",
+      successClientEventId: "10000000-0000-4000-8000-000000000023",
+    };
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.startsWith("/api/learning/session") && (!init || init.method === "GET")) {
+        return Response.json({ session: createClientSessionFixture("") });
+      }
+      if (url === "/api/auth/app-session" && init?.method === "DELETE") {
+        return Response.json({
+          ok: false,
+          sessionRevoked: true,
+          researchLogoutAcknowledged: false,
+        }, { status: 503 });
+      }
+      return Response.json({ ok: true });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    window.localStorage.setItem("aais_student_id", "Bobie");
+
+    render(<LearningPage />);
+    fireEvent.click(screen.getByRole("button", { name: "Bobie 账户菜单" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "退出" }));
+
+    await waitFor(() => expect(browserNavigationMocks.replace).toHaveBeenCalledWith(
+      "/login?researchLogout=ack-failed",
+    ));
+    expect(window.sessionStorage.getItem("aais_research_logout_ack_gap_v1")).toBe("1");
+    expect(window.localStorage.getItem("aais_student_id")).toBeNull();
+    expect(telemetryMocks.clearActor).toHaveBeenCalledOnce();
+    expect(telemetryMocks.record.mock.calls
+      .map(([event]) => event)
+      .filter((event) => event.eventName === "account_logout" && event.outcome === "failure"))
+      .toHaveLength(0);
+  });
+
+  it("retains the actor and durable failure evidence when server logout revocation fails", async () => {
+    setCsrfCookie();
+    telemetryMocks.logoutContext = {
+      expectedVisitId: "10000000-0000-4000-8000-000000000011",
+      failureClientEventId: "10000000-0000-4000-8000-000000000012",
+      finalClientTime: "2026-07-30T10:00:01.000Z",
+      operationId: "replaced-by-hook-operation",
+      successClientEventId: "10000000-0000-4000-8000-000000000013",
+    };
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.startsWith("/api/learning/session") && (!init || init.method === "GET")) {
+        return Response.json({ session: createClientSessionFixture("") });
+      }
+      if (url === "/api/auth/app-session" && init?.method === "DELETE") {
+        return Response.json({
+          error: { code: "AAIS_LOGOUT_FAILED" },
+        }, { status: 503 });
+      }
+      return Response.json({ ok: true });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    window.localStorage.setItem("aais_student_id", "Bobie");
+    window.localStorage.setItem("aais_display_name", "Bobie");
+
+    render(<LearningPage />);
+    fireEvent.click(screen.getByRole("button", { name: "Bobie 账户菜单" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "退出" }));
+
+    expect(await screen.findByText("退出未完成，服务器会话仍保持有效。请恢复连接后重试。")).toBeTruthy();
+    const failureEvent = telemetryMocks.record.mock.calls
+      .map(([event]) => event)
+      .find((event) => event.eventName === "account_logout" && event.outcome === "failure");
+    const attemptedEvent = telemetryMocks.record.mock.calls
+      .map(([event]) => event)
+      .find((event) => event.eventName === "account_logout" && event.outcome === "attempted");
+    expect(failureEvent).toMatchObject({
+      clientEventId: telemetryMocks.logoutContext.failureClientEventId,
+      clientTime: telemetryMocks.logoutContext.finalClientTime,
+      detail: {
+        operation_id: attemptedEvent.detail.operation_id,
+        error_kind: "session_revoke_failed",
+      },
+    });
+    expect(telemetryMocks.flush).toHaveBeenCalledTimes(2);
+    expect(telemetryMocks.clearActor).not.toHaveBeenCalled();
+    expect(browserNavigationMocks.replace).not.toHaveBeenCalled();
+    expect(window.localStorage.getItem("aais_student_id")).toBe("Bobie");
+    expect(window.localStorage.getItem("aais_display_name")).toBe("Bobie");
   });
 
   it("announces logout progress while the app-session revoke request is pending", async () => {
@@ -703,13 +1067,89 @@ describe("AAIS LearningPage", () => {
     expect((screen.getByRole("menuitem", { name: "退出" }) as HTMLButtonElement).disabled).toBe(true);
 
     fireEvent.click(screen.getByRole("menuitem", { name: "退出" }));
-    expect(fetchMock.mock.calls.filter(([input, init]) =>
-      String(input) === "/api/auth/app-session" && init?.method === "DELETE"
-    )).toHaveLength(1);
+    await waitFor(() => {
+      expect(fetchMock.mock.calls.filter(([input, init]) =>
+        String(input) === "/api/auth/app-session" && init?.method === "DELETE"
+      )).toHaveLength(1);
+    });
 
     logoutResponse.resolve(Response.json({ ok: true }));
 
-    await waitFor(() => expect(routerMocks.replace).toHaveBeenCalledWith("/login"));
+    await waitFor(() => expect(browserNavigationMocks.replace).toHaveBeenCalledWith("/login"));
+  });
+
+  it("abandons a stale logout continuation after the actor generation changes", async () => {
+    const telemetryFlush = createDeferred<void>();
+    telemetryMocks.logoutContext = {
+      expectedVisitId: "10000000-0000-4000-8000-000000000071",
+      failureClientEventId: "10000000-0000-4000-8000-000000000072",
+      finalClientTime: "2026-08-01T10:00:00.000Z",
+      operationId: "replaced-by-hook-operation",
+      successClientEventId: "10000000-0000-4000-8000-000000000073",
+    };
+    telemetryMocks.flush.mockImplementation(async () => {
+      await telemetryFlush.promise;
+      return undefined;
+    });
+    telemetryMocks.actorGeneration = 71;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.startsWith("/api/learning/session") && (!init || init.method === "GET")) {
+        return Response.json({ session: createClientSessionFixture("") });
+      }
+      return Response.json({ ok: true });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<LearningPage />);
+    fireEvent.click(screen.getByRole("button", { name: "Bobie 账户菜单" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "退出" }));
+    expect(telemetryMocks.flush).toHaveBeenCalled();
+
+    telemetryMocks.actorGeneration = 72;
+    telemetryFlush.resolve();
+    await waitFor(() => {
+      expect((screen.getByRole("menuitem", { name: "退出" }) as HTMLButtonElement).disabled).toBe(false);
+    });
+
+    expect(fetchMock.mock.calls.some(([input, init]) => (
+      String(input) === "/api/auth/app-session" && init?.method === "DELETE"
+    ))).toBe(false);
+    expect(telemetryMocks.clearActor).not.toHaveBeenCalled();
+    expect(browserNavigationMocks.replace).not.toHaveBeenCalled();
+  });
+
+  it("forces a full login reload after revocation without clearing a newer actor", async () => {
+    const logoutResponse = createDeferred<Response>();
+    telemetryMocks.actorGeneration = 81;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.startsWith("/api/learning/session") && (!init || init.method === "GET")) {
+        return Response.json({ session: createClientSessionFixture("") });
+      }
+      if (url === "/api/auth/app-session" && init?.method === "DELETE") {
+        return logoutResponse.promise;
+      }
+      return Response.json({ ok: true });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<LearningPage />);
+    fireEvent.click(screen.getByRole("button", { name: "Bobie 账户菜单" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "退出" }));
+    await waitFor(() => expect(fetchMock.mock.calls.some(([input, init]) => (
+      String(input) === "/api/auth/app-session" && init?.method === "DELETE"
+    ))).toBe(true));
+
+    telemetryMocks.actorGeneration = 82;
+    window.localStorage.setItem("aais_student_id", "newer-actor");
+    window.localStorage.setItem("aais_display_name", "Newer actor");
+    logoutResponse.resolve(Response.json({ sessionRevoked: true }));
+
+    await waitFor(() => expect(browserNavigationMocks.replace).toHaveBeenCalledWith("/login"));
+    expect(telemetryMocks.clearActor).not.toHaveBeenCalled();
+    expect(window.localStorage.getItem("aais_student_id")).toBe("newer-actor");
+    expect(window.localStorage.getItem("aais_display_name")).toBe("Newer actor");
   });
 
   it("shows A1 and A2 with university education avatars instead of childlike cartoon badges", async () => {
@@ -755,7 +1195,17 @@ describe("AAIS LearningPage", () => {
 
     render(<LearningPage />);
 
-    fireEvent.click(screen.getByRole("button", { name: "看 A2 专家如何思考" }));
+    fireEvent.click(screen.getByRole("button", { name: "开始示范" }));
+
+    await waitFor(() => {
+      const guideRequest = fetchMock.mock.calls.find(([input, init]) =>
+        String(input) === "/api/learning/ai-guide" && init?.method === "POST"
+      );
+      expect(JSON.parse(String(guideRequest?.[1]?.body))).toMatchObject({
+        learnerInput: "@专家智能体 请示范一次元认知思考过程。",
+        targetAgentIds: ["A2"],
+      });
+    });
 
     const a2Avatar = await screen.findByRole("img", {
       name: "A2 专家智能体大学教育风格头像",
@@ -842,6 +1292,64 @@ describe("AAIS LearningPage", () => {
 
     expect(await screen.findByText("A1 已给出分步支架。")).toBeTruthy();
     expect(screen.getByText("离线支架模式")).toBeTruthy();
+  });
+
+  it("does not open the file picker or launch a quick start when admission is rejected", () => {
+    vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>(() => undefined)));
+    render(<LearningPage />);
+    const fileInput = screen.getByLabelText("选择上传文件") as HTMLInputElement;
+    const fileInputClick = vi.spyOn(fileInput, "click");
+    telemetryMocks.admit.mockClear();
+    telemetryMocks.admit.mockReturnValue(false);
+
+    fireEvent.click(screen.getByRole("button", { name: "Upload file" }));
+    fireEvent.click(screen.getByRole("button", { name: "明确学习目标" }));
+
+    expect(fileInputClick).not.toHaveBeenCalled();
+    expect(screen.queryByText("请帮我明确这个学习任务的目标，并拆成下一步。")).toBeNull();
+    expect(telemetryMocks.admit.mock.calls.map(([event]) => event.eventName)).toEqual([
+      "guide_attachment_picker_opened",
+      "guide_quick_start_selected",
+    ]);
+  });
+
+  it("prevents external guide navigation when link admission is rejected", async () => {
+    setCsrfCookie();
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.startsWith("/api/learning/session") && (!init || init.method === "GET")) {
+        return Response.json({ session: createClientSessionFixture("") });
+      }
+      if (url === "/api/learning/ai-guide" && init?.method === "POST") {
+        return Response.json({
+          message: { text: "已找到资料。" },
+          turns: [{
+            agentId: "A1",
+            label: "导学智能体",
+            content: "[外部资料](https://example.com/research)",
+            actions: ["respond"],
+          }],
+        });
+      }
+      return Response.json({ ok: true });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<LearningPage />);
+    const guideInput = await screen.findByLabelText("向智能导学输入你的想法");
+    fireEvent.change(guideInput, { target: { value: "请提供资料" } });
+    fireEvent.click(screen.getByRole("button", { name: "发送" }));
+    const externalLink = await screen.findByRole("link", { name: "外部资料" });
+    telemetryMocks.admit.mockReturnValue(false);
+
+    expect(fireEvent.click(externalLink)).toBe(false);
+    expect(telemetryMocks.admit).toHaveBeenLastCalledWith(expect.objectContaining({
+      eventName: "guide_response_link_opened",
+      outcome: "success",
+      detail: expect.objectContaining({
+        link_host: "external",
+        link_protocol: "https:",
+      }),
+    }));
   });
 
   it("opens each content display item with a refined back control and reading layout", () => {
@@ -1273,8 +1781,12 @@ describe("AAIS LearningPage", () => {
     expect(await screen.findByText("strategy.md")).toBeTruthy();
     expect(screen.getByText(`${file.size} B`)).toBeTruthy();
 
+    telemetryMocks.admit.mockReturnValue(false);
     fireEvent.click(screen.getByRole("button", { name: "移除 strategy.md" }));
+    expect(screen.getByText("strategy.md")).toBeTruthy();
 
+    telemetryMocks.admit.mockReturnValue(true);
+    fireEvent.click(screen.getByRole("button", { name: "移除 strategy.md" }));
     expect(screen.queryByText("strategy.md")).toBeNull();
   });
 
@@ -1284,6 +1796,7 @@ describe("AAIS LearningPage", () => {
       type: "text/markdown",
     });
     vi.spyOn(file, "text").mockImplementation(async () => fileRead.promise);
+    telemetryMocks.actorGeneration = 41;
 
     render(<LearningPage />);
 
@@ -1301,12 +1814,52 @@ describe("AAIS LearningPage", () => {
     expect((screen.getByRole("button", { name: "Upload file" }) as HTMLButtonElement).disabled).toBe(true);
     expect((screen.getByRole("button", { name: "发送" }) as HTMLButtonElement).disabled).toBe(true);
 
+    telemetryMocks.actorGeneration = 42;
     fileRead.resolve("延迟读取的上传材料。");
 
     expect(await screen.findByText("delayed.md")).toBeTruthy();
     expect(screen.queryByText("文件正在读取...")).toBeNull();
     expect((screen.getByRole("button", { name: "Upload file" }) as HTMLButtonElement).disabled).toBe(false);
     expect((screen.getByRole("button", { name: "发送" }) as HTMLButtonElement).disabled).toBe(false);
+    const attachmentAttempt = telemetryMocks.admit.mock.calls
+      .map(([event]) => event)
+      .find((event) => event.eventName === "guide_attachment_add")!;
+    const attachmentSuccess = getLastResearchEvent("guide_attachment_add");
+    expect(attachmentAttempt).toMatchObject({
+      actorGeneration: 41,
+      outcome: "attempted",
+    });
+    expect(attachmentSuccess).toMatchObject({
+      actorGeneration: 41,
+      outcome: "success",
+    });
+    expect(attachmentAttempt.detail.operation_id).toBe(attachmentSuccess.detail.operation_id);
+  });
+
+  it("never places an unsupported browser MIME token into research telemetry", async () => {
+    const file = new File(["synthetic"], "unsupported.png", {
+      type: "image/png+PrivateToken",
+    });
+    render(<LearningPage />);
+
+    fireEvent.change(screen.getByLabelText("选择上传文件"), {
+      target: { files: [file] },
+    });
+
+    await waitFor(() => {
+      expect(telemetryMocks.record.mock.calls
+        .map(([event]) => event)
+        .some((event) => (
+          event.eventName === "guide_attachment_add"
+          && event.outcome === "failure"
+        ))).toBe(true);
+    });
+    const attachmentEvents = telemetryMocks.record.mock.calls
+      .map(([event]) => event)
+      .filter((event) => event.eventName === "guide_attachment_add");
+    expect(attachmentEvents).toHaveLength(2);
+    expect(attachmentEvents.every((event) => event.detail.mime_type === undefined)).toBe(true);
+    expect(JSON.stringify(attachmentEvents)).not.toContain("PrivateToken");
   });
 
   it("sends selected file snippets with the next guide request and clears attachments after success", async () => {
@@ -1356,9 +1909,10 @@ describe("AAIS LearningPage", () => {
 
   it("rejects oversized guide attachments inline before sending them", async () => {
     const fetchMock = installGuideFetchMock();
-    const oversized = new File(["x".repeat(2 * 1024 * 1024 + 1)], "too-large.txt", {
+    const oversized = new File(["x"], "too-large.txt", {
       type: "text/plain",
     });
+    Object.defineProperty(oversized, "size", { value: 20 * 1024 * 1024 + 1 });
 
     render(<LearningPage />);
 
@@ -1368,7 +1922,7 @@ describe("AAIS LearningPage", () => {
       },
     });
 
-    expect(await screen.findByText("文件 too-large.txt 超过 2 MB。")).toBeTruthy();
+    expect(await screen.findByText("文件 too-large.txt 超过 20 MB 上传上限。")).toBeTruthy();
     expect(screen.queryByText("too-large.txt")).toBeNull();
     expect(fetchMock).not.toHaveBeenCalledWith(
       "/api/learning/ai-guide",
@@ -1487,6 +2041,36 @@ describe("AAIS LearningPage", () => {
     expect(splitLayout.style.getPropertyValue("--content-panel-width")).toBe("416px");
   });
 
+  it("gates pointer and keyboard resize before either width mutation", () => {
+    render(<LearningPage />);
+    const splitLayout = screen.getByTestId("learning-split-layout");
+    const divider = screen.getByRole("separator", { name: "调整内容展示区域宽度" });
+    vi.spyOn(splitLayout, "getBoundingClientRect").mockReturnValue({
+      x: 0,
+      y: 0,
+      left: 0,
+      top: 0,
+      right: 1200,
+      bottom: 700,
+      width: 1200,
+      height: 700,
+      toJSON: () => ({}),
+    });
+    telemetryMocks.admit.mockReturnValue(false);
+
+    fireEvent.pointerDown(divider, { clientX: 900, pointerId: 7 });
+    fireEvent.pointerMove(document, { clientX: 760, pointerId: 7 });
+    fireEvent.pointerUp(document, { pointerId: 7 });
+    fireEvent.keyDown(divider, { key: "ArrowRight" });
+
+    expect(splitLayout.style.getPropertyValue("--content-panel-width")).toBe("600px");
+    const resizeAdmissions = telemetryMocks.admit.mock.calls
+      .map(([event]) => event)
+      .filter((event) => event.eventName === "panel_resize_completed");
+    expect(resizeAdmissions).toHaveLength(2);
+    expect(resizeAdmissions.map((event) => event.outcome)).toEqual(["attempted", "success"]);
+  });
+
   it("uses readable typography in the document editor area", () => {
     render(<LearningPage />);
 
@@ -1497,12 +2081,15 @@ describe("AAIS LearningPage", () => {
     const boldButton = screen.getByRole("button", { name: "加粗" });
     const artifactInput = screen.getByLabelText("在这里写下任务理解、计划、执行过程或最终产出。");
 
+    expect(screen.getByRole("toolbar", { name: "文档格式工具" })).toBeTruthy();
     expect(titleInput.className).toContain("h-12");
     expect(titleInput.className).toContain("text-[17px]");
     expect(fontSelect.className).toContain("h-10");
     expect(fontSelect.className).toContain("text-base");
     expect(boldButton.className).toContain("h-10");
     expect(boldButton.className).toContain("text-base");
+    expect(boldButton.getAttribute("aria-pressed")).toBe("false");
+    expect(screen.getByRole("button", { name: "左对齐" }).getAttribute("aria-pressed")).toBe("true");
     expect(artifactInput.getAttribute("contenteditable")).toBe("true");
     expect((artifactInput as HTMLElement).style.fontSize).toBe("17px");
     expect(artifactInput.className).toContain("leading-7");
@@ -1561,6 +2148,111 @@ describe("AAIS LearningPage", () => {
     expect(execCommand).toHaveBeenCalledWith("formatBlock", false, "<h1>");
     expect(execCommand).toHaveBeenCalledWith("formatBlock", false, "<h2>");
     expect(execCommand).toHaveBeenCalledWith("formatBlock", false, "<h3>");
+  });
+
+  it("does not apply editor formatting before its success event is admitted", () => {
+    const execCommand = installExecCommandMock();
+    render(<LearningPage />);
+    fireEvent.click(screen.getByRole("button", { name: "文档编辑" }));
+    const artifactInput = screen.getByRole("textbox", {
+      name: "在这里写下任务理解、计划、执行过程或最终产出。",
+    });
+    telemetryMocks.admit.mockReturnValue(false);
+
+    fireEvent.change(screen.getByLabelText("字号"), { target: { value: "24" } });
+    fireEvent.click(screen.getByRole("button", { name: "加粗" }));
+
+    expect((artifactInput as HTMLElement).style.fontSize).toBe("17px");
+    expect(execCommand).not.toHaveBeenCalled();
+    const formatAdmissions = telemetryMocks.admit.mock.calls
+      .map(([event]) => event)
+      .filter((event) => event.eventName === "editor_format_applied");
+    expect(formatAdmissions).toHaveLength(2);
+    expect(formatAdmissions.every((event) => event.outcome === "success")).toBe(true);
+  });
+
+  it("applies inline and alignment formatting with accessible pressed states when browser commands fail", () => {
+    Object.defineProperty(document, "execCommand", {
+      configurable: true,
+      value: vi.fn(() => false),
+    });
+    render(<LearningPage />);
+    fireEvent.click(screen.getByRole("button", { name: "文档编辑" }));
+    const artifactInput = screen.getByRole("textbox", {
+      name: "在这里写下任务理解、计划、执行过程或最终产出。",
+    });
+    setRichEditorContent(artifactInput, "<p>需要保留格式</p>");
+    const paragraph = artifactInput.querySelector("p") as HTMLParagraphElement;
+    const range = document.createRange();
+    range.selectNodeContents(paragraph);
+    window.getSelection()?.removeAllRanges();
+    window.getSelection()?.addRange(range);
+    fireEvent.mouseUp(artifactInput);
+
+    fireEvent.click(screen.getByRole("button", { name: "加粗" }));
+    fireEvent.click(screen.getByRole("button", { name: "斜体" }));
+    fireEvent.click(screen.getByRole("button", { name: "居中" }));
+
+    expect(artifactInput.innerHTML).toContain("<strong><em>需要保留格式</em></strong>");
+    expect((artifactInput.querySelector("p") as HTMLParagraphElement).style.textAlign).toBe("center");
+    expect(screen.getByRole("button", { name: "加粗" }).getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByRole("button", { name: "斜体" }).getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByRole("button", { name: "居中" }).getAttribute("aria-pressed")).toBe("true");
+  });
+
+  it("removes inline formatting only from the selected text while preserving selection", () => {
+    Object.defineProperty(document, "execCommand", {
+      configurable: true,
+      value: vi.fn(() => false),
+    });
+    render(<LearningPage />);
+    fireEvent.click(screen.getByRole("button", { name: "文档编辑" }));
+    const artifactInput = screen.getByRole("textbox", {
+      name: "在这里写下任务理解、计划、执行过程或最终产出。",
+    });
+    setRichEditorContent(artifactInput, "<p><strong>abcdef</strong></p>");
+    const textNode = artifactInput.querySelector("strong")?.firstChild as Text;
+    const range = document.createRange();
+    range.setStart(textNode, 2);
+    range.setEnd(textNode, 4);
+    window.getSelection()?.removeAllRanges();
+    window.getSelection()?.addRange(range);
+    fireEvent.mouseUp(artifactInput);
+
+    expect(screen.getByRole("button", { name: "加粗" }).getAttribute("aria-pressed")).toBe("true");
+    fireEvent.click(screen.getByRole("button", { name: "加粗" }));
+
+    expect(artifactInput.innerHTML).toBe("<p><strong>ab</strong>cd<strong>ef</strong></p>");
+    expect(window.getSelection()?.toString()).toBe("cd");
+    expect(screen.getByRole("button", { name: "加粗" }).getAttribute("aria-pressed")).toBe("false");
+  });
+
+  it("applies alignment fallback to every block intersecting the selection", () => {
+    Object.defineProperty(document, "execCommand", {
+      configurable: true,
+      value: vi.fn(() => false),
+    });
+    render(<LearningPage />);
+    fireEvent.click(screen.getByRole("button", { name: "文档编辑" }));
+    const artifactInput = screen.getByRole("textbox", {
+      name: "在这里写下任务理解、计划、执行过程或最终产出。",
+    });
+    setRichEditorContent(artifactInput, "<p>第一段</p><p>第二段</p>");
+    const paragraphs = artifactInput.querySelectorAll("p");
+    const range = document.createRange();
+    range.setStart(paragraphs[0].firstChild as Text, 0);
+    range.setEnd(paragraphs[1].firstChild as Text, paragraphs[1].textContent?.length ?? 0);
+    window.getSelection()?.removeAllRanges();
+    window.getSelection()?.addRange(range);
+    fireEvent.mouseUp(artifactInput);
+
+    fireEvent.click(screen.getByRole("button", { name: "右对齐" }));
+
+    expect(Array.from(paragraphs).map((paragraph) => paragraph.style.textAlign)).toEqual([
+      "right",
+      "right",
+    ]);
+    expect(screen.getByRole("button", { name: "右对齐" }).getAttribute("aria-pressed")).toBe("true");
   });
 
   it("formats H1, H2, and H3 even when the browser command does not mutate the editor", () => {
@@ -1678,13 +2370,19 @@ describe("AAIS LearningPage", () => {
       return Response.json({ ok: true });
     });
     vi.stubGlobal("fetch", fetchMock);
+    telemetryMocks.actorGeneration = 51;
 
     render(<LearningPage />);
+    telemetryMocks.actorGeneration = 52;
 
     fireEvent.click(screen.getByRole("button", { name: "文档编辑" }));
     const artifactInput = await screen.findByLabelText("在这里写下任务理解、计划、执行过程或最终产出。");
     await waitFor(() => {
       expect(artifactInput.textContent).toBe("后端保存的训练记录");
+    });
+    expect(getLastResearchEvent("workspace_session_load")).toMatchObject({
+      actorGeneration: 51,
+      outcome: "success",
     });
     setRichEditorContent(artifactInput, "新的过程记录");
 
@@ -1780,6 +2478,62 @@ describe("AAIS LearningPage", () => {
       taskId: "training_task_1",
       artifactText: "abc",
     });
+  });
+
+  it("keeps newer rich text intact and queues its save while an older save is in flight", async () => {
+    setCsrfCookie();
+    const firstSaveResponse = createDeferred<Response>();
+    const secondSaveResponse = createDeferred<Response>();
+    let saveRequestCount = 0;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.startsWith("/api/learning/session") && (!init || init.method === "GET")) {
+        return Response.json({ session: createClientSessionFixture("") });
+      }
+      if (url === "/api/learning/session" && init?.method === "PATCH") {
+        saveRequestCount += 1;
+        return saveRequestCount === 1
+          ? firstSaveResponse.promise
+          : secondSaveResponse.promise;
+      }
+      return Response.json({ ok: true });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<LearningPage />);
+    fireEvent.click(screen.getByRole("button", { name: "文档编辑" }));
+    const artifactInput = await screen.findByRole("textbox", {
+      name: "在这里写下任务理解、计划、执行过程或最终产出。",
+    });
+    const firstHtml = "<p><strong>第一版</strong></p>";
+    const latestHtml = "<p><strong>第一版</strong><em>，继续输入第二版</em></p>";
+
+    setRichEditorContent(artifactInput, firstHtml);
+    fireEvent.blur(artifactInput);
+    expect(getPatchCalls(fetchMock)).toHaveLength(1);
+
+    setRichEditorContent(artifactInput, latestHtml);
+    fireEvent.blur(artifactInput);
+    expect(getPatchCalls(fetchMock)).toHaveLength(1);
+    expect(screen.getByRole("status").textContent).toBe("正在保存文档，最新更改已排队。");
+
+    firstSaveResponse.resolve(Response.json({
+      session: createClientSessionFixture(firstHtml),
+    }));
+
+    await waitFor(() => {
+      expect(getPatchCalls(fetchMock)).toHaveLength(2);
+    });
+    expect(artifactInput.innerHTML).toBe(latestHtml);
+    expect(JSON.parse(String(getPatchCalls(fetchMock)[1][1]?.body))).toMatchObject({
+      action: "save-artifact",
+      artifactText: latestHtml,
+    });
+
+    secondSaveResponse.resolve(Response.json({
+      session: createClientSessionFixture(latestHtml),
+    }));
+    await screen.findByText("文档已保存。");
+    expect(artifactInput.innerHTML).toBe(latestHtml);
   });
 
   it("flushes a pending artifact save when the learner leaves the editor", async () => {
@@ -1972,6 +2726,132 @@ describe("AAIS LearningPage", () => {
     const reopenedDocument = screen.getByLabelText("在这里写下任务理解、计划、执行过程或最终产出。");
     expect(reopenedDocument.innerHTML).toContain("<strong>重点记录</strong>");
   });
+
+  it("does not emit research events from guide, title, or document keystroke-level changes", () => {
+    vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>(() => undefined)));
+    render(<LearningPage />);
+
+    fireEvent.click(screen.getByRole("button", { name: "文档编辑" }));
+    telemetryMocks.record.mockClear();
+    fireEvent.change(screen.getByLabelText("向智能导学输入你的想法"), {
+      target: { value: "未提交的导学草稿" },
+    });
+    fireEvent.change(screen.getByLabelText("文档标题"), {
+      target: { value: "尚未提交的标题" },
+    });
+    const editor = screen.getByLabelText("在这里写下任务理解、计划、执行过程或最终产出。");
+    editor.innerHTML = "<p>逐键击不应上报</p>";
+    fireEvent.input(editor);
+    fireEvent.keyUp(editor, { key: "入" });
+
+    expect(telemetryMocks.record).not.toHaveBeenCalled();
+  });
+
+  it("admits AI work before fetch and preserves retry plus success with one operation id", async () => {
+    setCsrfCookie();
+    let guideAttempts = 0;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.startsWith("/api/learning/session") && (!init || init.method === "GET")) {
+        return Response.json({ session: createClientSessionFixture("") });
+      }
+      if (url === "/api/learning/ai-guide" && init?.method === "POST") {
+        guideAttempts += 1;
+        if (guideAttempts === 1) {
+          return Response.json({});
+        }
+        return Response.json({
+          message: { text: "AAIS 智能体已回复。" },
+          turns: [{
+            agentId: "A1",
+            label: "导学智能体",
+            content: "已完成重试。",
+            actions: ["respond"],
+          }],
+          orchestration: {
+            runtime: {
+              timings: { fallback: false },
+            },
+          },
+        });
+      }
+      return Response.json({ ok: true });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<LearningPage />);
+    await screen.findByRole("button", { name: "发送" });
+    telemetryMocks.record.mockClear();
+    telemetryMocks.actorGeneration = 61;
+
+    const rawQuestion = "这段原始问题不应进入遥测 detail";
+    fireEvent.change(screen.getByLabelText("向智能导学输入你的想法"), {
+      target: { value: rawQuestion },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "发送" }));
+    telemetryMocks.actorGeneration = 62;
+
+    expect(await screen.findByText("已完成重试。")).toBeTruthy();
+    const attemptedEvent = telemetryMocks.admit.mock.calls
+      .map(([event]) => event)
+      .find((event) => event.eventName === "ai_guide_submit")!;
+    const aiEvents = telemetryMocks.record.mock.calls
+      .map(([event]) => event)
+      .filter((event) => event.eventName === "ai_guide_submit");
+    expect(attemptedEvent).toMatchObject({
+      actorGeneration: 61,
+      outcome: "attempted",
+    });
+    expect(aiEvents).toHaveLength(3);
+    expect(aiEvents[0]).toMatchObject({
+      actorGeneration: 61,
+      outcome: "attempted",
+    });
+    expect(aiEvents[1]).toMatchObject({
+      actorGeneration: 61,
+      outcome: "retry",
+      detail: {
+        attempt_number: 2,
+        retry_reason: "stream_protocol_fallback",
+      },
+    });
+    expect(aiEvents[2]).toMatchObject({
+      actorGeneration: 61,
+      outcome: "success",
+      detail: {
+        attempt_number: 2,
+        retry_reason: "stream_protocol_fallback",
+      },
+    });
+    expect(aiEvents[2].latencyMs).toEqual(expect.any(Number));
+    expect(attemptedEvent.detail.operation_id).toBe(aiEvents[0].detail.operation_id);
+    expect(aiEvents[0].detail.operation_id).toBe(aiEvents[1].detail.operation_id);
+    expect(aiEvents[1].detail.operation_id).toBe(aiEvents[2].detail.operation_id);
+    expect(JSON.stringify([attemptedEvent, ...aiEvents])).not.toContain(rawQuestion);
+    expect(attemptedEvent.detail.prompt_length).toBe(rawQuestion.length);
+  });
+
+  it("does not mutate the guide transcript or call AI when admission is rejected", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).startsWith("/api/learning/session") && (!init || init.method === "GET")) {
+        return Response.json({ session: createClientSessionFixture("") });
+      }
+      return Response.json({ ok: true });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<LearningPage />);
+    const guideInput = await screen.findByLabelText("向智能导学输入你的想法");
+    telemetryMocks.admit.mockImplementation((event) => event.eventName !== "ai_guide_submit");
+
+    fireEvent.change(guideInput, { target: { value: "不应发送的原始文本" } });
+    fireEvent.click(screen.getByRole("button", { name: "发送" }));
+
+    expect(fetchMock.mock.calls.some(([input, init]) =>
+      String(input) === "/api/learning/ai-guide" && init?.method === "POST"
+    )).toBe(false);
+    expect((guideInput as HTMLInputElement).value).toBe("不应发送的原始文本");
+    expect(screen.queryByText("不应发送的原始文本", { selector: "p" })).toBeNull();
+    expect(JSON.stringify(telemetryMocks.admit.mock.calls)).not.toContain("不应发送的原始文本");
+  });
 });
 
 function setCsrfCookie() {
@@ -1982,6 +2862,13 @@ function getPatchCalls(fetchMock: ReturnType<typeof vi.fn>) {
   return fetchMock.mock.calls.filter(([input, init]) =>
     String(input) === "/api/learning/session" && init?.method === "PATCH"
   );
+}
+
+function getLastResearchEvent(eventName: string) {
+  return telemetryMocks.record.mock.calls
+    .map(([event]) => event)
+    .filter((event) => event.eventName === eventName)
+    .at(-1);
 }
 
 function setRichEditorContent(editor: HTMLElement, value: string) {
@@ -2021,6 +2908,20 @@ function createClientSessionFixture(artifactText: string) {
     ],
     guideMessages: [],
     events: [],
+  };
+}
+
+function createRequiredResearchBoundary(): LearningPageResearchBoundary {
+  return {
+    required: true,
+    initialVisit: {
+      participantId: "participant-01",
+      studyRunId: "study-run-01",
+      visitId: "visit-01",
+      condition: "condition-a",
+      appVersion: "0.1.0",
+      commitSha: "abc1234",
+    },
   };
 }
 

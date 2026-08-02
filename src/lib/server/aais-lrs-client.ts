@@ -4,6 +4,7 @@ import {
   aaisEventDefinitions,
   type AaisEvent,
 } from "@/data/aais";
+import { requiresAaisResearchDataPlaneIsolation } from "@/lib/server/aais-research-contract";
 
 type AaisXapiVerb =
   | "initialized"
@@ -106,6 +107,7 @@ const eventVerbMap: Record<string, AaisXapiVerb> = {
   expert_trace_compared: "experienced",
   monitoring_pause_detected: "experienced",
   planning_submitted: "generated",
+  recommendation_override_recorded: "completed",
   scaffold_request: "requested",
   scaffold_self_check_started: "attempted",
   self_report_saved: "generated",
@@ -128,10 +130,12 @@ const verbIdMap: Record<AaisXapiVerb, string> = {
 };
 
 export function getLrsConfigurationStatus() {
-  const config = readLrsConfig();
+  const disabledByResearchIsolation = requiresAaisResearchDataPlaneIsolation();
+  const config = disabledByResearchIsolation ? null : readLrsConfig();
   return {
     configured: Boolean(config),
     requiredEnv: ["LRS_ENDPOINT", "LRS_USERNAME", "LRS_PASSWORD"],
+    disabledByResearchIsolation,
   };
 }
 
@@ -223,6 +227,12 @@ export async function sendAaisEventsToLrs(
   events: AaisEvent[],
   options: LrsClientOptions = {},
 ) {
+  if (requiresAaisResearchDataPlaneIsolation()) {
+    return {
+      status: "not_configured" as const,
+      sent: 0,
+    };
+  }
   const config = options.config ?? readLrsConfig();
   if (!config) {
     return {
@@ -375,10 +385,16 @@ export function createAaisLrsDeliveryQueue(options: AaisLrsDeliveryQueueOptions 
 const defaultAaisLrsDeliveryQueue = createAaisLrsDeliveryQueue();
 
 export function enqueueAaisLrsEvents(events: AaisEvent[]) {
+  if (requiresAaisResearchDataPlaneIsolation()) {
+    return defaultAaisLrsDeliveryQueue.getStatus();
+  }
   return defaultAaisLrsDeliveryQueue.enqueue(events);
 }
 
 export function flushAaisLrsDeliveryQueue() {
+  if (requiresAaisResearchDataPlaneIsolation()) {
+    return Promise.resolve(defaultAaisLrsDeliveryQueue.getStatus());
+  }
   return defaultAaisLrsDeliveryQueue.flush();
 }
 
@@ -387,6 +403,12 @@ export function getAaisLrsDeliveryQueueStatus() {
 }
 
 export async function probeAaisLrsConnection(options: LrsClientOptions = {}) {
+  if (requiresAaisResearchDataPlaneIsolation()) {
+    return {
+      status: "not_configured" as const,
+      configured: false,
+    };
+  }
   const config = options.config ?? readLrsConfig();
   if (!config) {
     return {
@@ -436,6 +458,9 @@ export async function sendAaisLrsHealthStatement(
 }
 
 function readLrsConfig(): LrsConfig | null {
+  if (requiresAaisResearchDataPlaneIsolation()) {
+    return null;
+  }
   const endpoint = process.env.LRS_ENDPOINT?.trim();
   const username = process.env.LRS_USERNAME?.trim();
   const password = process.env.LRS_PASSWORD?.trim();

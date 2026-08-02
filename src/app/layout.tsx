@@ -21,8 +21,16 @@ export default function RootLayout({
         <div id="aais-main-content" tabIndex={-1}>
           {children}
         </div>
-        <Analytics />
+        {shouldEnableAaisVercelAnalytics() ? <Analytics /> : null}
       </body>
     </html>
   );
+}
+
+export function shouldEnableAaisVercelAnalytics(
+  env: Record<string, string | undefined> = process.env,
+) {
+  return env.AAIS_RESEARCH_MODE?.trim().toLowerCase() !== "true"
+    && env.AAIS_RESEARCH_REQUIRED?.trim().toLowerCase() !== "true"
+    && env.AAIS_RESEARCH_ENVIRONMENT?.trim().toLowerCase() !== "research";
 }

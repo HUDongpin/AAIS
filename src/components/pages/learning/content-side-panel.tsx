@@ -5,6 +5,10 @@ import {
   minContentPanelWidth,
 } from "@/components/pages/learning/learning-page-constants";
 import {
+  admitAaisResearchAction,
+  createAaisResearchOperationId,
+} from "@/lib/client/aais-research-telemetry";
+import {
   ContentDisplay,
   contentDisplayItems,
 } from "@/components/pages/learning/content-display";
@@ -29,18 +33,45 @@ export function ContentResizeSeparator({
   setContentPanelWidth: (width: number) => void;
 }) {
   function handleKeyDown(event: KeyboardEvent<HTMLDivElement>) {
+    let nextWidth: number | null = null;
+    let applyResize: (() => void) | null = null;
     if (event.key === "ArrowLeft") {
       event.preventDefault();
-      onResizeBy(contentPanelResizeStep);
+      nextWidth = Math.min(getMaxContentPanelWidth(), contentPanelWidth + contentPanelResizeStep);
+      applyResize = () => onResizeBy(contentPanelResizeStep);
     } else if (event.key === "ArrowRight") {
       event.preventDefault();
-      onResizeBy(-contentPanelResizeStep);
+      nextWidth = Math.max(minContentPanelWidth, contentPanelWidth - contentPanelResizeStep);
+      applyResize = () => onResizeBy(-contentPanelResizeStep);
     } else if (event.key === "Home") {
       event.preventDefault();
-      setContentPanelWidth(minContentPanelWidth);
+      nextWidth = minContentPanelWidth;
+      applyResize = () => setContentPanelWidth(minContentPanelWidth);
     } else if (event.key === "End") {
       event.preventDefault();
-      setContentPanelWidth(getMaxContentPanelWidth());
+      const maxWidth = getMaxContentPanelWidth();
+      nextWidth = maxWidth;
+      applyResize = () => setContentPanelWidth(maxWidth);
+    }
+    if (
+      nextWidth !== null
+      && applyResize
+      && Math.round(nextWidth) !== Math.round(contentPanelWidth)
+    ) {
+      if (!admitAaisResearchAction({
+        eventName: "panel_resize_completed",
+        outcome: "success",
+        detail: {
+          operation_id: createAaisResearchOperationId("panel-resize"),
+          input_method: "keyboard",
+          trigger: event.key.toLowerCase(),
+          width_px: nextWidth,
+          delta_px: nextWidth - contentPanelWidth,
+        },
+      })) {
+        return;
+      }
+      applyResize();
     }
   }
 
@@ -91,11 +122,12 @@ export function ContentSidePanel({
   historyDocuments,
   onDocumentTitleChange,
   onDownloadDocument,
+  onBackContent,
+  onOpenContent,
   onOpenDocument,
   onRecordArtifact,
   onSaveAndCloseDocument,
   selectContentTab,
-  setActiveContentId,
 }: {
   activeContentId: ContentItemId | null;
   activeTab: ContentTab;
@@ -111,11 +143,12 @@ export function ContentSidePanel({
   historyDocuments: SavedLearningDocument[];
   onDocumentTitleChange: (value: string) => void;
   onDownloadDocument: () => void;
+  onBackContent: () => void;
+  onOpenContent: (id: ContentItemId) => void;
   onOpenDocument: (document: SavedLearningDocument) => void;
   onRecordArtifact: (value: string) => void;
   onSaveAndCloseDocument: () => void;
   selectContentTab: (nextTab: ContentTab) => void;
-  setActiveContentId: (id: ContentItemId | null) => void;
 }) {
   const activeContent =
     contentDisplayItems.find((item) => item.id === activeContentId) ?? null;
@@ -159,7 +192,7 @@ export function ContentSidePanel({
 
       {activeTab === "editor" && documentStatus ? (
         <p
-          className="border-b border-[#cce9d6] bg-[#effff4] px-3 py-2 text-sm font-semibold text-[#166534]"
+          className="relative z-10 min-h-9 shrink-0 break-words border-b border-[#cce9d6] bg-[#effff4] px-3 py-2 text-sm font-semibold leading-5 text-[#166534]"
           role="status"
           aria-live="polite"
           aria-atomic="true"
@@ -169,7 +202,7 @@ export function ContentSidePanel({
       ) : null}
       {activeTab === "editor" && documentError ? (
         <p
-          className="border-b border-[#f0b7c9] bg-[#fff1f5] px-3 py-2 text-sm font-semibold text-[#a12f56]"
+          className="relative z-10 min-h-9 shrink-0 break-words border-b border-[#f0b7c9] bg-[#fff1f5] px-3 py-2 text-sm font-semibold leading-5 text-[#a12f56]"
           role="alert"
           aria-live="assertive"
           aria-atomic="true"
@@ -183,8 +216,8 @@ export function ContentSidePanel({
           <ContentDisplay
             activeContent={activeContent}
             historyDocuments={historyDocuments}
-            onBack={() => setActiveContentId(null)}
-            onOpen={setActiveContentId}
+            onBack={onBackContent}
+            onOpen={onOpenContent}
             onOpenDocument={onOpenDocument}
           />
         ) : (

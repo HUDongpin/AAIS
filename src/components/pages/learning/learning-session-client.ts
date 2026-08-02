@@ -1,6 +1,7 @@
 import { getAaisApiErrorMessage } from "@/lib/client/aais-api-error";
 import { getAaisCsrfHeader } from "@/components/pages/learning/client-helpers";
 import type { AaisClientSession } from "@/components/pages/learning/learning-page-types";
+import type { AaisResearchLogoutContext } from "@/lib/client/aais-research-telemetry";
 
 type LearningSessionResponseBody = {
   session?: AaisClientSession;
@@ -16,6 +17,11 @@ type LearnerPrivacyResponseBody = {
     message?: string;
   };
   [key: string]: unknown;
+};
+
+type AaisAppSessionDeleteResult = {
+  researchAcknowledged: boolean;
+  sessionRevoked: boolean;
 };
 
 export type LearningSessionPatchBody = Record<string, unknown>;
@@ -40,11 +46,53 @@ export async function patchLearningSession(
   return readLearningSessionResponse(response, "AAIS session update failed.");
 }
 
-export async function deleteAaisAppSession(fetchImpl: typeof fetch = fetch) {
-  await fetchImpl("/api/auth/app-session", {
+export async function deleteAaisAppSession(
+  researchLogout: AaisResearchLogoutContext | null = null,
+  fetchImpl: typeof fetch = fetch,
+) {
+  const response = await fetchImpl("/api/auth/app-session", {
     method: "DELETE",
     credentials: "same-origin",
+    headers: researchLogout
+      ? {
+          "content-type": "application/json",
+          ...getAaisCsrfHeader(),
+        }
+      : {
+          ...getAaisCsrfHeader(),
+        },
+    ...(researchLogout ? { body: JSON.stringify({ researchLogout }) } : {}),
   });
+  const body = (await response.json().catch(() => null)) as {
+    researchLogout?: {
+      clientEventId?: unknown;
+      visitId?: unknown;
+    };
+    researchLogoutAcknowledged?: unknown;
+    sessionRevoked?: unknown;
+  } | null;
+  if (!response.ok) {
+    if (body?.sessionRevoked === true) {
+      return {
+        researchAcknowledged: false,
+        sessionRevoked: true,
+      } satisfies AaisAppSessionDeleteResult;
+    }
+    throw new Error("AAIS logout failed.");
+  }
+  if (researchLogout) {
+    const researchAcknowledged = body?.sessionRevoked === true
+      && body.researchLogout?.clientEventId === researchLogout.successClientEventId
+      && body.researchLogout.visitId === researchLogout.expectedVisitId;
+    return {
+      researchAcknowledged,
+      sessionRevoked: body?.sessionRevoked === true,
+    } satisfies AaisAppSessionDeleteResult;
+  }
+  return {
+    researchAcknowledged: false,
+    sessionRevoked: body?.sessionRevoked !== false,
+  } satisfies AaisAppSessionDeleteResult;
 }
 
 export async function fetchLearnerPrivacyData(fetchImpl: typeof fetch = fetch) {

@@ -3,6 +3,7 @@ import {
   type AaisCohortAnalyticsFilters,
   type AaisCohortLearnerPaginationInput,
   getAaisLearningStore,
+  isAaisLegacyResearchDataAccessDisabledError,
   isAaisLearningStorageConfigurationError,
   normalizeAaisCohortLearnerPagination,
   normalizeCohortAnalyticsFilters,
@@ -95,6 +96,14 @@ function getErrorResponseInput(error: unknown) {
     return {
       code: "AAIS_COHORT_ANALYTICS_FORBIDDEN",
       message: "AAIS teacher analytics requires educator authorization.",
+      status: 403,
+      extra: { secrets: "redacted" },
+    };
+  }
+  if (isAaisLegacyResearchDataAccessDisabledError(error)) {
+    return {
+      code: "AAIS_RESEARCH_CONTROLLED_EXPORT_REQUIRED",
+      message: "Legacy product analytics are disabled on the controlled research deployment.",
       status: 403,
       extra: { secrets: "redacted" },
     };

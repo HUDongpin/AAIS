@@ -29,6 +29,7 @@ export type GuideTurn = {
 };
 
 export type GuideQuickStart = {
+  id: "clarify_goal" | "expert_model" | "request_scaffold" | "organize_reflection";
   label: string;
   prompt: string;
 };

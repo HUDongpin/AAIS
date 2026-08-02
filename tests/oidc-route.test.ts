@@ -25,6 +25,8 @@ afterEach(() => {
     delete process.env[key];
   }
   delete process.env.AAIS_OIDC_TEACHER_GROUPS;
+  delete process.env.AAIS_OIDC_RESEARCHER_GROUPS;
+  delete process.env.AAIS_OIDC_RESEARCHER_EMAILS;
   delete process.env.AAIS_OIDC_ADMIN_EMAILS;
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
@@ -235,8 +237,9 @@ describe("AAIS OIDC auth routes", () => {
     info.mockRestore();
   });
 
-  it("maps configured OIDC educator claims into teacher and admin AAIS sessions", async () => {
+  it("maps configured OIDC claims into teacher, researcher, and admin AAIS sessions", async () => {
     process.env.AAIS_OIDC_TEACHER_GROUPS = "aais-teachers";
+    process.env.AAIS_OIDC_RESEARCHER_GROUPS = "aais-researchers";
     process.env.AAIS_OIDC_ADMIN_EMAILS = "admin@example.test";
     const { GET: start } = await import("@/app/api/auth/oidc/start/route");
     const { GET: callback } = await import("@/app/api/auth/oidc/callback/route");
@@ -270,7 +273,21 @@ describe("AAIS OIDC auth routes", () => {
       },
     });
 
-    const tokenQueue = [teacherToken, adminToken];
+    const researcherStart = await start(new Request("http://localhost/api/auth/oidc/start?from=/dashboard"));
+    const researcherAuthorizationUrl = new URL(researcherStart.headers.get("location") ?? "");
+    const researcherState = researcherAuthorizationUrl.searchParams.get("state") ?? "";
+    const researcherNonce = researcherAuthorizationUrl.searchParams.get("nonce") ?? "";
+    const researcherStateCookie = extractCookie(researcherStart.headers.get("set-cookie") ?? "", "aais_oidc_state");
+    const researcherToken = await createIdToken({
+      nonce: researcherNonce,
+      extraClaims: {
+        groups: ["aais-researchers"],
+        email: "researcher@example.test",
+        name: "Study Researcher",
+      },
+    });
+
+    const tokenQueue = [teacherToken, adminToken, researcherToken];
     const fetchMock = vi.fn<typeof fetch>(async (input, init) => {
       const url = String(input);
       if (url === oidcEnv.AAIS_OIDC_TOKEN_ENDPOINT) {
@@ -303,6 +320,13 @@ describe("AAIS OIDC auth routes", () => {
         },
       }),
     );
+    const researcherResponse = await callback(
+      new Request(`http://localhost/api/auth/oidc/callback?code=researcher-code&state=${encodeURIComponent(researcherState)}`, {
+        headers: {
+          cookie: `aais_oidc_state=${researcherStateCookie}`,
+        },
+      }),
+    );
 
     expect(verifyAaisSessionToken(extractCookie(teacherResponse.headers.get("set-cookie") ?? "", "aais_session")))
       .toMatchObject({
@@ -313,6 +337,11 @@ describe("AAIS OIDC auth routes", () => {
       .toMatchObject({
         role: "admin",
         displayName: "Enterprise Admin",
+      });
+    expect(verifyAaisSessionToken(extractCookie(researcherResponse.headers.get("set-cookie") ?? "", "aais_session")))
+      .toMatchObject({
+        role: "researcher",
+        displayName: "Study Researcher",
       });
   });
 

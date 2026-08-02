@@ -7,6 +7,9 @@ import {
 import { LoginPage } from "@/components/pages/login-page";
 
 const replace = vi.fn();
+const telemetryMocks = vi.hoisted(() => ({
+  clear: vi.fn(),
+}));
 
 vi.mock("next/navigation", () => ({
   useRouter: () => ({
@@ -38,19 +41,110 @@ vi.mock("next/image", () => ({
   },
 }));
 
+vi.mock("@/lib/client/aais-research-telemetry", () => ({
+  clearAaisResearchTelemetryForActor: telemetryMocks.clear,
+}));
+
 afterEach(() => {
   replace.mockReset();
+  telemetryMocks.clear.mockReset();
   vi.unstubAllGlobals();
   window.localStorage.clear();
+  window.sessionStorage.clear();
+  window.history.replaceState({}, "", "/login");
 });
 
 describe("AAIS LoginPage", () => {
+  it("warns that a revoked logout with no research ACK must not be marked complete", () => {
+    window.history.pushState({}, "", "/login?researchLogout=ack-failed");
+
+    render(<LoginPage />);
+
+    expect(screen.getByRole("alert").textContent).toContain(
+      "不要将本次实验标记为完成",
+    );
+
+    fireEvent.change(screen.getByRole("combobox", { name: "语言" }), {
+      target: {
+        value: "en-US",
+      },
+    });
+
+    expect(screen.getByRole("alert").textContent).toContain(
+      "do not mark this session complete",
+    );
+  });
   it("keeps the login route dynamic so runtime auth-mode changes are honored", () => {
     expect(loginRouteDynamic).toBe("force-dynamic");
     expect(loginRouteMetadata).toMatchObject({
       title: "CAAIS",
       description: "Cognitive Apprenticeship AI System",
     });
+  });
+
+  it("switches the login controls between Chinese and English and records the choice", () => {
+    const { container } = render(<LoginPage />);
+
+    const languageSelector = screen.getByRole("combobox", { name: "语言" }) as HTMLSelectElement;
+    expect(languageSelector.value).toBe("zh-CN");
+
+    fireEvent.change(languageSelector, {
+      target: {
+        value: "en-US",
+      },
+    });
+
+    expect(screen.getByRole("heading", { name: "Welcome to CAAIS" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Account and password" }).getAttribute("aria-pressed"))
+      .toBe("true");
+    expect(screen.getByLabelText("Account")).toBeTruthy();
+    expect(screen.getByLabelText("Password")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Sign in" })).toBeTruthy();
+    expect((container.firstElementChild as HTMLElement).lang).toBe("en-US");
+    expect(window.localStorage.getItem("aais_login_locale")).toBe("en-US");
+    expect(new URL(window.location.href).searchParams.get("lang")).toBe("en-US");
+  });
+
+  it("restores a previously selected login language when the URL has no language override", async () => {
+    window.localStorage.setItem("aais_login_locale", "en-US");
+
+    const { container } = render(<LoginPage />);
+
+    await waitFor(() => {
+      expect(screen.getByRole("heading", { name: "Welcome to CAAIS" })).toBeTruthy();
+    });
+    expect(screen.getByRole("combobox", { name: "Language" })).toHaveProperty("value", "en-US");
+    expect((container.firstElementChild as HTMLElement).lang).toBe("en-US");
+  });
+
+  it("exposes account login and forgot password as working accessible mode controls", async () => {
+    render(<LoginPage />);
+
+    const accountLogin = screen.getByRole("button", { name: "账号密码登录" });
+    const forgotPassword = screen.getByRole("button", { name: "忘记密码？" });
+
+    expect(accountLogin.getAttribute("aria-pressed")).toBe("true");
+    expect(accountLogin.getAttribute("aria-controls")).toBe("aais-account-login-form");
+    expect(forgotPassword.getAttribute("aria-pressed")).toBe("false");
+
+    fireEvent.click(forgotPassword);
+
+    expect(accountLogin.getAttribute("aria-pressed")).toBe("false");
+    expect(forgotPassword.getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByLabelText("账号邮箱")).toBeTruthy();
+    expect(screen.queryByLabelText("账号")).toBeNull();
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByLabelText("账号邮箱")));
+
+    fireEvent.click(screen.getByRole("button", { name: "发送重置邮件" }));
+    const alert = screen.getByRole("alert");
+    expect(alert.textContent).toBe("请输入账号邮箱。");
+    expect(alert.getAttribute("aria-live")).toBe("assertive");
+
+    fireEvent.click(accountLogin);
+
+    expect(accountLogin.getAttribute("aria-pressed")).toBe("true");
+    expect(forgotPassword.getAttribute("aria-pressed")).toBe("false");
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByLabelText("账号")));
   });
 
   it("temporarily hides the enterprise SSO entry", () => {
@@ -134,6 +228,7 @@ describe("AAIS LoginPage", () => {
     const busyButton = screen.getByRole("button", { name: "登录中..." }) as HTMLButtonElement;
     expect(busyButton.disabled).toBe(true);
     expect(screen.getByLabelText("账号").closest("form")?.getAttribute("aria-busy")).toBe("true");
+    expect((screen.getByRole("combobox", { name: "语言" }) as HTMLSelectElement).disabled).toBe(true);
 
     authResponse.resolve(Response.json({
       redirectTarget: "/learning",
@@ -147,6 +242,7 @@ describe("AAIS LoginPage", () => {
     }));
 
     await waitFor(() => expect(replace).toHaveBeenCalledWith("/learning"));
+    expect(telemetryMocks.clear).toHaveBeenCalledTimes(1);
   });
 
   it("prevents duplicate invite password saves while the request is pending", async () => {

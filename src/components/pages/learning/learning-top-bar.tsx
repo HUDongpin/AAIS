@@ -3,6 +3,7 @@ import { anthropicNavigationFontFamily } from "@/components/pages/learning/learn
 
 export function LearningTopBar({
   accountMenuOpen,
+  displayName,
   loggingOut,
   privacyBusy,
   onDeleteLearnerData,
@@ -11,6 +12,7 @@ export function LearningTopBar({
   onToggleAccountMenu,
 }: {
   accountMenuOpen: boolean;
+  displayName: string;
   loggingOut: boolean;
   privacyBusy: boolean;
   onDeleteLearnerData: () => void;
@@ -38,17 +40,17 @@ export function LearningTopBar({
       <div className="relative flex shrink-0 items-center gap-2">
         <button
           type="button"
-          aria-label="Bobie 账户菜单"
+          aria-label={`${displayName} 账户菜单`}
           aria-haspopup="menu"
           aria-expanded={accountMenuOpen}
           className="flex items-center gap-2 rounded-full px-1 py-0.5 text-[#0e0e0e] outline-none transition hover:bg-[#0e0e0e]/5 focus-visible:ring-2 focus-visible:ring-[#0e0e0e]/40"
           onClick={onToggleAccountMenu}
         >
-          <span className="text-xs font-medium">Bobie</span>
+          <span className="text-xs font-medium">{displayName}</span>
           <span
             role="img"
-            aria-label="Bobie 原创英雄人脸头像"
-            title="Bobie 原创英雄人脸头像"
+            aria-label={`${displayName} 原创英雄人脸头像`}
+            title={`${displayName} 原创英雄人脸头像`}
             className="relative grid size-8 place-items-center overflow-hidden rounded-full border-2 border-[#f8fafc] bg-[#26378f] shadow-[0_2px_10px_rgba(0,0,0,0.35)]"
           >
             <span aria-hidden="true" data-avatar-part="collar" className="absolute bottom-[-3px] h-3 w-[18px] rounded-t-full bg-[#d92332]" />
@@ -63,7 +65,7 @@ export function LearningTopBar({
         {accountMenuOpen ? (
           <div
             role="menu"
-            aria-label="Bobie 账户信息"
+            aria-label={`${displayName} 账户信息`}
             aria-busy={privacyBusy || loggingOut}
             className="absolute right-0 top-[calc(100%+6px)] z-40 min-w-[168px] rounded-lg border border-[#d9def0] bg-white py-1 text-[#172033] shadow-[0_12px_28px_rgba(0,0,0,0.22)]"
           >
@@ -102,5 +104,38 @@ export function LearningTopBar({
         ) : null}
       </div>
     </header>
+  );
+}
+
+export function LearningAccountFeedback({
+  error,
+  status,
+}: {
+  error: string;
+  status: string;
+}) {
+  return (
+    <>
+      {status ? (
+        <p
+          className="border-b border-[#cce9d6] bg-[#effff4] px-4 py-2 text-sm font-semibold text-[#166534]"
+          role="status"
+          aria-live="polite"
+          aria-atomic="true"
+        >
+          {status}
+        </p>
+      ) : null}
+      {error ? (
+        <p
+          className="border-b border-[#f0b7c9] bg-[#fff1f5] px-4 py-2 text-sm font-semibold text-[#a12f56]"
+          role="alert"
+          aria-live="assertive"
+          aria-atomic="true"
+        >
+          {error}
+        </p>
+      ) : null}
+    </>
   );
 }

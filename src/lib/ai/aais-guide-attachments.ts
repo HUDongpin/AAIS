@@ -1,7 +1,14 @@
+const aaisGuideAttachmentMaxFileSizeMiB = 20;
+
 export const aaisGuideAttachmentLimits = {
   maxFiles: 3,
-  maxFileSizeBytes: 2 * 1024 * 1024,
+  // Source files are parsed locally and never uploaded verbatim. This ceiling
+  // bounds browser CPU/RAM while the separate text cap bounds model context.
+  maxFileSizeMiB: aaisGuideAttachmentMaxFileSizeMiB,
+  maxFileSizeBytes: aaisGuideAttachmentMaxFileSizeMiB * 1024 * 1024,
   maxExtractedTextCharacters: 12_000,
+  maxTextReadBytes: 256 * 1024,
+  maxPdfPagesToScan: 100,
 } as const;
 
 export const aaisGuideAttachmentMediaTypes = [
@@ -97,7 +104,9 @@ function normalizeAttachmentSize(value: unknown, name: string) {
     throw new Error(`Guide attachment ${name} has an invalid size.`);
   }
   if (sizeBytes > aaisGuideAttachmentLimits.maxFileSizeBytes) {
-    throw new Error(`Guide attachment ${name} exceeds 2 MB.`);
+    throw new Error(
+      `Guide attachment ${name} exceeds the ${aaisGuideAttachmentLimits.maxFileSizeMiB} MB upload limit.`,
+    );
   }
   return Math.round(sizeBytes);
 }

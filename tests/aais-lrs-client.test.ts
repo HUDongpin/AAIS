@@ -1,11 +1,12 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   buildAaisXapiStatement,
+  getLrsConfigurationStatus,
   probeAaisLrsConnection,
   sendAaisEventsToLrs,
 } from "@/lib/server/aais-lrs-client";
 import * as lrsClient from "@/lib/server/aais-lrs-client";
-import type { AaisEvent } from "@/data/aais";
+import { aaisEventDefinitions, type AaisEvent } from "@/data/aais";
 
 const testConfig = {
   endpoint: "https://lrs.example.test/xapi",
@@ -27,7 +28,30 @@ const scaffoldEvent: AaisEvent = {
   },
 };
 
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
+
 describe("AAIS LRS xAPI client", () => {
+  it("has an xAPI verb mapping for every defined AAIS event", () => {
+    // Any event that reaches the LRS outbox must build a statement without
+    // throwing; a missing verb mapping would permanently stall the persistent
+    // outbox flush. Guard the whole class, not just one event.
+    for (const [eventName, definition] of Object.entries(aaisEventDefinitions)) {
+      const event: AaisEvent = {
+        student_id: "S001",
+        session_id: "session-coverage",
+        phase: "practice",
+        task: "practice_task_1",
+        agent: definition.agent,
+        event: eventName as AaisEvent["event"],
+        time: "2026-07-10T00:00:00.000Z",
+        detail: {},
+      };
+      expect(() => buildAaisXapiStatement(event), `event ${eventName} must map to an xAPI verb`).not.toThrow();
+    }
+  });
+
   it("builds analysis-ready xAPI statements from AAIS events", () => {
     const statement = buildAaisXapiStatement(scaffoldEvent);
 
@@ -132,6 +156,34 @@ describe("AAIS LRS xAPI client", () => {
         }),
       }),
     );
+  });
+
+  it("refuses the generic product LRS pipeline on a research deployment even with explicit credentials", async () => {
+    vi.stubEnv("AAIS_RESEARCH_MODE", "true");
+    vi.stubEnv("LRS_ENDPOINT", "https://legacy-mixed.example/xapi");
+    vi.stubEnv("LRS_USERNAME", "legacy-user");
+    vi.stubEnv("LRS_PASSWORD", "legacy-password");
+    const fetchMock = vi.fn<typeof fetch>();
+
+    await expect(sendAaisEventsToLrs([scaffoldEvent], {
+      config: testConfig,
+      fetchImpl: fetchMock as unknown as typeof fetch,
+    })).resolves.toEqual({
+      status: "not_configured",
+      sent: 0,
+    });
+    await expect(probeAaisLrsConnection({
+      config: testConfig,
+      fetchImpl: fetchMock as unknown as typeof fetch,
+    })).resolves.toEqual({
+      status: "not_configured",
+      configured: false,
+    });
+    expect(getLrsConfigurationStatus()).toMatchObject({
+      configured: false,
+      disabledByResearchIsolation: true,
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("uses a targeted statements query for health checks", async () => {

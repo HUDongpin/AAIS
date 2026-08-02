@@ -9,7 +9,7 @@ import {
   isAaisSessionWriteConflictError,
 } from "@/lib/server/aais-learning-store";
 import { isAaisCsrfError, requireAaisCsrf } from "@/lib/server/aais-csrf";
-import { isAaisAuthError, resolveAaisStudentId } from "@/lib/server/aais-request-auth";
+import { isAaisAuthError, requireAaisSessionActor } from "@/lib/server/aais-request-auth";
 import {
   normalizeAaisGuideTargetAgentIds,
   resolveAaisGuideTargetAgentIds,
@@ -22,6 +22,22 @@ import {
   isAaisApiRouteError,
 } from "@/lib/server/aais-api-error";
 import { recordAaisAuditEvent } from "@/lib/server/aais-audit-log";
+import {
+  AaisResearchConfigurationError,
+  AaisResearchDisabledError,
+  isAaisResearchModeEnabled,
+  requiresAaisResearchDataPlaneIsolation,
+} from "@/lib/server/aais-research-contract";
+import { getAaisResearchErrorResponseInput } from "@/lib/server/aais-research-api";
+import {
+  acquireAaisResearchRawTextWriteLeaseIfRequired,
+  type AaisResearchRawTextWriteLease,
+} from "@/lib/server/aais-research-raw-text";
+import {
+  AaisResearchAuthorizationError,
+  AaisResearchVisitInactiveError,
+  AaisResearchVisitNotFoundError,
+} from "@/lib/server/aais-research-store";
 import type { AaisPhase, Locale } from "@/data/aais";
 
 type AaisGuideRequestBody = {
@@ -54,65 +70,88 @@ export async function POST(request: Request) {
   }
 
   try {
-    const studentId = await resolveAaisStudentId(request);
+    const actor = await requireAaisSessionActor(request);
+    const studentId = actor.id;
     requireAaisCsrf(request, studentId);
+    const researchIsolationRequired = requiresAaisResearchDataPlaneIsolation();
+    if (researchIsolationRequired && !isAaisResearchModeEnabled()) {
+      throw new AaisApiRouteError({
+        code: "AAIS_RESEARCH_MODE_REQUIRED",
+        message: "AAIS research collection is required but not enabled.",
+        status: 503,
+      });
+    }
     const store = getAaisLearningStore();
-    const budget = await requireDailyGuideBudget(studentId, store);
     const targetAgentIds = normalizeAaisGuideTargetAgentIds(
       body.targetAgentIds,
       body.learnerInput,
     );
     const attachments = normalizeGuideAttachments(body.workspaceState?.attachments);
-    const input: AaisGuideInput = {
-      locale: body.locale === "en-US" ? "en-US" : "zh-CN",
-      studentId,
-      phase: body.phase === "practice" ? "practice" : "training",
-      taskId: body.taskId ?? "training_task_1",
-      learnerInput: body.learnerInput,
-      ...(targetAgentIds ? { targetAgentIds } : {}),
-      workspaceState: {
-        currentStep: body.workspaceState?.currentStep ?? "smart-guide",
-        artifactText: body.workspaceState?.artifactText,
-        helpRequestsUsed: body.workspaceState?.helpRequestsUsed,
-        ...(attachments.length ? { attachments } : {}),
-      },
-    };
-
-    if (isGuideStreamRequest(request)) {
-      return createGuideStreamResponse({
-        input,
-        store,
-        question: body.learnerInput,
-        budget,
+    if (researchIsolationRequired && attachments.length) {
+      throw new AaisApiRouteError({
+        code: "AAIS_RESEARCH_ATTACHMENT_PROHIBITED",
+        message: "Attachments are disabled for this research study.",
+        status: 400,
       });
     }
+    let rawTextWriteLease = await acquireAaisResearchRawTextWriteLeaseIfRequired(actor);
+    try {
+      const budget = await reserveDailyGuideBudget(studentId, store);
+      const input: AaisGuideInput = {
+        locale: body.locale === "en-US" ? "en-US" : "zh-CN",
+        studentId,
+        phase: body.phase === "practice" ? "practice" : "training",
+        taskId: body.taskId ?? "training_task_1",
+        learnerInput: body.learnerInput,
+        ...(targetAgentIds ? { targetAgentIds } : {}),
+        workspaceState: {
+          currentStep: body.workspaceState?.currentStep ?? "smart-guide",
+          artifactText: body.workspaceState?.artifactText,
+          helpRequestsUsed: body.workspaceState?.helpRequestsUsed,
+          ...(attachments.length ? { attachments } : {}),
+        },
+      };
 
-    const result = await runAaisLearningGuideGraph(input);
-    await store.appendGuideExchange({
-      studentId,
-      phase: body.phase === "practice" ? "practice" : "training",
-      taskId: body.taskId ?? "training_task_1",
-      question: body.learnerInput,
-      answer: result.messageText,
-      turns: result.visibleTurns,
-      orchestration: {
-        graphId: result.graph.graphId,
-        topologicalOrder: result.graph.topologicalOrder,
-        threadId: result.runtime.threadId,
-      },
-    });
-    const finalizedBudget = finalizeDailyGuideBudget(budget);
-    recordGuideBudgetAudit({
-      studentId,
-      event: "ai.guide.budget.used",
-      outcome: "success",
-      budget: finalizedBudget,
-    });
+      if (isGuideStreamRequest(request)) {
+        const response = createGuideStreamResponse({
+          input,
+          store,
+          question: body.learnerInput,
+          budget,
+          rawTextWriteLease,
+        });
+        rawTextWriteLease = null;
+        return response;
+      }
 
-    return NextResponse.json({
-      ...createGuideJsonBody(result),
-      budget: finalizedBudget,
-    });
+      const result = await runAaisLearningGuideGraph(input);
+      await store.appendGuideExchange({
+        studentId,
+        phase: body.phase === "practice" ? "practice" : "training",
+        taskId: body.taskId ?? "training_task_1",
+        question: body.learnerInput,
+        answer: result.messageText,
+        turns: result.visibleTurns,
+        orchestration: {
+          graphId: result.graph.graphId,
+          topologicalOrder: result.graph.topologicalOrder,
+          threadId: result.runtime.threadId,
+        },
+      });
+      recordGuideBudgetAudit({
+        studentId,
+        event: "ai.guide.budget.used",
+        outcome: "success",
+        budget,
+      });
+
+      return NextResponse.json({
+        ...createGuideJsonBody(result),
+        budget,
+      });
+    } finally {
+      await rawTextWriteLease?.release();
+    }
   } catch (error) {
     return createAaisApiErrorResponse(getErrorResponseInput(error));
   }
@@ -151,6 +190,15 @@ function getErrorResponseInput(error: unknown) {
       message: "AAIS CSRF token is required.",
       status: 403,
     };
+  }
+  if (
+    error instanceof AaisResearchAuthorizationError
+    || error instanceof AaisResearchVisitInactiveError
+    || error instanceof AaisResearchVisitNotFoundError
+    || error instanceof AaisResearchConfigurationError
+    || error instanceof AaisResearchDisabledError
+  ) {
+    return getAaisResearchErrorResponseInput(error, "/api/learning/ai-guide");
   }
   if (isAaisLearningStorageConfigurationError(error)) {
     return {
@@ -212,6 +260,7 @@ function createGuideStreamResponse(input: {
   store: ReturnType<typeof getAaisLearningStore>;
   question: string;
   budget: AaisGuideDailyBudget;
+  rawTextWriteLease: AaisResearchRawTextWriteLease | null;
 }) {
   const encoder = new TextEncoder();
   const stream = new ReadableStream({
@@ -224,7 +273,7 @@ function createGuideStreamResponse(input: {
         send("ack", {
           status: "accepted",
           graphId: "learning-ai-guide",
-          budget: finalizeDailyGuideBudget(input.budget),
+          budget: input.budget,
         });
         for (const agentId of targetAgentIds) {
           send("agent_start", { agentId });
@@ -244,12 +293,11 @@ function createGuideStreamResponse(input: {
             threadId: result.runtime.threadId,
           },
         });
-        const finalizedBudget = finalizeDailyGuideBudget(input.budget);
         recordGuideBudgetAudit({
           studentId: input.input.studentId,
           event: "ai.guide.budget.used",
           outcome: "success",
-          budget: finalizedBudget,
+          budget: input.budget,
         });
 
         for (const turn of result.visibleTurns) {
@@ -278,6 +326,16 @@ function createGuideStreamResponse(input: {
           ),
         });
       } finally {
+        try {
+          await input.rawTextWriteLease?.release();
+        } catch {
+          send("error", {
+            ...createAaisApiErrorBody(
+              "AAIS_RESEARCH_RAW_TEXT_LEASE_RELEASE_FAILED",
+              "AAIS research write coordination failed.",
+            ),
+          });
+        }
         controller.close();
       }
     },
@@ -307,19 +365,19 @@ class AaisGuideDailyBudgetError extends Error {
   }
 }
 
-async function requireDailyGuideBudget(
+async function reserveDailyGuideBudget(
   studentId: string,
   store: ReturnType<typeof getAaisLearningStore>,
 ): Promise<AaisGuideDailyBudget> {
   const limit = readDailyGuideLimit();
-  const usage = await store.getDailyGuideUsage(studentId);
-  const budget = {
-    limit,
-    used: usage.used,
-    remaining: Math.max(0, limit - usage.used),
-    resetsAt: usage.end,
+  const reservation = await store.reserveDailyGuideRequest({ studentId, limit });
+  const budget: AaisGuideDailyBudget = {
+    limit: reservation.limit,
+    used: reservation.used,
+    remaining: reservation.remaining,
+    resetsAt: reservation.resetsAt,
   };
-  if (budget.remaining <= 0) {
+  if (reservation.status === "exhausted") {
     recordGuideBudgetAudit({
       studentId,
       event: "ai.guide.budget.exceeded",
@@ -329,15 +387,6 @@ async function requireDailyGuideBudget(
     throw new AaisGuideDailyBudgetError(budget);
   }
   return budget;
-}
-
-function finalizeDailyGuideBudget(budget: AaisGuideDailyBudget): AaisGuideDailyBudget {
-  const used = budget.used + 1;
-  return {
-    ...budget,
-    used,
-    remaining: Math.max(0, budget.limit - used),
-  };
 }
 
 function readDailyGuideLimit() {

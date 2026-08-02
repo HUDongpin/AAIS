@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   getAaisMigrationDatabaseConfiguration,
+  getAaisResearchMigrationDatabaseConfiguration,
   loadAaisPostgresMigrations,
   runAaisPostgresMigrations,
 } from "../scripts/run-postgres-migrations.mjs";
@@ -52,6 +53,18 @@ describe("AAIS Postgres migrations", () => {
         fileName: "0007_course_catalog.sql",
         checksum: expect.stringMatching(/^[a-f0-9]{64}$/),
       }),
+      expect.objectContaining({
+        version: "0008",
+        name: "ai_guide_daily_usage",
+        fileName: "0008_ai_guide_daily_usage.sql",
+        checksum: expect.stringMatching(/^[a-f0-9]{64}$/),
+      }),
+      expect.objectContaining({
+        version: "0009",
+        name: "aais_research_study",
+        fileName: "0009_aais_research_study.sql",
+        checksum: expect.stringMatching(/^[a-f0-9]{64}$/),
+      }),
     ]);
     expect(migrations[0].sql).toContain("create table if not exists aais_learner_sessions");
     expect(migrations[0].sql).toContain("create table if not exists aais_lrs_outbox");
@@ -73,6 +86,12 @@ describe("AAIS Postgres migrations", () => {
     expect(migrations[6].sql).toContain("create table if not exists aais_enrollments");
     expect(migrations[6].sql).toContain("Cognitive Apprenticeship: Metacognition Studio");
     expect(migrations[6].sql).toContain("practice_task_3");
+    expect(migrations[7].sql).toContain("create table if not exists aais_ai_guide_daily_usage");
+    expect(migrations[7].sql).toContain("primary key (student_id, usage_day)");
+    expect(migrations[8].sql).toContain("create table if not exists aais_research_events");
+    expect(migrations[8].sql).toContain("create table if not exists aais_research_raw_write_leases");
+    expect(migrations[8].sql).toContain("create or replace function aais_research_record_event");
+    expect(migrations[8].sql).toContain("create or replace function aais_research_begin_withdrawal");
   });
 
   it("applies pending migrations and records checksums", async () => {
@@ -173,6 +192,19 @@ describe("AAIS Postgres migrations", () => {
     })).toEqual({
       url: "postgres://aais:secret@db.example.test:5433/prod?sslmode=require",
       sourceEnv: "PG*",
+    });
+  });
+
+  it("resolves research migrations only from the dedicated research URL", () => {
+    expect(getAaisResearchMigrationDatabaseConfiguration({
+      AAIS_DATABASE_URL: "postgres://product:secret@example.test/aais",
+    })).toBeNull();
+    expect(getAaisResearchMigrationDatabaseConfiguration({
+      AAIS_DATABASE_URL: "postgres://product:secret@example.test/aais",
+      AAIS_RESEARCH_DATABASE_URL: "postgres://research:secret@example.test/aais_research",
+    })).toEqual({
+      url: "postgres://research:secret@example.test/aais_research",
+      sourceEnv: "AAIS_RESEARCH_DATABASE_URL",
     });
   });
 });

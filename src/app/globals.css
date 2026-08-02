@@ -2,38 +2,6 @@
 
 @custom-variant dark (&:where(.dark, .dark *));
 
-@font-face {
-  font-family: "Anthropic Serif";
-  src: url("https://cdn.prod.website-files.com/67ce28cfec624e2b733f8a52/69971a1551eb6cda0d656e8a_AnthropicSerif-Roman-Web.woff2") format("woff2");
-  font-display: swap;
-  font-style: normal;
-  font-weight: 300 800;
-}
-
-@font-face {
-  font-family: "Anthropic Serif";
-  src: url("https://cdn.prod.website-files.com/67ce28cfec624e2b733f8a52/69971a15a9fb8c1107a3570e_AnthropicSerif-Italic-Web.woff2") format("woff2");
-  font-display: swap;
-  font-style: italic;
-  font-weight: 300 800;
-}
-
-@font-face {
-  font-family: "Anthropic Sans";
-  src: url("https://cdn.prod.website-files.com/67ce28cfec624e2b733f8a52/69971a00a3295036497e1a28_AnthropicSans-Roman-Web.woff2") format("woff2");
-  font-display: swap;
-  font-style: normal;
-  font-weight: 300 800;
-}
-
-@font-face {
-  font-family: "Anthropic Sans";
-  src: url("https://cdn.prod.website-files.com/67ce28cfec624e2b733f8a52/69971a016067bf14b9b8f48d_AnthropicSans-Italic-Web.woff2") format("woff2");
-  font-display: swap;
-  font-style: italic;
-  font-weight: 300 800;
-}
-
 :root {
   --background: #f5f9ff;
   --foreground: #172033;
