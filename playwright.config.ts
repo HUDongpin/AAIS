@@ -2,6 +2,8 @@ import { defineConfig, devices } from "@playwright/test";
 
 const port = Number(process.env.AAIS_E2E_PORT ?? 3000);
 const baseURL = process.env.AAIS_E2E_BASE_URL ?? `http://127.0.0.1:${port}`;
+const deployedE2e = Boolean(process.env.AAIS_E2E_BASE_URL);
+const protectionBypassSecret = process.env.VERCEL_AUTOMATION_BYPASS_SECRET?.trim();
 const e2eSmokeAccountsJson = JSON.stringify([
   {
     id: "teacher-e2e",
@@ -25,7 +27,13 @@ export default defineConfig({
   reporter: [["list"]],
   use: {
     baseURL,
-    trace: "on-first-retry",
+    trace: deployedE2e ? "off" : "on-first-retry",
+    extraHTTPHeaders: deployedE2e && protectionBypassSecret
+      ? {
+          "x-vercel-protection-bypass": protectionBypassSecret,
+          "x-vercel-set-bypass-cookie": "true",
+        }
+      : undefined,
   },
   webServer: process.env.AAIS_E2E_BASE_URL
     ? undefined

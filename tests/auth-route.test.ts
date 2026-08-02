@@ -28,6 +28,7 @@ afterEach(() => {
   delete process.env.AAIS_SESSION_SECRET;
   delete process.env.AAIS_TRIAL_ACCOUNTS_JSON;
   delete process.env.AAIS_TRIAL_SMOKE_ACCOUNTS_JSON;
+  delete process.env.AAIS_TRIAL_ADDITIONAL_ACCOUNTS_JSON;
   clearAaisSessionRevocationsForTest();
   vi.restoreAllMocks();
   vi.doUnmock("@/lib/server/aais-users");
@@ -207,14 +208,116 @@ describe("AAIS trial account auth route", () => {
     expect(JSON.stringify(body)).not.toContain("db-password-123");
   });
 
-  it("does not merge built-in learner demo accounts into production trial auth", async () => {
+  it("uses configured learner credentials in production without demo-password fallback", async () => {
     vi.stubEnv("NODE_ENV", "production");
     process.env.AAIS_TRIAL_ACCOUNTS_JSON = JSON.stringify([
       {
-        id: "student-smoke",
-        displayName: "Student Smoke",
+        id: "Bobie",
+        displayName: "Bobie",
         role: "student",
-        password: createPasswordRecord("student-secret"),
+        password: createPasswordRecord("production-bobie-secret"),
+      },
+    ]);
+    const { POST } = await import("@/app/api/auth/app-session/route");
+
+    const configured = await POST(
+      new Request("http://localhost/api/auth/app-session", {
+        method: "POST",
+        body: authBody({
+          account: "Bobie",
+          password: "production-bobie-secret",
+        }),
+      }),
+    );
+    const configuredBody = await configured.json();
+    const demoPassword = await POST(
+      new Request("http://localhost/api/auth/app-session", {
+        method: "POST",
+        body: authBody({
+          account: "Bobie",
+          password: "12345",
+        }),
+      }),
+    );
+
+    expect(configured.status).toBe(200);
+    expect(configuredBody.appSession.actor).toMatchObject({
+      id: "Bobie",
+      displayName: "Bobie",
+      role: "student",
+    });
+    expect(configured.headers.get("set-cookie") ?? "").toContain("aais_session=");
+    expect(demoPassword.status).toBe(401);
+  });
+
+  it("allows an additional production learner source to rotate one account without replacing others", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    process.env.AAIS_TRIAL_ACCOUNTS_JSON = JSON.stringify([
+      {
+        id: "Bobie",
+        displayName: "Bobie",
+        role: "student",
+        password: createPasswordRecord("legacy-bobie-secret"),
+      },
+      {
+        id: "Phoebe",
+        displayName: "Phoebe",
+        role: "student",
+        password: createPasswordRecord("production-phoebe-secret"),
+      },
+    ]);
+    process.env.AAIS_TRIAL_ADDITIONAL_ACCOUNTS_JSON = JSON.stringify([
+      {
+        id: "Bobie",
+        displayName: "Bobie",
+        role: "student",
+        password: createPasswordRecord("rotated-bobie-secret"),
+      },
+    ]);
+    const { POST } = await import("@/app/api/auth/app-session/route");
+
+    const rotated = await POST(
+      new Request("http://localhost/api/auth/app-session", {
+        method: "POST",
+        body: authBody({
+          account: "Bobie",
+          password: "rotated-bobie-secret",
+        }),
+      }),
+    );
+    const legacy = await POST(
+      new Request("http://localhost/api/auth/app-session", {
+        method: "POST",
+        body: authBody({
+          account: "Bobie",
+          password: "legacy-bobie-secret",
+        }),
+      }),
+    );
+    const otherLearner = await POST(
+      new Request("http://localhost/api/auth/app-session", {
+        method: "POST",
+        body: authBody({
+          account: "Phoebe",
+          password: "production-phoebe-secret",
+        }),
+      }),
+    );
+
+    expect(rotated.status).toBe(200);
+    expect(legacy.status).toBe(401);
+    expect(otherLearner.status).toBe(200);
+  });
+
+  it("uses a valid recovery learner when a legacy production source is malformed", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    process.env.AAIS_TRIAL_ACCOUNTS_JSON = "{not-json";
+    process.env.AAIS_TRIAL_ADDITIONAL_ACCOUNTS_JSON = JSON.stringify([
+      {
+        id: "Bobie",
+        displayName: "Bobie",
+        role: "student",
+        password: createPasswordRecord("recovery-bobie-secret"),
       },
     ]);
     const { POST } = await import("@/app/api/auth/app-session/route");
@@ -224,18 +327,82 @@ describe("AAIS trial account auth route", () => {
         method: "POST",
         body: authBody({
           account: "Bobie",
-          password: "12345",
+          password: "recovery-bobie-secret",
         }),
       }),
     );
-    const body = await response.json();
 
-    expect(response.status).toBe(401);
-    expect(body.error).toEqual({
-      code: "AAIS_INVALID_CREDENTIALS",
-      message: "Invalid AAIS trial account or password.",
-    });
-    expect(response.headers.get("set-cookie") ?? "").not.toContain("aais_session=");
+    expect(response.status).toBe(200);
+    expect(response.headers.get("set-cookie") ?? "").toContain("aais_session=");
+  });
+
+  it("fails closed when the recovery account source is malformed", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    process.env.AAIS_TRIAL_ACCOUNTS_JSON = JSON.stringify([
+      {
+        id: "Bobie",
+        displayName: "Bobie",
+        role: "student",
+        password: createPasswordRecord("production-bobie-secret"),
+      },
+    ]);
+    process.env.AAIS_TRIAL_ADDITIONAL_ACCOUNTS_JSON = "{not-json";
+    const { POST } = await import("@/app/api/auth/app-session/route");
+
+    const response = await POST(
+      new Request("http://localhost/api/auth/app-session", {
+        method: "POST",
+        body: authBody({
+          account: "Bobie",
+          password: "production-bobie-secret",
+        }),
+      }),
+    );
+
+    expect(response.status).toBe(503);
+  });
+
+  it("keeps production learners available when another source contains educator smoke records", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    process.env.AAIS_TRIAL_ACCOUNTS_JSON = JSON.stringify([
+      {
+        id: "Bobie",
+        displayName: "Bobie",
+        role: "student",
+        password: createPasswordRecord("production-bobie-secret"),
+      },
+    ]);
+    process.env.AAIS_TRIAL_SMOKE_ACCOUNTS_JSON = JSON.stringify([
+      {
+        id: "teacher-smoke",
+        displayName: "Teacher Smoke",
+        role: "teacher",
+        password: createPasswordRecord("teacher-secret"),
+      },
+    ]);
+    const { POST } = await import("@/app/api/auth/app-session/route");
+
+    const learner = await POST(
+      new Request("http://localhost/api/auth/app-session", {
+        method: "POST",
+        body: authBody({
+          account: "Bobie",
+          password: "production-bobie-secret",
+        }),
+      }),
+    );
+    const educator = await POST(
+      new Request("http://localhost/api/auth/app-session", {
+        method: "POST",
+        body: authBody({
+          account: "teacher-smoke",
+          password: "teacher-secret",
+        }),
+      }),
+    );
+
+    expect(learner.status).toBe(200);
+    expect(educator.status).toBe(401);
   });
 
   it("refuses production educator trial accounts so teachers and admins use database or OIDC identities", async () => {

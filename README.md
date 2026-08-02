@@ -6,6 +6,10 @@ The product agents are `A1` Guide, `A2` Expert, `A3` Supervision, and `A4` Refle
 
 ## Run Locally
 
+AAIS uses Node.js 24.x (see `.nvmrc`) and npm 11.x. Install dependencies with
+`npm ci`; `.npmrc` enables strict peer-dependency checks so incompatible
+dependency updates fail during installation instead of reaching deployment.
+
 ```bash
 npm ci
 cp .env.example .env.local

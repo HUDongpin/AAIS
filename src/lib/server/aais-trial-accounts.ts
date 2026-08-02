@@ -116,10 +116,9 @@ export function isAaisTrialLoginEnabled() {
 function readTrialAccounts() {
   const configuredAccounts = readConfiguredTrialAccounts();
   if (configuredAccounts) {
-    if (isProductionRuntime()) {
-      return configuredAccounts;
-    }
-    return mergeConfiguredAccountsWithBuiltInLearners(configuredAccounts);
+    return isProductionRuntime()
+      ? configuredAccounts
+      : mergeConfiguredAccountsWithBuiltInLearners(configuredAccounts);
   }
   return isProductionRuntime() ? null : builtInLearnerTrialAccounts;
 }
@@ -131,55 +130,82 @@ function readConfiguredTrialAccounts() {
 
 function readConfiguredTrialAccountLookup(): ConfiguredTrialAccountLookup {
   const rawSources = [
-    process.env.AAIS_TRIAL_ACCOUNTS_JSON?.trim(),
-    process.env.AAIS_TRIAL_SMOKE_ACCOUNTS_JSON?.trim(),
-  ].filter((raw): raw is string => Boolean(raw));
+    {
+      raw: process.env.AAIS_TRIAL_ACCOUNTS_JSON?.trim() ?? "",
+      recovery: false,
+    },
+    {
+      raw: process.env.AAIS_TRIAL_SMOKE_ACCOUNTS_JSON?.trim() ?? "",
+      recovery: false,
+    },
+    {
+      raw: process.env.AAIS_TRIAL_ADDITIONAL_ACCOUNTS_JSON?.trim() ?? "",
+      recovery: true,
+    },
+  ].filter((source) => Boolean(source.raw));
   if (!rawSources.length) {
     return {
       status: "missing",
       accounts: null,
     };
   }
-  const accounts: TrialAccountRecord[] = [];
-  try {
-    for (const raw of rawSources) {
-      const parsed = JSON.parse(raw) as Partial<TrialAccountRecord>[];
-      if (!Array.isArray(parsed)) {
+
+  const accountsById = new Map<string, TrialAccountRecord>();
+  let hasInvalidLegacySource = false;
+  let hasValidRecoverySource = false;
+  for (const source of rawSources) {
+    try {
+      const sourceAccounts = parseTrialAccountSource(source.raw);
+      if (source.recovery && sourceAccounts.length === 0) {
+        throw new Error("The recovery account source must not be empty.");
+      }
+      for (const account of sourceAccounts) {
+        accountsById.set(account.id, account);
+      }
+      hasValidRecoverySource ||= source.recovery;
+    } catch {
+      if (source.recovery) {
         return {
           status: "invalid",
           accounts: null,
         };
       }
-      accounts.push(...parsed.map(requireTrialAccount));
+      hasInvalidLegacySource = true;
     }
-    if (accounts.length === 0) {
-      return {
-        status: "invalid",
-        accounts: null,
-      };
-    }
-    if (new Set(accounts.map((account) => account.id)).size !== accounts.length) {
-      return {
-        status: "invalid",
-        accounts: null,
-      };
-    }
-    if (isProductionRuntime() && accounts.some((account) => account.role !== "student")) {
-      return {
-        status: "invalid",
-        accounts: null,
-      };
-    }
-    return {
-      status: "configured",
-      accounts,
-    };
-  } catch {
+  }
+  if (hasInvalidLegacySource && !hasValidRecoverySource) {
     return {
       status: "invalid",
       accounts: null,
     };
   }
+
+  const accounts = [...accountsById.values()];
+  const allowedAccounts = isProductionRuntime()
+    ? accounts.filter((account) => account.role === "student")
+    : accounts;
+  if (allowedAccounts.length === 0) {
+    return {
+      status: "invalid",
+      accounts: null,
+    };
+  }
+  return {
+    status: "configured",
+    accounts: allowedAccounts,
+  };
+}
+
+function parseTrialAccountSource(raw: string) {
+  const parsed = JSON.parse(raw) as Partial<TrialAccountRecord>[];
+  if (!Array.isArray(parsed)) {
+    throw new Error("AAIS trial account source must be an array.");
+  }
+  const accounts = parsed.map(requireTrialAccount);
+  if (new Set(accounts.map((account) => account.id)).size !== accounts.length) {
+    throw new Error("AAIS trial account source contains duplicate account IDs.");
+  }
+  return accounts;
 }
 
 function requireTrialAccount(account: Partial<TrialAccountRecord>): TrialAccountRecord {
@@ -208,10 +234,10 @@ function isAaisSessionRole(value: unknown): value is AaisSessionActor["role"] {
 }
 
 function mergeConfiguredAccountsWithBuiltInLearners(configuredAccounts: TrialAccountRecord[]) {
-  const builtInIds = new Set(builtInLearnerTrialAccounts.map((account) => account.id));
+  const configuredIds = new Set(configuredAccounts.map((account) => account.id));
   return [
-    ...builtInLearnerTrialAccounts,
-    ...configuredAccounts.filter((account) => !builtInIds.has(account.id)),
+    ...configuredAccounts,
+    ...builtInLearnerTrialAccounts.filter((account) => !configuredIds.has(account.id)),
   ];
 }
 

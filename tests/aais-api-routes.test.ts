@@ -15,6 +15,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  vi.useRealTimers();
   delete process.env.AAIS_DATA_DIR;
   delete process.env.AAIS_SESSION_SECRET;
   vi.unstubAllEnvs();
@@ -408,7 +409,10 @@ describe("AAIS learning API routes", () => {
     const info = vi.spyOn(console, "info").mockImplementation(() => undefined);
     vi.resetModules();
     const guideRoute = await import("@/app/api/learning/ai-guide/route");
-    const s001Cookie = createAuthedCookie("S001");
+    vi.setSystemTime(new Date("2026-07-13T06:00:00.999Z"));
+    const s001CsrfToken = createAaisCsrfToken("S001");
+    const s001Cookie = createAuthedCookie("S001", "student", s001CsrfToken);
+    vi.setSystemTime(new Date("2026-07-13T06:00:01.001Z"));
     const requestBody = {
       locale: "zh-CN",
       phase: "training",
@@ -424,7 +428,7 @@ describe("AAIS learning API routes", () => {
         method: "POST",
         headers: {
           cookie: s001Cookie,
-          "x-aais-csrf": createAaisCsrfToken("S001"),
+          "x-aais-csrf": s001CsrfToken,
         },
         body: JSON.stringify(requestBody),
       }),
@@ -443,7 +447,7 @@ describe("AAIS learning API routes", () => {
         method: "POST",
         headers: {
           cookie: s001Cookie,
-          "x-aais-csrf": createAaisCsrfToken("S001"),
+          "x-aais-csrf": s001CsrfToken,
         },
         body: JSON.stringify({
           ...requestBody,
@@ -944,15 +948,17 @@ describe("AAIS learning API routes", () => {
   it("exports cohort analytics only to educator sessions without raw learner text", async () => {
     const sessionRoute = await import("@/app/api/learning/session/route");
     const exportRoute = await import("@/app/api/learning/export/route");
-    const s001Cookie = createAuthedCookie("S001");
-    const s002Cookie = createAuthedCookie("S002");
+    const s001CsrfToken = createAaisCsrfToken("S001");
+    const s002CsrfToken = createAaisCsrfToken("S002");
+    const s001Cookie = createAuthedCookie("S001", "student", s001CsrfToken);
+    const s002Cookie = createAuthedCookie("S002", "student", s002CsrfToken);
 
-    await sessionRoute.PATCH(
+    const completeTrainingResponse = await sessionRoute.PATCH(
       new Request("http://localhost/api/learning/session", {
         method: "PATCH",
         headers: {
           cookie: s001Cookie,
-          "x-aais-csrf": createAaisCsrfToken("S001"),
+          "x-aais-csrf": s001CsrfToken,
         },
         body: JSON.stringify({
           action: "complete-task",
@@ -960,12 +966,14 @@ describe("AAIS learning API routes", () => {
         }),
       }),
     );
-    await sessionRoute.PATCH(
+    expect(completeTrainingResponse.status).toBe(200);
+
+    const selectPracticeResponse = await sessionRoute.PATCH(
       new Request("http://localhost/api/learning/session", {
         method: "PATCH",
         headers: {
           cookie: s001Cookie,
-          "x-aais-csrf": createAaisCsrfToken("S001"),
+          "x-aais-csrf": s001CsrfToken,
         },
         body: JSON.stringify({
           action: "select-task",
@@ -973,12 +981,14 @@ describe("AAIS learning API routes", () => {
         }),
       }),
     );
-    await sessionRoute.PATCH(
+    expect(selectPracticeResponse.status).toBe(200);
+
+    const firstArtifactResponse = await sessionRoute.PATCH(
       new Request("http://localhost/api/learning/session", {
         method: "PATCH",
         headers: {
           cookie: s001Cookie,
-          "x-aais-csrf": createAaisCsrfToken("S001"),
+          "x-aais-csrf": s001CsrfToken,
         },
         body: JSON.stringify({
           action: "save-artifact",
@@ -987,12 +997,14 @@ describe("AAIS learning API routes", () => {
         }),
       }),
     );
-    await sessionRoute.PATCH(
+    expect(firstArtifactResponse.status).toBe(200);
+
+    const secondArtifactResponse = await sessionRoute.PATCH(
       new Request("http://localhost/api/learning/session", {
         method: "PATCH",
         headers: {
           cookie: s001Cookie,
-          "x-aais-csrf": createAaisCsrfToken("S001"),
+          "x-aais-csrf": s001CsrfToken,
         },
         body: JSON.stringify({
           action: "save-artifact",
@@ -1001,12 +1013,14 @@ describe("AAIS learning API routes", () => {
         }),
       }),
     );
-    await sessionRoute.PATCH(
+    expect(secondArtifactResponse.status).toBe(200);
+
+    const s002ArtifactResponse = await sessionRoute.PATCH(
       new Request("http://localhost/api/learning/session", {
         method: "PATCH",
         headers: {
           cookie: s002Cookie,
-          "x-aais-csrf": createAaisCsrfToken("S002"),
+          "x-aais-csrf": s002CsrfToken,
         },
         body: JSON.stringify({
           action: "save-artifact",
@@ -1015,6 +1029,8 @@ describe("AAIS learning API routes", () => {
         }),
       }),
     );
+    expect(s002ArtifactResponse.status).toBe(200);
+
     const rawSessionResponse = await sessionRoute.GET(
       new Request("http://localhost/api/learning/session", {
         headers: {
@@ -1629,8 +1645,11 @@ function stubProductionWithoutDatabase() {
   vi.stubEnv("POSTGRES_PASSWORD", "");
 }
 
-function createAuthedCookie(id: string, role: "student" | "teacher" | "admin" = "student") {
-  const csrfToken = createAaisCsrfToken(id);
+function createAuthedCookie(
+  id: string,
+  role: "student" | "teacher" | "admin" = "student",
+  csrfToken = createAaisCsrfToken(id),
+) {
   const sessionToken = createAaisSessionToken({
     id,
     role,
