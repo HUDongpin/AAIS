@@ -35,18 +35,18 @@
     "load:staging": "node -- scripts/run-staging-load-sanity.mjs"
   },
   "dependencies": {
-    "@langchain/langgraph": "^1.4.4",
+    "@langchain/langgraph": "^1.4.8",
     "@neondatabase/serverless": "^1.1.0",
     "@phosphor-icons/react": "^2.1.10",
-    "@sentry/nextjs": "^10.65.0",
+    "@sentry/nextjs": "^10.69.0",
     "@vercel/analytics": "^2.0.1",
-    "jose": "^6.2.3",
+    "jose": "^6.2.5",
     "next": "16.2.12",
-    "pdfjs-dist": "^6.1.200",
+    "pdfjs-dist": "^6.2.108",
     "pg": "^8.22.0",
     "react": "19.2.7",
     "react-dom": "19.2.7",
-    "ws": "^8.21.0"
+    "ws": "^8.21.1"
   },
   "devDependencies": {
     "@playwright/test": "^1.61.1",
