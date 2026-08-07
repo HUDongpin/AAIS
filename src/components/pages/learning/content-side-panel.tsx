@@ -182,7 +182,8 @@ export function ContentSidePanel({
             <button
               type="button"
               onClick={onSaveAndCloseDocument}
-              className="inline-flex h-14 min-w-[104px] shrink-0 items-center justify-center whitespace-nowrap px-3 text-[14px] font-semibold text-[#536de8] outline-none transition hover:bg-white focus-visible:ring-2 focus-visible:ring-[#536de8]"
+              disabled={artifactSaveBusy}
+              className="inline-flex h-14 min-w-[104px] shrink-0 items-center justify-center whitespace-nowrap px-3 text-[14px] font-semibold text-[#536de8] outline-none transition hover:bg-white focus-visible:ring-2 focus-visible:ring-[#536de8] disabled:cursor-not-allowed disabled:opacity-70"
             >
               {copy.content.saveAndClose}
             </button>

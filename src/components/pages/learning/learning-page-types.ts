@@ -47,6 +47,10 @@ export type SavedLearningDocument = {
   savedAt: Date;
 };
 
+export type AaisClientSavedDocumentRecord = Omit<SavedLearningDocument, "markdown" | "savedAt"> & {
+  savedAt: string;
+};
+
 export type AaisClientTaskRecord = {
   taskId: string;
   artifactText: string;
@@ -56,6 +60,7 @@ export type AaisClientSession = {
   studentId: string;
   activeTaskId: string;
   tasks: AaisClientTaskRecord[];
+  historyDocuments?: AaisClientSavedDocumentRecord[];
   guideMessages: Array<
     GuideMessage & {
       orchestration?: {

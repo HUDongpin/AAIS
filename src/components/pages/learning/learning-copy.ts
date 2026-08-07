@@ -82,6 +82,7 @@ export type LearningCopy = {
     saving: string;
     saved: string;
     saveFailed: string;
+    archiveFailed: string;
     saveQueued: string;
     downloadPreparing: string;
     downloadReady: string;
@@ -219,6 +220,7 @@ export const learningCopyByLocale: Record<Locale, LearningCopy> = {
       saving: "正在保存文档...",
       saved: "文档已保存。",
       saveFailed: "任务过程记录未能保存到后端。",
+      archiveFailed: "文档未能归档，工作区内容已保留。",
       saveQueued: "文档更改待保存。",
       downloadPreparing: "正在准备下载...",
       downloadReady: "文档下载已准备。",
@@ -352,6 +354,7 @@ export const learningCopyByLocale: Record<Locale, LearningCopy> = {
       saving: "Saving document...",
       saved: "Document saved.",
       saveFailed: "The task-process record could not be saved to the server.",
+      archiveFailed: "The document could not be archived. Its workspace content has been retained.",
       saveQueued: "Document changes are waiting to be saved.",
       downloadPreparing: "Preparing download...",
       downloadReady: "Your document download is ready.",

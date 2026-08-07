@@ -137,6 +137,14 @@ export type AaisGuideTurnRecord = {
   actions: string[];
 };
 
+export type AaisHistoryDocumentRecord = {
+  id: string;
+  taskId: string;
+  title: string;
+  html: string;
+  savedAt: string;
+};
+
 export type AaisLearnerSession = {
   schemaVersion: 1;
   studentId: string;
@@ -146,6 +154,7 @@ export type AaisLearnerSession = {
   activeTaskId: string;
   activeStage: string;
   tasks: AaisTaskRecord[];
+  historyDocuments: AaisHistoryDocumentRecord[];
   guideMessages: AaisGuideMessageRecord[];
   events: AaisEvent[];
 };
@@ -327,6 +336,9 @@ const aaisLrsOutboxCoalescingPolicy = {
 const aaisA2CoachingCooldownMs = 10 * 60 * 1000;
 const aaisA2ArtifactRegressionMinimumPreviousCharacters = 80;
 const aaisA2ArtifactRegressionMinimumDropCharacters = 40;
+const aaisArtifactMaxCharacters = 2 * 1024 * 1024;
+const aaisHistoryDocumentMaxCount = 50;
+const aaisHistoryDocumentsMaxCharacters = 16 * 1024 * 1024;
 const defaultAaisCohortLearnerPageLimit = 25;
 const maxAaisCohortLearnerPageLimit = 100;
 
@@ -367,6 +379,7 @@ export function createAaisLearningStore(input: StoreInput = {}) {
         scaffoldRequests: 0,
         scaffoldHistory: [],
       })),
+      historyDocuments: [],
       guideMessages: [],
       events: [
         createAaisEvent({
@@ -539,6 +552,91 @@ export function createAaisLearningStore(input: StoreInput = {}) {
       value: artifactText,
       event: "artifact_saved",
     });
+  }
+
+  async function archiveArtifact(
+    studentId: string,
+    taskId: string,
+    input: {
+      activeDocumentId?: string | null;
+      document?: AaisHistoryDocumentRecord | null;
+    },
+  ) {
+    const safeTaskId = requireSafeId(taskId, "task id");
+    const activeDocumentId = input.activeDocumentId
+      ? requireSafeId(input.activeDocumentId, "history document id")
+      : null;
+    const document = input.document
+      ? requireSafeHistoryDocument(input.document)
+      : null;
+
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const session = await getOrCreateSession(studentId);
+      const task = requireUnlockedTask(session, safeTaskId);
+      const existingDocument = session.historyDocuments.find((candidate) =>
+        candidate.id === (activeDocumentId ?? document?.id)
+      ) ?? null;
+      if (document && !existingDocument && document.taskId !== safeTaskId) {
+        throw new Error("AAIS history document task does not match the active task.");
+      }
+      const nextDocument = document
+        ? {
+            ...document,
+            ...(existingDocument
+              ? { id: existingDocument.id, taskId: existingDocument.taskId }
+              : {}),
+          }
+        : null;
+      const historyDocuments = nextDocument
+        ? existingDocument
+          ? session.historyDocuments.map((candidate) =>
+              candidate.id === existingDocument.id ? nextDocument : candidate
+            )
+          : [nextDocument, ...session.historyDocuments]
+        : session.historyDocuments;
+      assertSafeHistoryCollection(historyDocuments);
+
+      const event = document
+        ? createAaisEvent({
+            studentId: session.studentId,
+            sessionId: session.sessionId,
+            phase: task.phase,
+            task: task.taskId,
+            agent: "A3",
+            event: "artifact_saved",
+            detail: {
+              characters: document.html.length,
+              destination: "history",
+            },
+          })
+        : null;
+      const updated = touch({
+        ...session,
+        tasks: session.tasks.map((candidate) =>
+          candidate.taskId === safeTaskId
+            ? { ...candidate, artifactText: "" }
+            : candidate
+        ),
+        historyDocuments,
+        events: event ? [...session.events, event] : session.events,
+      });
+      try {
+        await writeSessionAndMirrorEvents(updated, event ? [event] : []);
+        return updated;
+      } catch (error) {
+        if (isAaisSessionWriteConflictError(error) && attempt === 0) {
+          recordAaisSessionWriteConflict({
+            studentId: session.studentId,
+            operation: "archive_artifact",
+            attempt,
+            resolution: "retrying",
+          });
+          continue;
+        }
+        throw error;
+      }
+    }
+    throw new AaisSessionWriteConflictError();
   }
 
   async function saveSelfReport(studentId: string, taskId: string, selfReport: string) {
@@ -1058,7 +1156,9 @@ export function createAaisLearningStore(input: StoreInput = {}) {
     event: "artifact_saved" | "self_report_saved";
   }) {
     let baseFieldValue: string | null = null;
-    const value = requireSafeText(input.value, input.field);
+    const value = input.field === "artifactText"
+      ? requireSafeArtifactText(input.value)
+      : requireSafeText(input.value, input.field);
     for (let attempt = 0; attempt < 2; attempt += 1) {
       const session = await getOrCreateSession(input.studentId);
       const task = requireUnlockedTask(session, input.taskId);
@@ -1300,6 +1400,7 @@ export function createAaisLearningStore(input: StoreInput = {}) {
 
   return {
     appendGuideExchange,
+    archiveArtifact,
     completeTask,
     deleteLearnerData,
     deleteRestrictedResearchRawText,
@@ -2644,6 +2745,7 @@ function normalizeSession(session: AaisLearnerSession): AaisLearnerSession {
         scaffoldHistory: existing?.scaffoldHistory ?? [],
       };
     }),
+    historyDocuments: session.historyDocuments ?? [],
     guideMessages: session.guideMessages ?? [],
     events: (session.events ?? []).map((event) => ({
       ...event,
@@ -2662,6 +2764,7 @@ function redactRestrictedResearchRawText(
       artifactText: "",
       selfReport: "",
     })),
+    historyDocuments: [],
     guideMessages: session.guideMessages.map((message) => ({
       ...message,
       text: "",
@@ -3000,6 +3103,49 @@ function requireSafeText(value: string, label: string) {
     throw new Error(`AAIS ${label} is too large.`);
   }
   return value;
+}
+
+function requireSafeArtifactText(value: string) {
+  if (typeof value !== "string") {
+    throw new Error("Invalid AAIS artifactText.");
+  }
+  if (value.length > aaisArtifactMaxCharacters) {
+    throw new Error("AAIS artifactText is too large.");
+  }
+  return value;
+}
+
+function requireSafeHistoryDocument(
+  document: AaisHistoryDocumentRecord,
+): AaisHistoryDocumentRecord {
+  const title = requireSafeText(document.title, "document title");
+  if (title.length > 200) {
+    throw new Error("AAIS document title is too large.");
+  }
+  const savedAt = new Date(document.savedAt);
+  if (Number.isNaN(savedAt.getTime())) {
+    throw new Error("Invalid AAIS document savedAt.");
+  }
+  return {
+    id: requireSafeId(document.id, "history document id"),
+    taskId: requireSafeId(document.taskId, "task id"),
+    title,
+    html: requireSafeArtifactText(document.html),
+    savedAt: savedAt.toISOString(),
+  };
+}
+
+function assertSafeHistoryCollection(documents: AaisHistoryDocumentRecord[]) {
+  if (documents.length > aaisHistoryDocumentMaxCount) {
+    throw new Error("AAIS document history has reached its limit.");
+  }
+  const characters = documents.reduce(
+    (total, document) => total + document.title.length + document.html.length,
+    0,
+  );
+  if (characters > aaisHistoryDocumentsMaxCharacters) {
+    throw new Error("AAIS document history is too large.");
+  }
 }
 
 function getAaisUtcDayRange(now: Date) {

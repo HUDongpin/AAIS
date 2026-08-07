@@ -56,6 +56,36 @@ describe("AAIS learning API routes", () => {
     body = await response.json();
     expect(body.session.tasks[0].artifactText).toBe("训练任务过程记录");
 
+    response = await sessionRoute.PATCH(
+      new Request("http://localhost/api/learning/session", {
+        method: "PATCH",
+        headers: {
+          cookie: s001Cookie,
+          "x-aais-csrf": createAaisCsrfToken("S001"),
+        },
+        body: JSON.stringify({
+          action: "archive-artifact",
+          taskId: "training_task_1",
+          document: {
+            id: "training_task_1-api-archive",
+            taskId: "training_task_1",
+            title: "训练记录",
+            html: "训练任务过程记录",
+            savedAt: "2026-08-07T08:00:00.000Z",
+          },
+        }),
+      }),
+    );
+    body = await response.json();
+    expect(body.session.tasks[0].artifactText).toBe("");
+    expect(body.session.historyDocuments).toEqual([{
+      id: "training_task_1-api-archive",
+      taskId: "training_task_1",
+      title: "训练记录",
+      html: "训练任务过程记录",
+      savedAt: "2026-08-07T08:00:00.000Z",
+    }]);
+
     response = await sessionRoute.GET(
       new Request("http://localhost/api/learning/session", {
         headers: {
@@ -64,7 +94,8 @@ describe("AAIS learning API routes", () => {
       }),
     );
     body = await response.json();
-    expect(body.session.tasks[0].artifactText).toBe("训练任务过程记录");
+    expect(body.session.tasks[0].artifactText).toBe("");
+    expect(body.session.historyDocuments[0].title).toBe("训练记录");
 
     response = await sessionRoute.GET(
       new Request("http://localhost/api/learning/session", {
@@ -402,6 +433,52 @@ describe("AAIS learning API routes", () => {
     expect(sessionBody.session.events.map((event: { event: string }) => event.event)).toEqual(
       expect.arrayContaining(["ai_prompt_submitted", "ai_response_completed"]),
     );
+  });
+
+  it("carries persisted learner context and explicit English preference into later guide turns", async () => {
+    vi.stubEnv("AAIS_AI_PROVIDER", "");
+    vi.stubEnv("AAIS_AI_ENDPOINT", "");
+    vi.stubEnv("AAIS_AI_API_KEY", "");
+    vi.stubEnv("AAIS_AI_MODEL", "");
+    vi.stubEnv("AAIS_AI_FALLBACK_ENDPOINT", "");
+    vi.stubEnv("AAIS_AI_FALLBACK_API_KEY", "");
+    vi.stubEnv("AAIS_AI_FALLBACK_MODEL", "");
+    vi.resetModules();
+    const guideRoute = await import("@/app/api/learning/ai-guide/route");
+
+    const sendGuideTurn = async (studentId: string, learnerInput: string) => {
+      const response = await guideRoute.POST(
+        new Request("http://localhost/api/learning/ai-guide", {
+          method: "POST",
+          headers: {
+            cookie: createAuthedCookie(studentId),
+            "x-aais-csrf": createAaisCsrfToken(studentId),
+          },
+          body: JSON.stringify({
+            locale: "zh-CN",
+            phase: "training",
+            taskId: "training_task_1",
+            learnerInput,
+            targetAgentIds: ["A1"],
+            workspaceState: {
+              currentStep: "guide",
+            },
+          }),
+        }),
+      );
+      const body = await response.json();
+      expect(response.status).toBe(200);
+      return body;
+    };
+
+    await sendGuideTurn("context-learner", "@A1 我的卡点是高性能虚拟滚动列表。");
+    const recalledContext = await sendGuideTurn("context-learner", "@A1 我刚才说的卡点是什么？");
+    expect(recalledContext.turns[0].content).toContain("高性能虚拟滚动列表");
+
+    await sendGuideTurn("english-learner", "@A1 I mean answer all questions in English.");
+    const continuedEnglish = await sendGuideTurn("english-learner", "@A1 I do not have the target yet.");
+    expect(continuedEnglish.turns[0].content).toContain("direct assists remain");
+    expect(continuedEnglish.turns[0].content).not.toMatch(/[\u3400-\u9fff]/u);
   });
 
   it("enforces a per-student daily guide request budget", async () => {

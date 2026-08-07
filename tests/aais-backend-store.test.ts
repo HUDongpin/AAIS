@@ -167,9 +167,109 @@ describe("AAIS backend learning store", () => {
     expect(csv.body).toContain("practice_task_1");
   });
 
+  it("persists a bounded inline image in the document artifact without weakening other text limits", async () => {
+    const store = createAaisLearningStore({ rootDir: tempDir });
+    const inlineImageArtifact = `<p>图片记录</p><img alt="测试截图" src="data:image/png;base64,${"A".repeat(64_000)}">`;
+
+    const saved = await store.saveArtifact("S001", "training_task_1", inlineImageArtifact);
+
+    expect(saved.tasks[0]?.artifactText).toBe(inlineImageArtifact);
+    await expect(
+      store.saveArtifact("S001", "training_task_1", "x".repeat(2 * 1024 * 1024 + 1)),
+    ).rejects.toThrow("AAIS artifactText is too large");
+    await expect(
+      store.saveSelfReport("S001", "training_task_1", "x".repeat(20_001)),
+    ).rejects.toThrow("AAIS selfReport is too large");
+  });
+
+  it("archives a rich document durably before atomically clearing its working copy", async () => {
+    const store = createAaisLearningStore({ rootDir: tempDir });
+    const richDocumentHtml = `<h1>学习计划</h1><p><strong>重点记录</strong></p><img alt="测试截图" src="data:image/png;base64,${"A".repeat(64_000)}">`;
+    await store.saveArtifact("S001", "training_task_1", richDocumentHtml);
+
+    const archived = await store.archiveArtifact("S001", "training_task_1", {
+      document: {
+        id: "training_task_1-archive-1",
+        taskId: "training_task_1",
+        title: "学习计划",
+        html: richDocumentHtml,
+        savedAt: "2026-08-07T08:00:00.000Z",
+      },
+    });
+
+    expect(archived.tasks[0]?.artifactText).toBe("");
+    expect(archived.historyDocuments).toEqual([{
+      id: "training_task_1-archive-1",
+      taskId: "training_task_1",
+      title: "学习计划",
+      html: richDocumentHtml,
+      savedAt: "2026-08-07T08:00:00.000Z",
+    }]);
+
+    const reloaded = await createAaisLearningStore({ rootDir: tempDir })
+      .getOrCreateSession("S001");
+    expect(reloaded.tasks[0]?.artifactText).toBe("");
+    expect(reloaded.historyDocuments[0]).toMatchObject({
+      id: "training_task_1-archive-1",
+      title: "学习计划",
+      html: richDocumentHtml,
+    });
+
+    const renamed = await createAaisLearningStore({ rootDir: tempDir }).archiveArtifact(
+      "S001",
+      "training_task_1",
+      {
+        activeDocumentId: "training_task_1-archive-1",
+        document: {
+          id: "training_task_1-replacement-id",
+          taskId: "training_task_1",
+          title: "最终学习计划",
+          html: richDocumentHtml,
+          savedAt: "2026-08-07T09:00:00.000Z",
+        },
+      },
+    );
+    expect(renamed.historyDocuments).toHaveLength(1);
+    expect(renamed.historyDocuments[0]).toMatchObject({
+      id: "training_task_1-archive-1",
+      title: "最终学习计划",
+      savedAt: "2026-08-07T09:00:00.000Z",
+    });
+  });
+
+  it("never clears the working copy when durable document archiving is rejected", async () => {
+    const store = createAaisLearningStore({ rootDir: tempDir });
+    const workingCopy = "<p>归档失败时必须保留</p>";
+    await store.saveArtifact("S001", "training_task_1", workingCopy);
+
+    await expect(store.archiveArtifact("S001", "training_task_1", {
+      document: {
+        id: "training_task_1-invalid-archive",
+        taskId: "training_task_1",
+        title: "x".repeat(201),
+        html: workingCopy,
+        savedAt: "2026-08-07T08:00:00.000Z",
+      },
+    })).rejects.toThrow("AAIS document title is too large");
+
+    const reloaded = await createAaisLearningStore({ rootDir: tempDir })
+      .getOrCreateSession("S001");
+    expect(reloaded.tasks[0]?.artifactText).toBe(workingCopy);
+    expect(reloaded.historyDocuments).toEqual([]);
+  });
+
   it("deletes only restricted research raw text while preserving unrelated learner history", async () => {
     const store = createAaisLearningStore({ rootDir: tempDir });
     await store.saveArtifact("S001", "training_task_1", "研究作品原文");
+    await store.archiveArtifact("S001", "training_task_1", {
+      document: {
+        id: "training_task_1-research-archive",
+        taskId: "training_task_1",
+        title: "研究归档",
+        html: "研究作品原文",
+        savedAt: "2026-08-07T08:00:00.000Z",
+      },
+    });
     await store.saveSelfReport("S001", "training_task_1", "研究自我报告原文");
     await store.appendGuideExchange({
       studentId: "S001",
@@ -207,6 +307,7 @@ describe("AAIS backend learning store", () => {
     expect(reloaded.tasks.every((task) =>
       task.artifactText === "" && task.selfReport === ""
     )).toBe(true);
+    expect(reloaded.historyDocuments).toEqual([]);
     expect(reloaded.guideMessages.every((message) => message.text === "")).toBe(true);
     expect(reloaded.guideMessages.flatMap((message) => message.turns ?? []).every((turn) =>
       turn.content === "" && turn.actions.length === 0

@@ -122,6 +122,14 @@ describe("AAIS LearningPage", () => {
     expect(globalCss).toMatch(/html,\s*body\s*\{[\s\S]*?margin:\s*0;[\s\S]*?padding:\s*0;/);
   });
 
+  it("keeps pasted editor images bounded and renders one consistent underline weight", () => {
+    const globalCss = readFileSync("src/app/globals.css", "utf8");
+
+    expect(globalCss).toMatch(/\.aais-document-editor img\s*\{[\s\S]*?max-width:\s*100%;/);
+    expect(globalCss).toMatch(/\.aais-document-editor img\s*\{[\s\S]*?user-select:\s*none;/);
+    expect(globalCss).toMatch(/\.aais-document-editor u\s*\{[\s\S]*?text-decoration-thickness:\s*1px;/);
+  });
+
   it("renders the simplified CAAIS learning shell with the content display menu", () => {
     render(<LearningPage />);
 
@@ -2725,6 +2733,13 @@ describe("AAIS LearningPage", () => {
 
   it("flushes a pending artifact save and archives the editor document as a blue history folder", async () => {
     setCsrfCookie();
+    let persistedHistory: Array<{
+      id: string;
+      taskId: string;
+      title: string;
+      html: string;
+      savedAt: string;
+    }> = [];
     const showSaveFilePicker = vi.fn(async () => ({
       createWritable: vi.fn(),
     }));
@@ -2736,51 +2751,24 @@ describe("AAIS LearningPage", () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url.startsWith("/api/learning/session") && (!init || init.method === "GET")) {
-        return Response.json({
-          session: {
-            studentId: "S001",
-            activeStage: "training",
-            activeTaskId: "training_task_1",
-            tasks: [
-              {
-                taskId: "training_task_1",
-                phase: "training",
-                status: "active",
-                artifactText: "",
-                selfReport: "",
-                scaffoldRequests: 0,
-                scaffoldHistory: [],
-              },
-            ],
-            guideMessages: [],
-            events: [],
-          },
-        });
+        return Response.json({ session: createClientSessionFixture("", persistedHistory) });
       }
       if (url === "/api/learning/session" && init?.method === "PATCH") {
         const body = JSON.parse(String(init.body)) as {
-          artifactText: string;
+          action: string;
+          activeDocumentId?: string | null;
+          document: (typeof persistedHistory)[number];
         };
-        return Response.json({
-          session: {
-            studentId: "S001",
-            activeStage: "training",
-            activeTaskId: "training_task_1",
-            tasks: [
-              {
-                taskId: "training_task_1",
-                phase: "training",
-                status: "active",
-                artifactText: body.artifactText,
-                selfReport: "",
-                scaffoldRequests: 0,
-                scaffoldHistory: [],
-              },
-            ],
-            guideMessages: [],
-            events: [],
-          },
-        });
+        expect(body.action).toBe("archive-artifact");
+        const activeDocument = body.activeDocumentId
+          ? persistedHistory.find((document) => document.id === body.activeDocumentId)
+          : null;
+        persistedHistory = activeDocument
+          ? persistedHistory.map((document) => document.id === activeDocument.id
+            ? { ...body.document, id: activeDocument.id }
+            : document)
+          : [body.document, ...persistedHistory];
+        return Response.json({ session: createClientSessionFixture("", persistedHistory) });
       }
       return Response.json({ ok: true });
     });
@@ -2813,9 +2801,12 @@ describe("AAIS LearningPage", () => {
       }),
     );
     expect(JSON.parse(String(getPatchCalls(fetchMock)[0][1]?.body))).toMatchObject({
-      action: "save-artifact",
+      action: "archive-artifact",
       taskId: "training_task_1",
-      artifactText: richDocumentHtml,
+      document: {
+        title: "学习计划",
+        html: richDocumentHtml,
+      },
     });
     expect(showSaveFilePicker).not.toHaveBeenCalled();
     expect(screen.queryByLabelText("在这里写下任务理解、计划、执行过程或最终产出。")).toBeNull();
@@ -2826,7 +2817,15 @@ describe("AAIS LearningPage", () => {
       "from-[#68d4ff]",
     );
     expect(screen.getByText("刚刚保存")).toBeTruthy();
-    fireEvent.click(historyFolder);
+
+    fireEvent.click(screen.getByRole("button", { name: "文档编辑" }));
+    expect((screen.getByLabelText("文档标题") as HTMLInputElement).value).toBe("");
+    expect(screen.getByLabelText("在这里写下任务理解、计划、执行过程或最终产出。").innerHTML)
+      .toBe("");
+    fireEvent.click(screen.getByRole("button", { name: "内容展示" }));
+    fireEvent.click(screen.getByRole("button", { name: "历史文档" }));
+
+    fireEvent.click(screen.getByRole("button", { name: "历史文档文件夹：学习计划" }));
     const reopenedDocument = screen.getByLabelText("在这里写下任务理解、计划、执行过程或最终产出。");
     expect(reopenedDocument.innerHTML).toContain("<strong>重点记录</strong>");
 
@@ -2837,15 +2836,117 @@ describe("AAIS LearningPage", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: "保存并关闭" }));
 
-    expect(screen.queryByRole("button", { name: "历史文档文件夹：学习计划" })).toBeNull();
-    const renamedHistoryFolder = screen.getByRole("button", {
+    const renamedHistoryFolder = await screen.findByRole("button", {
       name: "历史文档文件夹：最终学习计划",
     });
+    expect(screen.queryByRole("button", { name: "历史文档文件夹：学习计划" })).toBeNull();
     expect(screen.getAllByRole("button", { name: /^历史文档文件夹：/ })).toHaveLength(1);
     fireEvent.click(renamedHistoryFolder);
     expect((screen.getByLabelText("文档标题") as HTMLInputElement).value).toBe("最终学习计划");
     expect(screen.getByLabelText("在这里写下任务理解、计划、执行过程或最终产出。").innerHTML)
       .toContain("<strong>重点记录</strong>");
+  });
+
+  it("keeps a closed document in durable history after reload while clearing only its working copy", async () => {
+    setCsrfCookie();
+    let persistedArtifact = "<h1>管理者记录</h1><p><strong>管理者遗留的文档编辑记录</strong></p><img alt=\"测试截图\" src=\"data:image/png;base64,QUFJUw==\">";
+    let persistedHistory: Array<{
+      id: string;
+      taskId: string;
+      title: string;
+      html: string;
+      savedAt: string;
+    }> = [];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.startsWith("/api/learning/session") && (!init || init.method === "GET")) {
+        return Response.json({
+          session: createClientSessionFixture(persistedArtifact, persistedHistory),
+        });
+      }
+      if (url === "/api/learning/session" && init?.method === "PATCH") {
+        const body = JSON.parse(String(init.body)) as {
+          action: string;
+          document?: (typeof persistedHistory)[number];
+        };
+        expect(body.action).toBe("archive-artifact");
+        persistedHistory = body.document ? [body.document] : [];
+        persistedArtifact = "";
+        return Response.json({
+          session: createClientSessionFixture(persistedArtifact, persistedHistory),
+        });
+      }
+      return Response.json({ ok: true });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const firstView = render(<LearningPage />);
+    fireEvent.click(screen.getByRole("button", { name: "文档编辑" }));
+    const firstEditor = await screen.findByLabelText("在这里写下任务理解、计划、执行过程或最终产出。");
+    await waitFor(() => expect(firstEditor.innerHTML).toContain("管理者遗留的文档编辑记录"));
+    fireEvent.change(screen.getByLabelText("文档标题"), {
+      target: { value: "管理者测试记录" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "保存并关闭" }));
+    await waitFor(() => expect(persistedArtifact).toBe(""));
+    expect(persistedHistory).toHaveLength(1);
+
+    firstView.unmount();
+    render(<LearningPage />);
+    fireEvent.click(screen.getByRole("button", { name: "文档编辑" }));
+    const reloadedEditor = await screen.findByLabelText("在这里写下任务理解、计划、执行过程或最终产出。");
+    await waitFor(() => expect(reloadedEditor.innerHTML).toBe(""));
+    fireEvent.click(screen.getByRole("button", { name: "内容展示" }));
+    fireEvent.click(screen.getByRole("button", { name: "历史文档" }));
+    const historyFolder = await screen.findByRole("button", {
+      name: "历史文档文件夹：管理者测试记录",
+    });
+    fireEvent.click(historyFolder);
+    expect((screen.getByLabelText("文档标题") as HTMLInputElement).value)
+      .toBe("管理者测试记录");
+    expect(screen.getByLabelText("在这里写下任务理解、计划、执行过程或最终产出。").innerHTML)
+      .toContain("管理者遗留的文档编辑记录");
+    expect(screen.getByLabelText("在这里写下任务理解、计划、执行过程或最终产出。").innerHTML)
+      .toContain("<strong>");
+    expect(screen.getByLabelText("在这里写下任务理解、计划、执行过程或最终产出。").innerHTML)
+      .toContain("data:image/png;base64,QUFJUw==");
+  });
+
+  it("keeps the editor title and content intact when durable archiving fails", async () => {
+    setCsrfCookie();
+    const persistedArtifact = "<p>归档失败也不能丢失</p>";
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.startsWith("/api/learning/session") && (!init || init.method === "GET")) {
+        return Response.json({ session: createClientSessionFixture(persistedArtifact) });
+      }
+      if (url === "/api/learning/session" && init?.method === "PATCH") {
+        return Response.json({
+          error: {
+            code: "AAIS_SESSION_ARCHIVE_FAILED",
+            message: "Archive failed.",
+          },
+        }, { status: 503 });
+      }
+      return Response.json({ ok: true });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<LearningPage />);
+    fireEvent.click(screen.getByRole("button", { name: "文档编辑" }));
+    const editor = await screen.findByLabelText("在这里写下任务理解、计划、执行过程或最终产出。");
+    await waitFor(() => expect(editor.innerHTML).toContain("归档失败也不能丢失"));
+    fireEvent.change(screen.getByLabelText("文档标题"), {
+      target: { value: "不能丢失的标题" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "保存并关闭" }));
+
+    expect((await screen.findByRole("alert")).textContent)
+      .toBe("文档未能归档，工作区内容已保留。");
+    expect((screen.getByLabelText("文档标题") as HTMLInputElement).value)
+      .toBe("不能丢失的标题");
+    expect(editor.innerHTML).toContain("归档失败也不能丢失");
+    expect(screen.queryByRole("button", { name: /^历史文档文件夹：/ })).toBeNull();
   });
 
   it("does not emit research events from guide, title, or document keystroke-level changes", () => {
@@ -3011,7 +3112,16 @@ function createDeferred<T>() {
   };
 }
 
-function createClientSessionFixture(artifactText: string) {
+function createClientSessionFixture(
+  artifactText: string,
+  historyDocuments: Array<{
+    id: string;
+    taskId: string;
+    title: string;
+    html: string;
+    savedAt: string;
+  }> = [],
+) {
   return {
     studentId: "S001",
     activeStage: "training",
@@ -3027,6 +3137,7 @@ function createClientSessionFixture(artifactText: string) {
         scaffoldHistory: [],
       },
     ],
+    historyDocuments,
     guideMessages: [],
     events: [],
   };

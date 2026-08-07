@@ -376,7 +376,7 @@ export function DocumentEditor({
           onBlur={onArtifactBlur}
           data-font-family={fontFamily}
           data-font-size={fontSize}
-          className="aais-document-editor min-h-[404px] w-full resize-none overflow-y-auto rounded-lg border border-[#e5e5e5] bg-white p-4 leading-7 text-[#333333] outline-none focus:border-[#536de8]"
+          className="aais-document-editor min-h-[404px] w-full resize-none overflow-x-hidden overflow-y-auto rounded-lg border border-[#e5e5e5] bg-white p-4 leading-7 text-[#333333] outline-none focus:border-[#536de8]"
         />
       </div>
     </section>

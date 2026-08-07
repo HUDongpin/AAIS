@@ -1,5 +1,4 @@
 "use client";
-
 import { useEffect, useRef, useState } from "react";
 import { artifactSaveDebounceMs } from "@/components/pages/learning/learning-page-constants";
 import { ContentResizeSeparator, ContentSidePanel } from "@/components/pages/learning/content-side-panel";
@@ -9,18 +8,17 @@ import { getLearningCopy } from "@/components/pages/learning/learning-copy";
 import { useLearningAccount } from "@/components/pages/learning/use-learning-account";
 import { useContentPanelResize } from "@/components/pages/learning/use-content-panel-resize";
 import { useLearningGuide } from "@/components/pages/learning/use-learning-guide";
+import { useLearningDocumentArchive } from "@/components/pages/learning/use-learning-document-archive";
 import { useLearningWorkspaceSession } from "@/components/pages/learning/use-learning-workspace-session";
 import { clientNowMs, createArtifactSaveEventDetail, isUserCancelledFilePicker, type PendingArtifactSave } from "@/components/pages/learning/client-helpers";
 import { LearningResearchWorkspaceBoundary, type LearningResearchBoundary } from "@/components/pages/learning/research-telemetry-boundary";
 import { admitAaisResearchAction, captureAaisResearchActorGeneration, classifyAaisResearchClientError, createAaisResearchOperationId, recordAaisResearchEvent } from "@/lib/client/aais-research-telemetry";
-import { createHistoryDocument, createLearningDocumentFileName, createLearningDocumentMarkdown, mergeHistoryDocument, saveMarkdownDocumentToLocal } from "@/components/pages/learning/document-markdown";
+import { createLearningDocumentFileName, createLearningDocumentMarkdown, saveMarkdownDocumentToLocal } from "@/components/pages/learning/document-markdown";
 import type { ContentItemId, ContentTab, SavedLearningDocument } from "@/components/pages/learning/learning-page-types";
 import type { Locale } from "@/data/aais";
 import { useLearningLocale } from "@/components/pages/learning/use-learning-locale";
-
 export type LearningPageActor = { id: string; displayName: string };
 export type LearningPageResearchBoundary = LearningResearchBoundary;
-
 export function LearningPage({ actor, locale: initialLocale = "zh-CN", research }: {
   actor: LearningPageActor;
   locale?: Locale;
@@ -39,11 +37,11 @@ function LearningWorkbench({ actor, initialLocale }: { actor: LearningPageActor;
   const [activeTab, setActiveTab] = useState<ContentTab>("display");
   const [activeContentId, setActiveContentId] = useState<ContentItemId | null>(null);
   const [documentTitle, setDocumentTitle] = useState("");
-  const [historyDocuments, setHistoryDocuments] = useState<SavedLearningDocument[]>([]);
   const [activeHistoryDocumentId, setActiveHistoryDocumentId] = useState<string | null>(null);
   const [artifactSaveBusy, setArtifactSaveBusy] = useState(false);
   const [artifactSaveStatus, setArtifactSaveStatus] = useState("");
   const [artifactSaveError, setArtifactSaveError] = useState("");
+  const [documentCloseError, setDocumentCloseError] = useState("");
   const [documentDownloadBusy, setDocumentDownloadBusy] = useState(false);
   const [documentDownloadStatus, setDocumentDownloadStatus] = useState("");
   const [documentDownloadError, setDocumentDownloadError] = useState("");
@@ -54,11 +52,13 @@ function LearningWorkbench({ actor, initialLocale }: { actor: LearningPageActor;
     activeTaskId,
     artifactText,
     backendError,
+    historyDocuments,
     lastSavedArtifactLengthRef,
     patchSession,
     resetWorkspaceSession,
     setArtifactText,
     setBackendError,
+    setHistoryDocuments,
   } = useLearningWorkspaceSession(locale);
   const {
     contentPanelWidth,
@@ -112,6 +112,7 @@ function LearningWorkbench({ actor, initialLocale }: { actor: LearningPageActor;
   function resetLearnerWorkspace() {
     setArtifactSaveStatus("");
     setArtifactSaveError("");
+    setDocumentCloseError("");
     setDocumentDownloadStatus("");
     setDocumentDownloadError("");
     if (artifactSaveTimerRef.current) {
@@ -126,7 +127,6 @@ function LearningWorkbench({ actor, initialLocale }: { actor: LearningPageActor;
     setHistoryDocuments([]);
     setActiveHistoryDocumentId(null);
   }
-
   function flushPendingArtifactSave(trigger = "manual") {
     const pending = pendingArtifactSaveRef.current;
     if (artifactSaveTimerRef.current) {
@@ -225,9 +225,22 @@ function LearningWorkbench({ actor, initialLocale }: { actor: LearningPageActor;
     );
   }
 
+  function cancelPendingArtifactSave() {
+    if (artifactSaveTimerRef.current) {
+      clearTimeout(artifactSaveTimerRef.current);
+      artifactSaveTimerRef.current = null;
+    }
+    pendingArtifactSaveRef.current = null;
+  }
+
+  function restorePendingArtifactSave(taskId: string, value: string) {
+    scheduleArtifactSave(taskId, value);
+  }
+
   function recordArtifact(value: string) {
     setDocumentDownloadStatus("");
     setDocumentDownloadError("");
+    setDocumentCloseError("");
     setArtifactText(value);
     scheduleArtifactSave(activeTaskId, value);
   }
@@ -250,39 +263,26 @@ function LearningWorkbench({ actor, initialLocale }: { actor: LearningPageActor;
     }
   }
 
-  function saveAndCloseDocument() {
-    const operationId = createAaisResearchOperationId("document-save-close");
-    const hadPendingSave = Boolean(pendingArtifactSaveRef.current);
-    if (!flushPendingArtifactSave("save_close")) {
-      return;
-    }
-    if (!admitAaisResearchAction({
-      eventName: "document_save_closed",
-      outcome: "success",
-      detail: {
-        operation_id: operationId,
-        task_id: activeTaskId,
-        pending_save: hadPendingSave,
-        title_length: documentTitle.trim().length,
-        artifact_length: artifactText.length,
-      },
-    })) {
-      return;
-    }
-    const sourceHtml = artifactText.trim();
-    if (sourceHtml || documentTitle.trim()) {
-      const archivedDocument = createHistoryDocument({
-        taskId: activeTaskId,
-        title: documentTitle,
-        html: sourceHtml,
-        locale,
-      });
-      setHistoryDocuments((currentDocuments) => mergeHistoryDocument(currentDocuments, archivedDocument, activeHistoryDocumentId));
-    }
-    setActiveHistoryDocumentId(null);
-    setActiveTab("display");
-    setActiveContentId("history");
-  }
+  const saveAndCloseDocument = useLearningDocumentArchive({
+    activeHistoryDocumentId,
+    activeTaskId,
+    artifactSaveBusy,
+    artifactText,
+    cancelPendingArtifactSave,
+    documentTitle,
+    hasPendingArtifactSave: () => Boolean(pendingArtifactSaveRef.current),
+    locale,
+    patchSession,
+    restorePendingArtifactSave,
+    setActiveContentId,
+    setActiveHistoryDocumentId,
+    setActiveTab,
+    setArtifactSaveBusy,
+    setArtifactSaveError,
+    setArtifactSaveStatus,
+    setDocumentCloseError,
+    setDocumentTitle,
+  });
 
   async function downloadDocumentToLocal() {
     if (documentDownloadBusy) {
@@ -473,7 +473,7 @@ function LearningWorkbench({ actor, initialLocale }: { actor: LearningPageActor;
             activeContentId={activeContentId}
             activeTab={activeTab}
             artifactSaveBusy={artifactSaveBusy}
-            artifactSaveError={artifactSaveError}
+            artifactSaveError={documentCloseError || artifactSaveError}
             artifactSaveStatus={artifactSaveStatus}
             artifactText={artifactText}
             documentDownloadBusy={documentDownloadBusy}
