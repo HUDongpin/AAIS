@@ -1,6 +1,10 @@
 import { getAaisApiErrorMessage } from "@/lib/client/aais-api-error";
 import { guideRequestTimeoutMs } from "@/components/pages/learning/learning-page-constants";
+import {
+  getGuideAgentLabel,
+} from "@/components/pages/learning/learning-copy";
 import type { GuideTurn } from "@/components/pages/learning/learning-page-types";
+import type { Locale } from "@/data/aais";
 
 export type GuideResponseBody = {
   message?: {
@@ -39,17 +43,21 @@ type GuideStreamEvent = {
 export const guideStreamProgressText = "AAIS 智能体正在分步处理。";
 export const guideStreamDoneText = "AAIS 智能体已回复。";
 
-const guideStreamAgentLabels: Record<string, string> = {
-  A1: "导学智能体",
-  A2: "专家智能体",
-  A3: "监督智能体",
-  A4: "反思智能体",
-};
+export function getGuideStreamProgressText(locale: Locale) {
+  return locale === "en-US"
+    ? "CAAIS agents are working through your request step by step."
+    : guideStreamProgressText;
+}
+
+export function getGuideStreamDoneText(locale: Locale) {
+  return locale === "en-US" ? "CAAIS agents replied." : guideStreamDoneText;
+}
 
 export async function readGuideStreamResponse(
   response: Response,
   onProgress: (progress: GuideStreamProgress) => void,
   idleTimeoutMs = guideRequestTimeoutMs,
+  locale: Locale = "zh-CN",
 ): Promise<GuideResponseBody> {
   if (!response.body) {
     throw new Error("AAIS guide stream is unavailable");
@@ -81,7 +89,7 @@ export async function readGuideStreamResponse(
 
     if (streamEvent.event === "ack") {
       graphId = typeof streamEvent.data.graphId === "string" ? streamEvent.data.graphId : graphId;
-      emitProgress(guideStreamProgressText);
+      emitProgress(getGuideStreamProgressText(locale));
       return;
     }
 
@@ -92,10 +100,12 @@ export async function readGuideStreamResponse(
       }
       upsertGuideStreamTurn(turns, {
         agentId,
-        content: `${readGuideStreamAgentLabel(agentId)}正在处理你的问题...`,
+        content: locale === "en-US"
+          ? `${readGuideStreamAgentLabel(agentId, locale)} is working on your question...`
+          : `${readGuideStreamAgentLabel(agentId, locale)}正在处理你的问题...`,
         actions: ["progress"],
-      });
-      emitProgress(guideStreamProgressText);
+      }, locale);
+      emitProgress(getGuideStreamProgressText(locale));
       return;
     }
 
@@ -109,14 +119,14 @@ export async function readGuideStreamResponse(
         agentId,
         content,
         actions: ["respond"],
-      });
-      emitProgress(guideStreamDoneText);
+      }, locale);
+      emitProgress(getGuideStreamDoneText(locale));
       return;
     }
 
     if (streamEvent.event === "fallback") {
       fallback = true;
-      emitProgress(turns.length ? guideStreamDoneText : guideStreamProgressText);
+      emitProgress(turns.length ? getGuideStreamDoneText(locale) : getGuideStreamProgressText(locale));
       return;
     }
 
@@ -158,7 +168,7 @@ export async function readGuideStreamResponse(
 
   const body: GuideResponseBody = {
     message: {
-      text: guideStreamDoneText,
+      text: getGuideStreamDoneText(locale),
     },
     turns,
     orchestration: {
@@ -224,10 +234,11 @@ function upsertGuideStreamTurn(
     content: string;
     actions: string[];
   },
+  locale: Locale,
 ) {
   const nextTurn: GuideTurn = {
     agentId: input.agentId,
-    label: readGuideStreamAgentLabel(input.agentId),
+    label: readGuideStreamAgentLabel(input.agentId, locale),
     content: input.content,
     actions: input.actions,
   };
@@ -265,6 +276,6 @@ function readStreamAgentId(data: Record<string, unknown>) {
   return typeof data.agentId === "string" ? data.agentId : null;
 }
 
-function readGuideStreamAgentLabel(agentId: string) {
-  return guideStreamAgentLabels[agentId] ?? agentId;
+function readGuideStreamAgentLabel(agentId: string, locale: Locale) {
+  return getGuideAgentLabel(locale, agentId);
 }

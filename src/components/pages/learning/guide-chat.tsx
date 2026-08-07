@@ -1,12 +1,22 @@
 import type { ReactNode } from "react";
 import type { AaisGuideAttachment } from "@/lib/ai/aais-guide-attachments";
 import {
+  localizeAaisGuideAgentReferences,
+  localizeAaisGuideTargetMentions,
+} from "@/lib/ai/aais-guide-targets";
+import type { Locale } from "@/data/aais";
+import {
   admitAaisResearchAction,
   createAaisResearchOperationId,
 } from "@/lib/client/aais-research-telemetry";
 import {
   visibleGuideAgentIds,
 } from "@/components/pages/learning/learning-page-constants";
+import {
+  getGuideAgentLabel,
+  getLearningCopy,
+} from "@/components/pages/learning/learning-copy";
+import { MathText } from "@/components/pages/learning/math-text";
 import type {
   GuideClientAttachment,
   GuideMessage,
@@ -35,14 +45,14 @@ const guideAgentPresentation: Record<
   }
 > = {
   A1: {
-    label: "导学智能体",
+    label: "小张",
     avatarVariant: "guide",
     avatarClassName:
       "border-[#d8e0ca] bg-[#f5f8ef] text-[#4c5b32] shadow-[0_4px_12px_rgba(76,91,50,0.12)]",
     bubbleClassName: "border-[#dfe7d2] bg-white",
   },
   A2: {
-    label: "专家智能体",
+    label: "教授",
     avatarVariant: "expert",
     avatarClassName:
       "border-[#d7e3f6] bg-[#f4f8fd] text-[#1f4f86] shadow-[0_4px_12px_rgba(31,79,134,0.14)]",
@@ -69,19 +79,29 @@ export function formatGuideAttachmentSize(sizeBytes: number) {
   return `${(sizeBytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-export function GuideBubble({ message }: { message: GuideMessage }) {
+export function GuideBubble({
+  locale = "zh-CN",
+  message,
+}: {
+  locale?: Locale;
+  message: GuideMessage;
+}) {
+  const copy = getLearningCopy(locale);
   const assistant = message.kind === "assistant";
+  const visibleMessageText = assistant
+    ? localizeAaisGuideAgentReferences(message.text, locale)
+    : localizeAaisGuideTargetMentions(message.text, locale);
   const visibleTurns = getVisibleGuideTurns(message.turns);
   if (assistant && visibleTurns.length) {
     return (
       <div className="space-y-3">
         {message.runtime?.fallback ? (
           <p className="inline-flex rounded-full border border-[#f2d6a2] bg-[#fff8ed] px-3 py-1 text-xs font-bold text-[#8a5a12]">
-            离线支架模式
+            {copy.guide.offlineScaffold}
           </p>
         ) : null}
         {visibleTurns.map((turn) => (
-          <AgentTurnBubble key={`${message.id}-${turn.agentId}`} turn={turn} />
+          <AgentTurnBubble key={`${message.id}-${turn.agentId}`} locale={locale} turn={turn} />
         ))}
       </div>
     );
@@ -90,7 +110,7 @@ export function GuideBubble({ message }: { message: GuideMessage }) {
   return (
     <div className={assistant ? "flex items-start gap-3" : "flex justify-end"}>
       {assistant ? (
-        <AgentAvatar agentId="A1" label="导学智能体" />
+        <AgentAvatar agentId="A1" label={getGuideAgentLabel(locale, "A1")} locale={locale} />
       ) : null}
       <div
         className={[
@@ -101,24 +121,24 @@ export function GuideBubble({ message }: { message: GuideMessage }) {
         ].join(" ")}
       >
         {assistant ? (
-          <p className="mb-2 text-sm font-medium text-[#9aa0ad]">AI 助教</p>
+          <p className="mb-2 text-sm font-medium text-[#9aa0ad]">{copy.guide.assistant}</p>
         ) : null}
         {assistant && message.runtime?.fallback ? (
           <p className="mb-2 inline-flex rounded-full border border-[#f2d6a2] bg-[#fff8ed] px-3 py-1 text-xs font-bold text-[#8a5a12]">
-            离线支架模式
+            {copy.guide.offlineScaffold}
           </p>
         ) : null}
-        <SafeMarkdownText text={message.text} />
+        <SafeMarkdownText text={visibleMessageText} />
       </div>
     </div>
   );
 }
 
-function AgentTurnBubble({ turn }: { turn: GuideTurn }) {
-  const presentation = getAgentPresentation(turn);
+function AgentTurnBubble({ locale, turn }: { locale: Locale; turn: GuideTurn }) {
+  const presentation = getAgentPresentation(turn, locale);
   return (
     <div className="flex items-start gap-3">
-      <AgentAvatar agentId={turn.agentId} label={presentation.label} />
+      <AgentAvatar agentId={turn.agentId} label={presentation.label} locale={locale} />
       <article
         className={[
           "max-w-[760px] rounded-[18px] px-5 py-4 text-[17px] leading-8 text-[#30343b] shadow-[0_6px_18px_rgba(17,24,39,0.05)]",
@@ -126,9 +146,9 @@ function AgentTurnBubble({ turn }: { turn: GuideTurn }) {
         ].join(" ")}
       >
         <p className="mb-2 text-sm font-semibold text-[#59657a]">
-          {turn.agentId} {presentation.label}
+          {presentation.label}
         </p>
-        <SafeMarkdownText text={turn.content} />
+        <SafeMarkdownText text={localizeAaisGuideAgentReferences(turn.content, locale)} />
       </article>
     </div>
   );
@@ -256,7 +276,7 @@ function parseSafeMarkdownListItem(line: string) {
 
 function renderSafeMarkdownInline(text: string, keyPrefix: string): ReactNode[] {
   const nodes: ReactNode[] = [];
-  const inlinePattern = /(`([^`\n]+)`|\*\*([\s\S]+?)\*\*|__([\s\S]+?)__|\[([^\]\n]+)\]\(([^)\s]+)\))/g;
+  const inlinePattern = /`([^`\n]+)`|\$\$([\s\S]+?)\$\$|\\\[([\s\S]+?)\\\]|\\\(([\s\S]+?)\\\)|(?<!\\)\$([^\s$](?:[^$\n]*?[^\s$])?)\$|\*\*([\s\S]+?)\*\*|__([\s\S]+?)__|\[([^\]\n]+)\]\(([^)\s]+)\)/g;
   let lastIndex = 0;
   let match: RegExpExecArray | null;
 
@@ -265,7 +285,18 @@ function renderSafeMarkdownInline(text: string, keyPrefix: string): ReactNode[] 
       nodes.push(text.slice(lastIndex, match.index));
     }
 
-    const [token, , code, strongAsterisk, strongUnderscore, linkLabel, linkHref] = match;
+    const [
+      token,
+      code,
+      displayDollar,
+      displayBracket,
+      inlineParentheses,
+      inlineDollar,
+      strongAsterisk,
+      strongUnderscore,
+      linkLabel,
+      linkHref,
+    ] = match;
     const key = `${keyPrefix}-${match.index}`;
 
     if (code !== undefined) {
@@ -273,6 +304,14 @@ function renderSafeMarkdownInline(text: string, keyPrefix: string): ReactNode[] 
         <code key={key} className="rounded bg-black/5 px-1 py-0.5 font-mono text-[0.92em]">
           {code}
         </code>,
+      );
+    } else if (displayDollar !== undefined || displayBracket !== undefined) {
+      nodes.push(
+        <MathText key={key} displayMode tex={displayDollar ?? displayBracket ?? ""} />,
+      );
+    } else if (inlineParentheses !== undefined || inlineDollar !== undefined) {
+      nodes.push(
+        <MathText key={key} tex={inlineParentheses ?? inlineDollar ?? ""} />,
       );
     } else if (strongAsterisk !== undefined || strongUnderscore !== undefined) {
       const strongText = strongAsterisk ?? strongUnderscore ?? "";
@@ -347,9 +386,17 @@ function getSafeMarkdownHref(href: string) {
   return null;
 }
 
-function AgentAvatar({ agentId, label }: { agentId: string; label: string }) {
+function AgentAvatar({
+  agentId,
+  label,
+  locale,
+}: {
+  agentId: string;
+  label: string;
+  locale: Locale;
+}) {
   const presentation = guideAgentPresentation[agentId] ?? guideAgentPresentation.A1;
-  const avatarLabel = `${agentId} ${label}大学教育风格头像`;
+  const avatarLabel = getLearningCopy(locale).guide.avatar(agentId, label);
   return (
     <span
       aria-label={avatarLabel}
@@ -406,9 +453,14 @@ export function getVisibleGuideTurns(turns?: GuideTurn[]) {
   ) ?? [];
 }
 
-function getAgentPresentation(turn: GuideTurn) {
-  return guideAgentPresentation[turn.agentId] ?? {
-    ...guideAgentPresentation.A1,
-    label: turn.label,
+function getAgentPresentation(turn: GuideTurn, locale: Locale) {
+  const canonicalVisibleLabel = visibleGuideAgentIds.includes(
+    turn.agentId as (typeof visibleGuideAgentIds)[number],
+  )
+    ? getGuideAgentLabel(locale, turn.agentId)
+    : null;
+  return {
+    ...(guideAgentPresentation[turn.agentId] ?? guideAgentPresentation.A1),
+    label: canonicalVisibleLabel || turn.label || getGuideAgentLabel(locale, turn.agentId),
   };
 }

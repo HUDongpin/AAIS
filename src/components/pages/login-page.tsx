@@ -13,6 +13,11 @@ import {
 import { getAaisApiErrorMessage } from "@/lib/client/aais-api-error";
 import { clearAaisResearchTelemetryForActor } from "@/lib/client/aais-research-telemetry";
 import {
+  aaisLocaleStorageKey,
+  applyAaisLocaleToDocument,
+  saveAaisLocalePreference,
+} from "@/lib/aais-locale";
+import {
   loginCopyByLocale,
   type LoginLocale,
 } from "@/components/pages/login/login-design";
@@ -55,7 +60,7 @@ export function LoginPage({ trialLoginEnabled = true }: LoginPageProps) {
     if (requestedLocale) {
       return;
     }
-    const savedLocale = parseLoginLocale(window.localStorage.getItem("aais_login_locale"));
+    const savedLocale = parseLoginLocale(window.localStorage.getItem(aaisLocaleStorageKey));
     if (!savedLocale || savedLocale === locale) {
       return;
     }
@@ -63,12 +68,16 @@ export function LoginPage({ trialLoginEnabled = true }: LoginPageProps) {
     return () => window.cancelAnimationFrame(frameId);
   }, [locale, requestedLocale]);
 
+  useEffect(() => {
+    applyAaisLocaleToDocument(locale);
+  }, [locale]);
+
   const handleLanguageChange = useCallback((event: ChangeEvent<HTMLSelectElement>) => {
     const nextLocale = parseLoginLocale(event.target.value) ?? "zh-CN";
     setLocale(nextLocale);
     setError("");
     setNotice("");
-    window.localStorage.setItem("aais_login_locale", nextLocale);
+    saveAaisLocalePreference(nextLocale);
 
     const url = new URL(window.location.href);
     if (nextLocale === "zh-CN") {
@@ -158,6 +167,7 @@ export function LoginPage({ trialLoginEnabled = true }: LoginPageProps) {
         if (result?.appSession?.actor?.displayName) {
           window.localStorage.setItem("aais_display_name", result.appSession.actor.displayName);
         }
+        saveAaisLocalePreference(locale);
         router.replace(isSafeLocalRedirectTarget(result?.redirectTarget) ? result.redirectTarget : "/learning");
       } catch {
         setError(copy.serverError);
@@ -166,7 +176,7 @@ export function LoginPage({ trialLoginEnabled = true }: LoginPageProps) {
         setSubmitting(false);
       }
     },
-    [account, consentAccepted, copy, password, router],
+    [account, consentAccepted, copy, locale, password, router],
   );
 
   const handleSetPassword = useCallback(

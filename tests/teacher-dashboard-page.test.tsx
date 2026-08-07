@@ -119,7 +119,10 @@ describe("AAIS TeacherDashboardPage", () => {
     expect(screen.getByRole("main", { name: "教师看板" })).toBeTruthy();
     expect(screen.getByText("学习者")).toBeTruthy();
     expect(screen.getAllByText("2").length).toBeGreaterThan(0);
-    expect(screen.getByText("A3/A2 信号")).toBeTruthy();
+    expect(screen.getByText("监督/教授信号")).toBeTruthy();
+    expect(screen.getByRole("option", { name: "小张" })).toBeTruthy();
+    expect(screen.getByRole("option", { name: "教授" })).toBeTruthy();
+    expect(document.body.textContent).not.toMatch(/\bA[12]\b/);
     expect(screen.getByText("AI 采纳")).toBeTruthy();
     expect(screen.getByText("风险分层")).toBeTruthy();
     expect(screen.getByText("推荐跟进")).toBeTruthy();

@@ -1,9 +1,12 @@
 import { DownloadSimple, SignOut, Sparkle, Trash } from "@phosphor-icons/react";
+import type { Locale } from "@/data/aais";
+import { getLearningCopy } from "@/components/pages/learning/learning-copy";
 
 export function LearningTopBar({
   accountMenuOpen,
   displayName,
   loggingOut,
+  locale = "zh-CN",
   privacyBusy,
   onDeleteLearnerData,
   onExportLearnerData,
@@ -13,12 +16,14 @@ export function LearningTopBar({
   accountMenuOpen: boolean;
   displayName: string;
   loggingOut: boolean;
+  locale?: Locale;
   privacyBusy: boolean;
   onDeleteLearnerData: () => void;
   onExportLearnerData: () => void;
   onLogout: () => void;
   onToggleAccountMenu: () => void;
 }) {
+  const copy = getLearningCopy(locale);
   return (
     <header
       className="aais-learning-navigation flex h-11 shrink-0 items-center justify-between border-b border-[#ececeb] bg-[#fcfcfb] px-3 text-[#0e0e0e]"
@@ -26,19 +31,19 @@ export function LearningTopBar({
       <div className="flex min-w-0 items-center gap-2">
         <span
           role="img"
-          aria-label="AAIS 登录界面 logo"
+          aria-label={copy.brand.logoLabel}
           className="grid size-6 shrink-0 place-items-center rounded-2xl bg-[#1f6feb] text-white shadow-[0_8px_18px_rgba(31,111,235,0.24)]"
         >
           <Sparkle size={14} weight="duotone" />
         </span>
         <span className="truncate text-xs font-medium leading-tight tracking-normal sm:text-sm">
-          Cognitive Apprenticeship AI System (CAAS)
+          Cognitive Apprenticeship AI System (CAAIS)
         </span>
       </div>
       <div className="relative flex shrink-0 items-center gap-2">
         <button
           type="button"
-          aria-label={`${displayName} 账户菜单`}
+          aria-label={copy.brand.accountMenu(displayName)}
           aria-haspopup="menu"
           aria-expanded={accountMenuOpen}
           className="flex items-center gap-2 rounded-full px-1 py-0.5 text-[#0e0e0e] outline-none transition hover:bg-[#0e0e0e]/5 focus-visible:ring-2 focus-visible:ring-[#0e0e0e]/40"
@@ -47,8 +52,8 @@ export function LearningTopBar({
           <span className="text-xs font-medium">{displayName}</span>
           <span
             role="img"
-            aria-label={`${displayName} 原创英雄人脸头像`}
-            title={`${displayName} 原创英雄人脸头像`}
+            aria-label={copy.brand.avatar(displayName)}
+            title={copy.brand.avatar(displayName)}
             className="relative grid size-8 place-items-center overflow-hidden rounded-full border-2 border-[#f8fafc] bg-[#26378f] shadow-[0_2px_10px_rgba(0,0,0,0.35)]"
           >
             <span aria-hidden="true" data-avatar-part="collar" className="absolute bottom-[-3px] h-3 w-[18px] rounded-t-full bg-[#d92332]" />
@@ -63,7 +68,7 @@ export function LearningTopBar({
         {accountMenuOpen ? (
           <div
             role="menu"
-            aria-label={`${displayName} 账户信息`}
+            aria-label={copy.brand.accountInfo(displayName)}
             aria-busy={privacyBusy || loggingOut}
             className="absolute right-0 top-[calc(100%+6px)] z-40 min-w-[168px] rounded-lg border border-[#d9def0] bg-white py-1 text-[#172033] shadow-[0_12px_28px_rgba(0,0,0,0.22)]"
           >
@@ -75,7 +80,7 @@ export function LearningTopBar({
               onClick={onExportLearnerData}
             >
               <DownloadSimple size={17} weight="duotone" />
-              导出学习数据
+              {copy.brand.exportLearnerData}
             </button>
             <button
               type="button"
@@ -85,7 +90,7 @@ export function LearningTopBar({
               onClick={onDeleteLearnerData}
             >
               <Trash size={17} weight="duotone" />
-              删除学习数据
+              {copy.brand.deleteLearnerData}
             </button>
             <div className="my-1 border-t border-[#edf1f8]" />
             <button
@@ -96,7 +101,7 @@ export function LearningTopBar({
               onClick={onLogout}
             >
               <SignOut size={17} weight="duotone" />
-              退出
+              {copy.brand.signOut}
             </button>
           </div>
         ) : null}

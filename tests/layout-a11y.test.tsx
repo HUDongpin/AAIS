@@ -1,8 +1,12 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { shouldEnableAaisVercelAnalytics } from "@/app/layout";
+import { metadata, shouldEnableAaisVercelAnalytics } from "@/app/layout";
 
 describe("AAIS root accessibility affordances", () => {
+  it("uses CAAIS as the browser-tab title", () => {
+    expect(metadata.title).toBe("CAAIS");
+  });
+
   it("provides a keyboard skip link to the shared content target", () => {
     const layout = readFileSync("src/app/layout.tsx", "utf8");
     const globalCss = readFileSync("src/app/globals.css", "utf8");

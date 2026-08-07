@@ -12,6 +12,7 @@ import {
 import {
   toEditableHtml,
 } from "@/components/pages/learning/document-markdown";
+import { getLearningCopy } from "@/components/pages/learning/learning-copy";
 import {
   applyAlignmentFallback,
   applyHeadingFallback,
@@ -30,6 +31,7 @@ import type {
   DocumentHeadingTag,
   DocumentListTag,
 } from "@/components/pages/learning/learning-page-types";
+import type { Locale } from "@/data/aais";
 
 const documentFontFamilyStyles: Record<DocumentFontFamily, string> = {
   system:
@@ -43,18 +45,22 @@ const documentFontSizeOptions: DocumentFontSize[] = ["17", "20", "24", "28"];
 export function DocumentEditor({
   artifactText,
   documentTitle,
+  locale = "zh-CN",
   onArtifactChange,
   onArtifactBlur,
   onDocumentTitleChange,
 }: {
   artifactText: string;
   documentTitle: string;
+  locale?: Locale;
   onArtifactChange: (value: string) => void;
   onArtifactBlur: () => void;
   onDocumentTitleChange: (value: string) => void;
 }) {
+  const copy = getLearningCopy(locale);
   const editorRef = useRef<HTMLDivElement | null>(null);
   const editorSelectionRef = useRef<Range | null>(null);
+  const editorComposingRef = useRef(false);
   const titleAtFocusRef = useRef(documentTitle);
   const [fontFamily, setFontFamily] = useState<DocumentFontFamily>("serif");
   const [fontSize, setFontSize] = useState<DocumentFontSize>("17");
@@ -64,6 +70,9 @@ export function DocumentEditor({
   useEffect(() => {
     const editor = editorRef.current;
     if (!editor) {
+      return;
+    }
+    if (editorComposingRef.current) {
       return;
     }
     const nextHtml = toEditableHtml(artifactText);
@@ -264,7 +273,7 @@ export function DocumentEditor({
   return (
     <section className="px-3 py-4">
       <input
-        aria-label="文档标题"
+        aria-label={copy.editor.titleLabel}
         value={documentTitle}
         onFocus={(event) => {
           titleAtFocusRef.current = event.currentTarget.value;
@@ -284,27 +293,27 @@ export function DocumentEditor({
             },
           });
         }}
-        placeholder="输入标题..."
+        placeholder={copy.editor.titlePlaceholder}
         className="h-12 w-full rounded-md border border-[#e7e7e7] px-4 text-[17px] text-[#333333] outline-none placeholder:text-[#b5b5b5] focus:border-[#536de8]"
       />
       <div
         className="mt-3 rounded-lg border border-[#e7e7e7] bg-[#f8f8f8] p-3 text-base text-[#5a5a5a]"
         role="toolbar"
-        aria-label="文档格式工具"
+        aria-label={copy.editor.toolbarLabel}
       >
         <div className="flex flex-wrap items-center gap-3">
           <select
-            aria-label="字体"
+            aria-label={copy.editor.fontLabel}
             value={fontFamily}
             onChange={(event) => setEditorFontFamily(event.target.value as DocumentFontFamily)}
             className="h-10 rounded-md border border-[#dddddd] bg-white px-3 text-base outline-none focus-visible:ring-2 focus-visible:ring-[#536de8]"
           >
-            <option value="system">默认</option>
-            <option value="serif">衬线</option>
-            <option value="mono">等宽</option>
+            <option value="system">{copy.editor.fontFamilies.system}</option>
+            <option value="serif">{copy.editor.fontFamilies.serif}</option>
+            <option value="mono">{copy.editor.fontFamilies.mono}</option>
           </select>
           <select
-            aria-label="字号"
+            aria-label={copy.editor.sizeLabel}
             value={fontSize}
             onChange={(event) => setEditorFontSize(event.target.value as DocumentFontSize)}
             className="h-10 rounded-md border border-[#dddddd] bg-white px-3 text-base outline-none focus-visible:ring-2 focus-visible:ring-[#536de8]"
@@ -315,40 +324,54 @@ export function DocumentEditor({
               </option>
             ))}
           </select>
-          <EditorButton label="加粗" pressed={formatState.bold} className={`${toolbarButtonClass} font-bold`} onMouseDown={keepEditorSelection} onClick={() => runInlineCommand("bold", "bold", "strong")}>B</EditorButton>
-          <EditorButton label="斜体" pressed={formatState.italic} className={`${toolbarButtonClass} italic`} onMouseDown={keepEditorSelection} onClick={() => runInlineCommand("italic", "italic", "em")}>I</EditorButton>
-          <EditorButton label="下划线" pressed={formatState.underline} className={`${toolbarButtonClass} underline`} onMouseDown={keepEditorSelection} onClick={() => runInlineCommand("underline", "underline", "u")}>U</EditorButton>
-          <EditorButton label="左对齐" pressed={formatState.alignment === "left"} className={toolbarButtonClass} onMouseDown={keepEditorSelection} onClick={() => runAlignmentCommand("align_left", "left")}>L</EditorButton>
-          <EditorButton label="居中" pressed={formatState.alignment === "center"} className={toolbarButtonClass} onMouseDown={keepEditorSelection} onClick={() => runAlignmentCommand("align_center", "center")}>C</EditorButton>
-          <EditorButton label="右对齐" pressed={formatState.alignment === "right"} className={toolbarButtonClass} onMouseDown={keepEditorSelection} onClick={() => runAlignmentCommand("align_right", "right")}>R</EditorButton>
+          <EditorButton label={copy.editor.bold} pressed={formatState.bold} className={`${toolbarButtonClass} font-bold`} onMouseDown={keepEditorSelection} onClick={() => runInlineCommand("bold", "bold", "strong")}>B</EditorButton>
+          <EditorButton label={copy.editor.italic} pressed={formatState.italic} className={`${toolbarButtonClass} italic`} onMouseDown={keepEditorSelection} onClick={() => runInlineCommand("italic", "italic", "em")}>I</EditorButton>
+          <EditorButton label={copy.editor.underline} pressed={formatState.underline} className={`${toolbarButtonClass} underline`} onMouseDown={keepEditorSelection} onClick={() => runInlineCommand("underline", "underline", "u")}>U</EditorButton>
+          <EditorButton label={copy.editor.alignLeft} pressed={formatState.alignment === "left"} className={toolbarButtonClass} onMouseDown={keepEditorSelection} onClick={() => runAlignmentCommand("align_left", "left")}>L</EditorButton>
+          <EditorButton label={copy.editor.alignCenter} pressed={formatState.alignment === "center"} className={toolbarButtonClass} onMouseDown={keepEditorSelection} onClick={() => runAlignmentCommand("align_center", "center")}>C</EditorButton>
+          <EditorButton label={copy.editor.alignRight} pressed={formatState.alignment === "right"} className={toolbarButtonClass} onMouseDown={keepEditorSelection} onClick={() => runAlignmentCommand("align_right", "right")}>R</EditorButton>
         </div>
         <div className="mt-3 flex flex-wrap items-center gap-3">
-          <EditorButton label="项目符号" pressed={formatState.list === "ul"} className={toolbarButtonClass} onMouseDown={keepEditorSelection} onClick={() => runListCommand("insertUnorderedList", "ul")}>=</EditorButton>
-          <EditorButton label="编号列表" pressed={formatState.list === "ol"} className={toolbarButtonClass} onMouseDown={keepEditorSelection} onClick={() => runListCommand("insertOrderedList", "ol")}>#</EditorButton>
-          <EditorButton label="一级标题" pressed={formatState.heading === "h1"} className={`${toolbarButtonClass} font-semibold`} onMouseDown={keepEditorSelection} onClick={() => runHeadingCommand("h1")}>H1</EditorButton>
-          <EditorButton label="二级标题" pressed={formatState.heading === "h2"} className={`${toolbarButtonClass} font-semibold`} onMouseDown={keepEditorSelection} onClick={() => runHeadingCommand("h2")}>H2</EditorButton>
-          <EditorButton label="三级标题" pressed={formatState.heading === "h3"} className={`${toolbarButtonClass} font-semibold`} onMouseDown={keepEditorSelection} onClick={() => runHeadingCommand("h3")}>H3</EditorButton>
+          <EditorButton label={copy.editor.bulletList} pressed={formatState.list === "ul"} className={toolbarButtonClass} onMouseDown={keepEditorSelection} onClick={() => runListCommand("insertUnorderedList", "ul")}>=</EditorButton>
+          <EditorButton label={copy.editor.numberedList} pressed={formatState.list === "ol"} className={toolbarButtonClass} onMouseDown={keepEditorSelection} onClick={() => runListCommand("insertOrderedList", "ol")}>#</EditorButton>
+          <EditorButton label={copy.editor.heading1} pressed={formatState.heading === "h1"} className={`${toolbarButtonClass} font-semibold`} onMouseDown={keepEditorSelection} onClick={() => runHeadingCommand("h1")}>H1</EditorButton>
+          <EditorButton label={copy.editor.heading2} pressed={formatState.heading === "h2"} className={`${toolbarButtonClass} font-semibold`} onMouseDown={keepEditorSelection} onClick={() => runHeadingCommand("h2")}>H2</EditorButton>
+          <EditorButton label={copy.editor.heading3} pressed={formatState.heading === "h3"} className={`${toolbarButtonClass} font-semibold`} onMouseDown={keepEditorSelection} onClick={() => runHeadingCommand("h3")}>H3</EditorButton>
         </div>
       </div>
       <div className="relative mt-3">
         {editorEmpty ? (
           <span className="pointer-events-none absolute left-4 top-4 text-[17px] leading-7 text-[#b5b5b5]">
-            在这里开始记录...
+            {copy.editor.emptyPrompt}
           </span>
         ) : null}
         <div
           ref={editorRef}
-          aria-label="在这里写下任务理解、计划、执行过程或最终产出。"
+          aria-label={copy.editor.inputLabel}
           aria-multiline="true"
           role="textbox"
           contentEditable
           suppressContentEditableWarning
           onInput={() => {
             syncEditorValue();
+            if (!editorComposingRef.current) {
+              saveEditorSelection();
+            }
+          }}
+          onCompositionStart={() => {
+            editorComposingRef.current = true;
+          }}
+          onCompositionEnd={() => {
+            editorComposingRef.current = false;
+            syncEditorValue();
             saveEditorSelection();
           }}
           onFocus={saveEditorSelection}
-          onKeyUp={saveEditorSelection}
+          onKeyUp={() => {
+            if (!editorComposingRef.current) {
+              saveEditorSelection();
+            }
+          }}
           onMouseUp={saveEditorSelection}
           onBlur={onArtifactBlur}
           data-font-family={fontFamily}

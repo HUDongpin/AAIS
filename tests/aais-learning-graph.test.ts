@@ -37,6 +37,9 @@ describe("AAIS LangGraph learning guide", () => {
         generatedTurns: 4,
         fallbackTurns: 4,
       },
+      timings: {
+        fallback: true,
+      },
     });
     expect(result.runtimeEvents.map((event) => event.nodeId)).toEqual(["A1", "A2", "A3", "A4"]);
     expect(result.runtimeEvents.every((event) => event.redaction.secrets === "omitted")).toBe(true);
@@ -46,13 +49,13 @@ describe("AAIS LangGraph learning guide", () => {
     expect(result.turns).toEqual([
       expect.objectContaining({
         agentId: "A1",
-        label: "导学智能体",
+        label: "小张",
         actions: ["guide-flow", "scaffold"],
-        content: expect.stringContaining("4 次直接辅助机会"),
+        content: expect.stringContaining("4 次直接辅助已用完"),
       }),
       expect.objectContaining({
         agentId: "A2",
-        label: "专家智能体",
+        label: "教授",
         actions: ["model", "coach", "mention-expert"],
         content: expect.stringContaining("Modelling"),
       }),
@@ -69,14 +72,17 @@ describe("AAIS LangGraph learning guide", () => {
         content: expect.stringContaining("专家过程进行对比评估"),
       }),
     ]);
-    expect(result.turns[0]?.content).toContain("fading");
+    expect(result.turns[0]?.content.length).toBeLessThanOrEqual(120);
+    expect(result.turns[0]?.content).toContain("我只给一个小提示");
+    expect(result.turns[0]?.content).not.toContain("Modelling");
     expect(result.turns[1]?.content).toContain("Coaching");
     expect(result.turns[1]?.content).toContain("@");
+    expect(result.turns[1]?.content.length).toBeGreaterThan(result.turns[0]?.content.length ?? 0);
     expect(result.turns[2]?.content).toContain("practice-articulation-reflection");
     expect(result.turns[3]?.content).toContain("反思性提问");
     expect(result.messageText).toContain("AAIS 智能体已回复");
-    expect(result.messageText).toContain("导学智能体");
-    expect(result.messageText).toContain("专家智能体");
+    expect(result.messageText).toContain("小张");
+    expect(result.messageText).toContain("教授");
     expect(result.messageText).not.toContain("监督智能体");
     expect(result.messageText).not.toContain("反思智能体");
 
@@ -128,12 +134,17 @@ describe("AAIS LangGraph learning guide", () => {
     expect(result.turns.map((turn) => turn.agentId)).toEqual(["A2", "A3", "A4"]);
     expect(result.visibleTurns.map((turn) => turn.agentId)).toEqual(["A2"]);
     expect(result.backgroundTurns.map((turn) => turn.agentId)).toEqual(["A3", "A4"]);
-    expect(result.messageText).toContain("专家智能体");
-    expect(result.messageText).not.toContain("导学智能体");
+    expect(result.messageText).toContain("教授");
+    expect(result.messageText).not.toContain("小张");
     expect(result.runtimeEvents.map((event) => event.nodeId)).toEqual(["A2", "A3", "A4"]);
     expect(result.runtime.timings).toMatchObject({
-      fallback: true,
+      fallback: false,
       timeoutReason: null,
+    });
+    expect(result.runtime.modelProvider).toMatchObject({
+      provider: "mixed",
+      generatedTurns: 3,
+      fallbackTurns: 2,
     });
     expect(result.runtime.timings.agents.map((agent) => ({
       agentId: agent.agentId,
@@ -144,6 +155,33 @@ describe("AAIS LangGraph learning guide", () => {
       { agentId: "A3", visible: false, status: "fallback" },
       { agentId: "A4", visible: false, status: "fallback" },
     ]);
+  });
+
+  it("keeps deterministic English guidance in English when the workspace locale is en-US", async () => {
+    const result = await runAaisLearningGuideGraph({
+      locale: "en-US",
+      studentId: "S-english-guide",
+      phase: "training",
+      taskId: "training_task_1",
+      learnerInput: "@A2 Help me understand calculus.",
+      targetAgentIds: ["A2"],
+      workspaceState: {
+        currentStep: "guide",
+      },
+    }, {
+      modelProvider: createDeterministicAaisProvider(),
+    });
+
+    expect(result.visibleTurns).toEqual([
+      expect.objectContaining({
+        agentId: "A2",
+        label: "Professor",
+        content: expect.stringContaining("university calculus"),
+      }),
+    ]);
+    expect(result.messageText).toContain("AAIS agents replied:");
+    expect(result.messageText).toContain("Professor");
+    expect(result.messageText).not.toContain("专家智能体");
   });
 
   it("uses contextual local scaffold text when A2 falls back for a learner topic", async () => {
@@ -254,9 +292,10 @@ describe("AAIS LangGraph learning guide", () => {
     expect(result.turns.map((turn) => turn.agentId)).toEqual(["A1", "A2", "A3", "A4"]);
     expect(result.visibleTurns.map((turn) => turn.agentId)).toEqual(["A1", "A2"]);
     expect(result.backgroundTurns.map((turn) => turn.agentId)).toEqual(["A3", "A4"]);
-    expect(result.turns[0].content).toContain("导学智能体");
-    expect(result.turns[0].content).toContain("4 次直接辅助");
-    expect(result.turns[1].content).toContain("专家智能体");
+    expect(result.turns[0].label).toBe("小张");
+    expect(result.turns[0].content).toContain("还可直接求助 3 次");
+    expect(result.turns[0].content.length).toBeLessThanOrEqual(120);
+    expect(result.turns[1].content).toContain("教授");
     expect(result.turns[1].content).toContain("本地支架模式");
     expect(result.turns[1].content).toContain("Modelling/Coaching");
     expect(result.turns[1].content).toContain("@");
@@ -318,15 +357,28 @@ describe("AAIS LangGraph learning guide", () => {
       "articulation",
       "reflection",
     ]);
+    expect(generate.mock.calls[0]?.[0].voice).toMatchObject({
+      persona: expect.stringContaining("同龄学长"),
+      maxSentences: 2,
+      maxCharacters: 120,
+      maxOutputTokens: 120,
+    });
+    expect(generate.mock.calls[1]?.[0].voice).toMatchObject({
+      persona: expect.stringContaining("教授型专家教练"),
+      replyContract: expect.stringContaining("专家思路"),
+    });
+    expect(generate.mock.calls[0]?.[0].voice?.persona).not.toBe(
+      generate.mock.calls[1]?.[0].voice?.persona,
+    );
     expect(result.turns.map((turn) => turn.content)).toEqual([
-      "A1 governed provider response",
-      "A2 governed provider response",
+      "小张 governed provider response",
+      "教授 governed provider response",
       expect.stringContaining("监督智能体"),
       expect.stringContaining("反思智能体"),
     ]);
     expect(result.visibleTurns.map((turn) => turn.content)).toEqual([
-      "A1 governed provider response",
-      "A2 governed provider response",
+      "小张 governed provider response",
+      "教授 governed provider response",
     ]);
     expect(result.backgroundTurns.map((turn) => turn.content)).toEqual([
       expect.stringContaining("监督智能体"),

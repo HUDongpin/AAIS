@@ -64,6 +64,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
   window.localStorage.clear();
   window.sessionStorage.clear();
+  document.cookie = "aais_locale=; Max-Age=0; Path=/";
   window.history.replaceState({}, "", "/login");
 });
 
@@ -114,7 +115,9 @@ describe("AAIS LoginPage", () => {
     expect(screen.getByLabelText("Password")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Sign in" })).toBeTruthy();
     expect((container.firstElementChild as HTMLElement).lang).toBe("en-US");
+    expect(document.documentElement.lang).toBe("en-US");
     expect(window.localStorage.getItem("aais_login_locale")).toBe("en-US");
+    expect(document.cookie).toContain("aais_locale=en-US");
     expect(new URL(window.location.href).searchParams.get("lang")).toBe("en-US");
   });
 

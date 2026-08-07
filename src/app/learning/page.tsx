@@ -1,5 +1,11 @@
 import { LearningPage } from "@/components/pages/learning-page";
 import { LearningResearchBoundaryNotice } from "@/components/pages/learning/research-telemetry-boundary";
+import { cookies } from "next/headers";
+import {
+  aaisLocaleCookieName,
+  defaultAaisLocale,
+  parseAaisLocale,
+} from "@/lib/aais-locale";
 import { requireAaisPageSession } from "@/lib/server/aais-page-auth";
 import {
   AaisResearchConfigurationError,
@@ -21,12 +27,13 @@ import {
 export const dynamic = "force-dynamic";
 
 export default async function Page() {
+  const locale = await readLearningPageLocale();
   const actor = await requireAaisPageSession("/learning");
   if (!isAaisResearchModeEnabled()) {
     if (isResearchCollectionRequired()) {
-      return terminalResearchBoundary;
+      return terminalResearchBoundary(locale);
     }
-    return <LearningPage actor={toClientActor(actor)} research={nonResearchBoundary} />;
+    return <LearningPage actor={toClientActor(actor)} locale={locale} research={nonResearchBoundary} />;
   }
 
   let readiness: AaisReadinessReport["checks"]["research"] | null = null;
@@ -37,19 +44,20 @@ export default async function Page() {
     // used as a shortcut around formal readiness.
   }
   if (!readiness) {
-    return terminalResearchBoundary;
+    return terminalResearchBoundary(locale);
   }
   const launchGate = classifyResearchLaunch(readiness);
   if (launchGate === "temporary") {
     return (
       <LearningPage
         actor={toClientActor(actor)}
+        locale={locale}
         research={{ required: true, initialVisit: null }}
       />
     );
   }
   if (launchGate === "terminal") {
-    return terminalResearchBoundary;
+    return terminalResearchBoundary(locale);
   }
 
   let visit: AaisResearchVisit | null = null;
@@ -63,6 +71,7 @@ export default async function Page() {
     return (
       <LearningPage
         actor={toClientActor(actor)}
+        locale={locale}
         research={{ required: true, initialVisit: toClientVisit(visit) }}
       />
     );
@@ -71,11 +80,12 @@ export default async function Page() {
     return (
       <LearningPage
         actor={toClientActor(actor)}
+        locale={locale}
         research={{ required: true, initialVisit: null }}
       />
     );
   }
-  return terminalResearchBoundary;
+  return terminalResearchBoundary(locale);
 }
 
 const nonResearchBoundary = {
@@ -148,6 +158,17 @@ function classifyResearchLaunch(
     : "terminal";
 }
 
-const terminalResearchBoundary = (
-  <LearningResearchBoundaryNotice state="terminal-blocked" />
-);
+function terminalResearchBoundary(locale: typeof defaultAaisLocale) {
+  return <LearningResearchBoundaryNotice locale={locale} state="terminal-blocked" />;
+}
+
+async function readLearningPageLocale() {
+  try {
+    const cookieStore = await cookies();
+    return parseAaisLocale(cookieStore.get(aaisLocaleCookieName)?.value) ?? defaultAaisLocale;
+  } catch {
+    // Unit rendering has no request-scoped cookie store, so use the stable
+    // Chinese default in that non-request context.
+    return defaultAaisLocale;
+  }
+}

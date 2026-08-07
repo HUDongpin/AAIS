@@ -6,46 +6,47 @@ import {
   SquaresFour,
 } from "@phosphor-icons/react";
 import { formatHistoryDocumentTime } from "@/components/pages/learning/document-markdown";
+import { getLearningCopy } from "@/components/pages/learning/learning-copy";
 import type {
   ContentItemId,
   SavedLearningDocument,
 } from "@/components/pages/learning/learning-page-types";
+import type { Locale } from "@/data/aais";
 
-export const contentDisplayItems: Array<{
+export type ContentDisplayItem = {
   id: ContentItemId;
   label: string;
   body: string;
-}> = [
-  {
-    id: "platform",
-    label: "平台介绍",
-    body: "CAAS平台是一个基于认知学徒理论搭建的，AI赋能的学习平台……",
-  },
-  {
-    id: "theory",
-    label: "理论知识",
-    body: "认知学徒理论强调专家示范、实践指导、支架支持、清晰表达与反思比较。",
-  },
-  {
-    id: "history",
-    label: "历史文档",
-    body: "历史文档用于保存学习过程、重要资料和后续pilot study可回顾的记录。",
-  },
-];
+};
+
+export function getContentDisplayItems(locale: Locale): ContentDisplayItem[] {
+  const items = getLearningCopy(locale).content.items;
+  return (["platform", "theory", "history"] as const).map((id) => ({
+    id,
+    ...items[id],
+  }));
+}
+
+// The default remains available for callers that deliberately render Chinese.
+export const contentDisplayItems = getContentDisplayItems("zh-CN");
 
 export function ContentDisplay({
   activeContent,
   historyDocuments,
+  locale = "zh-CN",
   onBack,
   onOpen,
   onOpenDocument,
 }: {
-  activeContent: (typeof contentDisplayItems)[number] | null;
+  activeContent: ContentDisplayItem | null;
   historyDocuments: SavedLearningDocument[];
+  locale?: Locale;
   onBack: () => void;
   onOpen: (id: ContentItemId) => void;
   onOpenDocument: (document: SavedLearningDocument) => void;
 }) {
+  const copy = getLearningCopy(locale);
+  const items = getContentDisplayItems(locale);
   if (activeContent) {
     return (
       <section className="px-6 py-7 sm:px-8">
@@ -53,11 +54,11 @@ export function ContentDisplay({
           <button
             type="button"
             onClick={onBack}
-            aria-label="返回内容展示"
+            aria-label={copy.content.backToDisplay}
             className="group inline-flex h-10 min-w-[88px] items-center justify-center gap-2 rounded-[10px] border border-[#d9dde4] bg-white/75 px-3 text-[15px] font-medium leading-none text-[#5f6672] shadow-[0_6px_18px_rgba(17,24,39,0.04)] outline-none transition hover:-translate-y-px hover:border-[#bfc7d3] hover:bg-white hover:text-[#303744] focus-visible:ring-2 focus-visible:ring-[#536de8] focus-visible:ring-offset-2 focus-visible:ring-offset-[#f7f7f5]"
           >
             <ArrowLeft size={20} weight="bold" className="transition group-hover:-translate-x-0.5" />
-            <span>返回</span>
+            <span>{copy.content.back}</span>
           </button>
           <div className="h-px flex-1 bg-[#e2e5eb]" aria-hidden="true" />
         </header>
@@ -69,6 +70,7 @@ export function ContentDisplay({
             <HistoryDocuments
               documents={historyDocuments}
               emptyText={activeContent.body}
+              locale={locale}
               onOpenDocument={onOpenDocument}
             />
           ) : (
@@ -82,9 +84,9 @@ export function ContentDisplay({
   }
 
   return (
-    <nav className="px-5 py-8 sm:px-6" aria-label="内容展示">
+    <nav className="px-5 py-8 sm:px-6" aria-label={copy.content.displayNav}>
       <div className="grid gap-4">
-        {contentDisplayItems.map((item) => {
+        {items.map((item) => {
           const ContentIcon =
             item.id === "platform"
               ? SquaresFour
@@ -124,10 +126,12 @@ export function ContentDisplay({
 function HistoryDocuments({
   documents,
   emptyText,
+  locale,
   onOpenDocument,
 }: {
   documents: SavedLearningDocument[];
   emptyText: string;
+  locale: Locale;
   onOpenDocument: (document: SavedLearningDocument) => void;
 }) {
   if (!documents.length) {
@@ -145,7 +149,7 @@ function HistoryDocuments({
           key={document.id}
           type="button"
           onClick={() => onOpenDocument(document)}
-          aria-label={`历史文档文件夹：${document.title}`}
+          aria-label={getLearningCopy(locale).content.documentFolder(document.title)}
           className="group flex min-h-[128px] w-full max-w-[160px] flex-col items-center justify-start rounded-md px-2 py-1 text-center outline-none transition focus-visible:ring-2 focus-visible:ring-[#536de8]"
         >
           <span
@@ -158,7 +162,7 @@ function HistoryDocuments({
             {document.title}
           </span>
           <span className="mt-1 text-xs leading-4 text-[#70757f]">
-            {formatHistoryDocumentTime(document.savedAt)}
+            {formatHistoryDocumentTime(document.savedAt, locale)}
           </span>
         </button>
       ))}

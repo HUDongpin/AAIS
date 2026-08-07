@@ -1,9 +1,5 @@
 import { useRef, useState, type FormEvent } from "react";
-import {
-  aaisGuideAttachmentLimits,
-  normalizeAaisGuideAttachments,
-  type AaisGuideAttachment,
-} from "@/lib/ai/aais-guide-attachments";
+import { aaisGuideAttachmentLimits, normalizeAaisGuideAttachments, type AaisGuideAttachment } from "@/lib/ai/aais-guide-attachments";
 import { normalizeAaisGuideTargetAgentIds } from "@/lib/ai/aais-guide-targets";
 import { readAaisGuideFileAttachment } from "@/lib/client/aais-guide-file-reader";
 import {
@@ -14,26 +10,18 @@ import {
   isAaisResearchDisconnectError,
   recordAaisResearchEvent,
 } from "@/lib/client/aais-research-telemetry";
-import {
-  createInitialGuideMessages,
-  guideAttachmentOnlyPrompt,
-} from "@/components/pages/learning/learning-page-constants";
-import {
-  getVisibleGuideTurns,
-  toGuideAttachmentPayload,
-} from "@/components/pages/learning/guide-chat";
-import {
-  fetchGuideRequest,
-  getAaisCsrfHeader,
-} from "@/components/pages/learning/client-helpers";
+import { createInitialGuideMessages, getGuideAttachmentOnlyPrompt } from "@/components/pages/learning/learning-page-constants";
+import { getLearningCopy } from "@/components/pages/learning/learning-copy";
+import { getVisibleGuideTurns, toGuideAttachmentPayload } from "@/components/pages/learning/guide-chat";
+import { fetchGuideRequest, getAaisCsrfHeader, clientNowMs } from "@/components/pages/learning/client-helpers";
 import type {
   GuideClientAttachment,
   GuideMessage,
   GuideQuickStart,
 } from "@/components/pages/learning/learning-page-types";
 import {
-  guideStreamDoneText,
-  guideStreamProgressText,
+  getGuideStreamDoneText,
+  getGuideStreamProgressText,
   isGuideEventStreamResponse,
   isUsableGuideBody,
   readGuideJsonBody,
@@ -42,10 +30,12 @@ import {
   type GuideResponseBody,
   type GuideStreamProgress,
 } from "@/components/pages/learning/guide-stream";
+import type { Locale } from "@/data/aais";
 type UseLearningGuideInput = {
   activeTaskId: string;
   artifactText: string;
   displayName: string;
+  locale: Locale;
   studentId: string;
 };
 type GuideSubmissionOptions = {
@@ -56,11 +46,13 @@ export function useLearningGuide({
   activeTaskId,
   artifactText,
   displayName,
+  locale,
   studentId,
 }: UseLearningGuideInput) {
+  const copy = getLearningCopy(locale);
   const [guideDraft, setGuideDraft] = useState("");
   const [guideMessages, setGuideMessages] = useState<GuideMessage[]>(() =>
-    createInitialGuideMessages(displayName)
+    createInitialGuideMessages(displayName, locale)
   );
   const [guideBusy, setGuideBusy] = useState(false);
   const [guideError, setGuideError] = useState("");
@@ -116,10 +108,10 @@ export function useLearningGuide({
       })) {
         return;
       }
-      setGuideAttachmentError(error instanceof Error ? error.message : "上传文件不可用。");
+      setGuideAttachmentError(error instanceof Error ? error.message : copy.guide.attachmentUnavailable);
       return;
     }
-    const question = rawQuestion.trim() || (boundedAttachments.length ? guideAttachmentOnlyPrompt : "");
+    const question = rawQuestion.trim() || (boundedAttachments.length ? getGuideAttachmentOnlyPrompt(locale) : "");
     if (!question) {
       if (!admitAaisResearchAction({
         eventName: "ai_guide_submit",
@@ -132,7 +124,7 @@ export function useLearningGuide({
       })) {
         return;
       }
-      setGuideError("请输入你的想法后再发送。");
+      setGuideError(copy.guide.inputRequired);
       return;
     }
     if (!admitAaisResearchAction({
@@ -157,7 +149,7 @@ export function useLearningGuide({
       {
         id: assistantId,
         kind: "assistant",
-        text: "CAAIS 已收到，多智能体链路正在处理。",
+        text: copy.guide.requestAccepted,
       },
     ]);
     setGuideDraft("");
@@ -175,7 +167,7 @@ export function useLearningGuide({
           ...getAaisCsrfHeader(),
         },
         body: JSON.stringify({
-          locale: "zh-CN",
+          locale,
           phase: "training",
           taskId: activeTaskId,
           learnerInput: question,
@@ -230,7 +222,7 @@ export function useLearningGuide({
           message.id === assistantId
             ? {
                 ...message,
-                text: "智能服务暂时不可用，已保留你的问题。请稍后重试。",
+                text: copy.guide.requestUnavailable,
                 turns: undefined,
                 runtime: undefined,
                 trace: undefined,
@@ -238,7 +230,7 @@ export function useLearningGuide({
             : message,
         ),
       );
-      setGuideError("智能服务暂时不可用，已保留你的问题。");
+      setGuideError(copy.guide.requestErrorAlert);
       recordAaisResearchEvent({
         eventName: "ai_guide_submit",
         outcome: isAaisResearchDisconnectError(error) ? "disconnected" : "failure",
@@ -268,8 +260,11 @@ export function useLearningGuide({
   ): Promise<GuideResponseBody> {
     const streamResponse = await fetchGuideRequest(requestInit, { stream: true });
     if (isGuideEventStreamResponse(streamResponse)) {
-      return readGuideStreamResponse(streamResponse, (progress) =>
-        updateGuideStreamMessage(assistantId, progress)
+      return readGuideStreamResponse(
+        streamResponse,
+        (progress) => updateGuideStreamMessage(assistantId, progress),
+        undefined,
+        locale,
       );
     }
 
@@ -295,7 +290,7 @@ export function useLearningGuide({
         message.id === assistantId
           ? {
               ...message,
-              text: structuredTurns.length ? guideStreamDoneText : body.message?.text ?? "",
+              text: structuredTurns.length ? getGuideStreamDoneText(locale) : body.message?.text ?? "",
               ...(structuredTurns.length ? { turns: structuredTurns } : { turns: undefined }),
               runtime: {
                 fallback: body.orchestration?.runtime?.timings?.fallback === true,
@@ -320,7 +315,7 @@ export function useLearningGuide({
         message.id === assistantId
           ? {
               ...message,
-              text: visibleTurns.length ? input.text : guideStreamProgressText,
+              text: visibleTurns.length ? input.text : getGuideStreamProgressText(locale),
               ...(visibleTurns.length ? { turns: [...visibleTurns] } : { turns: undefined }),
               runtime: {
                 fallback: input.fallback,
@@ -384,7 +379,7 @@ export function useLearningGuide({
       })) {
         return;
       }
-      setGuideAttachmentError(`一次最多上传 ${aaisGuideAttachmentLimits.maxFiles} 个文件。`);
+      setGuideAttachmentError(copy.guide.attachmentLimit(aaisGuideAttachmentLimits.maxFiles));
       return;
     }
     if (!admitAaisResearchAction({
@@ -424,7 +419,7 @@ export function useLearningGuide({
         detail: eventDetail,
       });
     } catch (error) {
-      setGuideAttachmentError(error instanceof Error ? error.message : "文件未能读取。");
+      setGuideAttachmentError(error instanceof Error ? error.message : copy.guide.fileReadFailed);
       recordAaisResearchEvent({
         actorGeneration: telemetryActorGeneration,
         eventName: "guide_attachment_add",
@@ -481,10 +476,6 @@ export function useLearningGuide({
     setGuideError,
     submitGuideQuestion,
   };
-}
-
-function clientNowMs() {
-  return typeof performance !== "undefined" ? performance.now() : Date.now();
 }
 
 function getControlledResearchMimeType(value: string | undefined) {
