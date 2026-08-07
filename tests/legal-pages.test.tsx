@@ -7,7 +7,7 @@ describe("AAIS legal notice pages", () => {
   it("renders the privacy page linked from login", () => {
     render(<PrivacyPage />);
 
-    expect(privacyMetadata.title).toBe("Privacy | AAIS");
+    expect(privacyMetadata.title).toBe("Privacy | CAAIS");
     expect(screen.getByRole("heading", { name: "隐私与学习数据说明" })).toBeTruthy();
     expect(screen.getByText(/CSV 字段会进行 spreadsheet-safe escaping/)).toBeTruthy();
     expect(screen.getByText(/未确认时 AAIS 不会签发 session cookie/)).toBeTruthy();
@@ -15,14 +15,18 @@ describe("AAIS legal notice pages", () => {
     expect(screen.getByText(/删除学习数据不会自动删除登录账号/)).toBeTruthy();
     expect(screen.getByText(/真实 cohort 前置条件/)).toBeTruthy();
     expect(screen.getByText(/FERPA、COPPA、GDPR、PIPL/)).toBeTruthy();
+    expect(screen.getByText(/小张与教授的互动事件/)).toBeTruthy();
+    expect(document.body.textContent).not.toMatch(/\bA[12]\b/);
     expect(screen.getByRole("link", { name: "返回登录" }).getAttribute("href")).toBe("/login");
   });
 
   it("renders the terms page linked from login", () => {
     render(<TermsPage />);
 
-    expect(termsMetadata.title).toBe("Terms | AAIS");
+    expect(termsMetadata.title).toBe("Terms | CAAIS");
     expect(screen.getByRole("heading", { name: "使用条款" })).toBeTruthy();
+    expect(screen.getByText(/小张和教授分别提供学习支架与专家示范/)).toBeTruthy();
+    expect(document.body.textContent).not.toMatch(/\bA[12]\b/);
     expect(screen.getByText(/不得共享账号、cookie、CSRF token/)).toBeTruthy();
     expect(screen.getByRole("link", { name: "返回登录" }).getAttribute("href")).toBe("/login");
   });

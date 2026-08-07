@@ -9,6 +9,8 @@ import {
   type AaisResearchTelemetryBoundaryState,
   type AaisResearchVisit,
 } from "@/lib/client/aais-research-telemetry";
+import { getLearningCopy } from "@/components/pages/learning/learning-copy";
+import type { Locale } from "@/data/aais";
 
 export type LearningResearchBoundary = {
   required: boolean;
@@ -44,9 +46,11 @@ export function useLearningResearchBoundary({
 
 export function LearningResearchWorkspaceBoundary({
   children,
+  locale = "zh-CN",
   research,
 }: {
   children: ReactNode;
+  locale?: Locale;
   research: LearningResearchBoundary;
 }) {
   const {
@@ -55,7 +59,7 @@ export function LearningResearchWorkspaceBoundary({
   } = useLearningResearchBoundary(research);
 
   if (!workspaceActivated && boundaryState !== "ready") {
-    return <LearningResearchBoundaryNotice state={boundaryState} />;
+    return <LearningResearchBoundaryNotice locale={locale} state={boundaryState} />;
   }
   const paused = research.required && boundaryState !== "ready";
   return (
@@ -71,7 +75,7 @@ export function LearningResearchWorkspaceBoundary({
         {children}
       </div>
       {paused ? (
-        <LearningResearchBoundaryNotice state={boundaryState} overlay />
+        <LearningResearchBoundaryNotice locale={locale} state={boundaryState} overlay />
       ) : null}
     </div>
   );
@@ -79,14 +83,17 @@ export function LearningResearchWorkspaceBoundary({
 
 export function LearningResearchBoundaryNotice({
   allowSafeExit = true,
+  locale = "zh-CN",
   overlay = false,
   state,
 }: {
   allowSafeExit?: boolean;
+  locale?: Locale;
   overlay?: boolean;
   state: Exclude<AaisResearchTelemetryBoundaryState, "ready">;
 }) {
   const router = useRouter();
+  const copy = getLearningCopy(locale).researchBoundary;
   const [exitBusy, setExitBusy] = useState(false);
   const [exitError, setExitError] = useState("");
 
@@ -103,21 +110,21 @@ export function LearningResearchBoundaryNotice({
       window.localStorage.removeItem("aais_display_name");
       router.replace("/login");
     } catch {
-      setExitError("安全退出暂时失败，请恢复连接后重试。");
+      setExitError(copy.safeExitFailed);
       setExitBusy(false);
     }
   }
 
   const message = state === "initializing"
-    ? "正在建立受控研究会话，请稍候。"
+    ? copy.initializing
     : state === "offline-or-temporary"
-      ? "研究记录连接暂时不可用。为避免产生未记录操作，学习工作台已暂停，并将在连接恢复后自动继续。"
-      : "本次研究会话不可继续。请停止操作并联系研究人员。";
+      ? copy.offlineOrTemporary
+      : copy.terminalBlocked;
 
   const content = (
     <section className="w-full max-w-xl rounded-2xl border border-[#d9def0] bg-white p-8 shadow-[0_18px_48px_rgba(23,32,51,0.12)]">
       <h1 id="aais-research-boundary-heading" className="text-xl font-bold">
-        AAIS 研究会话保护
+        {copy.heading}
       </h1>
       <p className="mt-4 text-base leading-7" role="status" aria-live="polite">
         {message}
@@ -130,7 +137,7 @@ export function LearningResearchBoundaryNotice({
             onClick={() => { void safelyExitResearchSession(); }}
             type="button"
           >
-            {exitBusy ? "正在安全退出..." : "安全退出到登录页"}
+            {exitBusy ? copy.safeExiting : copy.safeExit}
           </button>
           {exitError ? (
             <p className="mt-3 text-sm text-[#b42318]" role="alert">{exitError}</p>

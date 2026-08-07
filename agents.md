@@ -6,8 +6,8 @@ AAIS is a focused Cognitive Apprenticeship learning system. This project keeps t
 
 | Agent | Name | Scope | Notes |
 | --- | --- | --- | --- |
-| `A1` | 导学智能体 | Frontend guide; links the CA flow, manages four direct scaffold opportunities per task, and fades into dialogue-first support | Direct student dialogue; Scaffolding. |
-| `A2` | 专家智能体 | Frontend expert pair; demonstrates metacognitive process in Modelling and coaches practice | Direct student dialogue; Modelling + Coaching; students can use `@` to call one expert. |
+| `A1` | 导学智能体（显示名：小张） | Frontend guide; links the CA flow, manages four direct scaffold opportunities per task, and fades into dialogue-first support | Direct student dialogue; Scaffolding. |
+| `A2` | 专家智能体（显示名：Professor） | Frontend expert pair; demonstrates metacognitive process in Modelling and coaches practice | Direct student dialogue; Modelling + Coaching; students can use `@` to call one expert. |
 | `A3` | 监督智能体 | Backend supervision; collects task behavior data and sends scaffold signals to A1 | Interacts with A1; supports Scaffolding. |
 | `A4` | 反思智能体 | Backend reflection; records articulated metacognitive process, returns reports, asks reflective prompts, and compares with experts | Interacts with A1; Articulation + Reflection. |
 

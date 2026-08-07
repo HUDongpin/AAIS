@@ -701,8 +701,8 @@ describe("AAIS learning API routes", () => {
 
     expect(guideResponse.status).toBe(200);
     expect(guideBody.turns.map((turn: { agentId: string }) => turn.agentId)).toEqual(["A2"]);
-    expect(guideBody.message.text).toContain("专家智能体");
-    expect(guideBody.message.text).not.toContain("导学智能体");
+    expect(guideBody.message.text).toContain("教授");
+    expect(guideBody.message.text).not.toContain("小张");
     expect(guideBody.backgroundTurns.map((turn: { agentId: string }) => turn.agentId)).toEqual([
       "A3",
       "A4",
@@ -720,8 +720,8 @@ describe("AAIS learning API routes", () => {
     expect(sessionBody.session.guideMessages[1].turns.map((turn: { agentId: string }) => turn.agentId)).toEqual([
       "A2",
     ]);
-    expect(sessionBody.session.guideMessages[1].text).toContain("专家智能体");
-    expect(sessionBody.session.guideMessages[1].text).not.toContain("导学智能体");
+    expect(sessionBody.session.guideMessages[1].text).toContain("教授");
+    expect(sessionBody.session.guideMessages[1].text).not.toContain("小张");
   });
 
   it("returns a timed provider fallback for targeted guide aborts without calling hidden agents live", async () => {
@@ -763,7 +763,7 @@ describe("AAIS learning API routes", () => {
       "A3",
       "A4",
     ]);
-    expect(body.message.text).toContain("导学智能体");
+    expect(body.message.text).toContain("小张");
     expect(body.orchestration.runtime.timings).toMatchObject({
       fallback: true,
       timeoutReason: "abort-timeout",

@@ -2,7 +2,9 @@ import {
   defaultTaskId,
   documentDownloadContentType,
 } from "@/components/pages/learning/learning-page-constants";
+import { getLearningCopy } from "@/components/pages/learning/learning-copy";
 import type { SavedLearningDocument } from "@/components/pages/learning/learning-page-types";
+import type { Locale } from "@/data/aais";
 
 type MarkdownFileHandle = {
   createWritable: () => Promise<{
@@ -25,29 +27,53 @@ export function createHistoryDocument({
   taskId,
   title,
   html,
+  locale = "zh-CN",
 }: {
   taskId: string;
   title: string;
   html: string;
+  locale?: Locale;
 }): SavedLearningDocument {
   const markdown = createLearningDocumentMarkdown(html);
   const savedAt = new Date();
   return {
     id: `${taskId || defaultTaskId}-${savedAt.getTime()}`,
     taskId: taskId || defaultTaskId,
-    title: normalizeDocumentTitle(title, markdown),
+    title: normalizeDocumentTitle(title, markdown, locale),
     html,
     markdown,
     savedAt,
   };
 }
 
-export function formatHistoryDocumentTime(savedAt: Date) {
+export function mergeHistoryDocument(
+  documents: SavedLearningDocument[],
+  savedDocument: SavedLearningDocument,
+  activeDocumentId: string | null,
+) {
+  const activeDocument = activeDocumentId
+    ? documents.find((document) => document.id === activeDocumentId)
+    : null;
+  if (!activeDocument) {
+    return [savedDocument, ...documents];
+  }
+  return documents.map((document) =>
+    document.id === activeDocument.id
+      ? {
+          ...savedDocument,
+          id: activeDocument.id,
+          taskId: activeDocument.taskId,
+        }
+      : document,
+  );
+}
+
+export function formatHistoryDocumentTime(savedAt: Date, locale: Locale = "zh-CN") {
   const elapsedMs = Date.now() - savedAt.getTime();
   if (elapsedMs < 60_000) {
-    return "刚刚保存";
+    return getLearningCopy(locale).document.justSaved;
   }
-  return savedAt.toLocaleString("zh-Hans-CN", {
+  return savedAt.toLocaleString(locale === "en-US" ? "en-US" : "zh-Hans-CN", {
     month: "2-digit",
     day: "2-digit",
     hour: "2-digit",
@@ -188,7 +214,7 @@ function escapeHtml(value: string) {
     .replace(/'/g, "&#39;");
 }
 
-function normalizeDocumentTitle(title: string, markdown: string) {
+function normalizeDocumentTitle(title: string, markdown: string, locale: Locale) {
   const explicitTitle = title.trim();
   if (explicitTitle) {
     return explicitTitle;
@@ -198,7 +224,7 @@ function normalizeDocumentTitle(title: string, markdown: string) {
     return firstMarkdownHeading;
   }
   const firstContentLine = markdown.split("\n").find((line) => line.trim())?.trim();
-  return firstContentLine?.slice(0, 24) || "未命名文档";
+  return firstContentLine?.slice(0, 24) || getLearningCopy(locale).document.untitled;
 }
 
 function sanitizeFileName(value: string) {

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { defaultTaskId } from "@/components/pages/learning/learning-page-constants";
+import { getLearningCopy } from "@/components/pages/learning/learning-copy";
 import {
   fetchLearningSession,
   patchLearningSession,
@@ -13,13 +14,20 @@ import {
   createAaisResearchOperationId,
   recordAaisResearchEvent,
 } from "@/lib/client/aais-research-telemetry";
+import type { Locale } from "@/data/aais";
 
-export function useLearningWorkspaceSession() {
+export function useLearningWorkspaceSession(locale: Locale = "zh-CN") {
   const [activeTaskId, setActiveTaskId] = useState(defaultTaskId);
-  const [artifactText, setArtifactText] = useState("");
+  const [artifactText, setArtifactTextState] = useState("");
   const [backendError, setBackendError] = useState("");
+  const artifactRevisionRef = useRef(0);
   const lastSavedArtifactLengthRef = useRef(0);
   const sessionGenerationRef = useRef(0);
+  const localeRef = useRef(locale);
+
+  useEffect(() => {
+    localeRef.current = locale;
+  }, [locale]);
 
   function applySession(
     session: AaisClientSession,
@@ -30,9 +38,14 @@ export function useLearningWorkspaceSession() {
     const selectedTask =
       session.tasks?.find((task) => task.taskId === nextTaskId) ?? session.tasks?.[0];
     if (!preserveArtifactText) {
-      setArtifactText(selectedTask?.artifactText ?? "");
+      setArtifactTextState(selectedTask?.artifactText ?? "");
     }
     lastSavedArtifactLengthRef.current = selectedTask?.artifactText?.length ?? 0;
+  }
+
+  function setArtifactText(value: string) {
+    artifactRevisionRef.current += 1;
+    setArtifactTextState(value);
   }
 
   async function patchSession(body: LearningSessionPatchBody) {
@@ -47,13 +60,14 @@ export function useLearningWorkspaceSession() {
   function resetWorkspaceSession() {
     sessionGenerationRef.current += 1;
     setActiveTaskId(defaultTaskId);
-    setArtifactText("");
+    setArtifactTextState("");
     setBackendError("");
   }
 
   useEffect(() => {
     let cancelled = false;
     const sessionGeneration = sessionGenerationRef.current;
+    const artifactRevision = artifactRevisionRef.current;
 
     async function loadSession() {
       const telemetryActorGeneration = captureAaisResearchActorGeneration();
@@ -74,7 +88,9 @@ export function useLearningWorkspaceSession() {
       try {
         const session = await fetchLearningSession();
         if (!cancelled && sessionGeneration === sessionGenerationRef.current) {
-          applySession(session);
+          applySession(session, {
+            preserveArtifactText: artifactRevision !== artifactRevisionRef.current,
+          });
           setBackendError("");
           recordAaisResearchEvent({
             actorGeneration: telemetryActorGeneration,
@@ -90,7 +106,7 @@ export function useLearningWorkspaceSession() {
         }
       } catch (error) {
         if (!cancelled && sessionGeneration === sessionGenerationRef.current) {
-          setBackendError("学习记录服务暂时不可用，本页会保留当前输入但不会完成持久化。");
+          setBackendError(getLearningCopy(localeRef.current).workspace.sessionUnavailable);
           recordAaisResearchEvent({
             actorGeneration: telemetryActorGeneration,
             eventName: "workspace_session_load",

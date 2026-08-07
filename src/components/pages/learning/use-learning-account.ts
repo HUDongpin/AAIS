@@ -9,6 +9,7 @@ import {
   createLearnerDataFileName,
   saveJsonDocumentToLocal,
 } from "@/components/pages/learning/document-markdown";
+import { getLearningCopy } from "@/components/pages/learning/learning-copy";
 import {
   admitAaisResearchAction,
   captureAaisResearchActorGeneration,
@@ -20,18 +21,22 @@ import {
   getAaisResearchTelemetryPendingCount,
   recordAaisResearchEvent,
 } from "@/lib/client/aais-research-telemetry";
+import type { Locale } from "@/data/aais";
 
 type UseLearningAccountInput = {
   operationBusy: boolean;
   onLearnerDataDeleteStarted: () => void;
+  locale?: Locale;
   studentId: string;
 };
 
 export function useLearningAccount({
   operationBusy,
   onLearnerDataDeleteStarted,
+  locale = "zh-CN",
   studentId,
 }: UseLearningAccountInput) {
+  const copy = getLearningCopy(locale);
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
   const [privacyBusy, setPrivacyBusy] = useState(false);
@@ -43,7 +48,7 @@ export function useLearningAccount({
       return;
     }
     if (operationBusy || privacyBusy) {
-      setAccountError("请等待当前保存、下载或智能体操作完成后再退出。");
+      setAccountError(copy.account.waitForOperation);
       return;
     }
     const telemetryActorGeneration = captureAaisResearchActorGeneration();
@@ -60,7 +65,7 @@ export function useLearningAccount({
       return;
     }
     setLoggingOut(true);
-    setAccountStatus("正在退出...");
+    setAccountStatus(copy.account.signingOut);
     setAccountError("");
     // Ordinary (non-research) sessions must not be gated by a research queue.
     // A non-null context is the fail-closed proof that this logout belongs to a
@@ -74,7 +79,7 @@ export function useLearningAccount({
     }
     if (!telemetryFlushed) {
       setAccountStatus("");
-      setAccountError("研究事件尚未安全同步，请保持联网并稍后重试退出。");
+      setAccountError(copy.account.researchSyncRequired);
       setLoggingOut(false);
       return;
     }
@@ -107,7 +112,7 @@ export function useLearningAccount({
         await flushAaisResearchTelemetry();
       }
       setAccountStatus("");
-      setAccountError("退出未完成，服务器会话仍保持有效。请恢复连接后重试。");
+      setAccountError(copy.account.signOutFailed);
       setLoggingOut(false);
       return;
     }
@@ -143,7 +148,7 @@ export function useLearningAccount({
       return;
     }
     setPrivacyBusy(true);
-    setAccountStatus("正在导出学习数据...");
+    setAccountStatus(copy.account.exporting);
     setAccountError("");
     try {
       const data = await fetchLearnerPrivacyData();
@@ -151,7 +156,7 @@ export function useLearningAccount({
         fileName: createLearnerDataFileName(studentId),
         data,
       });
-      setAccountStatus("学习数据已导出。");
+      setAccountStatus(copy.account.exported);
       setAccountMenuOpen(false);
       recordAaisResearchEvent({
         actorGeneration: telemetryActorGeneration,
@@ -164,7 +169,7 @@ export function useLearningAccount({
       });
     } catch (error) {
       setAccountStatus("");
-      setAccountError("学习数据导出未能完成，请稍后重试。");
+      setAccountError(copy.account.exportFailed);
       recordAaisResearchEvent({
         actorGeneration: telemetryActorGeneration,
         eventName: "learner_data_export",
@@ -189,7 +194,7 @@ export function useLearningAccount({
     const telemetryActorGeneration = captureAaisResearchActorGeneration();
     const operationId = createAaisResearchOperationId("learner-delete");
     const startedAt = clientNowMs();
-    const confirmed = window.confirm("确定要删除当前学习数据吗？此操作会清除你的学习记录，但不会删除账号。");
+    const confirmed = window.confirm(copy.account.deleteConfirmation);
     if (!confirmed) {
       recordAaisResearchEvent({
         actorGeneration: telemetryActorGeneration,
@@ -216,12 +221,12 @@ export function useLearningAccount({
       return;
     }
     setPrivacyBusy(true);
-    setAccountStatus("正在删除学习数据...");
+    setAccountStatus(copy.account.deleting);
     setAccountError("");
     onLearnerDataDeleteStarted();
     try {
       await deleteLearnerPrivacyData();
-      setAccountStatus("学习数据已删除。");
+      setAccountStatus(copy.account.deleted);
       setAccountMenuOpen(false);
       recordAaisResearchEvent({
         actorGeneration: telemetryActorGeneration,
@@ -235,7 +240,7 @@ export function useLearningAccount({
       });
     } catch (error) {
       setAccountStatus("");
-      setAccountError("学习数据删除未能完成，请稍后重试。");
+      setAccountError(copy.account.deleteFailed);
       recordAaisResearchEvent({
         actorGeneration: telemetryActorGeneration,
         eventName: "learner_data_delete",

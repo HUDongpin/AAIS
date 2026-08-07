@@ -10,28 +10,33 @@ import {
 } from "@/lib/client/aais-research-telemetry";
 import {
   ContentDisplay,
-  contentDisplayItems,
+  getContentDisplayItems,
 } from "@/components/pages/learning/content-display";
 import { DocumentEditor } from "@/components/pages/learning/document-editor";
+import { getLearningCopy } from "@/components/pages/learning/learning-copy";
 import type {
   ContentItemId,
   ContentTab,
   SavedLearningDocument,
 } from "@/components/pages/learning/learning-page-types";
+import type { Locale } from "@/data/aais";
 
 export function ContentResizeSeparator({
   contentPanelWidth,
   getMaxContentPanelWidth,
+  locale = "zh-CN",
   onResizeBy,
   onResizeStart,
   setContentPanelWidth,
 }: {
   contentPanelWidth: number;
   getMaxContentPanelWidth: () => number;
+  locale?: Locale;
   onResizeBy: (delta: number) => void;
   onResizeStart: (event: ReactPointerEvent<HTMLDivElement>) => void;
   setContentPanelWidth: (width: number) => void;
 }) {
+  const copy = getLearningCopy(locale);
   function handleKeyDown(event: KeyboardEvent<HTMLDivElement>) {
     let nextWidth: number | null = null;
     let applyResize: (() => void) | null = null;
@@ -78,7 +83,7 @@ export function ContentResizeSeparator({
   return (
     <div
       role="separator"
-      aria-label="调整内容展示区域宽度"
+      aria-label={copy.content.resize}
       aria-orientation="vertical"
       aria-valuemin={minContentPanelWidth}
       aria-valuemax={maxContentPanelWidth}
@@ -120,6 +125,7 @@ export function ContentSidePanel({
   documentTitle,
   flushPendingArtifactSave,
   historyDocuments,
+  locale = "zh-CN",
   onDocumentTitleChange,
   onDownloadDocument,
   onBackContent,
@@ -141,6 +147,7 @@ export function ContentSidePanel({
   documentTitle: string;
   flushPendingArtifactSave: () => void;
   historyDocuments: SavedLearningDocument[];
+  locale?: Locale;
   onDocumentTitleChange: (value: string) => void;
   onDownloadDocument: () => void;
   onBackContent: () => void;
@@ -150,8 +157,9 @@ export function ContentSidePanel({
   onSaveAndCloseDocument: () => void;
   selectContentTab: (nextTab: ContentTab) => void;
 }) {
+  const copy = getLearningCopy(locale);
   const activeContent =
-    contentDisplayItems.find((item) => item.id === activeContentId) ?? null;
+    getContentDisplayItems(locale).find((item) => item.id === activeContentId) ?? null;
   const documentStatus = documentDownloadStatus || artifactSaveStatus;
   const documentError = documentDownloadError || artifactSaveError;
   const documentBusy = activeTab === "editor" && (artifactSaveBusy || documentDownloadBusy);
@@ -159,15 +167,15 @@ export function ContentSidePanel({
   return (
     <aside
       className="flex min-h-[620px] flex-col bg-[#fcfcfc] lg:min-h-0 lg:overflow-hidden"
-      aria-label="学习内容与文档"
+      aria-label={copy.content.panel}
       aria-busy={documentBusy}
     >
       <div className="flex h-14 shrink-0 items-stretch border-b border-[#d7d7d7] bg-[#fcfcfc]">
         <TabButton active={activeTab === "display"} onClick={() => selectContentTab("display")}>
-          内容展示
+          {copy.content.displayTab}
         </TabButton>
         <TabButton active={activeTab === "editor"} onClick={() => selectContentTab("editor")}>
-          文档编辑
+          {copy.content.editorTab}
         </TabButton>
         {activeTab === "editor" ? (
           <>
@@ -176,7 +184,7 @@ export function ContentSidePanel({
               onClick={onSaveAndCloseDocument}
               className="inline-flex h-14 min-w-[104px] shrink-0 items-center justify-center whitespace-nowrap px-3 text-[14px] font-semibold text-[#536de8] outline-none transition hover:bg-white focus-visible:ring-2 focus-visible:ring-[#536de8]"
             >
-              保存并关闭
+              {copy.content.saveAndClose}
             </button>
             <button
               type="button"
@@ -184,7 +192,7 @@ export function ContentSidePanel({
               disabled={documentDownloadBusy}
               className="ml-auto inline-flex h-14 min-w-[104px] shrink-0 items-center justify-center whitespace-nowrap px-3 text-[14px] font-semibold text-[#536de8] outline-none transition hover:bg-white focus-visible:ring-2 focus-visible:ring-[#536de8] disabled:cursor-not-allowed disabled:opacity-70"
             >
-              {documentDownloadBusy ? "下载中..." : "下载到本地"}
+              {documentDownloadBusy ? copy.content.downloading : copy.content.download}
             </button>
           </>
         ) : null}
@@ -216,6 +224,7 @@ export function ContentSidePanel({
           <ContentDisplay
             activeContent={activeContent}
             historyDocuments={historyDocuments}
+            locale={locale}
             onBack={onBackContent}
             onOpen={onOpenContent}
             onOpenDocument={onOpenDocument}
@@ -224,6 +233,7 @@ export function ContentSidePanel({
           <DocumentEditor
             artifactText={artifactText}
             documentTitle={documentTitle}
+            locale={locale}
             onArtifactChange={onRecordArtifact}
             onArtifactBlur={flushPendingArtifactSave}
             onDocumentTitleChange={onDocumentTitleChange}

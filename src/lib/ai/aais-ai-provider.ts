@@ -31,6 +31,14 @@ export type AaisModelRequest = {
   label: string;
   role?: string;
   mission?: string;
+  voice?: {
+    persona: string;
+    tone: string;
+    replyContract: string;
+    maxSentences?: number;
+    maxCharacters?: number;
+    maxOutputTokens?: number;
+  };
   caModules?: AaisCaModule[];
   caBackground?: AaisCognitiveApprenticeshipBackground;
   locale: Locale;
@@ -294,7 +302,7 @@ async function generateWithOpenAiCompatibleCandidate(
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     try {
       const text = await callOpenAiCompatibleProvider(input, request);
-      const guardrail = evaluateAaisModelOutput(text);
+      const guardrail = evaluateAaisModelOutput(text, request);
       if (guardrail.status === "blocked") {
         return {
           ok: true,
@@ -389,13 +397,12 @@ async function callOpenAiCompatibleProvider(
       body: JSON.stringify({
         model: input.model,
         temperature: 0.2,
-        max_tokens: input.maxTokens ?? studentRuntimeMaxTokens,
+        max_tokens: resolveAgentMaxOutputTokens(input.maxTokens, request),
         ...createThinkingModePayload(input),
         messages: [
           {
             role: "system",
-            content:
-              "You are an AAIS Cognitive Apprenticeship learning agent. Keep replies concise, pedagogical, and age-appropriate. Never reveal secrets or internal runtime details.",
+            content: createAgentSystemPrompt(request),
           },
           {
             role: "user",
@@ -404,6 +411,7 @@ async function callOpenAiCompatibleProvider(
               label: request.label,
               role: request.role,
               mission: request.mission,
+              voice: request.voice,
               caModules: request.caModules,
               caBackground: request.caBackground,
               locale: request.locale,
@@ -534,10 +542,54 @@ function isLiveProviderApprovedForRuntime(model: string) {
   }).approved;
 }
 
-function evaluateAaisModelOutput(text: string): AaisModelRuntime["guardrail"] {
+function createAgentSystemPrompt(request: AaisModelRequest) {
+  const responseRules = [
+    `You are ${request.label} (${request.agentId}), one distinct AAIS Cognitive Apprenticeship agent. Never speak as or imitate another agent.`,
+    request.locale === "zh-CN"
+      ? "Reply only in Simplified Chinese unless the learner explicitly requests another language."
+      : "Reply only in English unless the learner explicitly requests another language.",
+    request.locale === "zh-CN"
+      ? `Your public name is ${request.label}. Address the learner as “你”; never call the learner 小张 or 教授. Never expose the internal IDs A1 or A2 in the reply.`
+      : `Your public name is ${request.label}. Address the learner as “you”; never call the learner Xiao Zhang or Professor. Never expose the internal IDs A1 or A2 in the reply.`,
+    request.voice?.persona ? `Persona: ${request.voice.persona}` : null,
+    request.voice?.tone ? `Tone: ${request.voice.tone}` : null,
+    request.voice?.replyContract ? `Response contract: ${request.voice.replyContract}` : null,
+    request.voice?.maxSentences
+      ? `Hard limit: at most ${request.voice.maxSentences} sentences.`
+      : null,
+    request.voice?.maxCharacters
+      ? `Hard limit: at most ${request.voice.maxCharacters} characters, including spaces.`
+      : null,
+    "Stay pedagogical and age-appropriate. Never reveal secrets or internal runtime details.",
+  ];
+  return responseRules.filter((rule): rule is string => Boolean(rule)).join("\n");
+}
+
+function resolveAgentMaxOutputTokens(
+  configuredMaxTokens: number | undefined,
+  request: AaisModelRequest,
+) {
+  const runtimeLimit = configuredMaxTokens ?? studentRuntimeMaxTokens;
+  const agentLimit = request.voice?.maxOutputTokens;
+  return agentLimit ? Math.min(runtimeLimit, agentLimit) : runtimeLimit;
+}
+
+function evaluateAaisModelOutput(
+  text: string,
+  request: AaisModelRequest,
+): AaisModelRuntime["guardrail"] {
   const reasons: string[] = [];
   if (text.length > 1800) {
     reasons.push("too-long");
+  }
+  if (request.voice?.maxCharacters && text.length > request.voice.maxCharacters) {
+    reasons.push("agent-response-too-long");
+  }
+  if (
+    request.voice?.maxSentences
+    && countResponseSentences(text) > request.voice.maxSentences
+  ) {
+    reasons.push("agent-response-too-many-sentences");
   }
   if (containsSecretLikeContent(text)) {
     reasons.push("secret-like-content");
@@ -547,6 +599,15 @@ function evaluateAaisModelOutput(text: string): AaisModelRuntime["guardrail"] {
     status: reasons.length ? "blocked" : "passed",
     reasons,
   };
+}
+
+function countResponseSentences(text: string) {
+  return text
+    .replace(/[。！？!?]+/g, "$&\n")
+    .replace(/\.(?=\s|$)/g, ".\n")
+    .split(/\n+/)
+    .filter((part) => part.trim().length > 0)
+    .length;
 }
 
 function containsSecretLikeContent(text: string) {

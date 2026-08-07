@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import { LegalNoticePage } from "@/components/pages/legal-notice-page";
 
 export const metadata: Metadata = {
-  title: "Terms | AAIS",
+  title: "Terms | CAAIS",
   description: "AAIS use terms and responsible-use notice.",
 };
 
@@ -18,7 +18,7 @@ export default function Page() {
         {
           title: "学习使用边界",
           items: [
-            "A1-A4 智能体用于示范、监督、反思和支架支持；系统输出不应被视为最终成绩、纪律处分或高风险决策的唯一依据。",
+            "小张和教授分别提供学习支架与专家示范，后台机制支持监督和反思；系统输出不应被视为最终成绩、纪律处分或高风险决策的唯一依据。",
             "学习者应提交自己的理解、计划、反思和产出，不应把 AI 回复直接当作自己的完整答案。",
             "教师 dashboard 用于发现需要跟进的学习信号，实际教学判断仍应结合课堂、作业和机构政策。",
           ],

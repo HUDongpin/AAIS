@@ -217,7 +217,7 @@ export function TeacherDashboardPage() {
                 教师看板
               </h1>
               <p className="mt-2 max-w-3xl text-sm leading-6 text-[#59657a]">
-                聚合训练完成、支架依赖、A3 监督与 A2 coaching 信号、AI 互动和反思证据，帮助教师快速定位需要跟进的学习者。
+                聚合训练完成、支架依赖、后台监督与教授 coaching 信号、AI 互动和反思证据，帮助教师快速定位需要跟进的学习者。
               </p>
             </div>
             <div className="grid gap-2 rounded-xl border border-[#d8e6fb] bg-[#f8fbff] px-4 py-3 text-sm font-semibold text-[#3f4b69]">
@@ -272,8 +272,8 @@ export function TeacherDashboardPage() {
               options={[
                 ["all", "全部"],
                 ["platform", "Platform"],
-                ["A1", "A1"],
-                ["A2", "A2"],
+                ["A1", "小张"],
+                ["A2", "教授"],
                 ["A3", "A3"],
                 ["A4", "A4"],
               ]}
@@ -284,7 +284,7 @@ export function TeacherDashboardPage() {
               onChange={(value) => updateFilter({ ...filters, event: value as CohortFilterState["event"] })}
               options={[
                 ["all", "全部"],
-                ["coaching_push", "A2 coaching"],
+                ["coaching_push", "教授 coaching"],
                 ["ai_acceptance_recorded", "AI acceptance"],
                 ["artifact_saved", "Artifact saved"],
                 ["artifact_edited", "Artifact edited"],
@@ -338,7 +338,7 @@ export function TeacherDashboardPage() {
           <MetricTile icon={CheckCircle} label="完成训练" value={cohort.trainingCompleted} />
           <MetricTile icon={Student} label="练习完成数" value={cohort.completedPracticeTasks} />
           <MetricTile icon={ArrowsLeftRight} label="支架请求" value={cohort.scaffoldRequests} />
-          <MetricTile icon={WarningCircle} label="A3/A2 信号" value={cohort.coachingSignals} />
+          <MetricTile icon={WarningCircle} label="监督/教授信号" value={cohort.coachingSignals} />
           <MetricTile icon={ChartLineUp} label="AI 互动" value={cohort.aiInteractions} />
           <MetricTile icon={CheckCircle} label="AI 采纳" value={cohort.aiAcceptanceDecisions} />
         </section>
@@ -349,7 +349,7 @@ export function TeacherDashboardPage() {
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div>
                   <h2 className="text-lg font-black text-[#171b35]">学习者风险队列</h2>
-                  <p className="mt-1 text-sm text-[#68708a]">优先显示训练未完成、反思证据不足或 A3/A2 信号较多的学习者。</p>
+                  <p className="mt-1 text-sm text-[#68708a]">优先显示训练未完成、反思证据不足或监督/教授信号较多的学习者。</p>
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
                   <span className="rounded-full border border-[#d8e6fb] bg-[#f8fbff] px-3 py-1 text-xs font-bold text-[#1557c0]">
@@ -383,7 +383,7 @@ export function TeacherDashboardPage() {
                     <th className="px-4 py-3 font-bold">Training</th>
                     <th className="px-4 py-3 font-bold">Practice</th>
                     <th className="px-4 py-3 font-bold">Scaffold</th>
-                    <th className="px-4 py-3 font-bold">A2</th>
+                    <th className="px-4 py-3 font-bold">教授</th>
                     <th className="px-4 py-3 font-bold">AI</th>
                     <th className="px-4 py-3 font-bold">Reflection</th>
                     <th className="px-5 py-3 font-bold">Action</th>

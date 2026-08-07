@@ -15,6 +15,7 @@ import {
 } from "@/data/aais";
 import {
   aaisGuideTargetAgentIds,
+  localizeAaisGuideAgentReferences,
   resolveAaisGuideTargetAgentIds,
   type AaisGuideTargetAgentId,
 } from "@/lib/ai/aais-guide-targets";
@@ -246,6 +247,16 @@ async function createAgentTurn(
     label: agent.name[state.locale],
     role: agent.role[state.locale],
     mission: agent.mission[state.locale],
+    voice: agent.voice
+      ? {
+          persona: agent.voice.persona[state.locale],
+          tone: agent.voice.tone[state.locale],
+          replyContract: agent.voice.replyContract[state.locale],
+          maxSentences: agent.voice.maxSentences,
+          maxCharacters: agent.voice.maxCharacters?.[state.locale],
+          maxOutputTokens: agent.voice.maxOutputTokens,
+        }
+      : undefined,
     caModules: agent.caModules,
     caBackground: aaisCognitiveApprenticeshipBackground,
     locale: state.locale,
@@ -273,6 +284,9 @@ async function createAgentTurn(
     },
   }));
   const elapsedMs = Math.round(nowMs() - startedAt);
+  const learnerVisibleText = visible
+    ? localizeAaisGuideAgentReferences(response.text, state.locale)
+    : response.text;
   const providerRun = {
     agentId,
     ...response.runtime,
@@ -283,7 +297,7 @@ async function createAgentTurn(
       {
         agentId,
         label: agent.name[state.locale],
-        content: response.text,
+        content: learnerVisibleText,
         actions: createAgentActions(agentId, state.phase),
       },
     ],
@@ -329,7 +343,7 @@ function summarizeTimings(totalMs: number, timings: AaisGuideAgentTiming[]) {
       ? Math.max(...visibleTimings.map((timing) => timing.elapsedMs))
       : 0,
     attempts: timings.reduce((total, timing) => total + timing.attempts, 0),
-    fallback: timings.some((timing) => timing.fallback),
+    fallback: visibleTimings.some((timing) => timing.fallback),
     timeoutReason,
     agents: timings,
   };
@@ -356,12 +370,27 @@ function nowMs() {
 }
 
 function createAgentContent(agentId: AaisAgentId, state: AaisGuideState) {
-  const input = state.learnerInput.trim() || "学生尚未输入。";
+  const english = state.locale === "en-US";
+  const input = state.learnerInput.trim() || (english ? "The learner has not entered a response yet." : "学生尚未输入。");
   const helpCount = state.workspaceState.helpRequestsUsed ?? 0;
-  const attachmentSummary = formatAttachmentSummary(state.workspaceState.attachments);
+
+  if (english) {
+    if (agentId === "A1") {
+      return createA1ConciseFallback(state);
+    }
+    if (agentId === "A2") {
+      return createA2ContextualFallback(state, input);
+    }
+    if (agentId === "A3") {
+      return `Supervision Agent: I am collecting task-behavior signals for the current step, ${state.workspaceState.currentStep}, and will signal A1 when a scaffold may be useful. A1 remains responsible for responding to you.`;
+    }
+    return helpCount >= 4
+      ? "Reflection Agent: I will organize the metacognitive process record from your repeated help requests, return it to you, and invite comparison with an expert process."
+      : "Reflection Agent: Put your goal understanding, plan, adjustments, and reasons into words. I will form an articulation record and use reflective questions to support the next reflection.";
+  }
 
   if (agentId === "A1") {
-    return `导学智能体：我会围绕 ${state.taskId} 串联 CA 学习流程，并管理本任务的 4 次直接辅助机会。若辅助机会用完，我会先与你对话确认卡点，再给一定程度的协助，体现 fading。${attachmentSummary}你刚才说：${input}`;
+    return createA1ConciseFallback(state);
   }
   if (agentId === "A2") {
     return createA2ContextualFallback(state, input);
@@ -375,31 +404,72 @@ function createAgentContent(agentId: AaisAgentId, state: AaisGuideState) {
     : "反思智能体：请把解决问题时的目标理解、计划、调整和依据用文字表达出来，我会形成 articulation 记录，并通过反思性提问支持后续 reflection。";
 }
 
+function createA1ConciseFallback(state: AaisGuideState) {
+  const english = state.locale === "en-US";
+  const helpCount = Math.max(0, state.workspaceState.helpRequestsUsed ?? 0);
+  const remaining = Math.max(0, 4 - helpCount);
+  const attachmentReference = createA1AttachmentReference(
+    state.workspaceState.attachments,
+    state.locale,
+  );
+
+  if (remaining === 0) {
+    return english
+      ? "The 4 direct assists are used. Tell me where you are stuck; I will give one small next-step hint."
+      : "4 次直接辅助已用完。说说你卡在哪一步，我只给一个小提示。";
+  }
+
+  if (attachmentReference) {
+    return english
+      ? `I will use ${attachmentReference}; ${remaining} direct assists remain. Tell me the one step where you are stuck.`
+      : `我会参考 ${attachmentReference}，还可直接求助 ${remaining} 次。先说你卡在哪一步。`;
+  }
+
+  return english
+    ? `${remaining} direct assists remain. Tell me where you are stuck; I will help with only the next step.`
+    : `还可直接求助 ${remaining} 次。先说你卡在哪一步，我只帮你推进下一步。`;
+}
+
 function createA2ContextualFallback(state: AaisGuideState, learnerInput: string) {
-  const topic = summarizeLearnerTopic(learnerInput);
+  const english = state.locale === "en-US";
+  const topic = summarizeLearnerTopic(learnerInput, state.locale);
   const calculusFocus = /微积分|calculus/i.test(learnerInput);
   if (calculusFocus) {
+    if (english) {
+      return [
+        "Professor (local scaffold mode): the live AI has not returned, so I will help you move forward with a local scaffold.",
+        "For university calculus, begin with four moves: concept, graph, worked example, and review. Explain limits, derivatives, and integrals in one sentence each; use a function graph to connect rate of change and area; solve a few representative problems; then sort errors into definition, calculation, or modelling gaps.",
+        "Following the Modelling/Coaching rhythm, choose one concept such as a limit and explain what problem it solves in your own words. Mention @Professor again if you would like an expert model for one step.",
+      ].join("\n");
+    }
     return [
-      "专家智能体（本地支架模式）：live AI 暂时未返回，我先用本地支架帮你推进。",
+      "教授（本地支架模式）：live AI 暂时未返回，我先用本地支架帮你推进。",
       "针对大学微积分，先抓住“概念—图像—例题—复盘”四步：先把极限、导数、积分分别用一句话解释清楚，再画函数图像理解变化率和面积，接着做少量典型题检验概念，最后把错题归类到定义不清、计算不熟或建模不准。",
-      "按 Modelling/Coaching 的节奏，你下一步可以先选一个概念，比如极限，用自己的话写出它解决什么问题；如果需要专家示范，可以继续用 @A2 追问。",
+      "按 Modelling/Coaching 的节奏，你下一步可以先选一个概念，比如极限，用自己的话写出它解决什么问题；如果需要专家示范，可以继续用 @教授 追问。",
+    ].join("\n");
+  }
+  if (english) {
+    return [
+      "Professor (local scaffold mode): the live AI has not returned, so I will respond with a local scaffold.",
+      `You are focusing on: ${topic}`,
+      `I will use a Modelling/Coaching approach: first show how an expert would unpack the problem, then give you one practice prompt. Write three sentences: “What is my goal?”, “What do I know?”, and “What do I need to verify next?” Then mention @Professor so I can model one of those steps. Your current task is ${state.taskId}.`,
     ].join("\n");
   }
   return [
-    "专家智能体（本地支架模式）：live AI 暂时未返回，我先用本地支架回应你的问题。",
+    "教授（本地支架模式）：live AI 暂时未返回，我先用本地支架回应你的问题。",
     `你刚才关注的是：${topic}`,
-    `我会按 Modelling/Coaching 的方式处理：先示范专家会如何拆解这个问题，再给你一个练习提示。先写下“目标是什么、我已知什么、我下一步要验证什么”三句话，然后用 @A2 继续让我针对其中一步示范。当前任务是 ${state.taskId}。`,
+    `我会按 Modelling/Coaching 的方式处理：先示范专家会如何拆解这个问题，再给你一个练习提示。先写下“目标是什么、我已知什么、我下一步要验证什么”三句话，然后用 @教授 继续让我针对其中一步示范。当前任务是 ${state.taskId}。`,
   ].join("\n");
 }
 
-function summarizeLearnerTopic(input: string) {
+function summarizeLearnerTopic(input: string, locale: Locale) {
   const cleaned = input
     .replace(/@A\s*[12]/gi, "")
     .replace(/@\S+/g, "")
     .replace(/\s+/g, " ")
     .trim();
   if (!cleaned) {
-    return "这个学习任务";
+    return locale === "en-US" ? "this learning task" : "这个学习任务";
   }
   return cleaned.length > 80 ? `${cleaned.slice(0, 80)}...` : cleaned;
 }
@@ -436,12 +506,23 @@ function normalizeAaisGuideWorkspaceState(workspaceState: AaisWorkspaceState) {
   };
 }
 
-function formatAttachmentSummary(attachments?: AaisGuideAttachment[]) {
+function createA1AttachmentReference(
+  attachments: AaisGuideAttachment[] | undefined,
+  locale: Locale,
+) {
   if (!attachments?.length) {
     return "";
   }
-  const names = attachments.map((attachment) => attachment.name).join("、");
-  return `我也会参考你上传的文件：${names}。`;
+  const firstName = attachments[0]?.name.replace(/\s+/g, " ").trim().slice(0, 48) || "";
+  if (!firstName) {
+    return locale === "en-US" ? "the uploaded material" : "已上传的材料";
+  }
+  if (attachments.length === 1) {
+    return firstName;
+  }
+  return locale === "en-US"
+    ? `${firstName} and ${attachments.length - 1} more file(s)`
+    : `${firstName} 等 ${attachments.length} 个文件`;
 }
 
 function createThreadId(input: AaisGuideInput) {

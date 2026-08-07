@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import { LegalNoticePage } from "@/components/pages/legal-notice-page";
 
 export const metadata: Metadata = {
-  title: "Privacy | AAIS",
+  title: "Privacy | CAAIS",
   description: "AAIS privacy and learning-data governance notice.",
 };
 
@@ -18,7 +18,7 @@ export default function Page() {
         {
           title: "数据范围",
           items: [
-            "AAIS 保存学习会话、任务状态、支架请求、反思状态、A1-A4 事件、AI 互动计数和必要的 cohort 聚合字段。",
+            "AAIS 保存学习会话、任务状态、支架请求、反思状态、小张与教授的互动事件、后台监督与反思事件、AI 互动计数和必要的 cohort 聚合字段。",
             "原始 artifact、自我报告和提示词只用于学习会话本身；教师 cohort dashboard 和导出文件使用伪匿名 learner key。",
             "LRS/xAPI 记录使用事件语言、伪匿名 actor、确定性 statement id 和最小必要 detail 字段。",
           ],

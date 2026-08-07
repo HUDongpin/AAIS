@@ -617,4 +617,133 @@ describe("AAIS governed AI provider", () => {
     ]);
     expect(JSON.stringify(payload)).not.toContain("secret-api-key");
   });
+
+  it("builds distinct A1 and A2 voice prompts and caps only A1's output budget", async () => {
+    const fetchMock = vi.fn<typeof fetch>(async () =>
+      Response.json({
+        choices: [
+          {
+            message: {
+              content: "下一步先写下目标。",
+            },
+          },
+        ],
+      }),
+    );
+    const provider = createOpenAiCompatibleAaisProvider({
+      endpoint: "https://ai.example.test/v1/chat/completions",
+      apiKey: "secret-api-key",
+      model: "enterprise-model",
+      fetchImpl: fetchMock,
+      timeoutMs: 1000,
+      maxRetries: 0,
+    });
+
+    await provider.generate({
+      agentId: "A1",
+      label: "小张",
+      voice: {
+        persona: "亲切利落的同龄学习向导，不扮演专家。",
+        tone: "温和直接，只指出下一步。",
+        replyContract: "最多 2 句，不用标题或清单。",
+        maxSentences: 2,
+        maxCharacters: 120,
+        maxOutputTokens: 120,
+      },
+      locale: "zh-CN",
+      phase: "training",
+      taskId: "training_task_1",
+      learnerInput: "我应该如何开始？",
+      workspaceState: {
+        currentStep: "guide",
+      },
+      fallbackText: "先说你卡在哪一步。",
+    });
+    await provider.generate({
+      agentId: "A2",
+      label: "教授",
+      voice: {
+        persona: "严谨耐心的教授型专家教练。",
+        tone: "用思维示范、例子和追问解释理由。",
+        replyContract: "呈现专家思路、理由和一个练习提示。",
+      },
+      locale: "zh-CN",
+      phase: "training",
+      taskId: "training_task_1",
+      learnerInput: "请示范专家会如何开始。",
+      workspaceState: {
+        currentStep: "modelling",
+      },
+      fallbackText: "我先示范专家如何判断目标。",
+    });
+
+    const a1Payload = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
+    const a2Payload = JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body));
+    expect(a1Payload.max_tokens).toBe(120);
+    expect(a2Payload.max_tokens).toBe(600);
+    expect(a1Payload.messages[0].content).toContain("小张 (A1)");
+    expect(a1Payload.messages[0].content).toContain("Hard limit: at most 2 sentences");
+    expect(a1Payload.messages[0].content).toContain("不扮演专家");
+    expect(a1Payload.messages[0].content).toContain("Address the learner as “你”");
+    expect(a2Payload.messages[0].content).toContain("教授 (A2)");
+    expect(a2Payload.messages[0].content).toContain("教授型专家教练");
+    expect(a2Payload.messages[0].content).toContain("never call the learner 小张 or 教授");
+    expect(a2Payload.messages[0].content).not.toContain("Hard limit: at most 2 sentences");
+    expect(a1Payload.messages[0].content).not.toBe(a2Payload.messages[0].content);
+  });
+
+  it("falls back when an A1 response breaks its concise reply contract", async () => {
+    const fetchMock = vi.fn<typeof fetch>(async () =>
+      Response.json({
+        choices: [
+          {
+            message: {
+              content: "第一句先解释背景。第二句继续解释。第三句仍然展开很多内容。",
+            },
+          },
+        ],
+      }),
+    );
+    const provider = createOpenAiCompatibleAaisProvider({
+      endpoint: "https://ai.example.test/v1/chat/completions",
+      apiKey: "secret-api-key",
+      model: "enterprise-model",
+      fetchImpl: fetchMock,
+      timeoutMs: 1000,
+      maxRetries: 0,
+    });
+
+    const result = await provider.generate({
+      agentId: "A1",
+      label: "小张",
+      voice: {
+        persona: "简短的学习向导。",
+        tone: "温和直接。",
+        replyContract: "最多 2 句。",
+        maxSentences: 2,
+        maxCharacters: 24,
+        maxOutputTokens: 120,
+      },
+      locale: "zh-CN",
+      phase: "training",
+      taskId: "training_task_1",
+      learnerInput: "我应该如何开始？",
+      workspaceState: {
+        currentStep: "guide",
+      },
+      fallbackText: "先写下目标，我再帮你看下一步。",
+    });
+
+    expect(result.text).toBe("先写下目标，我再帮你看下一步。");
+    expect(result.runtime).toMatchObject({
+      status: "fallback",
+      guardrail: {
+        status: "blocked",
+        reasons: expect.arrayContaining([
+          "agent-response-too-long",
+          "agent-response-too-many-sentences",
+        ]),
+      },
+    });
+  });
 });

@@ -148,10 +148,10 @@ function createLearnerRecommendations(learner: AaisRecommendationLearner): AaisL
       ruleId: "respond_to_coaching",
       priority: learner.riskLevel === "low" ? "medium" : "high",
       targetTaskId,
-      title: "跟进 A2 coaching",
+      title: "跟进教授 coaching",
       actionLabel: "查看教练提示后的下一步",
       reasonCodes: ["a2_coaching_signals", "no_ai_interaction_after_coaching"],
-      reasons: ["A3/A2 已出现 coaching 信号，但学生尚未形成后续 AI 互动或采纳决策。"],
+      reasons: ["后台监督与教授已出现 coaching 信号，但学生尚未形成后续 AI 互动或采纳决策。"],
     }));
   }
 
