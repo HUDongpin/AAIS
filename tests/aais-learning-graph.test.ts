@@ -184,6 +184,91 @@ describe("AAIS LangGraph learning guide", () => {
     expect(result.messageText).not.toContain("专家智能体");
   });
 
+  it("honors an explicit English reply preference and carries it across bounded history", async () => {
+    const first = await runAaisLearningGuideGraph({
+      locale: "zh-CN",
+      studentId: "S-explicit-english",
+      phase: "training",
+      taskId: "training_task_1",
+      learnerInput: "I mean answer all questions in English.",
+      targetAgentIds: ["A1"],
+      workspaceState: {
+        currentStep: "guide",
+      },
+    }, {
+      modelProvider: createDeterministicAaisProvider(),
+    });
+
+    expect(first.visibleTurns[0]?.content).toContain("direct assists remain");
+    expect(first.visibleTurns[0]?.content).not.toMatch(/[\u4e00-\u9fff]/);
+
+    const second = await runAaisLearningGuideGraph({
+      locale: "zh-CN",
+      studentId: "S-explicit-english",
+      phase: "training",
+      taskId: "training_task_1",
+      learnerInput: "I do not have the target.",
+      targetAgentIds: ["A1"],
+      conversationHistory: [
+        { kind: "user", text: "I mean answer all questions in English." },
+        { kind: "assistant", text: first.messageText },
+      ],
+      workspaceState: {
+        currentStep: "guide",
+      },
+    }, {
+      modelProvider: createDeterministicAaisProvider(),
+    });
+
+    expect(second.visibleTurns[0]?.content).toContain("direct assists remain");
+    expect(second.visibleTurns[0]?.content).not.toMatch(/[\u4e00-\u9fff]/);
+  });
+
+  it("gives A1 the prior learner context when the learner refers back to a stated difficulty", async () => {
+    const generate = vi.fn(async (request: AaisModelRequest) => ({
+      text: `${request.agentId} received context`,
+      runtime: {
+        provider: "test-provider",
+        model: "fixture-model",
+        attempts: 1,
+        status: "ok" as const,
+        guardrail: {
+          policy: "aais-age-appropriate-output-v1" as const,
+          status: "passed" as const,
+          reasons: [],
+        },
+        redaction: {
+          secrets: "omitted" as const,
+          prompt: "summarized" as const,
+        },
+      },
+    }));
+
+    await runAaisLearningGuideGraph({
+      locale: "zh-CN",
+      studentId: "S-context",
+      phase: "training",
+      taskId: "training_task_1",
+      learnerInput: "@小张 我刚才说的卡点是什么？",
+      targetAgentIds: ["A1"],
+      conversationHistory: [
+        { kind: "user", text: "我的卡点是高性能虚拟滚动列表。" },
+        { kind: "assistant", text: "请先说明具体困难。" },
+      ],
+      workspaceState: {
+        currentStep: "guide",
+      },
+    }, {
+      modelProvider: { generate },
+    });
+
+    const [request] = generate.mock.calls[0] ?? [];
+    expect(request?.conversationHistory).toEqual([
+      { kind: "user", text: "我的卡点是高性能虚拟滚动列表。" },
+      { kind: "assistant", text: "请先说明具体困难。" },
+    ]);
+  });
+
   it("uses contextual local scaffold text when A2 falls back for a learner topic", async () => {
     const result = await runAaisLearningGuideGraph({
       locale: "zh-CN",

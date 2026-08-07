@@ -3,6 +3,7 @@ import {
   getAaisLearningStore,
   isAaisLearningStorageConfigurationError,
   isAaisSessionWriteConflictError,
+  type AaisHistoryDocumentRecord,
 } from "@/lib/server/aais-learning-store";
 import { isAaisCsrfError, requireAaisCsrf } from "@/lib/server/aais-csrf";
 import {
@@ -48,6 +49,8 @@ export async function PATCH(request: Request) {
         selfReport?: string;
         accepted?: boolean;
         reason?: string;
+        activeDocumentId?: string | null;
+        document?: AaisHistoryDocumentRecord | null;
       }
     | null;
 
@@ -75,6 +78,17 @@ export async function PATCH(request: Request) {
           studentId,
           requireString(body.taskId, "taskId"),
           body.artifactText ?? "",
+        );
+        return jsonSession(session, actor.role);
+      }
+      if (body?.action === "archive-artifact") {
+        const session = await store.archiveArtifact(
+          studentId,
+          requireString(body.taskId, "taskId"),
+          {
+            activeDocumentId: body.activeDocumentId,
+            document: body.document,
+          },
         );
         return jsonSession(session, actor.role);
       }

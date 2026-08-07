@@ -3,7 +3,10 @@ import {
   documentDownloadContentType,
 } from "@/components/pages/learning/learning-page-constants";
 import { getLearningCopy } from "@/components/pages/learning/learning-copy";
-import type { SavedLearningDocument } from "@/components/pages/learning/learning-page-types";
+import type {
+  AaisClientSavedDocumentRecord,
+  SavedLearningDocument,
+} from "@/components/pages/learning/learning-page-types";
 import type { Locale } from "@/data/aais";
 
 type MarkdownFileHandle = {
@@ -66,6 +69,22 @@ export function mergeHistoryDocument(
         }
       : document,
   );
+}
+
+export function hydrateHistoryDocuments(
+  records: AaisClientSavedDocumentRecord[] | undefined,
+): SavedLearningDocument[] {
+  return (records ?? []).flatMap((record) => {
+    const savedAt = new Date(record.savedAt);
+    if (Number.isNaN(savedAt.getTime())) {
+      return [];
+    }
+    return [{
+      ...record,
+      markdown: createLearningDocumentMarkdown(record.html),
+      savedAt,
+    }];
+  });
 }
 
 export function formatHistoryDocumentTime(savedAt: Date, locale: Locale = "zh-CN") {
@@ -201,8 +220,21 @@ export function sanitizeEditorHtml(value: string) {
         element.removeAttribute(attribute.name);
       }
     });
+    if (element.tagName.toLowerCase() === "img") {
+      const source = element.getAttribute("src")?.trim() ?? "";
+      if (!isSafeEditorImageSource(source)) {
+        element.removeAttribute("src");
+      }
+    }
   });
   return template.innerHTML;
+}
+
+function isSafeEditorImageSource(value: string) {
+  if (/^https:\/\//i.test(value)) {
+    return true;
+  }
+  return /^data:image\/(?:png|jpe?g|gif|webp);base64,[a-z0-9+/=\s]+$/i.test(value);
 }
 
 function escapeHtml(value: string) {

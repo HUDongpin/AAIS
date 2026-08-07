@@ -6,6 +6,7 @@ import type {
   Locale,
 } from "@/data/aais";
 import type { AaisGuideAttachment } from "@/lib/ai/aais-guide-attachments";
+import type { AaisGuideConversationMessage } from "@/lib/ai/orchestration/aais-learning-guide-graph";
 import {
   createDeterministicAaisAiRuntimeProfile,
   createManualAaisAiRuntimeProfile,
@@ -45,6 +46,7 @@ export type AaisModelRequest = {
   phase: AaisPhase;
   taskId: string;
   learnerInput: string;
+  conversationHistory?: AaisGuideConversationMessage[];
   workspaceState: AaisProviderWorkspaceState;
   fallbackText: string;
 };
@@ -418,6 +420,7 @@ async function callOpenAiCompatibleProvider(
               phase: request.phase,
               taskId: request.taskId,
               learnerInput: request.learnerInput,
+              conversationHistory: request.conversationHistory ?? [],
               workspaceState: {
                 currentStep: request.workspaceState.currentStep,
                 artifactCharacters: request.workspaceState.artifactText?.length ?? 0,
@@ -554,6 +557,9 @@ function createAgentSystemPrompt(request: AaisModelRequest) {
     request.voice?.persona ? `Persona: ${request.voice.persona}` : null,
     request.voice?.tone ? `Tone: ${request.voice.tone}` : null,
     request.voice?.replyContract ? `Response contract: ${request.voice.replyContract}` : null,
+    request.conversationHistory?.length
+      ? "Use the bounded conversationHistory to resolve references to earlier learner goals, difficulties, and language preferences. Do not ask the learner to repeat information already present there."
+      : null,
     request.voice?.maxSentences
       ? `Hard limit: at most ${request.voice.maxSentences} sentences.`
       : null,

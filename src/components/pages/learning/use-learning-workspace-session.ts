@@ -7,6 +7,8 @@ import {
   type LearningSessionPatchBody,
 } from "@/components/pages/learning/learning-session-client";
 import type { AaisClientSession } from "@/components/pages/learning/learning-page-types";
+import { hydrateHistoryDocuments } from "@/components/pages/learning/document-markdown";
+import type { SavedLearningDocument } from "@/components/pages/learning/learning-page-types";
 import {
   admitAaisResearchAction,
   captureAaisResearchActorGeneration,
@@ -19,6 +21,7 @@ import type { Locale } from "@/data/aais";
 export function useLearningWorkspaceSession(locale: Locale = "zh-CN") {
   const [activeTaskId, setActiveTaskId] = useState(defaultTaskId);
   const [artifactText, setArtifactTextState] = useState("");
+  const [historyDocuments, setHistoryDocuments] = useState<SavedLearningDocument[]>([]);
   const [backendError, setBackendError] = useState("");
   const artifactRevisionRef = useRef(0);
   const lastSavedArtifactLengthRef = useRef(0);
@@ -39,6 +42,9 @@ export function useLearningWorkspaceSession(locale: Locale = "zh-CN") {
       session.tasks?.find((task) => task.taskId === nextTaskId) ?? session.tasks?.[0];
     if (!preserveArtifactText) {
       setArtifactTextState(selectedTask?.artifactText ?? "");
+    }
+    if (session.historyDocuments) {
+      setHistoryDocuments(hydrateHistoryDocuments(session.historyDocuments));
     }
     lastSavedArtifactLengthRef.current = selectedTask?.artifactText?.length ?? 0;
   }
@@ -61,6 +67,7 @@ export function useLearningWorkspaceSession(locale: Locale = "zh-CN") {
     sessionGenerationRef.current += 1;
     setActiveTaskId(defaultTaskId);
     setArtifactTextState("");
+    setHistoryDocuments([]);
     setBackendError("");
   }
 
@@ -133,11 +140,13 @@ export function useLearningWorkspaceSession(locale: Locale = "zh-CN") {
     activeTaskId,
     artifactText,
     backendError,
+    historyDocuments,
     lastSavedArtifactLengthRef,
     patchSession,
     resetWorkspaceSession,
     setArtifactText,
     setBackendError,
+    setHistoryDocuments,
   };
 }
 

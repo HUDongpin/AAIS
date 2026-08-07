@@ -31,6 +31,11 @@ type AaisWorkspaceState = {
   attachments?: AaisGuideAttachment[];
 };
 
+export type AaisGuideConversationMessage = {
+  kind: "user" | "assistant";
+  text: string;
+};
+
 export type AaisGuideTurn = {
   agentId: AaisAgentId;
   label: string;
@@ -60,6 +65,7 @@ export type AaisGuideInput = {
   phase: AaisPhase;
   taskId: string;
   learnerInput: string;
+  conversationHistory?: AaisGuideConversationMessage[];
   targetAgentIds?: AaisGuideTargetAgentId[];
   workspaceState: AaisWorkspaceState;
   threadId?: string;
@@ -90,6 +96,9 @@ const redaction = {
 const graphId = "learning-ai-guide" as const;
 const topologicalOrder: AaisAgentId[] = ["A1", "A2", "A3", "A4"];
 const backgroundAgentIds: AaisAgentId[] = ["A3", "A4"];
+const maxConversationMessages = 10;
+const maxConversationMessageCharacters = 1_200;
+const maxConversationCharacters = 6_000;
 
 const AaisGuideGraphState = Annotation.Root({
   input: Annotation<AaisGuideState>,
@@ -108,8 +117,16 @@ export async function runAaisLearningGuideGraph(
   input: AaisGuideInput,
   options: AaisGuideOptions = {},
 ) {
+  const conversationHistory = normalizeConversationHistory(input.conversationHistory);
+  const responseLocale = resolveGuideResponseLocale(
+    input.locale,
+    input.learnerInput,
+    conversationHistory,
+  );
   const boundedInput: AaisGuideInput = {
     ...input,
+    locale: responseLocale,
+    ...(conversationHistory.length ? { conversationHistory } : { conversationHistory: undefined }),
     workspaceState: normalizeAaisGuideWorkspaceState(input.workspaceState),
   };
   const modelProvider = options.modelProvider ?? createConfiguredAaisModelProvider();
@@ -263,6 +280,7 @@ async function createAgentTurn(
     phase: state.phase,
     taskId: state.taskId,
     learnerInput: state.learnerInput,
+    conversationHistory: state.conversationHistory,
     workspaceState: state.workspaceState,
     fallbackText,
   }).catch(() => ({
@@ -408,10 +426,17 @@ function createA1ConciseFallback(state: AaisGuideState) {
   const english = state.locale === "en-US";
   const helpCount = Math.max(0, state.workspaceState.helpRequestsUsed ?? 0);
   const remaining = Math.max(0, 4 - helpCount);
+  const priorLearnerFocus = findPriorLearnerFocus(state.conversationHistory);
   const attachmentReference = createA1AttachmentReference(
     state.workspaceState.attachments,
     state.locale,
   );
+
+  if (priorLearnerFocus && refersToPriorContext(state.learnerInput)) {
+    return english
+      ? `You previously identified this focus: ${priorLearnerFocus}. Let us work on its smallest verifiable next step.`
+      : `你刚才说的卡点是：${priorLearnerFocus}。我们先推进其中最小、可验证的一步。`;
+  }
 
   if (remaining === 0) {
     return english
@@ -527,8 +552,92 @@ function createA1AttachmentReference(
 
 function createThreadId(input: AaisGuideInput) {
   return `aais-${hashSeed(
-    [input.studentId, input.phase, input.taskId, input.learnerInput].join("|"),
+    [input.studentId, input.phase, input.taskId].join("|"),
   )}`;
+}
+
+function normalizeConversationHistory(
+  history: AaisGuideConversationMessage[] | undefined,
+) {
+  const recent = (history ?? [])
+    .filter((message): message is AaisGuideConversationMessage =>
+      (message?.kind === "user" || message?.kind === "assistant")
+      && typeof message.text === "string"
+      && Boolean(message.text.trim()),
+    )
+    .slice(-maxConversationMessages);
+  const normalized: AaisGuideConversationMessage[] = [];
+  let remainingCharacters = maxConversationCharacters;
+
+  for (let index = recent.length - 1; index >= 0 && remainingCharacters > 0; index -= 1) {
+    const message = recent[index];
+    const text = message.text.trim().slice(0, maxConversationMessageCharacters);
+    const boundedText = text.slice(0, remainingCharacters);
+    if (boundedText) {
+      normalized.unshift({
+        kind: message.kind,
+        text: boundedText,
+      });
+      remainingCharacters -= boundedText.length;
+    }
+  }
+  return normalized;
+}
+
+function resolveGuideResponseLocale(
+  defaultLocale: Locale,
+  learnerInput: string,
+  history: AaisGuideConversationMessage[],
+) {
+  const candidates = [
+    learnerInput,
+    ...history
+      .filter((message) => message.kind === "user")
+      .map((message) => message.text)
+      .reverse(),
+  ];
+  for (const candidate of candidates) {
+    const preference = detectLanguagePreference(candidate);
+    if (preference) {
+      return preference;
+    }
+  }
+  return defaultLocale;
+}
+
+function detectLanguagePreference(value: string): Locale | null {
+  const englishPatterns = [
+    /\b(?:answer|reply|respond|speak|continue|write|use)\b[\s\S]{0,64}\b(?:in\s+|with\s+|using\s+)?english\b/i,
+    /\benglish(?:\s+only)?\b[\s\S]{0,48}\b(?:answers?|replies|responses?|questions?|from now on)\b/i,
+    /(?:请|以后|接下来|全部|所有|一直|改用|切换|使用|用).{0,18}(?:英文|英语)(?:回答|回复|交流|作答)?/,
+  ];
+  if (englishPatterns.some((pattern) => pattern.test(value))) {
+    return "en-US";
+  }
+  const chinesePatterns = [
+    /\b(?:answer|reply|respond|speak|continue|write|use)\b[\s\S]{0,64}\b(?:in\s+|with\s+|using\s+)?(?:chinese|mandarin)\b/i,
+    /(?:请|以后|接下来|全部|所有|一直|改用|切换|使用|用).{0,18}(?:中文|汉语)(?:回答|回复|交流|作答)?/,
+  ];
+  return chinesePatterns.some((pattern) => pattern.test(value)) ? "zh-CN" : null;
+}
+
+function findPriorLearnerFocus(history: AaisGuideConversationMessage[] | undefined) {
+  const priorUserMessage = [...(history ?? [])]
+    .reverse()
+    .find((message) => message.kind === "user" && !detectLanguagePreference(message.text));
+  if (!priorUserMessage) {
+    return "";
+  }
+  return priorUserMessage.text
+    .replace(/@A\s*[12]/gi, "")
+    .replace(/@(?:小张|教授|Professor)/gi, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 64);
+}
+
+function refersToPriorContext(value: string) {
+  return /刚才|之前|前面|上面|说过|提过|earlier|before|previous|already (?:said|mentioned)/i.test(value);
 }
 
 function hashSeed(seed: string) {

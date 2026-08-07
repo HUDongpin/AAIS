@@ -104,6 +104,28 @@ body {
   font-size: 28px;
 }
 
+/* Keep rich editor text and pasted media inside the editable page. */
+.aais-document-editor {
+  overflow-wrap: anywhere;
+}
+
+.aais-document-editor img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin-block: 0.75rem;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.aais-document-editor u {
+  text-decoration-line: underline;
+  text-decoration-style: solid;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 0.12em;
+  text-decoration-skip-ink: auto;
+}
+
 body[data-aais-panel-resizing="true"] {
   cursor: col-resize;
   user-select: none;

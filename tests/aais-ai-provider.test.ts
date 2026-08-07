@@ -595,6 +595,16 @@ describe("AAIS governed AI provider", () => {
       phase: "training",
       taskId: "training_task_1",
       learnerInput: "我想看专家怎么做。",
+      conversationHistory: [
+        {
+          kind: "user",
+          text: "我的卡点是高性能虚拟滚动列表。",
+        },
+        {
+          kind: "assistant",
+          text: "我们先确定最小验证目标。",
+        },
+      ],
       workspaceState: {
         currentStep: "modelling",
       },
@@ -614,6 +624,16 @@ describe("AAIS governed AI provider", () => {
       "fading",
       "articulation",
       "reflection",
+    ]);
+    expect(userContext.conversationHistory).toEqual([
+      {
+        kind: "user",
+        text: "我的卡点是高性能虚拟滚动列表。",
+      },
+      {
+        kind: "assistant",
+        text: "我们先确定最小验证目标。",
+      },
     ]);
     expect(JSON.stringify(payload)).not.toContain("secret-api-key");
   });

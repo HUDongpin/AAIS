@@ -19,6 +19,18 @@ describe("document editor HTML sanitization", () => {
     expect(sanitized).not.toContain("expression");
   });
 
+  it("preserves bounded pasted images while removing unsafe image sources", () => {
+    const sanitized = sanitizeEditorHtml(
+      '<p>截图</p><img src="data:image/png;base64,AAAA" alt="测试截图" onload="alert(1)">'
+      + '<img src="javascript:alert(1)" alt="危险图片">',
+    );
+
+    expect(sanitized).toContain('src="data:image/png;base64,AAAA"');
+    expect(sanitized).toContain('alt="测试截图"');
+    expect(sanitized).not.toContain("onload");
+    expect(sanitized).not.toContain("javascript:");
+  });
+
   it("updates the active history document instead of creating a renamed duplicate", () => {
     const original: SavedLearningDocument = {
       id: "history-1",

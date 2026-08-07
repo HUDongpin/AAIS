@@ -97,12 +97,17 @@ export async function POST(request: Request) {
     let rawTextWriteLease = await acquireAaisResearchRawTextWriteLeaseIfRequired(actor);
     try {
       const budget = await reserveDailyGuideBudget(studentId, store);
+      const session = await store.getOrCreateSession(studentId);
       const input: AaisGuideInput = {
         locale: body.locale === "en-US" ? "en-US" : "zh-CN",
         studentId,
         phase: body.phase === "practice" ? "practice" : "training",
         taskId: body.taskId ?? "training_task_1",
         learnerInput: body.learnerInput,
+        conversationHistory: session.guideMessages.map((message) => ({
+          kind: message.kind,
+          text: message.text,
+        })),
         ...(targetAgentIds ? { targetAgentIds } : {}),
         workspaceState: {
           currentStep: body.workspaceState?.currentStep ?? "smart-guide",
