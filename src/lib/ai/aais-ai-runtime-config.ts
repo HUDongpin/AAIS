@@ -55,7 +55,7 @@ export type AaisAiRuntimeConfig = {
 };
 
 export const qwenDashScopeEndpoint = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions";
-export const qwenDefaultModel = "qwen3.7-max";
+export const qwenDefaultModel = "qwen3.8-max";
 export const studentRuntimeDefaultTimeoutMs = 12_000;
 export const studentRuntimeMinTimeoutMs = 3_000;
 export const studentRuntimeMaxTimeoutMs = 30_000;

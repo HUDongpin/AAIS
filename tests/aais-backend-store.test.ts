@@ -56,6 +56,50 @@ afterEach(async () => {
 });
 
 describe("AAIS backend learning store", () => {
+  it("persists attachment receipts without extracted text or raw bytes", async () => {
+    const store = createAaisLearningStore({ rootDir: tempDir });
+    await store.appendGuideExchange({
+      studentId: "S001",
+      phase: "training",
+      taskId: "training_task_1",
+      question: "请阅读论文",
+      answer: "已阅读",
+      attachments: [{
+        name: "论文.docx",
+        mediaType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        sizeBytes: 4_096,
+        status: "read",
+      }],
+      orchestration: {
+        graphId: "learning-ai-guide",
+        topologicalOrder: ["A1"],
+        threadId: "thread-attachment",
+      },
+    });
+
+    const reloadedStore = createAaisLearningStore({ rootDir: tempDir });
+    const reloaded = await reloadedStore.getOrCreateSession("S001");
+    expect(reloaded.guideMessages[0]).toMatchObject({
+      kind: "user",
+      attachments: [{
+        name: "论文.docx",
+        mediaType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        sizeBytes: 4_096,
+        status: "read",
+      }],
+    });
+    expect(JSON.stringify(reloaded.guideMessages[0])).not.toContain("extractedText");
+
+    const learnerExport = await reloadedStore.exportLearnerData("S001");
+    expect(learnerExport.data.session?.guideMessages[0]?.attachments).toEqual([{
+      name: "论文.docx",
+      mediaType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      sizeBytes: 4_096,
+      status: "read",
+    }]);
+    expect(JSON.stringify(learnerExport)).not.toContain("extractedText");
+  });
+
   it("creates a durable learner session with training and locked practice tasks", async () => {
     const store = createAaisLearningStore({ rootDir: tempDir });
 
@@ -277,6 +321,12 @@ describe("AAIS backend learning store", () => {
       taskId: "training_task_1",
       question: "研究 AI 提问原文",
       answer: "研究 AI 回答原文",
+      attachments: [{
+        name: "研究原始文件名.docx",
+        mediaType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        sizeBytes: 5_120,
+        status: "read",
+      }],
       turns: [{
         agentId: "A1",
         label: "导学智能体",
@@ -320,6 +370,7 @@ describe("AAIS backend learning store", () => {
     expect(JSON.stringify(reloaded)).not.toContain("研究自我报告原文");
     expect(JSON.stringify(reloaded)).not.toContain("研究 AI 提问原文");
     expect(JSON.stringify(reloaded)).not.toContain("研究 AI 回答原文");
+    expect(JSON.stringify(reloaded)).not.toContain("研究原始文件名.docx");
   });
 
   it("persists first and mirrors learning events to LRS through the async delivery queue", async () => {

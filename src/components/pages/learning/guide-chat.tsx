@@ -1,4 +1,5 @@
 import type { AaisGuideAttachment } from "@/lib/ai/aais-guide-attachments";
+import { CheckCircle, FileText } from "@phosphor-icons/react";
 import {
   localizeAaisGuideAgentReferences,
   localizeAaisGuideTargetMentions,
@@ -114,9 +115,81 @@ export function GuideBubble({
           </p>
         ) : null}
         <SafeMarkdownText text={visibleMessageText} />
+        {!assistant && message.attachments?.length ? (
+          <GuideMessageAttachmentCards attachments={message.attachments} locale={locale} />
+        ) : null}
       </div>
     </div>
   );
+}
+
+function GuideMessageAttachmentCards({
+  attachments,
+  locale,
+}: {
+  attachments: NonNullable<GuideMessage["attachments"]>;
+  locale: Locale;
+}) {
+  const copy = locale === "en-US"
+    ? {
+        list: "Files sent with this message",
+        status: "Upload complete · Read",
+        card: (name: string, type: string, size: string) =>
+          `Attachment ${name}, ${type}, ${size}, upload complete and read`,
+      }
+    : {
+        list: "此消息已发送的文件",
+        status: "上传成功 · 已读取",
+        card: (name: string, type: string, size: string) =>
+          `附件 ${name}，${type}，${size}，上传成功并已读取`,
+      };
+
+  return (
+    <ul aria-label={copy.list} className="mt-3 space-y-2">
+      {attachments.map((attachment, index) => {
+        const typeLabel = formatGuideAttachmentType(attachment.mediaType, locale);
+        const sizeLabel = formatGuideAttachmentSize(attachment.sizeBytes);
+        return (
+          <li
+            key={`${attachment.name}-${attachment.sizeBytes}-${index}`}
+            aria-label={copy.card(attachment.name, typeLabel, sizeLabel)}
+            className="flex min-w-0 items-center gap-3 rounded-xl border border-white/35 bg-white px-3 py-2 text-left text-[#30343b] shadow-[0_4px_12px_rgba(17,24,39,0.12)]"
+          >
+            <FileText aria-hidden="true" className="shrink-0 text-[#536de8]" size={24} weight="duotone" />
+            <span className="min-w-0 flex-1">
+              <span className="block truncate text-sm font-bold">{attachment.name}</span>
+              <span className="block text-xs text-[#687084]">
+                {typeLabel} · {sizeLabel}
+              </span>
+            </span>
+            <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-[#eef7e9] px-2 py-1 text-[11px] font-bold text-[#476238]">
+              <CheckCircle aria-hidden="true" size={14} weight="fill" />
+              {copy.status}
+            </span>
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
+function formatGuideAttachmentType(
+  mediaType: NonNullable<GuideMessage["attachments"]>[number]["mediaType"],
+  locale: Locale,
+) {
+  if (mediaType === "application/pdf") {
+    return "PDF";
+  }
+  if (mediaType === "application/vnd.openxmlformats-officedocument.wordprocessingml.document") {
+    return locale === "en-US" ? "Word document" : "Word 文档";
+  }
+  if (mediaType === "text/markdown") {
+    return "Markdown";
+  }
+  if (mediaType === "text/csv") {
+    return "CSV";
+  }
+  return locale === "en-US" ? "Plain text" : "纯文本";
 }
 
 function AgentTurnBubble({ locale, turn }: { locale: Locale; turn: GuideTurn }) {

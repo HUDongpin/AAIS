@@ -18,6 +18,10 @@ type SafeMarkdownBlock =
   | {
       type: "ordered-list" | "unordered-list";
       items: string[];
+    }
+  | {
+      type: "blockquote";
+      lines: string[];
     };
 
 export function SafeMarkdownText({ text }: { text: string }) {
@@ -56,6 +60,21 @@ export function SafeMarkdownText({ text }: { text: string }) {
             >
               {renderSafeMarkdownInline(block.lines.join("\n"), `paragraph-${blockIndex}`)}
             </p>
+          );
+        }
+
+        if (block.type === "blockquote") {
+          return (
+            <blockquote
+              key={`blockquote-${blockIndex}`}
+              className={[
+                "border-l-4 border-[#cfd8ec] pl-4 text-[#59657a]",
+                "whitespace-pre-line",
+                spacingClassName,
+              ].filter(Boolean).join(" ")}
+            >
+              {renderSafeMarkdownInline(block.lines.join("\n"), `blockquote-${blockIndex}`)}
+            </blockquote>
           );
         }
 
@@ -105,6 +124,7 @@ function parseSafeMarkdownBlocks(text: string): SafeMarkdownBlock[] {
     const line = normalizedLines[lineIndex] ?? "";
     const listItem = parseSafeMarkdownListItem(line);
     const heading = line.match(/^\s*(#{1,6})\s+(.+?)\s*$/);
+    const blockquoteLine = parseSafeMarkdownBlockquoteLine(line);
 
     if (!line.trim()) {
       flushParagraph();
@@ -120,6 +140,27 @@ function parseSafeMarkdownBlocks(text: string): SafeMarkdownBlock[] {
         content: heading[2],
       });
       lineIndex += 1;
+      continue;
+    }
+
+    if (blockquoteLine !== null) {
+      const lines: string[] = [];
+      flushParagraph();
+
+      while (lineIndex < normalizedLines.length) {
+        const nextLine = parseSafeMarkdownBlockquoteLine(normalizedLines[lineIndex] ?? "");
+        if (nextLine === null) {
+          break;
+        }
+
+        lines.push(nextLine);
+        lineIndex += 1;
+      }
+
+      blocks.push({
+        type: "blockquote",
+        lines,
+      });
       continue;
     }
 
@@ -172,9 +213,14 @@ function parseSafeMarkdownListItem(line: string) {
   return null;
 }
 
+function parseSafeMarkdownBlockquoteLine(line: string) {
+  const match = line.match(/^\s*>\s?(.*)$/);
+  return match ? match[1] : null;
+}
+
 function renderSafeMarkdownInline(text: string, keyPrefix: string): ReactNode[] {
   const nodes: ReactNode[] = [];
-  const inlinePattern = /`([^`\n]+)`|\$\$([\s\S]+?)\$\$|\\\[([\s\S]+?)\\\]|\\\(([\s\S]+?)\\\)|(?<!\\)\$([^\s$](?:[^$\n]*?[^\s$])?)\$|\*\*([\s\S]+?)\*\*|__([\s\S]+?)__|\[([^\]\n]+)\]\(([^)\s]+)\)/g;
+  const inlinePattern = /`([^`\n]+)`|\$\$([\s\S]+?)\$\$|\\\[([\s\S]+?)\\\]|\\\(([\s\S]+?)\\\)|(?<!\\)\$([^\s$](?:[^$\n]*?[^\s$])?)\$|\*\*([\s\S]+?)\*\*|__([\s\S]+?)__|(?<![\\*])\*([^*\n]+?)\*(?!\*)|\[([^\]\n]+)\]\(([^)\s]+)\)/g;
   let lastIndex = 0;
   let match: RegExpExecArray | null;
 
@@ -192,6 +238,7 @@ function renderSafeMarkdownInline(text: string, keyPrefix: string): ReactNode[] 
       inlineDollar,
       strongAsterisk,
       strongUnderscore,
+      emphasisAsterisk,
       linkLabel,
       linkHref,
     ] = match;
@@ -217,6 +264,12 @@ function renderSafeMarkdownInline(text: string, keyPrefix: string): ReactNode[] 
         <strong key={key} className="font-semibold">
           {renderSafeMarkdownInline(strongText, key)}
         </strong>,
+      );
+    } else if (emphasisAsterisk !== undefined) {
+      nodes.push(
+        <em key={key}>
+          {renderSafeMarkdownInline(emphasisAsterisk, key)}
+        </em>,
       );
     } else if (linkLabel !== undefined && linkHref !== undefined) {
       const safeHref = getSafeMarkdownHref(linkHref);

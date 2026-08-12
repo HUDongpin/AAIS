@@ -64,6 +64,151 @@ describe("AAIS governed AI provider", () => {
     expect(JSON.stringify(result.runtime)).not.toContain("secret-api-key");
   });
 
+  it("retries a length-truncated response and only returns the complete retry", async () => {
+    const fetchMock = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(Response.json({
+        choices: [{
+          finish_reason: "length",
+          message: {
+            content: "> 3. 作者是否",
+          },
+        }],
+      }))
+      .mockResolvedValueOnce(Response.json({
+        choices: [{
+          finish_reason: "stop",
+          message: {
+            content: "作者是否提供了足够证据？请逐项核对。",
+          },
+        }],
+      }));
+    const provider = createOpenAiCompatibleAaisProvider({
+      endpoint: "https://ai.example.test/v1/chat/completions",
+      apiKey: "secret-api-key",
+      model: "enterprise-model",
+      fetchImpl: fetchMock,
+      timeoutMs: 1000,
+      maxRetries: 1,
+    });
+
+    const result = await provider.generate({
+      agentId: "A2",
+      label: "专家智能体",
+      locale: "zh-CN",
+      phase: "training",
+      taskId: "training_task_1",
+      learnerInput: "请继续分析。",
+      workspaceState: {
+        currentStep: "modelling",
+      },
+      fallbackText: "本地 fallback",
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(result).toMatchObject({
+      text: "作者是否提供了足够证据？请逐项核对。",
+      runtime: {
+        attempts: 2,
+        status: "ok",
+      },
+    });
+    expect(result.text).not.toContain("> 3. 作者是否");
+  });
+
+  it("falls back with a testable reason when every response reaches a token limit", async () => {
+    const fetchMock = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(Response.json({
+        choices: [{
+          finish_reason: "length",
+          message: {
+            content: "第一段未完成",
+          },
+        }],
+      }))
+      .mockResolvedValueOnce(Response.json({
+        choices: [{
+          stop_reason: "max_tokens",
+          message: {
+            content: "第二段仍未完成",
+          },
+        }],
+      }));
+    const provider = createOpenAiCompatibleAaisProvider({
+      endpoint: "https://ai.example.test/v1/chat/completions",
+      apiKey: "secret-api-key",
+      model: "enterprise-model",
+      fetchImpl: fetchMock,
+      timeoutMs: 1000,
+      maxRetries: 1,
+    });
+
+    const result = await provider.generate({
+      agentId: "A2",
+      label: "专家智能体",
+      locale: "zh-CN",
+      phase: "training",
+      taskId: "training_task_1",
+      learnerInput: "请继续分析。",
+      workspaceState: {
+        currentStep: "modelling",
+      },
+      fallbackText: "本地 fallback",
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(result).toMatchObject({
+      text: "本地 fallback",
+      runtime: {
+        attempts: 2,
+        status: "fallback",
+        guardrail: {
+          status: "not-applicable",
+          reasons: ["truncated-response"],
+        },
+      },
+    });
+    expect(JSON.stringify(result)).not.toContain("未完成");
+  });
+
+  it("keeps accepting legacy compatible responses that omit finish_reason", async () => {
+    const fetchMock = vi.fn<typeof fetch>(async () => Response.json({
+      choices: [{
+        message: {
+          content: "旧测试 mock 的完整回复",
+        },
+      }],
+    }));
+    const provider = createOpenAiCompatibleAaisProvider({
+      endpoint: "https://ai.example.test/v1/chat/completions",
+      apiKey: "secret-api-key",
+      model: "enterprise-model",
+      fetchImpl: fetchMock,
+      timeoutMs: 1000,
+      maxRetries: 0,
+    });
+
+    const result = await provider.generate({
+      agentId: "A1",
+      label: "导学智能体",
+      locale: "zh-CN",
+      phase: "training",
+      taskId: "training_task_1",
+      learnerInput: "我应该如何开始？",
+      workspaceState: {
+        currentStep: "guide",
+      },
+      fallbackText: "本地 fallback",
+    });
+
+    expect(result).toMatchObject({
+      text: "旧测试 mock 的完整回复",
+      runtime: {
+        attempts: 1,
+        status: "ok",
+      },
+    });
+  });
+
   it("uses the fallback provider when the configured primary provider cannot connect", async () => {
     vi.stubEnv("AAIS_AI_PROVIDER", "openai-compatible");
     vi.stubEnv("AAIS_AI_ENDPOINT", "https://qwen.example.test/compatible-mode/v1/chat/completions");
@@ -276,7 +421,7 @@ describe("AAIS governed AI provider", () => {
       "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
     );
     const payload = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
-    expect(payload.model).toBe("qwen3.7-max");
+    expect(payload.model).toBe("qwen3.8-max");
     expect(payload.enable_thinking).toBe(false);
     expect(payload).not.toHaveProperty("thinking");
     expect(fetchMock.mock.calls[0]?.[1]?.headers).toMatchObject({
@@ -284,7 +429,7 @@ describe("AAIS governed AI provider", () => {
     });
     expect(result.runtime).toMatchObject({
       provider: "openai-compatible",
-      model: "qwen3.7-max",
+      model: "qwen3.8-max",
       status: "ok",
       runtimeProfile: {
         mode: "live",
@@ -337,13 +482,13 @@ describe("AAIS governed AI provider", () => {
     });
   });
 
-  it("keeps production on deterministic fallback when the configured evaluation version is stale", async () => {
+  it("keeps Qwen 3.8 Max on deterministic production fallback when only Qwen 3.7 evaluation exists", async () => {
     vi.stubEnv("NODE_ENV", "production");
     vi.stubEnv("AAIS_AI_PROVIDER", "qwen");
     vi.stubEnv("DASHSCOPE_API_KEY", "dashscope-secret-key");
-    vi.stubEnv("AAIS_AI_MODEL", "qwen3.7-max");
+    vi.stubEnv("AAIS_AI_MODEL", "qwen3.8-max");
     vi.stubEnv("AAIS_AI_EVAL_APPROVED", "true");
-    vi.stubEnv("AAIS_AI_EVAL_VERSION", "eval-for-an-older-model");
+    vi.stubEnv("AAIS_AI_EVAL_VERSION", "eval-2026-07-19-qwen3.7-max-v1");
     const fetchMock = vi.fn<typeof fetch>();
     vi.stubGlobal("fetch", fetchMock);
 
@@ -537,7 +682,7 @@ describe("AAIS governed AI provider", () => {
     const provider = createOpenAiCompatibleAaisProvider({
       endpoint: "https://ai.example.test/v1/chat/completions",
       apiKey: "secret-api-key",
-      model: "qwen3.7-max",
+      model: "qwen3.8-max",
       provider: "qwen",
       fetchImpl: fetchMock,
       timeoutMs: 1000,

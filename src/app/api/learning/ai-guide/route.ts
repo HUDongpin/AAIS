@@ -14,7 +14,10 @@ import {
   normalizeAaisGuideTargetAgentIds,
   resolveAaisGuideTargetAgentIds,
 } from "@/lib/ai/aais-guide-targets";
-import { normalizeAaisGuideAttachments } from "@/lib/ai/aais-guide-attachments";
+import {
+  normalizeAaisGuideAttachments,
+  toAaisGuideAttachmentMetadata,
+} from "@/lib/ai/aais-guide-attachments";
 import {
   AaisApiRouteError,
   createAaisApiErrorBody,
@@ -87,6 +90,7 @@ export async function POST(request: Request) {
       body.learnerInput,
     );
     const attachments = normalizeGuideAttachments(body.workspaceState?.attachments);
+    const attachmentMetadata = attachments.map(toAaisGuideAttachmentMetadata);
     if (researchIsolationRequired && attachments.length) {
       throw new AaisApiRouteError({
         code: "AAIS_RESEARCH_ATTACHMENT_PROHIBITED",
@@ -123,6 +127,7 @@ export async function POST(request: Request) {
           store,
           question: body.learnerInput,
           budget,
+          attachmentMetadata,
           rawTextWriteLease,
         });
         rawTextWriteLease = null;
@@ -136,6 +141,7 @@ export async function POST(request: Request) {
         taskId: body.taskId ?? "training_task_1",
         question: body.learnerInput,
         answer: result.messageText,
+        ...(attachmentMetadata.length ? { attachments: attachmentMetadata } : {}),
         turns: result.visibleTurns,
         orchestration: {
           graphId: result.graph.graphId,
@@ -265,6 +271,7 @@ function createGuideStreamResponse(input: {
   store: ReturnType<typeof getAaisLearningStore>;
   question: string;
   budget: AaisGuideDailyBudget;
+  attachmentMetadata: ReturnType<typeof toAaisGuideAttachmentMetadata>[];
   rawTextWriteLease: AaisResearchRawTextWriteLease | null;
 }) {
   const encoder = new TextEncoder();
@@ -291,6 +298,9 @@ function createGuideStreamResponse(input: {
           taskId: input.input.taskId,
           question: input.question,
           answer: result.messageText,
+          ...(input.attachmentMetadata.length
+            ? { attachments: input.attachmentMetadata }
+            : {}),
           turns: result.visibleTurns,
           orchestration: {
             graphId: result.graph.graphId,

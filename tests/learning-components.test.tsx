@@ -12,6 +12,42 @@ import type {
 } from "@/components/pages/learning/learning-page-types";
 
 describe("learning page components", () => {
+  it("renders a persistent, accessible attachment receipt inside a user message", () => {
+    render(
+      <GuidePanel
+        addGuideFiles={vi.fn()}
+        backendError=""
+        guideAttachmentBusy={false}
+        guideAttachmentError=""
+        guideAttachments={[]}
+        guideBusy={false}
+        guideDraft=""
+        guideError=""
+        guideFileInputRef={createRef<HTMLInputElement>()}
+        guideMessages={[{
+          id: "user-with-docx",
+          kind: "user",
+          text: "请概括附件",
+          attachments: [{
+            name: "论文.docx",
+            mediaType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            sizeBytes: 2_048,
+            status: "read",
+          }],
+        }]}
+        hasGuideSubmission={false}
+        onRemoveAttachment={vi.fn()}
+        onSubmitGuideQuestion={vi.fn()}
+        sendGuideMessage={vi.fn()}
+        setGuideDraft={vi.fn()}
+        setGuideError={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole("list", { name: "此消息已发送的文件" })).toBeTruthy();
+    expect(screen.getByLabelText("附件 论文.docx，Word 文档，2.0 KB，上传成功并已读取")).toBeTruthy();
+  });
+
   it("keeps LearningTopBar account privacy actions and logout wired", () => {
     const onDeleteLearnerData = vi.fn();
     const onExportLearnerData = vi.fn();

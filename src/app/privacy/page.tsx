@@ -20,6 +20,7 @@ export default function Page() {
           items: [
             "AAIS 保存学习会话、任务状态、支架请求、反思状态、小张与教授的互动事件、后台监督与反思事件、AI 互动计数和必要的 cohort 聚合字段。",
             "原始 artifact、自我报告和提示词只用于学习会话本身；教师 cohort dashboard 和导出文件使用伪匿名 learner key。",
+            "支持的附件在浏览器中读取；AAIS 不保存附件原始文件或抽取正文，只在导学成功后保存经清理的文件名、类型、大小和已读取状态。启用 live AI 时，受长度限制的抽取文本会发送给所选 AI provider。",
             "LRS/xAPI 记录使用事件语言、伪匿名 actor、确定性 statement id 和最小必要 detail 字段。",
           ],
         },
@@ -43,7 +44,7 @@ export default function Page() {
         {
           title: "个人数据导出与删除",
           items: [
-            "已登录学习者可通过 /api/learning/privacy 导出自己的 learner-data JSON；该文件包含个人会话、事件和原始学习文本，因此只返回给当前签名会话本人。",
+            "已登录学习者可通过 /api/learning/privacy 导出自己的 learner-data JSON；该文件包含个人会话、事件、原始学习文本和成功附件回执元数据，因此只返回给当前签名会话本人。",
             "学习者可向 /api/learning/privacy 发起带 CSRF token 的 DELETE 请求删除自己的学习会话、事件、任务状态和 LRS outbox 记录。",
             "删除学习数据不会自动删除登录账号；账号停用、邀请、密码重置和机构身份生命周期由管理员或机构 SSO 流程另行处理。",
           ],

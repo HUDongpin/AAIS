@@ -1502,6 +1502,46 @@ describe("AAIS LearningPage", () => {
     expect(screen.queryByText("旧导学消息不应该出现在简化首页")).toBeNull();
   });
 
+  it("restores persisted attachment receipts after the learning page reloads", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).startsWith("/api/learning/session") && (!init || init.method === "GET")) {
+        return Response.json({
+          session: {
+            ...createClientSessionFixture(""),
+            guideMessages: [
+              {
+                id: "persisted-user-attachment",
+                kind: "user",
+                text: "请概括论文",
+                attachments: [{
+                  name: "论文.docx",
+                  mediaType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                  sizeBytes: 2_048,
+                  status: "read",
+                }],
+              },
+              {
+                id: "persisted-assistant-attachment",
+                kind: "assistant",
+                text: "已根据论文给出建议。",
+              },
+            ],
+          },
+        });
+      }
+      return Response.json({ ok: true });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<LearningPage />);
+
+    expect(await screen.findByLabelText(
+      "附件 论文.docx，Word 文档，2.0 KB，上传成功并已读取",
+    )).toBeTruthy();
+    expect(screen.getByText("请概括论文")).toBeTruthy();
+    expect(screen.getByText("已根据论文给出建议。")).toBeTruthy();
+  });
+
   it("runs the right-side intelligent guide through the AAIS API as structured agent turns", async () => {
     setCsrfCookie();
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -1944,7 +1984,7 @@ describe("AAIS LearningPage", () => {
     expect(JSON.stringify(attachmentEvents)).not.toContain("PrivateToken");
   });
 
-  it("sends selected file snippets with the next guide request and clears attachments after success", async () => {
+  it("sends selected file snippets and keeps a read receipt on the user message", async () => {
     setCsrfCookie();
     const fetchMock = installGuideFetchMock();
     const file = new File(["私有上传片段：请提炼三个关键点。"], "notes.txt", {
@@ -1986,7 +2026,42 @@ describe("AAIS LearningPage", () => {
       },
     });
     expect(await screen.findByText("小张已阅读上传文件。")).toBeTruthy();
-    expect(screen.queryByText("notes.txt")).toBeNull();
+    expect(screen.queryByRole("button", { name: "移除 notes.txt" })).toBeNull();
+    expect(screen.getByRole("list", { name: "此消息已发送的文件" })).toBeTruthy();
+    expect(screen.getByLabelText("附件 notes.txt，纯文本，48 B，上传成功并已读取")).toBeTruthy();
+    expect(screen.getByText("上传成功 · 已读取")).toBeTruthy();
+  });
+
+  it("keeps an attachment available for retry and never claims success when the guide fails", async () => {
+    setCsrfCookie();
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.startsWith("/api/learning/session") && (!init || init.method === "GET")) {
+        return Response.json({ session: createClientSessionFixture("") });
+      }
+      if (url === "/api/learning/ai-guide" && init?.method === "POST") {
+        return Response.json({ error: "guide unavailable" }, { status: 503 });
+      }
+      return Response.json({ ok: true });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const file = new File(["重试时仍需保留"], "retry-notes.txt", {
+      type: "text/plain",
+    });
+
+    render(<LearningPage />);
+    fireEvent.change(screen.getByLabelText("选择上传文件"), {
+      target: { files: [file] },
+    });
+    expect(await screen.findByRole("button", { name: "移除 retry-notes.txt" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "发送" }));
+
+    expect(await screen.findByText(
+      "智能服务暂时不可用，已保留你的问题。请稍后重试。",
+    )).toBeTruthy();
+    expect(screen.getByRole("button", { name: "移除 retry-notes.txt" })).toBeTruthy();
+    expect(screen.queryByRole("list", { name: "此消息已发送的文件" })).toBeNull();
+    expect(screen.queryByText("上传成功 · 已读取")).toBeNull();
   });
 
   it("rejects oversized guide attachments inline before sending them", async () => {
@@ -2168,8 +2243,9 @@ describe("AAIS LearningPage", () => {
     expect(titleInput.className).toContain("text-[17px]");
     expect(fontSelect.className).toContain("h-10");
     expect(fontSelect.className).toContain("text-base");
-    expect(boldButton.className).toContain("h-10");
-    expect(boldButton.className).toContain("text-base");
+    expect(boldButton.className).toContain("min-h-11");
+    expect(boldButton.className).toContain("min-w-11");
+    expect(boldButton.className).toContain("text-sm");
     expect(boldButton.getAttribute("aria-pressed")).toBe("false");
     expect(screen.getByRole("button", { name: "左对齐" }).getAttribute("aria-pressed")).toBe("true");
     expect(artifactInput.getAttribute("contenteditable")).toBe("true");

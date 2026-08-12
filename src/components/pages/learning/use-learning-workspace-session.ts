@@ -6,9 +6,13 @@ import {
   patchLearningSession,
   type LearningSessionPatchBody,
 } from "@/components/pages/learning/learning-session-client";
-import type { AaisClientSession } from "@/components/pages/learning/learning-page-types";
+import type {
+  AaisClientSession,
+  GuideMessage,
+} from "@/components/pages/learning/learning-page-types";
 import { hydrateHistoryDocuments } from "@/components/pages/learning/document-markdown";
 import type { SavedLearningDocument } from "@/components/pages/learning/learning-page-types";
+import { getPersistedAttachmentGuideMessages } from "@/components/pages/learning/guide-message-persistence";
 import {
   admitAaisResearchAction,
   captureAaisResearchActorGeneration,
@@ -22,6 +26,7 @@ export function useLearningWorkspaceSession(locale: Locale = "zh-CN") {
   const [activeTaskId, setActiveTaskId] = useState(defaultTaskId);
   const [artifactText, setArtifactTextState] = useState("");
   const [historyDocuments, setHistoryDocuments] = useState<SavedLearningDocument[]>([]);
+  const [persistedGuideMessages, setPersistedGuideMessages] = useState<GuideMessage[]>([]);
   const [backendError, setBackendError] = useState("");
   const artifactRevisionRef = useRef(0);
   const lastSavedArtifactLengthRef = useRef(0);
@@ -34,7 +39,13 @@ export function useLearningWorkspaceSession(locale: Locale = "zh-CN") {
 
   function applySession(
     session: AaisClientSession,
-    { preserveArtifactText = false }: { preserveArtifactText?: boolean } = {},
+    {
+      preserveArtifactText = false,
+      preserveGuideMessages = false,
+    }: {
+      preserveArtifactText?: boolean;
+      preserveGuideMessages?: boolean;
+    } = {},
   ) {
     const nextTaskId = session.activeTaskId || defaultTaskId;
     setActiveTaskId(nextTaskId);
@@ -45,6 +56,9 @@ export function useLearningWorkspaceSession(locale: Locale = "zh-CN") {
     }
     if (session.historyDocuments) {
       setHistoryDocuments(hydrateHistoryDocuments(session.historyDocuments));
+    }
+    if (!preserveGuideMessages) {
+      setPersistedGuideMessages(getPersistedAttachmentGuideMessages(session.guideMessages));
     }
     lastSavedArtifactLengthRef.current = selectedTask?.artifactText?.length ?? 0;
   }
@@ -58,6 +72,7 @@ export function useLearningWorkspaceSession(locale: Locale = "zh-CN") {
     const session = await patchLearningSession(body);
     applySession(session, {
       preserveArtifactText: body.action === "save-artifact",
+      preserveGuideMessages: true,
     });
     setBackendError("");
     return session;
@@ -68,6 +83,7 @@ export function useLearningWorkspaceSession(locale: Locale = "zh-CN") {
     setActiveTaskId(defaultTaskId);
     setArtifactTextState("");
     setHistoryDocuments([]);
+    setPersistedGuideMessages([]);
     setBackendError("");
   }
 
@@ -143,6 +159,7 @@ export function useLearningWorkspaceSession(locale: Locale = "zh-CN") {
     historyDocuments,
     lastSavedArtifactLengthRef,
     patchSession,
+    persistedGuideMessages,
     resetWorkspaceSession,
     setArtifactText,
     setBackendError,

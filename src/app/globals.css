@@ -109,6 +109,49 @@ body {
   overflow-wrap: anywhere;
 }
 
+/* Tailwind's reset removes native list markers. Restore them only inside the
+   rich editor, including simple nested levels created by Tab or pasted HTML. */
+.aais-document-editor :where(ul, ol) {
+  display: block;
+  margin-block: 0.625rem;
+  padding-inline-start: 1.75rem;
+  list-style-position: outside;
+}
+
+.aais-document-editor :where(ul, ol) :where(ul, ol) {
+  margin-block: 0.25rem;
+  padding-inline-start: 1.5rem;
+}
+
+.aais-document-editor ul {
+  list-style-type: disc;
+}
+
+.aais-document-editor ol {
+  list-style-type: decimal;
+}
+
+.aais-document-editor :is(ul, ol) ul {
+  list-style-type: circle;
+}
+
+.aais-document-editor :is(ul, ol) :is(ul, ol) ul {
+  list-style-type: square;
+}
+
+.aais-document-editor :is(ul, ol) ol {
+  list-style-type: lower-alpha;
+}
+
+.aais-document-editor :is(ul, ol) :is(ul, ol) ol {
+  list-style-type: lower-roman;
+}
+
+.aais-document-editor li {
+  display: list-item;
+  padding-inline-start: 0.25rem;
+}
+
 .aais-document-editor img {
   display: block;
   max-width: 100%;
