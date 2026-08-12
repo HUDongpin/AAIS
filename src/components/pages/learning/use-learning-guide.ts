@@ -1,5 +1,9 @@
 import { useRef, useState, type FormEvent } from "react";
-import { aaisGuideAttachmentLimits, normalizeAaisGuideAttachments, type AaisGuideAttachment } from "@/lib/ai/aais-guide-attachments";
+import {
+  aaisGuideAttachmentLimits,
+  normalizeAaisGuideAttachments,
+  type AaisGuideAttachment,
+} from "@/lib/ai/aais-guide-attachments";
 import { normalizeAaisGuideTargetAgentIds } from "@/lib/ai/aais-guide-targets";
 import { readAaisGuideFileAttachment } from "@/lib/client/aais-guide-file-reader";
 import {
@@ -12,6 +16,11 @@ import {
 } from "@/lib/client/aais-research-telemetry";
 import { createInitialGuideMessages, getGuideAttachmentOnlyPrompt } from "@/components/pages/learning/learning-page-constants";
 import { getLearningCopy } from "@/components/pages/learning/learning-copy";
+import {
+  addReadAttachmentMetadataToGuideMessage,
+  getControlledGuideAttachmentMimeType,
+  useHydratePersistedGuideMessages,
+} from "@/components/pages/learning/guide-message-persistence";
 import { getVisibleGuideTurns, toGuideAttachmentPayload } from "@/components/pages/learning/guide-chat";
 import { fetchGuideRequest, getAaisCsrfHeader, clientNowMs } from "@/components/pages/learning/client-helpers";
 import type {
@@ -36,6 +45,7 @@ type UseLearningGuideInput = {
   artifactText: string;
   displayName: string;
   locale: Locale;
+  persistedGuideMessages?: GuideMessage[];
   studentId: string;
 };
 type GuideSubmissionOptions = {
@@ -47,6 +57,7 @@ export function useLearningGuide({
   artifactText,
   displayName,
   locale,
+  persistedGuideMessages = [],
   studentId,
 }: UseLearningGuideInput) {
   const copy = getLearningCopy(locale);
@@ -62,6 +73,7 @@ export function useLearningGuide({
   const guideMessageIdRef = useRef(0);
   const guideAttachmentIdRef = useRef(0);
   const guideFileInputRef = useRef<HTMLInputElement | null>(null);
+  useHydratePersistedGuideMessages(persistedGuideMessages, setGuideMessages);
 
   const hasGuideDraft = guideDraft.trim().length > 0;
   const hasGuideSubmission = hasGuideDraft || guideAttachments.length > 0;
@@ -197,6 +209,11 @@ export function useLearningGuide({
         });
       });
       applyGuideResponse(assistantId, body);
+      if (boundedAttachments.length) {
+        setGuideMessages((current) =>
+          addReadAttachmentMetadataToGuideMessage(current, userId, boundedAttachments),
+        );
+      }
       setGuideAttachments([]);
       recordAaisResearchEvent({
         eventName: "ai_guide_submit",
@@ -356,7 +373,7 @@ export function useLearningGuide({
     const operationId = createAaisResearchOperationId("attachment-add");
     const startedAt = clientNowMs();
     const controlledMimeType = selectedFiles.length === 1
-      ? getControlledResearchMimeType(selectedFiles[0]?.type)
+      ? getControlledGuideAttachmentMimeType(selectedFiles[0]?.type)
       : undefined;
     const eventDetail = {
       operation_id: operationId,
@@ -476,14 +493,4 @@ export function useLearningGuide({
     setGuideError,
     submitGuideQuestion,
   };
-}
-
-function getControlledResearchMimeType(value: string | undefined) {
-  const normalized = value?.trim().toLowerCase();
-  return normalized === "text/plain"
-    || normalized === "text/markdown"
-    || normalized === "text/csv"
-    || normalized === "application/pdf"
-    ? normalized
-    : undefined;
 }

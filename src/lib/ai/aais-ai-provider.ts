@@ -113,6 +113,7 @@ type AaisProviderFailureReason =
   | "connect-timeout"
   | "empty-response"
   | "http-status"
+  | "truncated-response"
   | "provider-error";
 
 type AaisProviderFailure = {
@@ -443,12 +444,20 @@ async function callOpenAiCompatibleProvider(
     }
     const body = (await response.json()) as {
       choices?: Array<{
+        finish_reason?: unknown;
+        finishReason?: unknown;
+        stop_reason?: unknown;
         message?: {
           content?: string;
         };
       }>;
     };
-    const content = body.choices?.[0]?.message?.content?.trim();
+    const choice = body.choices?.[0];
+    const finishReason = choice?.finish_reason ?? choice?.finishReason ?? choice?.stop_reason;
+    if (isTruncatedProviderFinishReason(finishReason)) {
+      throw createProviderError("truncated-response");
+    }
+    const content = choice?.message?.content?.trim();
     if (!content) {
       throw createProviderError("empty-response");
     }
@@ -521,8 +530,24 @@ function isProviderFailureReason(value: unknown): value is AaisProviderFailureRe
     "connect-timeout",
     "empty-response",
     "http-status",
+    "truncated-response",
     "provider-error",
   ].includes(String(value));
+}
+
+function isTruncatedProviderFinishReason(value: unknown) {
+  if (typeof value !== "string") {
+    return false;
+  }
+  const normalized = value.trim().toLowerCase().replace(/[\s-]+/g, "_");
+  return [
+    "length",
+    "max_completion_tokens",
+    "max_length",
+    "max_output_tokens",
+    "max_tokens",
+    "token_limit",
+  ].includes(normalized);
 }
 
 function createThinkingModePayload(input: OpenAiCompatibleProviderInput) {

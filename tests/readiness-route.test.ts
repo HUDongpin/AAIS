@@ -1542,7 +1542,7 @@ describe("AAIS readiness route", () => {
     expect(JSON.stringify(body)).not.toContain("dashscope-secret-that-must-not-leak");
   });
 
-  it("rejects bundled Qwen evaluation evidence when the configured version is stale", async () => {
+  it("rejects bundled Qwen 3.7 evaluation evidence for Qwen 3.8 Max", async () => {
     vi.stubEnv("AAIS_SESSION_SECRET", "session-secret-that-must-not-leak");
     vi.stubEnv("AAIS_TRIAL_ACCOUNTS_JSON", trialAccountConfig);
     vi.stubEnv("DATABASE_URL", "postgres://aais:database-secret@ep-prod.us-east-1.aws.neon.tech/aais");
@@ -1550,10 +1550,9 @@ describe("AAIS readiness route", () => {
     vi.stubEnv("AAIS_READINESS_MODE", "traffic");
     vi.stubEnv("AAIS_AI_PROVIDER", "qwen");
     vi.stubEnv("DASHSCOPE_API_KEY", "dashscope-secret-that-must-not-leak");
-    vi.stubEnv("AAIS_AI_MODEL", "qwen3.7-max");
+    vi.stubEnv("AAIS_AI_MODEL", "qwen3.8-max");
     vi.stubEnv("AAIS_AI_EVAL_APPROVED", "true");
-    vi.stubEnv("AAIS_AI_EVAL_VERSION", "eval-for-an-older-model");
-    vi.stubEnv("AAIS_AI_EVAL_MANIFEST_JSON", JSON.stringify(passingAiEvalManifest()));
+    vi.stubEnv("AAIS_AI_EVAL_VERSION", "eval-2026-07-19-qwen3.7-max-v1");
     const { GET } = await import("@/app/api/system/readiness/route");
 
     const response = await GET();
@@ -1567,10 +1566,10 @@ describe("AAIS readiness route", () => {
         ai: {
           status: "blocked",
           provider: "openai-compatible",
-          evalVersion: "eval-for-an-older-model",
-          evalManifest: "mismatch",
+          evalVersion: "eval-2026-07-19-qwen3.7-max-v1",
+          evalManifest: "missing",
           evalSource: null,
-          modelFingerprint: modelFingerprint("qwen3.7-max"),
+          modelFingerprint: modelFingerprint("qwen3.8-max"),
         },
       },
     });
@@ -1799,7 +1798,7 @@ describe("AAIS readiness route", () => {
     vi.stubEnv("NODE_ENV", "development");
     vi.stubEnv("AAIS_AI_PROVIDER", "qwen");
     vi.stubEnv("DASHSCOPE_API_KEY", "dashscope-secret-that-must-not-leak");
-    vi.stubEnv("AAIS_AI_MODEL", "qwen3.7-max");
+    vi.stubEnv("AAIS_AI_MODEL", "qwen3.8-max");
     const { GET } = await import("@/app/api/system/readiness/route");
 
     const response = await GET();
@@ -1811,12 +1810,12 @@ describe("AAIS readiness route", () => {
       provider: "openai-compatible",
       evalVersion: null,
       evalManifest: "not-required",
-      modelFingerprint: modelFingerprint("qwen3.7-max"),
+      modelFingerprint: modelFingerprint("qwen3.8-max"),
       runtimeProfile: {
         mode: "live",
         primary: {
           provider: "qwen",
-          modelFingerprint: modelFingerprint("qwen3.7-max"),
+          modelFingerprint: modelFingerprint("qwen3.8-max"),
           thinkingMode: "disabled",
           timeoutMs: {
             configured: null,

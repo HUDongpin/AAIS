@@ -4,9 +4,10 @@ import {
   type AaisGuideAttachment,
   type AaisGuideAttachmentMediaType,
 } from "@/lib/ai/aais-guide-attachments";
+import { strFromU8, unzipSync } from "fflate";
 
 export const aaisGuideFileAccept =
-  ".txt,.md,.csv,.pdf,text/plain,text/markdown,text/csv,application/pdf";
+  ".txt,.md,.csv,.pdf,.docx,text/plain,text/markdown,text/csv,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document";
 
 export async function readAaisGuideFileAttachment(file: File): Promise<AaisGuideAttachment> {
   if (file.size > aaisGuideAttachmentLimits.maxFileSizeBytes) {
@@ -23,6 +24,8 @@ export async function readAaisGuideFileAttachment(file: File): Promise<AaisGuide
   const extractedText =
     mediaType === "application/pdf"
       ? await extractPdfText(file)
+      : mediaType === "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        ? await extractDocxText(file)
       : await extractTextFile(file);
   const normalizedText = extractedText
     .trim()
@@ -65,7 +68,91 @@ function inferGuideAttachmentMediaType(file: File): AaisGuideAttachmentMediaType
   if (extension === "pdf") {
     return "application/pdf";
   }
+  if (extension === "docx") {
+    return "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+  }
   return null;
+}
+
+async function extractDocxText(file: File) {
+  let documentEntryCount = 0;
+  let documentEntryTooLarge = false;
+  let files: Record<string, Uint8Array>;
+
+  try {
+    files = unzipSync(new Uint8Array(await file.arrayBuffer()), {
+      filter(entry) {
+        if (entry.name !== "word/document.xml") {
+          return false;
+        }
+        documentEntryCount += 1;
+        if (
+          documentEntryCount > 1
+          || entry.originalSize > aaisGuideAttachmentLimits.maxDocxDocumentXmlBytes
+        ) {
+          documentEntryTooLarge = true;
+          return false;
+        }
+        return true;
+      },
+    });
+  } catch {
+    throw new Error(`文件 ${file.name} 不是可读取的 DOCX 文档。`);
+  }
+
+  if (documentEntryTooLarge) {
+    throw new Error(`文件 ${file.name} 的 DOCX 正文内容过大。`);
+  }
+  const documentXml = files["word/document.xml"];
+  if (!documentXml || documentEntryCount !== 1) {
+    throw new Error(`文件 ${file.name} 没有可读取的 DOCX 正文。`);
+  }
+  if (documentXml.byteLength > aaisGuideAttachmentLimits.maxDocxDocumentXmlBytes) {
+    throw new Error(`文件 ${file.name} 的 DOCX 正文内容过大。`);
+  }
+
+  const documentXmlText = strFromU8(documentXml);
+  if (/<!\s*(?:DOCTYPE|ENTITY)\b/i.test(documentXmlText)) {
+    throw new Error(`文件 ${file.name} 的 DOCX 正文包含不允许的 XML 声明。`);
+  }
+  const xmlDocument = new DOMParser().parseFromString(
+    documentXmlText,
+    "application/xml",
+  );
+  if (xmlDocument.getElementsByTagName("parsererror").length) {
+    throw new Error(`文件 ${file.name} 的 DOCX 正文格式无效。`);
+  }
+
+  const wordNamespace =
+    "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
+  const paragraphs = Array.from(xmlDocument.getElementsByTagNameNS(wordNamespace, "p"));
+  return paragraphs
+    .map((paragraph) => extractDocxParagraphText(paragraph, wordNamespace))
+    .filter((paragraph) => paragraph.trim().length > 0)
+    .join("\n");
+}
+
+function extractDocxParagraphText(paragraph: Element, wordNamespace: string) {
+  let text = "";
+  const walker = paragraph.ownerDocument.createTreeWalker(
+    paragraph,
+    NodeFilter.SHOW_ELEMENT,
+  );
+  let node = walker.nextNode();
+  while (node) {
+    const element = node as Element;
+    if (element.namespaceURI === wordNamespace) {
+      if (element.localName === "t") {
+        text += element.textContent ?? "";
+      } else if (element.localName === "tab") {
+        text += "\t";
+      } else if (element.localName === "br" || element.localName === "cr") {
+        text += "\n";
+      }
+    }
+    node = walker.nextNode();
+  }
+  return text;
 }
 
 async function extractPdfText(file: File) {

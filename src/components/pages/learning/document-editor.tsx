@@ -3,7 +3,15 @@ import {
   useRef,
   useState,
   type MouseEvent as ReactMouseEvent,
+  type ReactNode,
 } from "react";
+import {
+  ListBullets,
+  ListNumbers,
+  TextHOne,
+  TextHThree,
+  TextHTwo,
+} from "@phosphor-icons/react";
 import { anthropicLearningFontFamily } from "@/components/pages/learning/learning-page-constants";
 import {
   admitAaisResearchAction,
@@ -113,7 +121,22 @@ export function DocumentEditor({
     const range = getEditorRange();
     if (editor && range) {
       editorSelectionRef.current = range.cloneRange();
-      setFormatState(readEditorFormatState(range, editor));
+      const nextFormatState = readEditorFormatState(range, editor);
+      const onlyChildTag = editor.children.length === 1 && !editor.textContent?.trim()
+        ? editor.firstElementChild?.tagName.toLowerCase()
+        : null;
+
+      // Chromium can leave an empty-editor caret on the contentEditable root after
+      // creating the first list. The DOM is formatted correctly, but a root range
+      // has no UL/OL ancestor, so keep the pressed state in sync with that sole
+      // empty block until the learner starts typing.
+      if (onlyChildTag === "ul" || onlyChildTag === "ol") {
+        nextFormatState.list = onlyChildTag;
+      } else if (onlyChildTag === "h1" || onlyChildTag === "h2" || onlyChildTag === "h3") {
+        nextFormatState.heading = onlyChildTag;
+      }
+
+      setFormatState(nextFormatState);
     }
   }
 
@@ -269,7 +292,7 @@ export function DocumentEditor({
   }
 
   const toolbarButtonClass =
-    "inline-flex h-10 min-w-10 items-center justify-center px-3 text-base outline-none transition hover:bg-white aria-pressed:bg-[#e8ecff] aria-pressed:text-[#324fd6] focus-visible:ring-2 focus-visible:ring-[#536de8]";
+    "group relative inline-flex min-h-11 min-w-11 items-center justify-center gap-1.5 rounded-md border border-transparent px-2.5 text-sm font-medium text-[#4a4a4a] outline-none transition-colors duration-150 hover:border-[#cbd4ff] hover:bg-white hover:text-[#324fd6] active:bg-[#dfe5ff] aria-pressed:border-[#aab8ff] aria-pressed:bg-[#e8ecff] aria-pressed:text-[#253fb0] focus-visible:ring-2 focus-visible:ring-[#536de8] focus-visible:ring-offset-2 focus-visible:ring-offset-[#f8f8f8]";
   return (
     <section className="px-3 py-4">
       <input
@@ -331,12 +354,27 @@ export function DocumentEditor({
           <EditorButton label={copy.editor.alignCenter} pressed={formatState.alignment === "center"} className={toolbarButtonClass} onMouseDown={keepEditorSelection} onClick={() => runAlignmentCommand("align_center", "center")}>C</EditorButton>
           <EditorButton label={copy.editor.alignRight} pressed={formatState.alignment === "right"} className={toolbarButtonClass} onMouseDown={keepEditorSelection} onClick={() => runAlignmentCommand("align_right", "right")}>R</EditorButton>
         </div>
-        <div className="mt-3 flex flex-wrap items-center gap-3">
-          <EditorButton label={copy.editor.bulletList} pressed={formatState.list === "ul"} className={toolbarButtonClass} onMouseDown={keepEditorSelection} onClick={() => runListCommand("insertUnorderedList", "ul")}>=</EditorButton>
-          <EditorButton label={copy.editor.numberedList} pressed={formatState.list === "ol"} className={toolbarButtonClass} onMouseDown={keepEditorSelection} onClick={() => runListCommand("insertOrderedList", "ol")}>#</EditorButton>
-          <EditorButton label={copy.editor.heading1} pressed={formatState.heading === "h1"} className={`${toolbarButtonClass} font-semibold`} onMouseDown={keepEditorSelection} onClick={() => runHeadingCommand("h1")}>H1</EditorButton>
-          <EditorButton label={copy.editor.heading2} pressed={formatState.heading === "h2"} className={`${toolbarButtonClass} font-semibold`} onMouseDown={keepEditorSelection} onClick={() => runHeadingCommand("h2")}>H2</EditorButton>
-          <EditorButton label={copy.editor.heading3} pressed={formatState.heading === "h3"} className={`${toolbarButtonClass} font-semibold`} onMouseDown={keepEditorSelection} onClick={() => runHeadingCommand("h3")}>H3</EditorButton>
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          <EditorButton label={copy.editor.bulletList} pressed={formatState.list === "ul"} className={toolbarButtonClass} onMouseDown={keepEditorSelection} onClick={() => runListCommand("insertUnorderedList", "ul")}>
+            <ListBullets aria-hidden="true" size={20} weight="bold" />
+            <span className="whitespace-nowrap">{copy.editor.bulletList}</span>
+          </EditorButton>
+          <EditorButton label={copy.editor.numberedList} pressed={formatState.list === "ol"} className={toolbarButtonClass} onMouseDown={keepEditorSelection} onClick={() => runListCommand("insertOrderedList", "ol")}>
+            <ListNumbers aria-hidden="true" size={20} weight="bold" />
+            <span className="whitespace-nowrap">{copy.editor.numberedList}</span>
+          </EditorButton>
+          <EditorButton label={copy.editor.heading1} pressed={formatState.heading === "h1"} className={toolbarButtonClass} onMouseDown={keepEditorSelection} onClick={() => runHeadingCommand("h1")}>
+            <TextHOne aria-hidden="true" size={20} weight="bold" />
+            <span className="whitespace-nowrap">{copy.editor.heading1}</span>
+          </EditorButton>
+          <EditorButton label={copy.editor.heading2} pressed={formatState.heading === "h2"} className={toolbarButtonClass} onMouseDown={keepEditorSelection} onClick={() => runHeadingCommand("h2")}>
+            <TextHTwo aria-hidden="true" size={20} weight="bold" />
+            <span className="whitespace-nowrap">{copy.editor.heading2}</span>
+          </EditorButton>
+          <EditorButton label={copy.editor.heading3} pressed={formatState.heading === "h3"} className={toolbarButtonClass} onMouseDown={keepEditorSelection} onClick={() => runHeadingCommand("h3")}>
+            <TextHThree aria-hidden="true" size={20} weight="bold" />
+            <span className="whitespace-nowrap">{copy.editor.heading3}</span>
+          </EditorButton>
         </div>
       </div>
       <div className="relative mt-3">
@@ -391,7 +429,7 @@ function EditorButton({
   onMouseDown,
   pressed,
 }: {
-  children: string;
+  children: ReactNode;
   className: string;
   label: string;
   onClick: () => void;
@@ -406,8 +444,15 @@ function EditorButton({
       className={className}
       aria-label={label}
       aria-pressed={pressed}
+      title={label}
     >
       {children}
+      <span
+        aria-hidden="true"
+        className="pointer-events-none invisible absolute left-1/2 bottom-full z-30 mb-2 -translate-x-1/2 whitespace-nowrap rounded bg-[#172033] px-2 py-1 text-xs font-normal text-white opacity-0 shadow-lg transition-opacity duration-150 group-hover:visible group-hover:opacity-100 group-focus-visible:visible group-focus-visible:opacity-100"
+      >
+        {label}
+      </span>
     </button>
   );
 }

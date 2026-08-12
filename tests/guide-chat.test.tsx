@@ -24,4 +24,45 @@ describe("GuideBubble safe rich-text output", () => {
     expect(screen.queryByText(/### 1\. Task interpretation/)).toBeNull();
     expect(screen.getByText("Define the target").closest("ul")).toBeTruthy();
   });
+
+  it("renders single-star emphasis and quoted reasoning without leaking their markers", () => {
+    const { container } = render(
+      <GuideBubble
+        message={{
+          id: "assistant-quote-emphasis",
+          kind: "assistant",
+          text: "done",
+          turns: [{
+            agentId: "A2",
+            label: "Professor",
+            content: "> *内心独白*：先判断证据。\n> 再核对结论。",
+            actions: ["model"],
+          }],
+        }}
+      />,
+    );
+
+    const quote = container.querySelector("blockquote");
+    expect(quote?.textContent).toBe("内心独白：先判断证据。\n再核对结论。");
+    expect(quote?.querySelector("em")?.textContent).toBe("内心独白");
+    expect(quote?.textContent).not.toContain(">");
+    expect(quote?.textContent).not.toContain("*");
+  });
+
+  it("keeps HTML and unsafe links inert inside quotes and emphasis", () => {
+    const { container } = render(
+      <GuideBubble
+        message={{
+          id: "assistant-safe-formatting",
+          kind: "assistant",
+          text: "> *<img src=x onerror=alert(1)>* [unsafe](javascript:alert(1))",
+        }}
+      />,
+    );
+
+    expect(container.querySelector("img")).toBeNull();
+    expect(container.querySelector("script")).toBeNull();
+    expect(screen.queryByRole("link", { name: "unsafe" })).toBeNull();
+    expect(container.querySelector("blockquote em")?.textContent).toContain("<img");
+  });
 });

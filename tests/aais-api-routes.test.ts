@@ -569,7 +569,7 @@ describe("AAIS learning API routes", () => {
     expect(JSON.stringify(secondBody)).not.toContain("test-session-secret");
   });
 
-  it("accepts sanitized guide attachments without persisting uploaded raw text", async () => {
+  it("persists bounded guide attachment metadata without uploaded raw text", async () => {
     vi.stubEnv("AAIS_AI_PROVIDER", "");
     vi.stubEnv("AAIS_AI_ENDPOINT", "");
     vi.stubEnv("AAIS_AI_API_KEY", "");
@@ -624,7 +624,16 @@ describe("AAIS learning API routes", () => {
 
     expect(serializedSession).toContain("请阅读上传文件并给我下一步建议。");
     expect(serializedSession).not.toContain("private uploaded snippet must not persist");
-    expect(serializedSession).not.toContain("attachments");
+    expect(sessionBody.session.guideMessages[0]).toMatchObject({
+      kind: "user",
+      attachments: [{
+        name: "planning-notes.txt",
+        mediaType: "text/plain",
+        sizeBytes: 52,
+        status: "read",
+      }],
+    });
+    expect(sessionBody.session.guideMessages[0].attachments[0]).not.toHaveProperty("extractedText");
   });
 
   it("rejects attachments before provider or session persistence in research mode", async () => {
@@ -875,6 +884,7 @@ describe("AAIS learning API routes", () => {
     vi.stubEnv("AAIS_AI_FALLBACK_MODEL", "");
     vi.resetModules();
     const guideRoute = await import("@/app/api/learning/ai-guide/route");
+    const sessionRoute = await import("@/app/api/learning/session/route");
 
     const response = await guideRoute.POST(
       new Request("http://localhost/api/learning/ai-guide?stream=1", {
@@ -890,6 +900,12 @@ describe("AAIS learning API routes", () => {
           learnerInput: "@A1 请帮我明确目标。",
           workspaceState: {
             currentStep: "guide",
+            attachments: [{
+              name: "stream-notes.txt",
+              mediaType: "text/plain",
+              sizeBytes: 18,
+              extractedText: "stream-only private source",
+            }],
           },
         }),
       }),
@@ -905,6 +921,19 @@ describe("AAIS learning API routes", () => {
     expect(streamText).toContain("event: fallback");
     expect(streamText).toContain("event: background_done");
     expect(streamText).not.toContain("secret");
+    const sessionResponse = await sessionRoute.GET(
+      new Request("http://localhost/api/learning/session", {
+        headers: { cookie: createAuthedCookie("S001") },
+      }),
+    );
+    const sessionBody = await sessionResponse.json();
+    expect(sessionBody.session.guideMessages[0].attachments).toEqual([{
+      name: "stream-notes.txt",
+      mediaType: "text/plain",
+      sizeBytes: 18,
+      status: "read",
+    }]);
+    expect(JSON.stringify(sessionBody.session)).not.toContain("stream-only private source");
   });
 
   it("emits stream acknowledgement before the guide graph finishes", async () => {

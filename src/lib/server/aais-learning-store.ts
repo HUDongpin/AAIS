@@ -22,6 +22,10 @@ import {
 } from "@/lib/server/aais-lrs-client";
 import { requiresAaisResearchDataPlaneIsolation } from "@/lib/server/aais-research-contract";
 import type { AaisRecommendationOverrideDecision } from "@/lib/server/aais-recommendations";
+import {
+  normalizeAaisGuideAttachmentMetadata,
+  type AaisGuideAttachmentMetadata,
+} from "@/lib/ai/aais-guide-attachments";
 
 export type AaisDatabaseClient = {
   query(sql: string, params?: unknown[]): Promise<{ rows: Array<Record<string, unknown>> }>;
@@ -122,6 +126,7 @@ export type AaisGuideMessageRecord = {
   kind: "user" | "assistant";
   text: string;
   time: string;
+  attachments?: AaisGuideAttachmentMetadata[];
   turns?: AaisGuideTurnRecord[];
   orchestration?: {
     graphId: string;
@@ -787,6 +792,7 @@ export function createAaisLearningStore(input: StoreInput = {}) {
     taskId: string;
     question: string;
     answer: string;
+    attachments?: AaisGuideAttachmentMetadata[];
     turns?: AaisGuideTurnRecord[];
     orchestration: {
       graphId: string;
@@ -797,11 +803,13 @@ export function createAaisLearningStore(input: StoreInput = {}) {
     const session = await getOrCreateSession(input.studentId);
     const task = requireTask(session, input.taskId);
     const now = new Date().toISOString();
+    const attachments = normalizeAaisGuideAttachmentMetadata(input.attachments);
     const userMessage: AaisGuideMessageRecord = {
       id: `user-${hashForId([input.studentId, input.taskId, input.question, now].join("|"))}`,
       kind: "user",
       text: input.question,
       time: now,
+      ...(attachments.length ? { attachments } : {}),
     };
     const assistantMessage: AaisGuideMessageRecord = {
       id: `assistant-${hashForId([input.studentId, input.taskId, input.answer, now].join("|"))}`,
@@ -2746,12 +2754,32 @@ function normalizeSession(session: AaisLearnerSession): AaisLearnerSession {
       };
     }),
     historyDocuments: session.historyDocuments ?? [],
-    guideMessages: session.guideMessages ?? [],
+    guideMessages: (session.guideMessages ?? []).map(normalizeGuideMessageRecord),
     events: (session.events ?? []).map((event) => ({
       ...event,
       session_id: event.session_id ?? sessionId,
     })),
   };
+}
+
+function normalizeGuideMessageRecord(
+  message: AaisGuideMessageRecord,
+): AaisGuideMessageRecord {
+  const messageWithoutAttachments = { ...message };
+  delete messageWithoutAttachments.attachments;
+  if (message.kind !== "user") {
+    return messageWithoutAttachments;
+  }
+  try {
+    const attachments = normalizeAaisGuideAttachmentMetadata(message.attachments);
+    return attachments.length
+      ? { ...messageWithoutAttachments, attachments }
+      : messageWithoutAttachments;
+  } catch {
+    // Malformed legacy metadata must neither break session loading nor expose
+    // an arbitrary attachment-shaped payload to the learner client.
+    return messageWithoutAttachments;
+  }
 }
 
 function redactRestrictedResearchRawText(
@@ -2765,15 +2793,19 @@ function redactRestrictedResearchRawText(
       selfReport: "",
     })),
     historyDocuments: [],
-    guideMessages: session.guideMessages.map((message) => ({
-      ...message,
-      text: "",
-      turns: message.turns?.map((turn) => ({
-        ...turn,
-        content: "",
-        actions: [],
-      })),
-    })),
+    guideMessages: session.guideMessages.map((message) => {
+      const messageWithoutAttachments = { ...message };
+      delete messageWithoutAttachments.attachments;
+      return {
+        ...messageWithoutAttachments,
+        text: "",
+        turns: message.turns?.map((turn) => ({
+          ...turn,
+          content: "",
+          actions: [],
+        })),
+      };
+    }),
   });
 }
 

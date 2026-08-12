@@ -55,6 +55,7 @@ function LearningWorkbench({ actor, initialLocale }: { actor: LearningPageActor;
     historyDocuments,
     lastSavedArtifactLengthRef,
     patchSession,
+    persistedGuideMessages,
     resetWorkspaceSession,
     setArtifactText,
     setBackendError,
@@ -87,9 +88,7 @@ function LearningWorkbench({ actor, initialLocale }: { actor: LearningPageActor;
   } = useLearningGuide({
     activeTaskId,
     artifactText,
-    displayName: actor.displayName,
-    locale,
-    studentId,
+    displayName: actor.displayName, locale, persistedGuideMessages, studentId,
   });
   const {
     accountError,

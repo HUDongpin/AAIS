@@ -4,6 +4,7 @@ import {
   normalizeAaisGuideAttachments,
 } from "@/lib/ai/aais-guide-attachments";
 import { readAaisGuideFileAttachment } from "@/lib/client/aais-guide-file-reader";
+import { strToU8, zipSync } from "fflate";
 
 const pdfjsMocks = vi.hoisted(() => ({
   getDocument: vi.fn(),
@@ -101,5 +102,71 @@ describe("AAIS guide file reader", () => {
     expect(getPage).toHaveBeenCalledTimes(1);
     expect(getTextContent).toHaveBeenCalledOnce();
     expect(destroy).toHaveBeenCalledOnce();
+  });
+
+  it("extracts bounded plain text from a DOCX document body", async () => {
+    const longBody = "关键结论".repeat(aaisGuideAttachmentLimits.maxExtractedTextCharacters);
+    const documentXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+      <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+        <w:body>
+          <w:p><w:r><w:t>第一段</w:t></w:r><w:r><w:tab/><w:t>第二列</w:t></w:r></w:p>
+          <w:p><w:r><w:t>${longBody}</w:t></w:r></w:p>
+        </w:body>
+      </w:document>`;
+    const bytes = zipSync({
+      "[Content_Types].xml": strToU8("<Types />"),
+      "word/document.xml": strToU8(documentXml),
+      "word/ignored.xml": strToU8("sensitive text outside the main document body"),
+    });
+    const file = new File([bytes], "论文.docx", {
+      type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    });
+
+    const attachment = await readAaisGuideFileAttachment(file);
+
+    expect(attachment).toMatchObject({
+      name: "论文.docx",
+      mediaType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      sizeBytes: bytes.byteLength,
+    });
+    expect(attachment.extractedText.startsWith("第一段\t第二列\n关键结论")).toBe(true);
+    expect(attachment.extractedText).toHaveLength(
+      aaisGuideAttachmentLimits.maxExtractedTextCharacters,
+    );
+    expect(attachment.extractedText).not.toContain("sensitive text outside");
+  });
+
+  it("rejects invalid DOCX containers and oversized document XML entries", async () => {
+    const invalidFile = new File(["not-a-zip"], "invalid.docx", {
+      type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    });
+    await expect(readAaisGuideFileAttachment(invalidFile)).rejects.toThrow(
+      "文件 invalid.docx 不是可读取的 DOCX 文档。",
+    );
+
+    const oversizedXml = zipSync({
+      "word/document.xml": new Uint8Array(
+        aaisGuideAttachmentLimits.maxDocxDocumentXmlBytes + 1,
+      ),
+    });
+    const oversizedFile = new File([oversizedXml], "oversized.docx", {
+      type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    });
+    await expect(readAaisGuideFileAttachment(oversizedFile)).rejects.toThrow(
+      "文件 oversized.docx 的 DOCX 正文内容过大。",
+    );
+
+    const entityXml = `<!DOCTYPE w:document [<!ENTITY repeated "unsafe">]>
+      <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+        <w:body><w:p><w:r><w:t>&repeated;</w:t></w:r></w:p></w:body>
+      </w:document>`;
+    const entityFile = new File([zipSync({
+      "word/document.xml": strToU8(entityXml),
+    })], "entity.docx", {
+      type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    });
+    await expect(readAaisGuideFileAttachment(entityFile)).rejects.toThrow(
+      "文件 entity.docx 的 DOCX 正文包含不允许的 XML 声明。",
+    );
   });
 });

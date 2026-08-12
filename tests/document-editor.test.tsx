@@ -70,4 +70,73 @@ describe("DocumentEditor", () => {
     rerender(<DocumentEditor {...props} artifactText="明确的新外部内容" />);
     expect(editor.textContent).toBe("明确的新外部内容");
   });
+
+  it("shows localized labels and tooltips while preserving accessible button names", () => {
+    render(
+      <DocumentEditor
+        artifactText=""
+        documentTitle=""
+        onArtifactBlur={() => undefined}
+        onArtifactChange={() => undefined}
+        onDocumentTitleChange={() => undefined}
+      />,
+    );
+
+    ["项目符号", "编号列表", "一级标题", "二级标题", "三级标题"].forEach((label) => {
+      const button = screen.getByRole("button", { name: label });
+      expect(button.textContent).toContain(label);
+      expect(button.getAttribute("aria-label")).toBe(label);
+      expect(button.getAttribute("title")).toBe(label);
+      expect(button.className).toContain("min-h-11");
+      expect(button.className).toContain("min-w-11");
+      expect(button.querySelector('[aria-hidden="true"]')).toBeTruthy();
+    });
+
+    ["加粗", "斜体", "下划线", "左对齐", "居中", "右对齐"].forEach((label) => {
+      const button = screen.getByRole("button", { name: label });
+      expect(button.getAttribute("aria-label")).toBe(label);
+      expect(button.getAttribute("title")).toBe(label);
+    });
+  });
+
+  it("keeps the first empty list button visibly pressed when Chromium leaves the caret on the editor root", () => {
+    const onArtifactChange = vi.fn();
+    render(
+      <DocumentEditor
+        artifactText=""
+        documentTitle=""
+        onArtifactBlur={() => undefined}
+        onArtifactChange={onArtifactChange}
+        onDocumentTitleChange={() => undefined}
+      />,
+    );
+
+    const editor = screen.getByRole("textbox", {
+      name: "在这里写下任务理解、计划、执行过程或最终产出。",
+    });
+    const range = document.createRange();
+    range.selectNodeContents(editor);
+    range.collapse(true);
+    window.getSelection()?.removeAllRanges();
+    window.getSelection()?.addRange(range);
+    fireEvent.focus(editor);
+    fireEvent.mouseUp(editor);
+
+    Object.defineProperty(document, "execCommand", {
+      configurable: true,
+      value: vi.fn((command: string) => {
+        if (command === "insertUnorderedList") {
+          editor.innerHTML = "<ul><li><br></li></ul>";
+          return true;
+        }
+        return false;
+      }),
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "项目符号" }));
+
+    expect(editor.innerHTML).toBe("<ul><li><br></li></ul>");
+    expect(onArtifactChange).toHaveBeenLastCalledWith("<ul><li><br></li></ul>");
+    expect(screen.getByRole("button", { name: "项目符号" }).getAttribute("aria-pressed")).toBe("true");
+  });
 });

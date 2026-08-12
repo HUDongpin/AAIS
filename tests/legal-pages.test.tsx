@@ -16,6 +16,8 @@ describe("AAIS legal notice pages", () => {
     expect(screen.getByText(/真实 cohort 前置条件/)).toBeTruthy();
     expect(screen.getByText(/FERPA、COPPA、GDPR、PIPL/)).toBeTruthy();
     expect(screen.getByText(/小张与教授的互动事件/)).toBeTruthy();
+    expect(screen.getByText(/AAIS 不保存附件原始文件或抽取正文/)).toBeTruthy();
+    expect(screen.getByText(/成功附件回执元数据/)).toBeTruthy();
     expect(document.body.textContent).not.toMatch(/\bA[12]\b/);
     expect(screen.getByRole("link", { name: "返回登录" }).getAttribute("href")).toBe("/login");
   });

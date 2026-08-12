@@ -1,4 +1,7 @@
-import type { AaisGuideAttachment } from "@/lib/ai/aais-guide-attachments";
+import type {
+  AaisGuideAttachment,
+  AaisGuideAttachmentMetadata,
+} from "@/lib/ai/aais-guide-attachments";
 
 export type ContentTab = "display" | "editor";
 export type ContentItemId = "platform" | "theory" | "history";
@@ -11,6 +14,7 @@ export type GuideMessage = {
   id: string;
   kind: "user" | "assistant";
   text: string;
+  attachments?: AaisGuideAttachmentMetadata[];
   turns?: GuideTurn[];
   runtime?: {
     fallback?: boolean;
