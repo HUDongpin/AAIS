@@ -1302,6 +1302,16 @@ describe("AAIS trial account auth route", () => {
       `${getAaisCsrfCookieName()}=${csrf}`,
     ].join("; ");
 
+    const sessionCreated = await sessionRoute.POST(
+      new Request("http://localhost/api/learning/session", {
+        method: "POST",
+        headers: {
+          cookie,
+          "x-aais-csrf": csrf,
+        },
+      }),
+    );
+
     const beforeLogout = await sessionRoute.GET(
       new Request("http://localhost/api/learning/session", {
         headers: { cookie },
@@ -1333,6 +1343,7 @@ describe("AAIS trial account auth route", () => {
       }),
     );
 
+    expect(sessionCreated.status).toBe(200);
     expect(beforeLogout.status).toBe(200);
     expect(logout.status).toBe(200);
     expect(logoutBody).toMatchObject({
