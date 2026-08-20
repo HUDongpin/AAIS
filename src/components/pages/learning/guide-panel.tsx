@@ -116,6 +116,8 @@ export function GuidePanel({
           <input
             ref={guideFileInputRef}
             aria-label={copy.guide.chooseFiles}
+            aria-hidden="true"
+            tabIndex={-1}
             type="file"
             multiple
             accept={aaisGuideFileAccept}

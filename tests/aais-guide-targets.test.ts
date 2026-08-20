@@ -13,6 +13,13 @@ describe("AAIS guide target parsing", () => {
     expect(normalizeAaisGuideTargetAgentIds(undefined, "@小张 请帮我拆下一步。")).toEqual([
       "A1",
     ]);
+    expect(normalizeAaisGuideTargetAgentIds(undefined, "@Xiao Zhang help me plan the next step.")).toEqual([
+      "A1",
+    ]);
+    expect(normalizeAaisGuideTargetAgentIds(undefined, "@Xiao   Zhang help me plan the next step.")).toEqual([
+      "A1",
+    ]);
+    expect(normalizeAaisGuideTargetAgentIds(undefined, "@Xiao Zhangman is not an agent handle.")).toBeUndefined();
   });
 
   it("keeps legacy role handles as compatible aliases", () => {

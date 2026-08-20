@@ -1,15 +1,22 @@
 import { createHash } from "node:crypto";
-import { Pool } from "pg";
 import {
   getAaisDatabaseConfiguration,
   type AaisDatabaseClient,
 } from "@/lib/server/aais-learning-store";
+import { createAaisPostgresPool } from "@/lib/server/aais-postgres-pool";
 
 type MemoryRevocation = {
   actorId: string;
   expiresAt: number;
   revokedAt: number;
 };
+
+export class AaisSessionRevocationConfigurationError extends Error {
+  constructor() {
+    super("AAIS durable session revocation storage is not configured.");
+    this.name = "AaisSessionRevocationConfigurationError";
+  }
+}
 
 const memoryRevocations = new Map<string, MemoryRevocation>();
 
@@ -122,19 +129,35 @@ function cleanupMemoryRevocations(now: number) {
 
 function resolveSessionRevocationDatabase(database: AaisDatabaseClient | null | undefined) {
   if (database !== undefined) {
-    return database ?? undefined;
+    if (database) {
+      return database;
+    }
+    if (isProductionRuntime()) {
+      throw new AaisSessionRevocationConfigurationError();
+    }
+    return undefined;
   }
   const config = getAaisDatabaseConfiguration();
   if (!config) {
+    if (isProductionRuntime()) {
+      throw new AaisSessionRevocationConfigurationError();
+    }
     return undefined;
   }
   if (!cachedDatabase || cachedDatabase.url !== config.url) {
+    if (cachedDatabase?.client.end) {
+      void cachedDatabase.client.end().catch(() => undefined);
+    }
     cachedDatabase = {
       url: config.url,
-      client: new Pool({ connectionString: config.url }) as AaisDatabaseClient,
+      client: createAaisPostgresPool(config.url) as AaisDatabaseClient,
     };
   }
   return cachedDatabase.client;
+}
+
+function isProductionRuntime() {
+  return process.env.NODE_ENV === "production" || process.env.VERCEL_ENV === "production";
 }
 
 function createActorKey(actorId: string) {

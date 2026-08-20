@@ -4,6 +4,7 @@ export type AaisGuideTargetAgentId = (typeof aaisGuideTargetAgentIds)[number];
 
 const aaisGuideTargetHandleAliases: Record<string, AaisGuideTargetAgentId> = {
   小张: "A1",
+  "xiao zhang": "A1",
   导学智能体: "A1",
   教授: "A2",
   professor: "A2",
@@ -12,7 +13,7 @@ const aaisGuideTargetHandleAliases: Record<string, AaisGuideTargetAgentId> = {
 
 export function parseAaisGuideTargetAgentIds(text: string) {
   const targetIds: AaisGuideTargetAgentId[] = [];
-  const mentionPattern = /@(A\s*([12])(?!\d)|小张|教授|Professor|导学智能体|专家智能体)/gi;
+  const mentionPattern = /@(A\s*([12])(?!\d)|Xiao\s+Zhang\b|小张|教授|Professor\b|导学智能体|专家智能体)/gi;
   let match: RegExpExecArray | null;
 
   while ((match = mentionPattern.exec(text)) !== null) {
@@ -98,5 +99,5 @@ function resolveAaisGuideTargetMention(match: RegExpExecArray) {
     return `A${match[2]}` as AaisGuideTargetAgentId;
   }
 
-  return aaisGuideTargetHandleAliases[match[1].toLowerCase()];
+  return aaisGuideTargetHandleAliases[match[1].toLowerCase().replace(/\s+/g, " ")];
 }

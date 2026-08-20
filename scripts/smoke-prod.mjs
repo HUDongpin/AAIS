@@ -216,8 +216,9 @@ async function checkLearningWrite({ baseUrl, cookieHeader, csrfToken, fetchImpl,
       },
     });
     const sessionBody = await readJson(sessionResponse);
-    const taskId = readActiveTaskId(sessionBody);
-    if (sessionResponse.status !== 200 || !taskId) {
+    const writeState = readActiveTaskWriteState(sessionBody);
+    const taskId = writeState?.taskId ?? null;
+    if (sessionResponse.status !== 200 || !writeState) {
       return {
         name: "learning-write",
         status: "failed",
@@ -240,6 +241,9 @@ async function checkLearningWrite({ baseUrl, cookieHeader, csrfToken, fetchImpl,
       body: JSON.stringify({
         action: "save-artifact",
         taskId,
+        dataGeneration: writeState.dataGeneration,
+        expectedArtifactRevision: writeState.artifactRevision,
+        mutationId: `production-smoke-${now}`,
         artifactText: `AAIS smoke verification ${now}`,
       }),
     });
@@ -263,6 +267,26 @@ async function checkLearningWrite({ baseUrl, cookieHeader, csrfToken, fetchImpl,
 function readActiveTaskId(body) {
   const value = body?.session?.activeTaskId;
   return typeof value === "string" && value.trim() ? value : null;
+}
+
+function readActiveTaskWriteState(body) {
+  const taskId = readActiveTaskId(body);
+  const dataGeneration = body?.session?.dataGeneration;
+  const task = body?.session?.tasks?.find((candidate) => candidate?.taskId === taskId);
+  if (
+    !taskId
+    || !Number.isSafeInteger(dataGeneration)
+    || dataGeneration < 1
+    || !Number.isSafeInteger(task?.artifactRevision)
+    || task.artifactRevision < 0
+  ) {
+    return null;
+  }
+  return {
+    taskId,
+    dataGeneration,
+    artifactRevision: task.artifactRevision,
+  };
 }
 
 function extractCookieJar(headers) {

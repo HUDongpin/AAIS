@@ -1,32 +1,42 @@
 import Link from "next/link";
+import type { Locale } from "@/data/aais";
 
 type LegalNoticeSection = {
   title: string;
-  items: string[];
+  items: readonly string[];
 };
 
 type LegalNoticePageProps = {
+  backHref: string;
+  backLabel: string;
   eyebrow: string;
+  locale: Locale;
   title: string;
   summary: string;
-  sections: LegalNoticeSection[];
+  sections: readonly LegalNoticeSection[];
 };
 
 export function LegalNoticePage({
+  backHref,
+  backLabel,
   eyebrow,
+  locale,
   title,
   summary,
   sections,
 }: LegalNoticePageProps) {
   return (
-    <main className="min-h-[100dvh] bg-[var(--background)] px-4 py-8 text-[var(--foreground)] sm:px-6 lg:px-8">
+    <main
+      className="min-h-[100dvh] bg-[var(--background)] px-4 py-8 text-[var(--foreground)] sm:px-6 lg:px-8"
+      lang={locale}
+    >
       <div className="mx-auto grid w-full max-w-5xl gap-5">
         <nav className="flex flex-wrap items-center justify-between gap-3 text-sm font-bold">
           <Link
-            href="/login"
+            href={backHref}
             className="rounded-lg border border-[#d8e6fb] bg-white px-3 py-2 text-[#1f6feb] outline-none transition hover:border-[#1f6feb] focus-visible:ring-2 focus-visible:ring-[#1f6feb]"
           >
-            返回登录
+            {backLabel}
           </Link>
           <span className="rounded-full border border-[#d8e6fb] bg-[#f8fbff] px-3 py-1 text-[#4f5873]">
             AAIS

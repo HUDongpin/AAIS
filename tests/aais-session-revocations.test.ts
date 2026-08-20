@@ -1,13 +1,19 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createAaisSessionToken,
   verifyAaisSessionTokenWithMetadata,
 } from "@/lib/server/aais-session";
 import {
+  AaisSessionRevocationConfigurationError,
   clearAaisSessionRevocationsForTest,
   isAaisSessionTokenRevoked,
   revokeAaisSessionToken,
 } from "@/lib/server/aais-session-revocations";
+
+afterEach(() => {
+  clearAaisSessionRevocationsForTest();
+  vi.unstubAllEnvs();
+});
 
 describe("AAIS session revocations", () => {
   it("revokes tokens with the local memory fallback", async () => {
@@ -37,6 +43,54 @@ describe("AAIS session revocations", () => {
       now,
       database: null,
     })).resolves.toBe(true);
+  });
+
+  it("keeps the development memory fallback explicitly process-local across module instances", async () => {
+    vi.stubEnv("NODE_ENV", "test");
+    vi.stubEnv("VERCEL_ENV", "preview");
+    const { verified, now } = createVerifiedToken();
+    const firstWorker = await import("@/lib/server/aais-session-revocations");
+    firstWorker.clearAaisSessionRevocationsForTest();
+
+    await firstWorker.revokeAaisSessionToken({
+      tokenHash: verified.tokenHash,
+      actorId: verified.actor.id,
+      expiresAt: verified.expiresAt,
+      now,
+      database: null,
+    });
+    await expect(firstWorker.isAaisSessionTokenRevoked({
+      tokenHash: verified.tokenHash,
+      now,
+      database: null,
+    })).resolves.toBe(true);
+
+    vi.resetModules();
+    const secondWorker = await import("@/lib/server/aais-session-revocations");
+    await expect(secondWorker.isAaisSessionTokenRevoked({
+      tokenHash: verified.tokenHash,
+      now,
+      database: null,
+    })).resolves.toBe(false);
+    secondWorker.clearAaisSessionRevocationsForTest();
+  });
+
+  it("refuses process-local revocation reads and writes in production", async () => {
+    const { verified, now } = createVerifiedToken();
+    vi.stubEnv("NODE_ENV", "production");
+
+    await expect(isAaisSessionTokenRevoked({
+      tokenHash: verified.tokenHash,
+      now,
+      database: null,
+    })).rejects.toBeInstanceOf(AaisSessionRevocationConfigurationError);
+    await expect(revokeAaisSessionToken({
+      tokenHash: verified.tokenHash,
+      actorId: verified.actor.id,
+      expiresAt: verified.expiresAt,
+      now,
+      database: null,
+    })).rejects.toBeInstanceOf(AaisSessionRevocationConfigurationError);
   });
 
   it("persists revocations in Postgres without storing raw tokens or actor ids", async () => {

@@ -53,21 +53,26 @@ describe("learning page components", () => {
     const onExportLearnerData = vi.fn();
     const onLogout = vi.fn();
 
-    render(
+    const renderTopBar = (privacyBusy: boolean) => (
       <LearningTopBar
         accountMenuOpen
         displayName="Bobie"
         loggingOut={false}
-        privacyBusy={false}
+        privacyBusy={privacyBusy}
         onDeleteLearnerData={onDeleteLearnerData}
         onExportLearnerData={onExportLearnerData}
         onLogout={onLogout}
         onToggleAccountMenu={vi.fn()}
-      />,
+      />
     );
+    const { rerender } = render(renderTopBar(false));
 
     fireEvent.click(screen.getByRole("menuitem", { name: "导出学习数据" }));
+    rerender(renderTopBar(true));
+    rerender(renderTopBar(false));
     fireEvent.click(screen.getByRole("menuitem", { name: "删除学习数据" }));
+    rerender(renderTopBar(true));
+    rerender(renderTopBar(false));
     fireEvent.click(screen.getByRole("menuitem", { name: "退出" }));
 
     expect(onExportLearnerData).toHaveBeenCalledTimes(1);
@@ -140,6 +145,9 @@ describe("learning page components", () => {
     );
 
     fireEvent.click(screen.getByRole("button", { name: "明确学习目标" }));
+    const hiddenFileInput = screen.getByLabelText("选择上传文件") as HTMLInputElement;
+    expect(hiddenFileInput.tabIndex).toBe(-1);
+    expect(hiddenFileInput.getAttribute("aria-hidden")).toBe("true");
     fireEvent.change(screen.getByLabelText("向智能导学输入你的想法"), {
       target: {
         value: "请帮我整理下一步",
@@ -202,7 +210,7 @@ describe("learning page components", () => {
       "学习记录服务暂时不可用。",
     ]);
     expect((screen.getByRole("button", { name: "明确学习目标" }) as HTMLButtonElement).disabled).toBe(true);
-    expect((screen.getByRole("button", { name: "Upload file" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "上传文件" }) as HTMLButtonElement).disabled).toBe(true);
     expect((screen.getByRole("button", { name: "发送" }) as HTMLButtonElement).disabled).toBe(true);
     expect((screen.getByRole("button", { name: "移除 notes.pdf" }) as HTMLButtonElement).disabled).toBe(true);
   });
@@ -234,7 +242,7 @@ describe("learning page components", () => {
     expect(status.getAttribute("aria-live")).toBe("polite");
     expect(status.getAttribute("aria-atomic")).toBe("true");
     expect(status.closest("section")?.getAttribute("aria-busy")).toBe("true");
-    expect((screen.getByRole("button", { name: "Upload file" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "上传文件" }) as HTMLButtonElement).disabled).toBe(true);
     expect((screen.getByRole("button", { name: "发送" }) as HTMLButtonElement).disabled).toBe(true);
     expect((screen.getByRole("button", { name: "明确学习目标" }) as HTMLButtonElement).disabled).toBe(true);
   });
@@ -271,6 +279,48 @@ describe("learning page components", () => {
     expect(onOpenDocument).toHaveBeenCalledWith(historyDocument);
   });
 
+  it("disables content and history entry points while document navigation is locked", () => {
+    const onOpenContent = vi.fn();
+    const onOpenDocument = vi.fn();
+    const historyDocument = createSavedDocument();
+    const { rerender } = render(
+      <ContentSidePanel
+        {...createContentSidePanelProps({
+          documentNavigationLocked: true,
+          historyDocuments: [historyDocument],
+          onOpenContent,
+          onOpenDocument,
+        })}
+      />,
+    );
+
+    const historyEntry = screen.getByRole("button", { name: "历史文档" }) as HTMLButtonElement;
+    expect(historyEntry.disabled).toBe(true);
+    fireEvent.click(historyEntry);
+    expect(onOpenContent).not.toHaveBeenCalled();
+
+    rerender(
+      <ContentSidePanel
+        {...createContentSidePanelProps({
+          activeContentId: "history",
+          documentNavigationLocked: true,
+          historyDocuments: [historyDocument],
+          onOpenContent,
+          onOpenDocument,
+        })}
+      />,
+    );
+
+    const historyFolder = screen.getByRole("button", {
+      name: "历史文档文件夹：学习记录",
+    }) as HTMLButtonElement;
+    expect(historyFolder.disabled).toBe(true);
+    fireEvent.click(historyFolder);
+    expect(onOpenDocument).not.toHaveBeenCalled();
+    expect((screen.getByRole("button", { name: "返回内容展示" }) as HTMLButtonElement).disabled)
+      .toBe(true);
+  });
+
   it("keeps DocumentEditor title, rich text, and blur persistence callbacks wired", () => {
     const onArtifactChange = vi.fn();
     const onArtifactBlur = vi.fn();
@@ -302,6 +352,31 @@ describe("learning page components", () => {
     expect(onArtifactChange).toHaveBeenCalledWith("<h1>学习计划</h1><p>新记录</p>");
     expect(onArtifactBlur).toHaveBeenCalledTimes(1);
   });
+
+  it("sanitizes active pasted HTML before it reaches autosave state", () => {
+    const onArtifactChange = vi.fn();
+    render(
+      <DocumentEditor
+        artifactText=""
+        documentTitle=""
+        onArtifactChange={onArtifactChange}
+        onArtifactBlur={vi.fn()}
+        onDocumentTitleChange={vi.fn()}
+      />,
+    );
+    const editor = screen.getByRole("textbox", {
+      name: "在这里写下任务理解、计划、执行过程或最终产出。",
+    });
+    editor.innerHTML = '<p onclick="alert(1)">学习记录</p>'
+      + '<iframe src="https://attacker.example.test/frame"></iframe>'
+      + '<a href="https://attacker.example.test/collect">外部链接</a>';
+
+    fireEvent.input(editor);
+
+    expect(onArtifactChange).toHaveBeenLastCalledWith("<p>学习记录</p>外部链接");
+    expect(editor.innerHTML).toBe("<p>学习记录</p>外部链接");
+    expect(editor.innerHTML).not.toContain("attacker.example.test");
+  });
 });
 
 function createContentSidePanelProps(overrides: Partial<{
@@ -315,6 +390,7 @@ function createContentSidePanelProps(overrides: Partial<{
   documentDownloadError: string;
   documentDownloadStatus: string;
   documentTitle: string;
+  documentNavigationLocked: boolean;
   flushPendingArtifactSave: () => void;
   historyDocuments: SavedLearningDocument[];
   onDocumentTitleChange: (value: string) => void;
@@ -337,6 +413,7 @@ function createContentSidePanelProps(overrides: Partial<{
     documentDownloadError: "",
     documentDownloadStatus: "",
     documentTitle: "",
+    documentNavigationLocked: false,
     flushPendingArtifactSave: vi.fn(),
     historyDocuments: [],
     onDocumentTitleChange: vi.fn(),

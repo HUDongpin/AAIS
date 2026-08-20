@@ -58,9 +58,14 @@ export type AaisClientSavedDocumentRecord = Omit<SavedLearningDocument, "markdow
 export type AaisClientTaskRecord = {
   taskId: string;
   artifactText: string;
+  artifactRevision: number;
+  documentTitle?: string;
+  activeDocumentId?: string | null;
+  selfReportRevision: number;
 };
 
 export type AaisClientSession = {
+  dataGeneration: number;
   studentId: string;
   activeTaskId: string;
   tasks: AaisClientTaskRecord[];

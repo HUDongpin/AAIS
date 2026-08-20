@@ -58,6 +58,7 @@ export async function readGuideStreamResponse(
   onProgress: (progress: GuideStreamProgress) => void,
   idleTimeoutMs = guideRequestTimeoutMs,
   locale: Locale = "zh-CN",
+  abortUpstream?: () => void,
 ): Promise<GuideResponseBody> {
   if (!response.body) {
     throw new Error("AAIS guide stream is unavailable");
@@ -80,6 +81,12 @@ export async function readGuideStreamResponse(
     });
   };
   const handleStreamEvent = (streamEvent: GuideStreamEvent) => {
+    if (streamEvent.event === "heartbeat") {
+      // Receiving this server-only liveness marker starts a fresh idle read
+      // window without exposing it as learner-visible progress.
+      return;
+    }
+
     if (streamEvent.event === "error") {
       throw new Error(getAaisApiErrorMessage(
         { error: streamEvent.data as GuideResponseBody["error"] },
@@ -130,7 +137,7 @@ export async function readGuideStreamResponse(
       return;
     }
 
-    if (streamEvent.event === "background_done") {
+    if (streamEvent.event === "done" || streamEvent.event === "background_done") {
       streamCompleted = true;
     }
   };
@@ -152,15 +159,24 @@ export async function readGuideStreamResponse(
       }
     }
   } catch (error) {
+    abortUpstream?.();
     await reader.cancel().catch(() => undefined);
     throw error;
   }
-  buffer += decoder.decode();
-  const streamEvent = parseGuideStreamEvent(buffer);
-  if (streamEvent) {
-    handleStreamEvent(streamEvent);
+  try {
+    buffer += decoder.decode();
+    const streamEvent = parseGuideStreamEvent(buffer);
+    if (streamEvent) {
+      handleStreamEvent(streamEvent);
+    }
+  } catch (error) {
+    abortUpstream?.();
+    await reader.cancel().catch(() => undefined);
+    throw error;
   }
   if (!streamCompleted) {
+    abortUpstream?.();
+    await reader.cancel().catch(() => undefined);
     throw Object.assign(new Error("AAIS guide stream disconnected before completion"), {
       name: "AaisGuideStreamDisconnectedError",
     });
@@ -254,15 +270,18 @@ function parseGuideStreamEvent(block: string): GuideStreamEvent | null {
   const lines = block.replace(/\r\n?/g, "\n").split("\n");
   let event = "message";
   const dataLines: string[] = [];
+  let heartbeat = false;
   for (const line of lines) {
     if (line.startsWith("event:")) {
       event = line.slice("event:".length).trim();
     } else if (line.startsWith("data:")) {
       dataLines.push(line.slice("data:".length).trim());
+    } else if (line.trim() === ": aais-heartbeat") {
+      heartbeat = true;
     }
   }
   if (!dataLines.length) {
-    return null;
+    return heartbeat ? { event: "heartbeat", data: {} } : null;
   }
   try {
     const data = JSON.parse(dataLines.join("\n"));

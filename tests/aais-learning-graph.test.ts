@@ -533,6 +533,43 @@ describe("AAIS LangGraph learning guide", () => {
     }
     expect(result.messageText).toContain("long-notes.txt");
   });
+
+  it("propagates caller cancellation through LangGraph without converting it to fallback", async () => {
+    const controller = new AbortController();
+    let notifyGenerateStarted!: () => void;
+    const generateStarted = new Promise<void>((resolve) => {
+      notifyGenerateStarted = resolve;
+    });
+    const generate = vi.fn((request: AaisModelRequest) => {
+      notifyGenerateStarted();
+      return new Promise<never>((_resolve, reject) => {
+        request.signal?.addEventListener(
+          "abort",
+          () => reject(request.signal?.reason),
+          { once: true },
+        );
+      });
+    });
+
+    const result = runAaisLearningGuideGraph({
+      locale: "zh-CN",
+      studentId: "S-cancelled-graph",
+      phase: "training",
+      taskId: "training_task_1",
+      learnerInput: "@A1 这个请求会被取消。",
+      targetAgentIds: ["A1"],
+      workspaceState: { currentStep: "guide" },
+    }, {
+      modelProvider: { generate },
+      signal: controller.signal,
+    });
+    await generateStarted;
+    controller.abort();
+
+    await expect(result).rejects.toMatchObject({ name: "AbortError" });
+    expect(generate).toHaveBeenCalledTimes(1);
+    expect(generate.mock.calls[0]?.[0].signal?.aborted).toBe(true);
+  });
 });
 
 function createDeferred<T>() {

@@ -27,7 +27,7 @@ test("student guide turn shows fallback state when the AI route reports template
         orchestration: {
           graph: {
             graphId: "learning-ai-guide",
-            topologicalOrder: ["A1", "A2", "A3", "A4"],
+            topologicalOrder: ["A2"],
           },
           runtime: {
             timings: {

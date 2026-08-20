@@ -1,4 +1,4 @@
-import { useRef, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import {
   aaisGuideAttachmentLimits,
   normalizeAaisGuideAttachments,
@@ -29,21 +29,23 @@ import type {
   GuideQuickStart,
 } from "@/components/pages/learning/learning-page-types";
 import {
-  getGuideStreamDoneText,
-  getGuideStreamProgressText,
   isGuideEventStreamResponse,
   isUsableGuideBody,
   readGuideJsonBody,
   readGuideStreamResponse,
   validateGuideResponse,
   type GuideResponseBody,
-  type GuideStreamProgress,
 } from "@/components/pages/learning/guide-stream";
+import {
+  applyGuideResponseToMessages,
+  applyGuideStreamProgressToMessages,
+} from "@/components/pages/learning/guide-message-updates";
 import type { Locale } from "@/data/aais";
 type UseLearningGuideInput = {
   activeTaskId: string;
   artifactText: string;
   displayName: string;
+  waitForLearnerDataGeneration: () => number | Promise<number>;
   locale: Locale;
   persistedGuideMessages?: GuideMessage[];
   studentId: string;
@@ -56,6 +58,7 @@ export function useLearningGuide({
   activeTaskId,
   artifactText,
   displayName,
+  waitForLearnerDataGeneration,
   locale,
   persistedGuideMessages = [],
   studentId,
@@ -73,7 +76,12 @@ export function useLearningGuide({
   const guideMessageIdRef = useRef(0);
   const guideAttachmentIdRef = useRef(0);
   const guideFileInputRef = useRef<HTMLInputElement | null>(null);
+  const guideRequestAbortControllerRef = useRef<AbortController | null>(null);
   useHydratePersistedGuideMessages(persistedGuideMessages, setGuideMessages);
+  useEffect(() => () => {
+    guideRequestAbortControllerRef.current?.abort();
+    guideRequestAbortControllerRef.current = null;
+  }, []);
 
   const hasGuideDraft = guideDraft.trim().length > 0;
   const hasGuideSubmission = hasGuideDraft || guideAttachments.length > 0;
@@ -172,6 +180,10 @@ export function useLearningGuide({
     let retryReason: string | undefined;
 
     try {
+      const generationResult = waitForLearnerDataGeneration();
+      const dataGeneration = typeof generationResult === "number"
+        ? generationResult
+        : await generationResult;
       const requestInit = {
         method: "POST",
         headers: {
@@ -179,6 +191,7 @@ export function useLearningGuide({
           ...getAaisCsrfHeader(),
         },
         body: JSON.stringify({
+          dataGeneration,
           locale,
           phase: "training",
           taskId: activeTaskId,
@@ -208,7 +221,9 @@ export function useLearningGuide({
           },
         });
       });
-      applyGuideResponse(assistantId, body);
+      setGuideMessages((current) =>
+        applyGuideResponseToMessages(current, assistantId, body, locale),
+      );
       if (boundedAttachments.length) {
         setGuideMessages((current) =>
           addReadAttachmentMetadataToGuideMessage(current, userId, boundedAttachments),
@@ -275,75 +290,43 @@ export function useLearningGuide({
     assistantId: string,
     onTransportRetry: () => boolean,
   ): Promise<GuideResponseBody> {
-    const streamResponse = await fetchGuideRequest(requestInit, { stream: true });
-    if (isGuideEventStreamResponse(streamResponse)) {
-      return readGuideStreamResponse(
-        streamResponse,
-        (progress) => updateGuideStreamMessage(assistantId, progress),
-        undefined,
-        locale,
-      );
-    }
+    const streamAbortController = new AbortController();
+    guideRequestAbortControllerRef.current = streamAbortController;
+    try {
+      const streamResponse = await fetchGuideRequest(requestInit, {
+        stream: true,
+        signal: streamAbortController.signal,
+      });
+      if (isGuideEventStreamResponse(streamResponse)) {
+        return await readGuideStreamResponse(
+          streamResponse,
+          (progress) => setGuideMessages((current) =>
+            applyGuideStreamProgressToMessages(current, assistantId, progress, locale),
+          ),
+          undefined,
+          locale,
+          () => streamAbortController.abort(),
+        );
+      }
 
-    const streamedJsonBody = await readGuideJsonBody(streamResponse);
-    if (!streamResponse.ok || isUsableGuideBody(streamedJsonBody)) {
-      validateGuideResponse(streamResponse, streamedJsonBody);
-      return streamedJsonBody;
-    }
+      const streamedJsonBody = await readGuideJsonBody(streamResponse);
+      if (!streamResponse.ok || isUsableGuideBody(streamedJsonBody)) {
+        validateGuideResponse(streamResponse, streamedJsonBody);
+        return streamedJsonBody;
+      }
 
-    if (!onTransportRetry()) {
-      throw new Error("AAIS research telemetry blocked the guide retry.");
+      if (!onTransportRetry()) {
+        throw new Error("AAIS research telemetry blocked the guide retry.");
+      }
+    } finally {
+      if (guideRequestAbortControllerRef.current === streamAbortController) {
+        guideRequestAbortControllerRef.current = null;
+      }
     }
     const response = await fetchGuideRequest(requestInit);
     const body = await readGuideJsonBody(response);
     validateGuideResponse(response, body);
     return body;
-  }
-
-  function applyGuideResponse(assistantId: string, body: GuideResponseBody) {
-    const structuredTurns = getVisibleGuideTurns(body.turns);
-    setGuideMessages((current) =>
-      current.map((message) =>
-        message.id === assistantId
-          ? {
-              ...message,
-              text: structuredTurns.length ? getGuideStreamDoneText(locale) : body.message?.text ?? "",
-              ...(structuredTurns.length ? { turns: structuredTurns } : { turns: undefined }),
-              runtime: {
-                fallback: body.orchestration?.runtime?.timings?.fallback === true,
-              },
-              trace: {
-                graphId: body.orchestration?.graph?.graphId,
-                topologicalOrder: body.orchestration?.graph?.topologicalOrder,
-              },
-            }
-          : message,
-      ),
-    );
-  }
-
-  function updateGuideStreamMessage(
-    assistantId: string,
-    input: GuideStreamProgress,
-  ) {
-    const visibleTurns = getVisibleGuideTurns(input.turns);
-    setGuideMessages((current) =>
-      current.map((message) =>
-        message.id === assistantId
-          ? {
-              ...message,
-              text: visibleTurns.length ? input.text : getGuideStreamProgressText(locale),
-              ...(visibleTurns.length ? { turns: [...visibleTurns] } : { turns: undefined }),
-              runtime: {
-                fallback: input.fallback,
-              },
-              trace: {
-                graphId: input.graphId,
-              },
-            }
-          : message,
-      ),
-    );
   }
 
   function createGuideMessageId(prefix: string) {
@@ -414,7 +397,7 @@ export function useLearningGuide({
       const nextAttachments = await Promise.all(
         selectedFiles.map(async (file) => ({
           id: createGuideAttachmentId(),
-          ...(await readAaisGuideFileAttachment(file)),
+          ...(await readAaisGuideFileAttachment(file, locale)),
         })),
       );
       const boundedAttachments = normalizeAaisGuideAttachments([
@@ -476,6 +459,21 @@ export function useLearningGuide({
     setGuideAttachmentError("");
   }
 
+  function resetGuideState() {
+    guideRequestAbortControllerRef.current?.abort();
+    guideRequestAbortControllerRef.current = null;
+    setGuideDraft("");
+    setGuideMessages(createInitialGuideMessages(displayName, locale));
+    setGuideBusy(false);
+    setGuideError("");
+    setGuideAttachmentBusy(false);
+    setGuideAttachmentError("");
+    setGuideAttachments([]);
+    if (guideFileInputRef.current) {
+      guideFileInputRef.current.value = "";
+    }
+  }
+
   return {
     addGuideFiles,
     guideAttachmentBusy,
@@ -488,6 +486,7 @@ export function useLearningGuide({
     guideMessages,
     hasGuideSubmission,
     removeGuideAttachment,
+    resetGuideState,
     sendGuideMessage,
     setGuideDraft,
     setGuideError,

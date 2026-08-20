@@ -30,7 +30,13 @@ describe("AAIS production smoke runner", () => {
       }
       if (url.endsWith("/api/learning/session") && init.method === "GET") {
         expect(init.headers.cookie).toContain("aais_session=signed-session-value");
-        return jsonResponse({ session: { activeTaskId: "practice-1" } });
+        return jsonResponse({
+          session: {
+            activeTaskId: "practice-1",
+            dataGeneration: 2,
+            tasks: [{ taskId: "practice-1", artifactRevision: 4 }],
+          },
+        });
       }
       if (url.endsWith("/api/learning/session") && init.method === "PATCH") {
         expect(init.headers.cookie).toContain("aais_session=signed-session-value");
@@ -38,6 +44,9 @@ describe("AAIS production smoke runner", () => {
         expect(JSON.parse(init.body)).toMatchObject({
           action: "save-artifact",
           taskId: "practice-1",
+          dataGeneration: 2,
+          expectedArtifactRevision: 4,
+          mutationId: expect.stringMatching(/^production-smoke-/),
         });
         return jsonResponse({ session: { activeTaskId: "practice-1" } });
       }
@@ -109,7 +118,13 @@ describe("AAIS production smoke runner", () => {
         );
       }
       if (url.endsWith("/api/learning/session") && init.method === "GET") {
-        return jsonResponse({ session: { activeTaskId: "practice-1" } });
+        return jsonResponse({
+          session: {
+            activeTaskId: "practice-1",
+            dataGeneration: 1,
+            tasks: [{ taskId: "practice-1", artifactRevision: 0 }],
+          },
+        });
       }
       if (url.endsWith("/api/learning/session") && init.method === "PATCH") {
         return jsonResponse({ session: { activeTaskId: "practice-1" } });

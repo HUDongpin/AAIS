@@ -1,4 +1,4 @@
-import type { KeyboardEvent, PointerEvent as ReactPointerEvent } from "react";
+import type { FocusEvent, KeyboardEvent, PointerEvent as ReactPointerEvent } from "react";
 import {
   contentPanelResizeStep,
   maxContentPanelWidth,
@@ -123,6 +123,8 @@ export function ContentSidePanel({
   documentDownloadError,
   documentDownloadStatus,
   documentTitle,
+  documentArchiveBusy = false,
+  documentNavigationLocked = false,
   flushPendingArtifactSave,
   historyDocuments,
   locale = "zh-CN",
@@ -133,6 +135,7 @@ export function ContentSidePanel({
   onOpenDocument,
   onRecordArtifact,
   onSaveAndCloseDocument,
+  onSaveAndClosePointerDown = () => undefined,
   selectContentTab,
 }: {
   activeContentId: ContentItemId | null;
@@ -145,6 +148,8 @@ export function ContentSidePanel({
   documentDownloadError: string;
   documentDownloadStatus: string;
   documentTitle: string;
+  documentArchiveBusy?: boolean;
+  documentNavigationLocked?: boolean;
   flushPendingArtifactSave: () => void;
   historyDocuments: SavedLearningDocument[];
   locale?: Locale;
@@ -155,6 +160,7 @@ export function ContentSidePanel({
   onOpenDocument: (document: SavedLearningDocument) => void;
   onRecordArtifact: (value: string) => void;
   onSaveAndCloseDocument: () => void;
+  onSaveAndClosePointerDown?: () => void;
   selectContentTab: (nextTab: ContentTab) => void;
 }) {
   const copy = getLearningCopy(locale);
@@ -170,28 +176,35 @@ export function ContentSidePanel({
       aria-label={copy.content.panel}
       aria-busy={documentBusy}
     >
-      <div className="flex h-14 shrink-0 items-stretch border-b border-[#d7d7d7] bg-[#fcfcfc]">
-        <TabButton active={activeTab === "display"} onClick={() => selectContentTab("display")}>
+      <div className="grid h-auto shrink-0 grid-cols-2 items-stretch border-b border-[#d7d7d7] bg-[#fcfcfc] lg:flex lg:h-14">
+        <TabButton
+          active={activeTab === "display"}
+          ariaDisabled={activeTab === "editor" && documentNavigationLocked}
+          disabled={documentArchiveBusy || (activeTab === "editor" && artifactSaveBusy)}
+          onClick={() => selectContentTab("display")}
+        >
           {copy.content.displayTab}
         </TabButton>
-        <TabButton active={activeTab === "editor"} onClick={() => selectContentTab("editor")}>
+        <TabButton active={activeTab === "editor"} disabled={documentArchiveBusy} onClick={() => selectContentTab("editor")}>
           {copy.content.editorTab}
         </TabButton>
         {activeTab === "editor" ? (
           <>
             <button
               type="button"
+              data-document-archive-action="true"
+              onPointerDown={onSaveAndClosePointerDown}
               onClick={onSaveAndCloseDocument}
-              disabled={artifactSaveBusy}
-              className="inline-flex h-14 min-w-[104px] shrink-0 items-center justify-center whitespace-nowrap px-3 text-[14px] font-semibold text-[#536de8] outline-none transition hover:bg-white focus-visible:ring-2 focus-visible:ring-[#536de8] disabled:cursor-not-allowed disabled:opacity-70"
+              disabled={artifactSaveBusy || documentArchiveBusy}
+              className="inline-flex h-14 min-w-0 items-center justify-center whitespace-nowrap border-t border-[#d7d7d7] px-2 text-[14px] font-semibold text-[#536de8] outline-none transition hover:bg-white focus-visible:ring-2 focus-visible:ring-[#536de8] disabled:cursor-not-allowed disabled:opacity-70 lg:min-w-[104px] lg:shrink-0 lg:border-t-0 lg:px-3"
             >
               {copy.content.saveAndClose}
             </button>
             <button
               type="button"
               onClick={onDownloadDocument}
-              disabled={documentDownloadBusy}
-              className="ml-auto inline-flex h-14 min-w-[104px] shrink-0 items-center justify-center whitespace-nowrap px-3 text-[14px] font-semibold text-[#536de8] outline-none transition hover:bg-white focus-visible:ring-2 focus-visible:ring-[#536de8] disabled:cursor-not-allowed disabled:opacity-70"
+              disabled={documentDownloadBusy || documentArchiveBusy}
+              className="inline-flex h-14 min-w-0 items-center justify-center whitespace-nowrap border-t border-l border-[#d7d7d7] px-2 text-[14px] font-semibold text-[#536de8] outline-none transition hover:bg-white focus-visible:ring-2 focus-visible:ring-[#536de8] disabled:cursor-not-allowed disabled:opacity-70 lg:ml-auto lg:min-w-[104px] lg:shrink-0 lg:border-t-0 lg:border-l-0 lg:px-3"
             >
               {documentDownloadBusy ? copy.content.downloading : copy.content.download}
             </button>
@@ -226,6 +239,7 @@ export function ContentSidePanel({
             activeContent={activeContent}
             historyDocuments={historyDocuments}
             locale={locale}
+            navigationLocked={documentNavigationLocked}
             onBack={onBackContent}
             onOpen={onOpenContent}
             onOpenDocument={onOpenDocument}
@@ -234,9 +248,15 @@ export function ContentSidePanel({
           <DocumentEditor
             artifactText={artifactText}
             documentTitle={documentTitle}
+            disabled={documentArchiveBusy}
             locale={locale}
             onArtifactChange={onRecordArtifact}
-            onArtifactBlur={flushPendingArtifactSave}
+            onArtifactBlur={(event: FocusEvent<HTMLDivElement>) => {
+              const nextTarget = event.relatedTarget as HTMLElement | null;
+              if (!nextTarget?.dataset.documentArchiveAction) {
+                flushPendingArtifactSave();
+              }
+            }}
             onDocumentTitleChange={onDocumentTitleChange}
           />
         )}
@@ -247,23 +267,31 @@ export function ContentSidePanel({
 
 function TabButton({
   active,
+  ariaDisabled = false,
   children,
+  disabled,
   onClick,
 }: {
   active: boolean;
+  ariaDisabled?: boolean;
   children: string;
+  disabled: boolean;
   onClick: () => void;
 }) {
   return (
     <button
       type="button"
+      disabled={disabled}
+      aria-disabled={ariaDisabled || undefined}
       onClick={onClick}
       aria-pressed={active}
       className={[
-        "relative h-14 min-w-[148px] shrink-0 whitespace-nowrap border-r border-[#d7d7d7] px-6 text-center text-[20px] font-black leading-[56px] tracking-normal outline-none transition focus-visible:ring-2 focus-visible:ring-[#536de8]",
+        "relative h-14 min-w-0 whitespace-nowrap border-r border-[#d7d7d7] px-2 text-center text-[17px] font-black leading-[56px] tracking-normal outline-none transition focus-visible:ring-2 focus-visible:ring-[#536de8] lg:min-w-[148px] lg:shrink-0 lg:px-6 lg:text-[20px]",
         active
           ? "bg-[#f0f0ef] text-[#10131a] shadow-[inset_0_-3px_0_#536de8]"
-          : "bg-white text-[#16181d] hover:bg-[#f8f8f7]",
+          : ariaDisabled
+            ? "cursor-wait bg-white text-[#6b7280]"
+            : "bg-white text-[#16181d] hover:bg-[#f8f8f7]",
       ].join(" ")}
     >
       {children}

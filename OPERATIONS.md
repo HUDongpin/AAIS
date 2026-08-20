@@ -87,7 +87,8 @@ The workflow requires these GitHub Actions secrets:
 
 The student credentials must match the non-production learner configured in
 the Vercel Preview `AAIS_TRIAL_ACCOUNTS_JSON`; Preview also needs its own
-`AAIS_SESSION_SECRET`. Teacher/admin tests remain in the local CI E2E suite and
+`AAIS_SESSION_SECRET` and a separate canonical 32-byte base64url
+`AAIS_PRODUCT_PSEUDONYM_SECRET`. Teacher/admin tests remain in the local CI E2E suite and
 must not receive teacher/admin secrets in the deployed Preview job.
 
 Create `VERCEL_E2E_METADATA_TOKEN` in the Vercel personal-account Tokens page,

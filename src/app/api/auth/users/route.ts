@@ -9,44 +9,76 @@ import {
 } from "@/lib/server/aais-api-error";
 import {
   createAaisUserStore,
+  isAaisActiveAdminInvariantError,
+  isAaisAuthEmailDeliveryFencedError,
+  isAaisUserInviteConflictError,
   isAaisUserNotFoundError,
   isAaisUserStoreConfigurationError,
 } from "@/lib/server/aais-users";
+import {
+  AaisRequestBodyError,
+  readAaisBoundedJson,
+} from "@/lib/server/aais-request-json";
+import { isAaisAuthDeliveryConfigurationError } from "@/lib/server/aais-auth-delivery";
 
-type UserManagementBody = {
-  action?: string;
-  email?: string;
-  displayName?: string;
-  role?: "student" | "teacher" | "researcher" | "admin";
-  status?: "invited" | "active" | "disabled";
-  userId?: string;
-} | null;
+const aaisUsersBodyMaxBytes = 16 * 1024;
+const aaisUserEmailMaxCharacters = 320;
+const aaisUserDisplayNameMaxCharacters = 120;
+const aaisUserIdMaxCharacters = 128;
+const aaisSensitiveResponseHeaders = { "cache-control": "private, no-store" } as const;
+
+type AaisUserRole = "student" | "teacher" | "researcher" | "admin";
+type AaisUserStatus = "invited" | "active" | "disabled";
+
+type UserManagementBody =
+  | {
+      action: "invite";
+      email: string;
+      displayName: string;
+      role: AaisUserRole;
+    }
+  | {
+      action: "password-reset";
+      email: string;
+    }
+  | {
+      action: "update-access";
+      role: AaisUserRole;
+      status: AaisUserStatus;
+      userId: string;
+    };
 
 export async function GET(request: Request) {
   try {
     const actor = await requireAdminActor(request);
     requireAaisCsrf(request, actor.id);
     const users = await createAaisUserStore().listUsers();
-    return NextResponse.json({
-      users,
-      secrets: "redacted",
-    });
+    return NextResponse.json(
+      {
+        users,
+        secrets: "redacted",
+      },
+      { headers: aaisSensitiveResponseHeaders },
+    );
   } catch (error) {
-    return createAaisApiErrorResponse(getErrorResponseInput(error));
+    return createAaisApiErrorResponse({
+      ...getErrorResponseInput(error),
+      headers: aaisSensitiveResponseHeaders,
+    });
   }
 }
 
 export async function POST(request: Request) {
-  const body = (await request.json().catch(() => null)) as UserManagementBody;
   try {
     const actor = await requireAdminActor(request);
     requireAaisCsrf(request, actor.id);
+    const body = await readUserManagementBody(request);
     const store = createAaisUserStore();
-    if (body?.action === "invite") {
+    if (body.action === "invite") {
       const invite = await store.createInvite({
-        email: requireString(body.email, "email"),
-        displayName: requireString(body.displayName, "displayName"),
-        role: requireRole(body.role),
+        email: body.email,
+        displayName: body.displayName,
+        role: body.role,
         createdBy: actor.id,
       });
       recordAaisAuditEvent({
@@ -58,14 +90,17 @@ export async function POST(request: Request) {
           deliveryStatus: invite.delivery.status,
         },
       });
-      return NextResponse.json({
-        invite: redactInviteResult(invite),
-        secrets: "redacted",
-      });
+      return NextResponse.json(
+        {
+          invite: redactInviteResult(invite),
+          secrets: "redacted",
+        },
+        { headers: aaisSensitiveResponseHeaders },
+      );
     }
-    if (body?.action === "password-reset") {
+    if (body.action === "password-reset") {
       const reset = await store.createPasswordReset({
-        email: requireString(body.email, "email"),
+        email: body.email,
         createdBy: actor.id,
       });
       recordAaisAuditEvent({
@@ -77,48 +112,49 @@ export async function POST(request: Request) {
           deliveryStatus: reset?.delivery.status ?? "not_queued",
         },
       });
-      return NextResponse.json({
-        reset: reset ? redactPasswordResetResult(reset) : null,
-        secrets: "redacted",
+      return NextResponse.json(
+        {
+          reset: reset ? redactPasswordResetResult(reset) : null,
+          secrets: "redacted",
+        },
+        { headers: aaisSensitiveResponseHeaders },
+      );
+    }
+    const { userId, role, status } = body;
+    if (userId === actor.id && (role !== "admin" || status !== "active")) {
+      throw new AaisApiRouteError({
+        code: "AAIS_USER_SELF_ACTIVE_ADMIN_REQUIRED",
+        message: "AAIS administrators must keep their own account active with the admin role.",
+        status: 409,
       });
     }
-    if (body?.action === "update-access") {
-      const userId = requireString(body.userId, "userId");
-      const status = requireStatus(body.status);
-      if (userId === actor.id && status === "disabled") {
-        throw new AaisApiRouteError({
-          code: "AAIS_USER_SELF_DISABLE_UNSUPPORTED",
-          message: "AAIS administrators cannot disable their own account.",
-          status: 400,
-        });
-      }
-      const user = await store.updateUserAccess({
-        userId,
-        role: requireRole(body.role),
-        status,
-        updatedBy: actor.id,
-      });
-      recordAaisAuditEvent({
-        event: "auth.user.access.updated",
-        actorId: actor.id,
-        outcome: "success",
-        metadata: {
-          targetRole: user.role,
-          targetStatus: user.status,
-        },
-      });
-      return NextResponse.json({
+    const user = await store.updateUserAccess({
+      userId,
+      role,
+      status,
+      updatedBy: actor.id,
+    });
+    recordAaisAuditEvent({
+      event: "auth.user.access.updated",
+      actorId: actor.id,
+      outcome: "success",
+      metadata: {
+        targetRole: user.role,
+        targetStatus: user.status,
+      },
+    });
+    return NextResponse.json(
+      {
         user,
         secrets: "redacted",
-      });
-    }
-    throw new AaisApiRouteError({
-      code: "AAIS_USER_ACTION_UNSUPPORTED",
-      message: "Unsupported AAIS user management action.",
-      status: 400,
-    });
+      },
+      { headers: aaisSensitiveResponseHeaders },
+    );
   } catch (error) {
-    return createAaisApiErrorResponse(getErrorResponseInput(error));
+    return createAaisApiErrorResponse({
+      ...getErrorResponseInput(error),
+      headers: aaisSensitiveResponseHeaders,
+    });
   }
 }
 
@@ -130,43 +166,175 @@ async function requireAdminActor(request: Request) {
   return actor;
 }
 
-function requireString(value: string | undefined, label: string) {
-  const text = value?.trim();
-  if (!text) {
-    throw new AaisApiRouteError({
-      code: "AAIS_USER_REQUIRED_FIELD",
-      message: `${label} is required.`,
-      status: 400,
-    });
+async function readUserManagementBody(request: Request): Promise<UserManagementBody> {
+  let value: unknown;
+  try {
+    value = await readAaisBoundedJson(request, { maxBytes: aaisUsersBodyMaxBytes });
+  } catch (error) {
+    if (error instanceof AaisRequestBodyError && error.reason === "too_large") {
+      throw userRequestError(
+        "AAIS_USER_REQUEST_TOO_LARGE",
+        "AAIS user management request is too large.",
+        413,
+      );
+    }
+    throw userRequestError(
+      "AAIS_USER_REQUEST_INVALID",
+      "AAIS user management request is invalid.",
+      400,
+    );
   }
-  return text;
-}
-
-function requireRole(value: string | undefined) {
-  if (
-    value === "student"
-    || value === "teacher"
-    || value === "researcher"
-    || value === "admin"
-  ) {
-    return value;
+  if (!isPlainJsonObject(value) || typeof value.action !== "string") {
+    throw userRequestError(
+      "AAIS_USER_REQUEST_INVALID",
+      "AAIS user management request is invalid.",
+      400,
+    );
   }
+  if (value.action.length > 64) {
+    throw userRequestError(
+      "AAIS_USER_REQUEST_TOO_LARGE",
+      "AAIS user management request is too large.",
+      413,
+    );
+  }
+  if (value.action === "invite") {
+    requireOnlyKeys(value, ["action", "email", "displayName", "role"]);
+    if (
+      typeof value.email !== "string"
+      || typeof value.displayName !== "string"
+      || !isAaisUserRole(value.role)
+    ) {
+      throw userRequestError(
+        "AAIS_USER_REQUEST_INVALID",
+        "AAIS user management request is invalid.",
+        400,
+      );
+    }
+    if (
+      value.email.length > aaisUserEmailMaxCharacters
+      || value.displayName.length > aaisUserDisplayNameMaxCharacters
+    ) {
+      throw userRequestError(
+        "AAIS_USER_REQUEST_TOO_LARGE",
+        "AAIS user management request is too large.",
+        413,
+      );
+    }
+    const email = value.email.trim();
+    const displayName = value.displayName.trim();
+    if (!email || !displayName) {
+      throw userRequestError(
+        "AAIS_USER_REQUEST_INVALID",
+        "AAIS user management request is invalid.",
+        400,
+      );
+    }
+    return {
+      action: value.action,
+      email,
+      displayName,
+      role: value.role,
+    };
+  }
+  if (value.action === "password-reset") {
+    requireOnlyKeys(value, ["action", "email"]);
+    if (typeof value.email !== "string") {
+      throw userRequestError(
+        "AAIS_USER_REQUEST_INVALID",
+        "AAIS user management request is invalid.",
+        400,
+      );
+    }
+    if (value.email.length > aaisUserEmailMaxCharacters) {
+      throw userRequestError(
+        "AAIS_USER_REQUEST_TOO_LARGE",
+        "AAIS user management request is too large.",
+        413,
+      );
+    }
+    const email = value.email.trim();
+    if (!email) {
+      throw userRequestError(
+        "AAIS_USER_REQUEST_INVALID",
+        "AAIS user management request is invalid.",
+        400,
+      );
+    }
+    return { action: value.action, email };
+  }
+  if (value.action === "update-access") {
+    requireOnlyKeys(value, ["action", "userId", "role", "status"]);
+    if (
+      typeof value.userId !== "string"
+      || !isAaisUserRole(value.role)
+      || !isAaisUserStatus(value.status)
+    ) {
+      throw userRequestError(
+        "AAIS_USER_REQUEST_INVALID",
+        "AAIS user management request is invalid.",
+        400,
+      );
+    }
+    if (value.userId.length > aaisUserIdMaxCharacters) {
+      throw userRequestError(
+        "AAIS_USER_REQUEST_TOO_LARGE",
+        "AAIS user management request is too large.",
+        413,
+      );
+    }
+    const userId = value.userId.trim();
+    if (!userId) {
+      throw userRequestError(
+        "AAIS_USER_REQUEST_INVALID",
+        "AAIS user management request is invalid.",
+        400,
+      );
+    }
+    return {
+      action: value.action,
+      userId,
+      role: value.role,
+      status: value.status,
+    };
+  }
+  requireOnlyKeys(value, ["action"]);
   throw new AaisApiRouteError({
-    code: "AAIS_USER_ROLE_INVALID",
-    message: "AAIS user role is invalid.",
+    code: "AAIS_USER_ACTION_UNSUPPORTED",
+    message: "Unsupported AAIS user management action.",
     status: 400,
   });
 }
 
-function requireStatus(value: string | undefined) {
-  if (value === "invited" || value === "active" || value === "disabled") {
-    return value;
+function isPlainJsonObject(value: unknown): value is Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return false;
   }
-  throw new AaisApiRouteError({
-    code: "AAIS_USER_STATUS_INVALID",
-    message: "AAIS user status is invalid.",
-    status: 400,
-  });
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
+function requireOnlyKeys(record: Record<string, unknown>, allowedKeys: readonly string[]) {
+  const allowed = new Set(allowedKeys);
+  if (Object.keys(record).some((key) => !allowed.has(key))) {
+    throw userRequestError(
+      "AAIS_USER_REQUEST_INVALID",
+      "AAIS user management request is invalid.",
+      400,
+    );
+  }
+}
+
+function isAaisUserRole(value: unknown): value is AaisUserRole {
+  return value === "student" || value === "teacher" || value === "researcher" || value === "admin";
+}
+
+function isAaisUserStatus(value: unknown): value is AaisUserStatus {
+  return value === "invited" || value === "active" || value === "disabled";
+}
+
+function userRequestError(code: string, message: string, status: 400 | 413) {
+  return new AaisApiRouteError({ code, message, status });
 }
 
 class AaisUserManagementAuthorizationError extends Error {
@@ -229,11 +397,39 @@ function getErrorResponseInput(error: unknown) {
       status: 503,
     };
   }
+  if (isAaisAuthDeliveryConfigurationError(error)) {
+    return {
+      code: "AAIS_AUTH_DELIVERY_NOT_CONFIGURED",
+      message: "AAIS authentication email delivery is temporarily unavailable.",
+      status: 503,
+    };
+  }
   if (isAaisUserNotFoundError(error)) {
     return {
       code: "AAIS_USER_NOT_FOUND",
       message: "AAIS user was not found.",
       status: 404,
+    };
+  }
+  if (isAaisActiveAdminInvariantError(error)) {
+    return {
+      code: "AAIS_ACTIVE_ADMIN_REQUIRED",
+      message: "AAIS must retain at least one active administrator.",
+      status: 409,
+    };
+  }
+  if (isAaisUserInviteConflictError(error)) {
+    return {
+      code: "AAIS_USER_INVITE_CONFLICT",
+      message: "AAIS cannot invite an account that is already active or disabled.",
+      status: 409,
+    };
+  }
+  if (isAaisAuthEmailDeliveryFencedError(error)) {
+    return {
+      code: "AAIS_AUTH_EMAIL_DELIVERY_IN_PROGRESS",
+      message: "AAIS authentication email delivery is already in progress.",
+      status: 409,
     };
   }
   if (error instanceof Error && error.message.startsWith("Invalid AAIS")) {
@@ -246,7 +442,7 @@ function getErrorResponseInput(error: unknown) {
   return {
     code: "AAIS_USER_MANAGEMENT_FAILED",
     message: "AAIS user management request failed.",
-    status: 400,
+    status: 500,
     cause: error,
     route: "/api/auth/users",
   };

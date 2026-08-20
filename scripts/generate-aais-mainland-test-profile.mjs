@@ -177,6 +177,7 @@ export async function generateAaisMainlandTestProfile(input) {
     }
   };
   const sessionSecret = issueSecret(32, "hex");
+  const productPseudonymSecret = issueSecret(32, "base64url");
   const identityEncryptionKey = issueSecret(32, "base64");
   const identityFingerprintKey = issueSecret(32, "base64");
   const lrsStores = LRS_STORE_SPECS.map((spec) => ({
@@ -201,6 +202,7 @@ export async function generateAaisMainlandTestProfile(input) {
   const receiptKeyId = `caaistest-ed25519-${scopeHash}`;
   assertDistinctSecrets([
     sessionSecret,
+    productPseudonymSecret,
     identityEncryptionKey,
     identityFingerprintKey,
     ...lrsStores.flatMap((store) => [store.username, store.password]),
@@ -225,6 +227,7 @@ export async function generateAaisMainlandTestProfile(input) {
     receiptVerifyingSpki,
     runId,
     sessionSecret,
+    productPseudonymSecret,
     studyId,
   });
   const manifest = buildSanitizedManifest({
@@ -328,6 +331,7 @@ function buildSecretsEnv(input) {
     ["AAIS_RESEARCH_EXPORT_ACTOR_IDS", "caaistest-researcher"],
     ["AAIS_RESEARCH_EXPORT_ENABLED", "true"],
     ["AAIS_SESSION_SECRET", input.sessionSecret],
+    ["AAIS_PRODUCT_PSEUDONYM_SECRET", input.productPseudonymSecret],
     ["AAIS_APP_VERSION", input.appVersion],
     ["AAIS_COMMIT_SHA", input.commitSha],
     ["AAIS_RESEARCH_IDENTITY_RETENTION_DAYS", "7"],

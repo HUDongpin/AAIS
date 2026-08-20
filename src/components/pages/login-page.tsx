@@ -10,7 +10,6 @@ import {
   Sparkle,
   UserCircle,
 } from "@phosphor-icons/react";
-import { getAaisApiErrorMessage } from "@/lib/client/aais-api-error";
 import { clearAaisResearchTelemetryForActor } from "@/lib/client/aais-research-telemetry";
 import {
   aaisLocaleStorageKey,
@@ -21,19 +20,25 @@ import {
   loginCopyByLocale,
   type LoginLocale,
 } from "@/components/pages/login/login-design";
+import { isSafeAaisLocalRedirectTarget } from "@/lib/aais-local-redirect";
 
 type LoginPageProps = {
+  initialLocale?: LoginLocale;
   trialLoginEnabled?: boolean;
 };
 
-export function LoginPage({ trialLoginEnabled = true }: LoginPageProps) {
+export function LoginPage({
+  initialLocale,
+  trialLoginEnabled = true,
+}: LoginPageProps) {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const inviteToken = searchParams.get("invite_token")?.trim() ?? "";
-  const resetToken = searchParams.get("reset_token")?.trim() ?? "";
-  const passwordToken = inviteToken || resetToken;
+  const legacyInviteToken = searchParams.get("invite_token")?.trim() ?? "";
+  const legacyResetToken = searchParams.get("reset_token")?.trim() ?? "";
   const requestedLocale = parseLoginLocale(searchParams.get("lang"));
-  const [locale, setLocale] = useState<LoginLocale>(requestedLocale ?? "zh-CN");
+  const [locale, setLocale] = useState<LoginLocale>(
+    requestedLocale ?? initialLocale ?? "zh-CN",
+  );
   const copy = loginCopyByLocale[locale];
   const researchLogoutAcknowledgementFailed = searchParams.get("researchLogout") === "ack-failed";
   const [account, setAccount] = useState("");
@@ -46,9 +51,11 @@ export function LoginPage({ trialLoginEnabled = true }: LoginPageProps) {
   const [notice, setNotice] = useState("");
   const [resetMode, setResetMode] = useState(false);
   const [resetEmail, setResetEmail] = useState("");
+  const [passwordToken, setPasswordToken] = useState("");
   const [passwordTokenConsumed, setPasswordTokenConsumed] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const submittingRef = useRef(false);
+  const passwordTokenCaptureCompletedRef = useRef(false);
   const accountInputRef = useRef<HTMLInputElement>(null);
   const resetEmailInputRef = useRef<HTMLInputElement>(null);
   const passwordTokenMode = Boolean(passwordToken) && !passwordTokenConsumed;
@@ -57,7 +64,43 @@ export function LoginPage({ trialLoginEnabled = true }: LoginPageProps) {
     : "");
 
   useEffect(() => {
-    if (requestedLocale) {
+    if (passwordTokenCaptureCompletedRef.current) {
+      return;
+    }
+    passwordTokenCaptureCompletedRef.current = true;
+    const url = new URL(window.location.href);
+    const fragmentContainsToken = /(?:^|[&#])(invite_token|reset_token)=/i.test(url.hash.slice(1));
+    const fragmentParams = fragmentContainsToken
+      ? new URLSearchParams(url.hash.slice(1))
+      : null;
+    const token = fragmentParams?.get("invite_token")?.trim()
+      || fragmentParams?.get("reset_token")?.trim()
+      || legacyInviteToken
+      || legacyResetToken;
+    setPasswordToken(token);
+    setPasswordTokenConsumed(false);
+
+    const hadLegacyQueryToken = url.searchParams.has("invite_token")
+      || url.searchParams.has("reset_token");
+    url.searchParams.delete("invite_token");
+    url.searchParams.delete("reset_token");
+    if (fragmentParams) {
+      fragmentParams.delete("invite_token");
+      fragmentParams.delete("reset_token");
+      const remainingFragment = fragmentParams.toString();
+      url.hash = remainingFragment ? `#${remainingFragment}` : "";
+    }
+    if (hadLegacyQueryToken || fragmentContainsToken) {
+      window.history.replaceState(
+        window.history.state,
+        "",
+        `${url.pathname}${url.search}${url.hash}`,
+      );
+    }
+  }, [legacyInviteToken, legacyResetToken]);
+
+  useEffect(() => {
+    if (requestedLocale || initialLocale) {
       return;
     }
     const savedLocale = parseLoginLocale(window.localStorage.getItem(aaisLocaleStorageKey));
@@ -66,7 +109,7 @@ export function LoginPage({ trialLoginEnabled = true }: LoginPageProps) {
     }
     const frameId = window.requestAnimationFrame(() => setLocale(savedLocale));
     return () => window.cancelAnimationFrame(frameId);
-  }, [locale, requestedLocale]);
+  }, [initialLocale, locale, requestedLocale]);
 
   useEffect(() => {
     applyAaisLocaleToDocument(locale);
@@ -146,6 +189,7 @@ export function LoginPage({ trialLoginEnabled = true }: LoginPageProps) {
             actor?: {
               id?: string;
               displayName?: string;
+              role?: string;
             };
           };
         } | null;
@@ -153,22 +197,23 @@ export function LoginPage({ trialLoginEnabled = true }: LoginPageProps) {
         if (!response.ok) {
           setError(response.status === 401
             ? copy.invalidError
-            : getAaisApiErrorMessage(result, copy.serverError));
+            : getLocalizedLoginApiError(result, copy));
+          return;
+        }
+
+        if (!isAaisLoginSuccessResponse(result)) {
+          setError(copy.serverError);
           return;
         }
 
         // A successful login establishes a new actor boundary. Discard any
         // visit validation and unsent queue left by an expired/revoked prior
-        // session before storing the newly authenticated actor locally.
+        // session. The server-rendered page obtains the actor from the
+        // HttpOnly session, so no identity or display name belongs in web
+        // storage.
         clearAaisResearchTelemetryForActor();
-        if (result?.appSession?.actor?.id) {
-          window.localStorage.setItem("aais_student_id", result.appSession.actor.id);
-        }
-        if (result?.appSession?.actor?.displayName) {
-          window.localStorage.setItem("aais_display_name", result.appSession.actor.displayName);
-        }
         saveAaisLocalePreference(locale);
-        router.replace(isSafeLocalRedirectTarget(result?.redirectTarget) ? result.redirectTarget : "/learning");
+        router.replace(result.redirectTarget);
       } catch {
         setError(copy.serverError);
       } finally {
@@ -214,7 +259,11 @@ export function LoginPage({ trialLoginEnabled = true }: LoginPageProps) {
         });
         const result = await response.json().catch(() => null);
         if (!response.ok) {
-          setError(getAaisApiErrorMessage(result, copy.serverError));
+          setError(getLocalizedLoginApiError(result, copy));
+          return;
+        }
+        if (!isAaisSetPasswordSuccessResponse(result)) {
+          setError(copy.serverError);
           return;
         }
         setNewPassword("");
@@ -262,7 +311,7 @@ export function LoginPage({ trialLoginEnabled = true }: LoginPageProps) {
         });
         const result = await response.json().catch(() => null);
         if (!response.ok) {
-          setError(getAaisApiErrorMessage(result, copy.serverError));
+          setError(getLocalizedLoginApiError(result, copy));
           return;
         }
         setResetEmail("");
@@ -583,11 +632,11 @@ export function LoginPage({ trialLoginEnabled = true }: LoginPageProps) {
                   </label>
                   <p className="mt-2 pl-7 text-sm font-medium leading-6 text-[#5d6b84]">
                     <span>{copy.consentBasisPrefix}</span>
-                    <a href="/terms" className="font-semibold text-[#1557c0] underline-offset-4 hover:underline">
+                    <a href={createLegalHref("/terms", locale)} className="font-semibold text-[#1557c0] underline-offset-4 hover:underline">
                       {copy.terms}
                     </a>
                     <span>{copy.consentBasisConnector}</span>
-                    <a href="/privacy" className="font-semibold text-[#1557c0] underline-offset-4 hover:underline">
+                    <a href={createLegalHref("/privacy", locale)} className="font-semibold text-[#1557c0] underline-offset-4 hover:underline">
                       {copy.privacy}
                     </a>
                     <span>{copy.consentBasisSuffix}</span>
@@ -615,11 +664,11 @@ export function LoginPage({ trialLoginEnabled = true }: LoginPageProps) {
 
                 <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-[#69758d]">
                   <span>{copy.protectedSpaceNotice}</span>
-                  <a href="/terms" className="font-semibold text-[#1557c0] underline-offset-4 hover:underline">
+                  <a href={createLegalHref("/terms", locale)} className="font-semibold text-[#1557c0] underline-offset-4 hover:underline">
                     {copy.terms}
                   </a>
                   <span>{copy.consentBasisConnector.trim()}</span>
-                  <a href="/privacy" className="font-semibold text-[#1557c0] underline-offset-4 hover:underline">
+                  <a href={createLegalHref("/privacy", locale)} className="font-semibold text-[#1557c0] underline-offset-4 hover:underline">
                     {copy.privacy}
                   </a>
                 </p>
@@ -632,8 +681,148 @@ export function LoginPage({ trialLoginEnabled = true }: LoginPageProps) {
   );
 }
 
-function isSafeLocalRedirectTarget(value: string | undefined): value is string {
-  return Boolean(value?.startsWith("/") && !value.startsWith("//"));
+type LoginCopy = (typeof loginCopyByLocale)[LoginLocale];
+
+type AaisLoginSuccessResponse = {
+  redirectTarget: string;
+  appSession: {
+    actor: {
+      id: string;
+      displayName: string;
+      role: "student" | "teacher" | "researcher" | "admin";
+    };
+  };
+};
+
+type AaisSetPasswordSuccessResponse = {
+  user: {
+    id: string;
+    email: string;
+    displayName: string;
+    role: "student" | "teacher" | "researcher" | "admin";
+    status: "active";
+    createdAt: string;
+    updatedAt: string;
+    lastLoginAt: string | null;
+  };
+  secrets: "redacted";
+};
+
+function isAaisLoginSuccessResponse(value: unknown): value is AaisLoginSuccessResponse {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+  const response = value as Record<string, unknown>;
+  if (
+    !isSafeAaisLocalRedirectTarget(
+      typeof response.redirectTarget === "string" ? response.redirectTarget : null,
+    )
+    || typeof response.appSession !== "object"
+    || response.appSession === null
+  ) {
+    return false;
+  }
+  const appSession = response.appSession as Record<string, unknown>;
+  if (typeof appSession.actor !== "object" || appSession.actor === null) {
+    return false;
+  }
+  const actor = appSession.actor as Record<string, unknown>;
+  return isAaisActorId(actor.id)
+    && isAaisDisplayName(actor.displayName)
+    && isAaisActorRole(actor.role);
+}
+
+function isAaisSetPasswordSuccessResponse(
+  value: unknown,
+): value is AaisSetPasswordSuccessResponse {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+  const response = value as Record<string, unknown>;
+  if (
+    response.secrets !== "redacted"
+    || typeof response.user !== "object"
+    || response.user === null
+  ) {
+    return false;
+  }
+  const user = response.user as Record<string, unknown>;
+  return isAaisActorId(user.id)
+    && isAaisEmail(user.email)
+    && isAaisDisplayName(user.displayName)
+    && isAaisActorRole(user.role)
+    && user.status === "active"
+    && isAaisIsoDate(user.createdAt)
+    && isAaisIsoDate(user.updatedAt)
+    && (user.lastLoginAt === null || isAaisIsoDate(user.lastLoginAt));
+}
+
+function isAaisActorId(value: unknown): value is string {
+  return typeof value === "string"
+    && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(value);
+}
+
+function isAaisDisplayName(value: unknown): value is string {
+  return typeof value === "string"
+    && value.trim().length > 0
+    && value.length <= 120;
+}
+
+function isAaisActorRole(
+  value: unknown,
+): value is "student" | "teacher" | "researcher" | "admin" {
+  return value === "student"
+    || value === "teacher"
+    || value === "researcher"
+    || value === "admin";
+}
+
+function isAaisEmail(value: unknown): value is string {
+  return typeof value === "string"
+    && value.length <= 254
+    && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+}
+
+function isAaisIsoDate(value: unknown): value is string {
+  if (typeof value !== "string") {
+    return false;
+  }
+  const date = new Date(value);
+  return !Number.isNaN(date.getTime()) && date.toISOString() === value;
+}
+
+function getLocalizedLoginApiError(
+  body: {
+    error?: string | {
+      code?: string;
+      message?: string;
+    };
+  } | null,
+  copy: LoginCopy,
+) {
+  const code = typeof body?.error === "object" && body.error !== null
+    ? body.error.code
+    : undefined;
+
+  switch (code) {
+    case "AAIS_INVALID_CREDENTIALS":
+      return copy.invalidError;
+    case "AAIS_LOGIN_RATE_LIMITED":
+    case "AAIS_SET_PASSWORD_RATE_LIMITED":
+      return copy.rateLimitError;
+    case "AAIS_PASSWORD_TOKEN_INVALID":
+      return copy.passwordTokenInvalidError;
+    case "AAIS_PASSWORD_INPUT_INVALID":
+    case "AAIS_PASSWORD_REQUEST_INVALID":
+      return copy.passwordInputInvalidError;
+    case "AAIS_PASSWORD_REQUEST_TOO_LARGE":
+      return copy.passwordRequestTooLargeError;
+    default:
+      // Auth responses can contain operational English text. The login page
+      // intentionally exposes only reviewed locale copy and never renders raw
+      // server or dependency messages.
+      return copy.serverError;
+  }
 }
 
 function parseLoginLocale(value: string | null): LoginLocale | null {
@@ -641,4 +830,8 @@ function parseLoginLocale(value: string | null): LoginLocale | null {
     return value;
   }
   return null;
+}
+
+function createLegalHref(pathname: "/privacy" | "/terms", locale: LoginLocale) {
+  return locale === "en-US" ? `${pathname}?lang=en-US` : pathname;
 }

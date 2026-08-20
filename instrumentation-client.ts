@@ -5,6 +5,8 @@ import {
   getAaisSentryRelease,
   getAaisSentrySampleRate,
   sanitizeAaisSentryEvent,
+  sanitizeAaisSentrySpan,
+  sanitizeAaisSentryTransaction,
 } from "./sentry.common";
 
 const dsn = getAaisSentryDsn();
@@ -21,6 +23,8 @@ if (dsn) {
     ),
     enableLogs: true,
     beforeSend: sanitizeAaisSentryEvent,
+    beforeSendTransaction: sanitizeAaisSentryTransaction,
+    beforeSendSpan: sanitizeAaisSentrySpan,
   });
 }
 

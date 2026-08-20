@@ -91,6 +91,7 @@ const requiredResearchColumns = [
   ["aais_research_export_audit", "commit_sha"],
   ["aais_research_export_audit", "retention_due_at"],
   ["aais_research_retention_runs", "retention_due_at"],
+  ["aais_research_retention_runs", "stale_raw_text_write_lease_count"],
   ["aais_research_lrs_deletions", "retention_due_at"],
   ["aais_research_lrs_deletions", "receipt_sha256"],
   ["aais_research_lrs_deletions", "provider_absence_confirmed_at"],

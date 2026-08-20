@@ -95,6 +95,7 @@ export type LearningCopy = {
   };
   account: {
     waitForOperation: string;
+    waitForExportOperation: string;
     signingOut: string;
     researchSyncRequired: string;
     signOutFailed: string;
@@ -137,9 +138,7 @@ export const learningCopyByLocale: Record<Locale, LearningCopy> = {
       readingFiles: "文件正在读取...",
       quickStarts: "元认知快速开始",
       chooseFiles: "选择上传文件",
-      // Preserve the pre-existing accessible control name for the upload
-      // trigger. Its visible button label remains the localized `chooseFiles`.
-      uploadFile: "Upload file",
+      uploadFile: "上传文件",
       inputLabel: "向智能导学输入你的想法",
       inputPlaceholder: "输入你的想法...",
       send: "发送",
@@ -233,6 +232,7 @@ export const learningCopyByLocale: Record<Locale, LearningCopy> = {
     },
     account: {
       waitForOperation: "请等待当前保存、下载或智能体操作完成后再退出。",
+      waitForExportOperation: "请等待当前保存、下载或智能体操作完成后再导出学习数据。",
       signingOut: "正在退出...",
       researchSyncRequired: "研究事件尚未安全同步，请保持联网并稍后重试退出。",
       signOutFailed: "退出未完成，服务器会话仍保持有效。请恢复连接后重试。",
@@ -367,6 +367,7 @@ export const learningCopyByLocale: Record<Locale, LearningCopy> = {
     },
     account: {
       waitForOperation: "Wait for the current save, download, or AI operation to finish before signing out.",
+      waitForExportOperation: "Wait for the current save, download, or AI operation to finish before exporting learning data.",
       signingOut: "Signing out...",
       researchSyncRequired: "Research events have not synced safely. Stay online and try signing out again shortly.",
       signOutFailed: "Sign-out did not finish, and the server session is still active. Restore your connection and try again.",

@@ -2,6 +2,7 @@ import {
   useEffect,
   useRef,
   useState,
+  type FocusEvent,
   type MouseEvent as ReactMouseEvent,
   type ReactNode,
 } from "react";
@@ -18,6 +19,7 @@ import {
   createAaisResearchOperationId,
 } from "@/lib/client/aais-research-telemetry";
 import {
+  sanitizeEditorHtml,
   toEditableHtml,
 } from "@/components/pages/learning/document-markdown";
 import { getLearningCopy } from "@/components/pages/learning/learning-copy";
@@ -53,6 +55,7 @@ const documentFontSizeOptions: DocumentFontSize[] = ["17", "20", "24", "28"];
 export function DocumentEditor({
   artifactText,
   documentTitle,
+  disabled = false,
   locale = "zh-CN",
   onArtifactChange,
   onArtifactBlur,
@@ -60,9 +63,10 @@ export function DocumentEditor({
 }: {
   artifactText: string;
   documentTitle: string;
+  disabled?: boolean;
   locale?: Locale;
   onArtifactChange: (value: string) => void;
-  onArtifactBlur: () => void;
+  onArtifactBlur: (event: FocusEvent<HTMLDivElement>) => void;
   onDocumentTitleChange: (value: string) => void;
 }) {
   const copy = getLearningCopy(locale);
@@ -95,8 +99,13 @@ export function DocumentEditor({
     if (!editor) {
       return;
     }
+    const sanitizedHtml = sanitizeEditorHtml(editor.innerHTML);
+    if (sanitizedHtml !== editor.innerHTML) {
+      editor.innerHTML = sanitizedHtml;
+      placeCaretAtEditorEnd(editor);
+    }
     setEditorEmpty(!editor.textContent?.trim());
-    onArtifactChange(editor.innerHTML);
+    onArtifactChange(sanitizedHtml);
   }
 
   function focusEditor() {
@@ -294,7 +303,7 @@ export function DocumentEditor({
   const toolbarButtonClass =
     "group relative inline-flex min-h-11 min-w-11 items-center justify-center gap-1.5 rounded-md border border-transparent px-2.5 text-sm font-medium text-[#4a4a4a] outline-none transition-colors duration-150 hover:border-[#cbd4ff] hover:bg-white hover:text-[#324fd6] active:bg-[#dfe5ff] aria-pressed:border-[#aab8ff] aria-pressed:bg-[#e8ecff] aria-pressed:text-[#253fb0] focus-visible:ring-2 focus-visible:ring-[#536de8] focus-visible:ring-offset-2 focus-visible:ring-offset-[#f8f8f8]";
   return (
-    <section className="px-3 py-4">
+    <fieldset className="min-w-0 px-3 py-4" disabled={disabled}>
       <input
         aria-label={copy.editor.titleLabel}
         value={documentTitle}
@@ -388,7 +397,8 @@ export function DocumentEditor({
           aria-label={copy.editor.inputLabel}
           aria-multiline="true"
           role="textbox"
-          contentEditable
+          aria-disabled={disabled || undefined}
+          contentEditable={!disabled}
           suppressContentEditableWarning
           onInput={() => {
             syncEditorValue();
@@ -417,8 +427,20 @@ export function DocumentEditor({
           className="aais-document-editor min-h-[404px] w-full resize-none overflow-x-hidden overflow-y-auto rounded-lg border border-[#e5e5e5] bg-white p-4 leading-7 text-[#333333] outline-none focus:border-[#536de8]"
         />
       </div>
-    </section>
+    </fieldset>
   );
+}
+
+function placeCaretAtEditorEnd(editor: HTMLElement) {
+  const selection = window.getSelection();
+  if (!selection) {
+    return;
+  }
+  const range = document.createRange();
+  range.selectNodeContents(editor);
+  range.collapse(false);
+  selection.removeAllRanges();
+  selection.addRange(range);
 }
 
 function EditorButton({

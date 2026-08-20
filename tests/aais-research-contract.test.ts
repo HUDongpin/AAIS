@@ -486,6 +486,219 @@ describe("AAIS research contract", () => {
       AAIS_RESEARCH_LRS_PASSWORD: "research-password",
       AAIS_RESEARCH_LRS_STORE_ID: "aais-research-store",
     })).toMatchObject({ configured: false, isolatedFromGenericLrs: true });
+    expect(getAaisResearchLrsConfigurationStatus({
+      NODE_ENV: "production",
+      AAIS_RESEARCH_REHEARSAL_MODE: "true",
+      AAIS_RESEARCH_LRS_ENDPOINT: "http://localhost:43239/xapi/statements",
+      AAIS_RESEARCH_LRS_USERNAME: "research-writer",
+      AAIS_RESEARCH_LRS_PASSWORD: "research-password",
+      AAIS_RESEARCH_LRS_STORE_ID: "aais-research-store",
+    })).toMatchObject({ configured: false, isolatedFromGenericLrs: true });
+  });
+
+  it("bounds and cancels an oversized provider deletion receipt", async () => {
+    let cancelled = false;
+    const responseBody = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array(65 * 1024));
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+
+    await expect(deleteAaisResearchStatement({
+      statementId: createOutboxPayload().eventId,
+      expectedStoreId: configuration.lrsStoreId,
+      configuration: {
+        endpoint: "https://aais-research-lrs.example/xapi/statements",
+        username: "least-privilege-writer",
+        password: "test-only",
+        storeId: configuration.lrsStoreId,
+      },
+      fetchImpl: async () => new Response(responseBody),
+    })).rejects.toThrow(/too large/i);
+
+    expect(cancelled).toBe(true);
+  });
+
+  it("does not send Basic credentials through an unsafe injected LRS endpoint", async () => {
+    let called = false;
+    const fetchImpl: typeof fetch = async () => {
+      called = true;
+      return new Response("", { status: 200 });
+    };
+
+    await expect(sendAaisResearchStatement({
+      payload: createOutboxPayload(),
+      configuration: {
+        endpoint: "http://provider.example.test/xapi/statements",
+        username: "least-privilege-writer",
+        password: "test-only",
+        storeId: configuration.lrsStoreId,
+      },
+      fetchImpl,
+    })).rejects.toThrow(/HTTPS/i);
+
+    expect(called).toBe(false);
+  });
+
+  it("keeps the LRS timeout active while streaming a deletion receipt", async () => {
+    let aborted = false;
+    const fetchImpl = async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const signal = init?.signal;
+      return new Response(new ReadableStream<Uint8Array>({
+        start(controller) {
+          const timer = setTimeout(() => {
+            controller.enqueue(new TextEncoder().encode("late receipt"));
+            controller.close();
+          }, 40);
+          signal?.addEventListener("abort", () => {
+            aborted = true;
+            clearTimeout(timer);
+            controller.error(new DOMException("Aborted", "AbortError"));
+          }, { once: true });
+        },
+      }));
+    };
+
+    await expect(deleteAaisResearchStatement({
+      statementId: createOutboxPayload().eventId,
+      expectedStoreId: configuration.lrsStoreId,
+      configuration: {
+        endpoint: "https://aais-research-lrs.example/xapi/statements",
+        username: "least-privilege-writer",
+        password: "test-only",
+        storeId: configuration.lrsStoreId,
+      },
+      fetchImpl,
+      timeoutMs: 5,
+    })).rejects.toThrow();
+
+    expect(aborted).toBe(true);
+  });
+
+  it("consumes a bounded LRS PUT response body before returning its HTTP status", async () => {
+    const providerResponse = new Response("provider acknowledgement", { status: 201 });
+
+    const delivery = await sendAaisResearchStatement({
+      payload: createOutboxPayload(),
+      configuration: {
+        endpoint: "https://aais-research-lrs.example/xapi/statements",
+        username: "least-privilege-writer",
+        password: "test-only",
+        storeId: configuration.lrsStoreId,
+      },
+      fetchImpl: async () => providerResponse,
+    });
+
+    expect(delivery).toEqual({ ok: true, httpStatus: 201 });
+    expect(providerResponse.bodyUsed).toBe(true);
+  });
+
+  it("cancels an oversized LRS PUT response body while preserving its HTTP status", async () => {
+    let cancelled = false;
+    const responseBody = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array(65 * 1024));
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+
+    const delivery = await sendAaisResearchStatement({
+      payload: createOutboxPayload(),
+      configuration: {
+        endpoint: "https://aais-research-lrs.example/xapi/statements",
+        username: "least-privilege-writer",
+        password: "test-only",
+        storeId: configuration.lrsStoreId,
+      },
+      fetchImpl: async () => new Response(responseBody, { status: 413 }),
+    });
+
+    expect(delivery).toEqual({ ok: false, httpStatus: 413 });
+    expect(cancelled).toBe(true);
+  });
+
+  it("keeps the LRS timeout active while discarding a slow PUT response body", async () => {
+    let aborted = false;
+    const fetchImpl = async (_input: RequestInfo | URL, init?: RequestInit) =>
+      new Response(new ReadableStream<Uint8Array>({
+        start(controller) {
+          const timer = setTimeout(() => {
+            controller.enqueue(new TextEncoder().encode("late acknowledgement"));
+            controller.close();
+          }, 40);
+          init?.signal?.addEventListener("abort", () => {
+            aborted = true;
+            clearTimeout(timer);
+            controller.error(new DOMException("Aborted", "AbortError"));
+          }, { once: true });
+        },
+      }), { status: 503 });
+
+    const delivery = await sendAaisResearchStatement({
+      payload: createOutboxPayload(),
+      configuration: {
+        endpoint: "https://aais-research-lrs.example/xapi/statements",
+        username: "least-privilege-writer",
+        password: "test-only",
+        storeId: configuration.lrsStoreId,
+      },
+      fetchImpl,
+      timeoutMs: 5,
+    });
+
+    expect(delivery).toEqual({ ok: false, httpStatus: 503 });
+    expect(aborted).toBe(true);
+  });
+
+  it("bounds a never-closing PUT body even when stream cancellation rejects", async () => {
+    let cancelAttempts = 0;
+    const responseBody = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("partial acknowledgement"));
+      },
+      pull() {
+        return new Promise<void>(() => undefined);
+      },
+      cancel() {
+        cancelAttempts += 1;
+        return Promise.reject(new Error("provider cancellation failed"));
+      },
+    });
+
+    const delivery = await sendAaisResearchStatement({
+      payload: createOutboxPayload(),
+      configuration: {
+        endpoint: "https://aais-research-lrs.example/xapi/statements",
+        username: "least-privilege-writer",
+        password: "test-only",
+        storeId: configuration.lrsStoreId,
+      },
+      fetchImpl: async () => new Response(responseBody, { status: 429 }),
+      timeoutMs: 5,
+    });
+
+    expect(delivery).toEqual({ ok: false, httpStatus: 429 });
+    expect(cancelAttempts).toBe(1);
+  });
+
+  it("accepts an empty 204 LRS PUT response without manufacturing a body failure", async () => {
+    const delivery = await sendAaisResearchStatement({
+      payload: createOutboxPayload(),
+      configuration: {
+        endpoint: "https://aais-research-lrs.example/xapi/statements",
+        username: "least-privilege-writer",
+        password: "test-only",
+        storeId: configuration.lrsStoreId,
+      },
+      fetchImpl: async () => new Response(null, { status: 204 }),
+    });
+
+    expect(delivery).toEqual({ ok: true, httpStatus: 204 });
   });
 
   it("uses deterministic PUT delivery and requires provider absence evidence after DELETE", async () => {

@@ -31,13 +31,13 @@ type AaisUsersResponse = {
   invite?: {
     user: AaisUserListItem;
     delivery: {
-      status: "sent" | "not_configured";
+      status: "queued";
       provider: "resend";
     };
   };
   reset?: {
     delivery: {
-      status: "sent" | "not_configured";
+      status: "queued";
       provider: "resend";
     };
   } | null;
@@ -56,6 +56,11 @@ type ActiveUserAction = {
   userId: string;
   action: "password-reset" | "update-access";
 };
+
+const inviteNotQueuedMessage =
+  "The invite was not queued. Refresh the account list and try again.";
+const passwordResetNotQueuedMessage =
+  "The password reset was not queued. Refresh the account list and try again.";
 
 const roleLabels: Record<AaisUserRole, string> = {
   student: "Student",
@@ -147,8 +152,11 @@ export function AdminUsersPage() {
         displayName,
         role,
       });
-      if (!body.invite?.user) {
-        throw new Error("AAIS invite request failed.");
+      if (
+        !body.invite?.user
+        || !isQueuedResendDelivery(body.invite.delivery)
+      ) {
+        throw new Error(inviteNotQueuedMessage);
       }
       upsertUser(body.invite.user);
       setDrafts((current) => ({
@@ -161,8 +169,9 @@ export function AdminUsersPage() {
       setEmail("");
       setDisplayName("");
       setRole("student");
-      setStatus(body.invite.delivery.status === "sent" ? "Invite sent." : "Invite created.");
+      setStatus("Invite queued for delivery.");
     } catch (caught) {
+      setStatus("");
       setError(caught instanceof Error ? caught.message : "AAIS invite request failed.");
     } finally {
       submittingRef.current = false;
@@ -181,12 +190,16 @@ export function AdminUsersPage() {
       action: "password-reset",
     });
     try {
-      await postUserAction({
+      const body = await postUserAction({
         action: "password-reset",
         email: user.email,
       });
+      if (!body.reset || !isQueuedResendDelivery(body.reset.delivery)) {
+        throw new Error(passwordResetNotQueuedMessage);
+      }
       setStatus("Password reset request recorded.");
     } catch (caught) {
+      setStatus("");
       setError(caught instanceof Error ? caught.message : "AAIS password reset request failed.");
     } finally {
       setActiveUserAction(null);
@@ -220,6 +233,7 @@ export function AdminUsersPage() {
       upsertUser(body.user);
       setStatus("Access updated.");
     } catch (caught) {
+      setStatus("");
       setError(caught instanceof Error ? caught.message : "AAIS user access update failed.");
     } finally {
       setActiveUserAction(null);
@@ -491,6 +505,17 @@ function createAccessDrafts(users: AaisUserListItem[]) {
   ]));
 }
 
+function isQueuedResendDelivery(value: unknown): value is {
+  status: "queued";
+  provider: "resend";
+} {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+  const delivery = value as Record<string, unknown>;
+  return delivery.status === "queued" && delivery.provider === "resend";
+}
+
 function getAaisCsrfHeader(): Record<string, string> {
   const token = readCookie("aais_csrf");
   return token ? { "x-aais-csrf": token } : {};
@@ -500,11 +525,15 @@ function readCookie(name: string) {
   if (typeof document === "undefined") {
     return "";
   }
-  const cookie = document.cookie
-    .split(";")
-    .map((part) => part.trim())
-    .find((part) => part.startsWith(`${name}=`));
-  return cookie ? decodeURIComponent(cookie.slice(name.length + 1)) : "";
+  try {
+    const cookie = document.cookie
+      .split(";")
+      .map((part) => part.trim())
+      .find((part) => part.startsWith(`${name}=`));
+    return cookie ? decodeURIComponent(cookie.slice(name.length + 1)) : "";
+  } catch {
+    return "";
+  }
 }
 
 function formatDate(value: string) {

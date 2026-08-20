@@ -34,6 +34,7 @@ export function ContentDisplay({
   activeContent,
   historyDocuments,
   locale = "zh-CN",
+  navigationLocked = false,
   onBack,
   onOpen,
   onOpenDocument,
@@ -41,6 +42,7 @@ export function ContentDisplay({
   activeContent: ContentDisplayItem | null;
   historyDocuments: SavedLearningDocument[];
   locale?: Locale;
+  navigationLocked?: boolean;
   onBack: () => void;
   onOpen: (id: ContentItemId) => void;
   onOpenDocument: (document: SavedLearningDocument) => void;
@@ -53,9 +55,10 @@ export function ContentDisplay({
         <header className="mb-8 flex items-center gap-4">
           <button
             type="button"
+            disabled={navigationLocked}
             onClick={onBack}
             aria-label={copy.content.backToDisplay}
-            className="group inline-flex h-10 min-w-[88px] items-center justify-center gap-2 rounded-[10px] border border-[#d9dde4] bg-white/75 px-3 text-[15px] font-medium leading-none text-[#5f6672] shadow-[0_6px_18px_rgba(17,24,39,0.04)] outline-none transition hover:-translate-y-px hover:border-[#bfc7d3] hover:bg-white hover:text-[#303744] focus-visible:ring-2 focus-visible:ring-[#536de8] focus-visible:ring-offset-2 focus-visible:ring-offset-[#f7f7f5]"
+            className="group inline-flex h-10 min-w-[88px] items-center justify-center gap-2 rounded-[10px] border border-[#d9dde4] bg-white/75 px-3 text-[15px] font-medium leading-none text-[#5f6672] shadow-[0_6px_18px_rgba(17,24,39,0.04)] outline-none transition hover:-translate-y-px hover:border-[#bfc7d3] hover:bg-white hover:text-[#303744] focus-visible:ring-2 focus-visible:ring-[#536de8] focus-visible:ring-offset-2 focus-visible:ring-offset-[#f7f7f5] disabled:cursor-wait disabled:opacity-70 disabled:hover:translate-y-0"
           >
             <ArrowLeft size={20} weight="bold" className="transition group-hover:-translate-x-0.5" />
             <span>{copy.content.back}</span>
@@ -71,6 +74,7 @@ export function ContentDisplay({
               documents={historyDocuments}
               emptyText={activeContent.body}
               locale={locale}
+              navigationLocked={navigationLocked}
               onOpenDocument={onOpenDocument}
             />
           ) : (
@@ -98,8 +102,9 @@ export function ContentDisplay({
             <button
               key={item.id}
               type="button"
+              disabled={navigationLocked}
               onClick={() => onOpen(item.id)}
-              className="group flex min-h-[104px] w-full items-center gap-5 rounded-lg border border-[#d7dce5] bg-white/80 px-6 text-left text-[#111827] shadow-[0_8px_24px_rgba(17,24,39,0.04)] outline-none transition hover:-translate-y-px hover:border-[#bcc5d4] hover:bg-white focus-visible:ring-2 focus-visible:ring-[#536de8] focus-visible:ring-offset-2 focus-visible:ring-offset-[#fcfcfc]"
+              className="group flex min-h-[104px] w-full items-center gap-5 rounded-lg border border-[#d7dce5] bg-white/80 px-6 text-left text-[#111827] shadow-[0_8px_24px_rgba(17,24,39,0.04)] outline-none transition hover:-translate-y-px hover:border-[#bcc5d4] hover:bg-white focus-visible:ring-2 focus-visible:ring-[#536de8] focus-visible:ring-offset-2 focus-visible:ring-offset-[#fcfcfc] disabled:cursor-wait disabled:opacity-70 disabled:hover:translate-y-0"
             >
               <span
                 data-content-entry-icon={item.id}
@@ -127,11 +132,13 @@ function HistoryDocuments({
   documents,
   emptyText,
   locale,
+  navigationLocked,
   onOpenDocument,
 }: {
   documents: SavedLearningDocument[];
   emptyText: string;
   locale: Locale;
+  navigationLocked: boolean;
   onOpenDocument: (document: SavedLearningDocument) => void;
 }) {
   if (!documents.length) {
@@ -148,9 +155,10 @@ function HistoryDocuments({
         <button
           key={document.id}
           type="button"
+          disabled={navigationLocked}
           onClick={() => onOpenDocument(document)}
           aria-label={getLearningCopy(locale).content.documentFolder(document.title)}
-          className="group flex min-h-[128px] w-full max-w-[160px] flex-col items-center justify-start rounded-md px-2 py-1 text-center outline-none transition focus-visible:ring-2 focus-visible:ring-[#536de8]"
+          className="group flex min-h-[128px] w-full max-w-[160px] flex-col items-center justify-start rounded-md px-2 py-1 text-center outline-none transition focus-visible:ring-2 focus-visible:ring-[#536de8] disabled:cursor-wait disabled:opacity-70"
         >
           <span
             data-history-folder="icon"

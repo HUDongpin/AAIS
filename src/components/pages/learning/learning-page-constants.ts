@@ -6,6 +6,7 @@ import type { Locale } from "@/data/aais";
 
 export const artifactSaveDebounceMs = 600;
 export const guideRequestTimeoutMs = 30_000;
+export const guideStreamHeartbeatIntervalMs = 10_000;
 export const defaultTaskId = "training_task_1";
 export const documentDownloadContentType = "text/markdown;charset=utf-8";
 export const defaultContentPanelWidth = 600;

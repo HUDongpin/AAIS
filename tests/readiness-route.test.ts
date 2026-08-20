@@ -9,12 +9,52 @@ import {
 } from "@/lib/server/aais-session";
 import { createPasswordRecord } from "@/lib/server/aais-trial-accounts";
 
-let databaseProbeMode: "ok" | "missing_schema" | "error" = "ok";
-let researchDatabaseProbeMode: "ok" | "missing_schema" | "error" = "ok";
+let databaseProbeMode:
+  | "ok"
+  | "missing_schema"
+  | "missing_delivery_fence"
+  | "missing_lrs_delivery_reconciliation"
+  | "inconsistent_lrs_delivery_attempt"
+  | "stale_lrs_delivery_attempt"
+  | "missing_lease"
+  | "missing_dispatch_constraint"
+  | "missing_delete_function"
+  | "missing_admin_invariant"
+  | "missing_auth_rate_retention"
+  | "missing_auth_email_outbox"
+  | "missing_auth_email_reconciliation"
+  | "auth_email_dead_letter"
+  | "auth_email_uncertain"
+  | "auth_email_retry_uncertain"
+  | "lrs_dead_letter"
+  | "outbox_error"
+  | "error" = "ok";
+let researchDatabaseProbeMode:
+  | "ok"
+  | "missing_schema"
+  | "missing_withdrawal_safe_export"
+  | "missing_visit_event_cap"
+  | "missing_raw_write_lease_schema"
+  | "missing_research_write_barrier_functions"
+  | "missing_retention_stale_lease_column"
+  | "event_dead_letter"
+  | "deletion_dead_letter"
+  | "blocked_retention"
+  | "stale_raw_text_write_lease"
+  | "error" = "ok";
 const receiptVerifyingKey = generateKeyPairSync("ed25519").publicKey;
 const receiptVerifyingSpki = receiptVerifyingKey
   .export({ format: "der", type: "spki" })
   .toString("base64");
+const productPseudonymSecret = Buffer.from(
+  Array.from({ length: 32 }, (_, index) => index + 33),
+).toString("base64url");
+const publishedProductPseudonymSecret = Buffer.from(
+  Array.from({ length: 32 }, (_, index) => index + 1),
+).toString("base64url");
+const developmentDefaultProductPseudonymSecret = createHash("sha256")
+  .update("aais-development-product-pseudonym-secret-do-not-use-in-production")
+  .digest("base64url");
 
 const readyResearchSchemaRow = {
   identity_schema: true,
@@ -22,16 +62,25 @@ const readyResearchSchemaRow = {
   identity_map_table: true,
   participation_ledger_table: true,
   visits_table: true,
+  raw_write_leases_table: true,
+  raw_write_leases_expiry_index: true,
   events_table: true,
   outbox_table: true,
   export_audit_table: true,
   withdrawals_table: true,
   deletions_table: true,
   retention_runs_table: true,
+  retention_stale_lease_count_column: true,
   legacy_archives_table: true,
   identity_nonce_constraints: true,
   participation_ledger_constraints: true,
   required_functions: true,
+  withdrawal_safe_export_function: true,
+  visit_event_cap_guard: true,
+  event_dead_letter_count: 0,
+  deletion_dead_letter_count: 0,
+  retention_blocked_active_visit_count: 0,
+  stale_raw_text_write_lease_count: 0,
 };
 
 vi.mock("pg", () => ({
@@ -47,26 +96,205 @@ vi.mock("pg", () => ({
             ...(researchDatabaseProbeMode === "missing_schema"
               ? { outbox_table: false }
               : {}),
+            ...(researchDatabaseProbeMode === "missing_withdrawal_safe_export"
+              ? { withdrawal_safe_export_function: false }
+              : {}),
+            ...(researchDatabaseProbeMode === "missing_visit_event_cap"
+              ? { visit_event_cap_guard: false }
+              : {}),
+            ...(researchDatabaseProbeMode === "missing_raw_write_lease_schema"
+              ? {
+                  raw_write_leases_table: false,
+                  raw_write_leases_expiry_index: false,
+                }
+              : {}),
+            ...(researchDatabaseProbeMode === "missing_research_write_barrier_functions"
+              ? { required_functions: false }
+              : {}),
+            ...(researchDatabaseProbeMode === "missing_retention_stale_lease_column"
+              ? { retention_stale_lease_count_column: false }
+              : {}),
+            ...(researchDatabaseProbeMode === "event_dead_letter"
+              ? { event_dead_letter_count: 2 }
+              : {}),
+            ...(researchDatabaseProbeMode === "deletion_dead_letter"
+              ? { deletion_dead_letter_count: 3 }
+              : {}),
+            ...(researchDatabaseProbeMode === "blocked_retention"
+              ? { retention_blocked_active_visit_count: 1 }
+              : {}),
+            ...(researchDatabaseProbeMode === "stale_raw_text_write_lease"
+              ? { stale_raw_text_write_lease_count: 1 }
+              : {}),
+            raw_write_leases_table:
+              researchDatabaseProbeMode !== "missing_raw_write_lease_schema"
+              && /to_regclass\('public\.aais_research_raw_write_leases'\)[\s\S]*as raw_write_leases_table/i.test(sql),
+            raw_write_leases_expiry_index:
+              researchDatabaseProbeMode !== "missing_raw_write_lease_schema"
+              && /aais_research_raw_write_leases_scope_expiry_idx[\s\S]*expires_at[\s\S]*as raw_write_leases_expiry_index/i.test(sql),
+            required_functions:
+              researchDatabaseProbeMode !== "missing_research_write_barrier_functions"
+              && /count\(distinct p\.proname\) = 8/i.test(sql)
+              && /aais_research_acquire_raw_write_lease/i.test(sql)
+              && /aais_research_begin_withdrawal/i.test(sql)
+              && /p\.provolatile/i.test(sql)
+              && /p\.prosecdef is false/i.test(sql),
+            retention_stale_lease_count_column:
+              researchDatabaseProbeMode !== "missing_retention_stale_lease_column"
+              && /column_name = 'stale_raw_text_write_lease_count'[\s\S]*as retention_stale_lease_count_column/i.test(sql),
           }],
         };
       }
       if (databaseProbeMode === "error") {
         throw new Error("database unavailable");
       }
+      if (
+        databaseProbeMode === "outbox_error"
+        && /select status, count\(\*\)[\s\S]*from aais_lrs_outbox[\s\S]*group by status/i.test(sql)
+      ) {
+        throw new Error("outbox status unavailable");
+      }
+      if (/select status, count\(\*\)[\s\S]*from aais_lrs_outbox[\s\S]*group by status/i.test(sql)) {
+        return {
+          rows: databaseProbeMode === "lrs_dead_letter"
+            ? [{ status: "dead_letter", count: 2 }]
+            : [],
+        };
+      }
+      if (/aais_auth_email_outbox/i.test(sql)) {
+        const present = databaseProbeMode !== "missing_auth_email_outbox";
+        return {
+          rows: [{
+            outbox_table: present,
+            required_columns: present,
+            token_delivery_fence_columns: present,
+            reconciliation_columns:
+              present && databaseProbeMode !== "missing_auth_email_reconciliation",
+            required_constraints: present,
+            reconciliation_constraint:
+              present && databaseProbeMode !== "missing_auth_email_reconciliation",
+            reconciliation_evidence_index:
+              present && databaseProbeMode !== "missing_auth_email_reconciliation",
+            reissue_guard_function: present,
+            reissue_guard_trigger: present,
+            due_index: present,
+            lease_index: present,
+            token_fence_index: present,
+            pending_count: 0,
+            retry_count: databaseProbeMode === "auth_email_retry_uncertain" ? 1 : 0,
+            sending_count: databaseProbeMode === "auth_email_uncertain" ? 1 : 0,
+            sent_count: 0,
+            dead_letter_count: databaseProbeMode === "auth_email_dead_letter" ? 1 : 0,
+            uncertain_count: databaseProbeMode === "auth_email_uncertain"
+              ? 1
+              : databaseProbeMode === "auth_email_retry_uncertain"
+                  && /reconciliation_disposition\s+is\s+null/i.test(sql)
+                  && /status\s+in\s*\(\s*'sending'\s*,\s*'retry'\s*,\s*'dead'\s*\)/i.test(sql)
+                ? 1
+                : 0,
+            total_count:
+              databaseProbeMode === "auth_email_dead_letter"
+              || databaseProbeMode === "auth_email_uncertain"
+              || databaseProbeMode === "auth_email_retry_uncertain"
+                ? 1
+                : 0,
+          }],
+        };
+      }
       if (/to_regclass/i.test(sql)) {
         return {
           rows: [{
             learner_sessions_table: databaseProbeMode === "missing_schema" ? null : "aais_learner_sessions",
+            learner_data_generations_table: databaseProbeMode === "missing_schema"
+              ? null
+              : "aais_learner_data_generations",
+            learner_lrs_delivery_fence_columns:
+              databaseProbeMode !== "missing_schema"
+              && databaseProbeMode !== "missing_delivery_fence",
+            learner_session_generation_compatible: databaseProbeMode !== "missing_schema",
             learner_task_state_table: databaseProbeMode === "missing_schema" ? null : "aais_learner_task_state",
             lrs_outbox_table: databaseProbeMode === "missing_schema" ? null : "aais_lrs_outbox",
+            lrs_outbox_claim_columns: databaseProbeMode !== "missing_schema",
+            lrs_delivery_attempts_table:
+              databaseProbeMode === "missing_schema"
+                || databaseProbeMode === "missing_lrs_delivery_reconciliation"
+                ? null
+                : "aais_lrs_delivery_attempts",
+            lrs_delivery_attempt_statements_table:
+              databaseProbeMode === "missing_schema"
+                || databaseProbeMode === "missing_lrs_delivery_reconciliation"
+                ? null
+                : "aais_lrs_delivery_attempt_statements",
+            lrs_delivery_attempt_columns:
+              databaseProbeMode !== "missing_schema"
+              && databaseProbeMode !== "missing_lrs_delivery_reconciliation",
+            lrs_delivery_attempt_statement_columns:
+              databaseProbeMode !== "missing_schema"
+              && databaseProbeMode !== "missing_lrs_delivery_reconciliation",
+            lrs_delivery_reconciliation_constraints:
+              databaseProbeMode !== "missing_schema"
+              && databaseProbeMode !== "missing_lrs_delivery_reconciliation",
+            lrs_delivery_reconciliation_index:
+              databaseProbeMode === "missing_schema"
+                || databaseProbeMode === "missing_lrs_delivery_reconciliation"
+                ? null
+                : "aais_lrs_delivery_attempts_reconciliation_idx",
+            lrs_delivery_attempt_student_index:
+              databaseProbeMode === "missing_schema"
+                || databaseProbeMode === "missing_lrs_delivery_reconciliation"
+                ? null
+                : "aais_lrs_delivery_attempt_statements_student_idx",
+            lrs_delivery_attempts_consistent:
+              databaseProbeMode !== "missing_schema"
+              && databaseProbeMode !== "missing_lrs_delivery_reconciliation"
+              && databaseProbeMode !== "inconsistent_lrs_delivery_attempt",
+            lrs_delivery_reconciliation_clear:
+              databaseProbeMode !== "missing_schema"
+              && databaseProbeMode !== "missing_lrs_delivery_reconciliation"
+              && databaseProbeMode !== "stale_lrs_delivery_attempt",
             login_rate_limits_table: databaseProbeMode === "missing_schema" ? null : "aais_login_rate_limits",
+            login_rate_limits_expires_column:
+              databaseProbeMode !== "missing_schema"
+              && databaseProbeMode !== "missing_auth_rate_retention",
+            login_rate_limits_expires_index:
+              databaseProbeMode !== "missing_schema"
+              && databaseProbeMode !== "missing_auth_rate_retention",
             events_table: databaseProbeMode === "missing_schema" ? null : "aais_events",
+            ai_guide_daily_usage_table: databaseProbeMode === "missing_schema" ? null : "aais_ai_guide_daily_usage",
+            ai_guide_reservations_table: databaseProbeMode === "missing_schema" ? null : "aais_ai_guide_reservations",
+            ai_guide_reservation_lease_column:
+              databaseProbeMode !== "missing_schema" && databaseProbeMode !== "missing_lease",
+            ai_guide_reservation_dispatch_state_constraint:
+              databaseProbeMode !== "missing_schema"
+              && databaseProbeMode !== "missing_dispatch_constraint",
+            ai_guide_reservation_dispatch_finalized_constraint:
+              databaseProbeMode !== "missing_schema"
+              && databaseProbeMode !== "missing_dispatch_constraint",
+            ai_guide_reservation_function:
+              databaseProbeMode !== "missing_schema" && databaseProbeMode !== "missing_lease",
+            learner_data_delete_function:
+              databaseProbeMode !== "missing_schema"
+              && databaseProbeMode !== "missing_delete_function",
             users_table: databaseProbeMode === "missing_schema" ? null : "aais_users",
+            users_auth_version_column: databaseProbeMode !== "missing_schema",
+            active_admin_invariant_lock_table:
+              databaseProbeMode === "missing_schema" || databaseProbeMode === "missing_admin_invariant"
+                ? null
+                : "aais_active_admin_invariant_lock",
+            active_admin_update_trigger:
+              databaseProbeMode !== "missing_schema"
+              && databaseProbeMode !== "missing_admin_invariant",
+            active_admin_delete_trigger:
+              databaseProbeMode !== "missing_schema"
+              && databaseProbeMode !== "missing_admin_invariant",
             user_auth_tokens_table: databaseProbeMode === "missing_schema" ? null : "aais_user_auth_tokens",
             session_revocations_table: databaseProbeMode === "missing_schema" ? null : "aais_session_revocations",
             courses_table: databaseProbeMode === "missing_schema" ? null : "aais_courses",
             course_tasks_table: databaseProbeMode === "missing_schema" ? null : "aais_course_tasks",
             enrollments_table: databaseProbeMode === "missing_schema" ? null : "aais_enrollments",
+            enrollment_scope_index: databaseProbeMode === "missing_schema"
+              ? null
+              : "aais_enrollments_user_scope_idx",
           }],
         };
       }
@@ -91,6 +319,7 @@ vi.mock("pg", () => ({
 
 const enterpriseEnv = [
   "AAIS_SESSION_SECRET",
+  "AAIS_PRODUCT_PSEUDONYM_SECRET",
   "AAIS_TRIAL_LOGIN_ENABLED",
   "AAIS_TRIAL_ACCOUNTS_JSON",
   "AAIS_TRIAL_SMOKE_ACCOUNTS_JSON",
@@ -125,6 +354,10 @@ const enterpriseEnv = [
   "AAIS_UPTIME_LOGIN_CHECK_URL",
   "CRON_SECRET",
   "AAIS_LRS_OUTBOX_FLUSH_TOKEN",
+  "AAIS_APP_BASE_URL",
+  "RESEND_API_KEY",
+  "AAIS_AUTH_EMAIL_FROM",
+  "AAIS_AUTH_EMAIL_OUTBOX_FLUSH_TOKEN",
   "AAIS_CRON_FAILURE_ALERTS_CONFIGURED",
   "AAIS_OIDC_ISSUER",
   "AAIS_OIDC_CLIENT_ID",
@@ -223,6 +456,14 @@ const enterpriseEnv = [
 ];
 
 let tempDir: string;
+const readinessTestToken = "readiness-test-token-with-at-least-32-characters";
+
+function createAuthorizedReadinessRequest() {
+  process.env.AAIS_READINESS_BEARER_TOKEN = readinessTestToken;
+  return new Request("http://localhost/api/system/readiness", {
+    headers: { authorization: `Bearer ${readinessTestToken}` },
+  });
+}
 
 const trialAccountConfig = JSON.stringify([
   {
@@ -307,6 +548,14 @@ beforeEach(async () => {
     vi.stubEnv(key, "");
   }
   vi.stubEnv("AAIS_DATABASE_DRIVER", "pg");
+  vi.stubEnv("AAIS_PRODUCT_PSEUDONYM_SECRET", productPseudonymSecret);
+  vi.stubEnv("AAIS_APP_BASE_URL", "https://aais.example.test");
+  vi.stubEnv("RESEND_API_KEY", "re_1234567890abcdefghijklmnopqrstuvwxyzABCD");
+  vi.stubEnv("AAIS_AUTH_EMAIL_FROM", "AAIS <no-reply@example.test>");
+  vi.stubEnv(
+    "AAIS_AUTH_EMAIL_OUTBOX_FLUSH_TOKEN",
+    "auth-email-outbox-token-with-at-least-32-characters",
+  );
 });
 
 afterEach(async () => {
@@ -318,7 +567,7 @@ function stubMonitoringEnv() {
   vi.stubEnv("SENTRY_DSN", "https://private@example.ingest.sentry.io/123");
   vi.stubEnv("AAIS_SENTRY_ALERTS_CONFIGURED", "true");
   vi.stubEnv("AAIS_UPTIME_LOGIN_CHECK_URL", "https://uptime.example.test/aais-login");
-  vi.stubEnv("CRON_SECRET", "cron-secret-that-must-not-leak");
+  vi.stubEnv("CRON_SECRET", "cron-secret-that-must-not-leak-2026");
   vi.stubEnv("AAIS_CRON_FAILURE_ALERTS_CONFIGURED", "true");
 }
 
@@ -451,8 +700,9 @@ describe("AAIS readiness route", () => {
     vi.stubEnv("AAIS_AI_EVAL_MANIFEST_PATH", manifestPath);
     const { GET } = await import("@/app/api/system/readiness/route");
 
-    const response = await GET();
+    const response = await GET(createAuthorizedReadinessRequest());
     const body = await response.json();
+
 
     expect(response.status).toBe(200);
     expect(body).toMatchObject({
@@ -709,7 +959,7 @@ describe("AAIS readiness route", () => {
     const fingerprintKey = process.env.AAIS_RESEARCH_IDENTITY_FINGERPRINT_KEY;
     const { GET } = await import("@/app/api/system/readiness/route");
 
-    const response = await GET();
+    const response = await GET(createAuthorizedReadinessRequest());
     const body = await response.json();
 
     expect(response.status).toBe(200);
@@ -740,6 +990,14 @@ describe("AAIS readiness route", () => {
             probe: "connected",
             schema: "current",
             sourceOfTruth: "postgres",
+          },
+          operations: {
+            status: "ok",
+            available: true,
+            eventDeadLetter: 0,
+            deletionDeadLetter: 0,
+            blockedActiveVisits: 0,
+            staleRawTextWriteLeases: 0,
           },
           lrs: {
             status: "ok",
@@ -786,6 +1044,13 @@ describe("AAIS readiness route", () => {
             governanceEvidenceFresh: true,
           },
         },
+        authDelivery: {
+          reconciliation: {
+            auth: "admin_session_csrf",
+            evidenceRequired: true,
+            automaticUncertainRelease: false,
+          },
+        },
       },
       issues: [],
       secrets: "redacted",
@@ -802,6 +1067,63 @@ describe("AAIS readiness route", () => {
     expect(serialized).not.toContain("1".repeat(64));
   });
 
+  it.each([
+    ["event dead letters", "event_dead_letter", {
+      eventDeadLetter: 2,
+      deletionDeadLetter: 0,
+      blockedActiveVisits: 0,
+      staleRawTextWriteLeases: 0,
+    }],
+    ["deletion dead letters", "deletion_dead_letter", {
+      eventDeadLetter: 0,
+      deletionDeadLetter: 3,
+      blockedActiveVisits: 0,
+      staleRawTextWriteLeases: 0,
+    }],
+    ["overdue active visits", "blocked_retention", {
+      eventDeadLetter: 0,
+      deletionDeadLetter: 0,
+      blockedActiveVisits: 1,
+      staleRawTextWriteLeases: 0,
+    }],
+    ["stale raw-text write leases", "stale_raw_text_write_lease", {
+      eventDeadLetter: 0,
+      deletionDeadLetter: 0,
+      blockedActiveVisits: 0,
+      staleRawTextWriteLeases: 1,
+    }],
+  ] as const)(
+    "blocks study launch for research operational health: %s",
+    async (_label, mode, metrics) => {
+      vi.stubEnv("NODE_ENV", "development");
+      vi.stubEnv("AAIS_READINESS_MODE", "enterprise");
+      researchDatabaseProbeMode = mode;
+      stubResearchEnv();
+      const { GET } = await import("@/app/api/system/readiness/route");
+
+      const response = await GET(createAuthorizedReadinessRequest());
+      const body = await response.json();
+
+      expect(response.status).toBe(503);
+      expect(body.checks.research).toMatchObject({
+        status: "blocked",
+        applicationReady: true,
+        studyLaunchReady: false,
+        storage: { status: "ok", schema: "current" },
+        operations: {
+          status: "blocked",
+          available: true,
+          ...metrics,
+        },
+      });
+      expect(body.issues).toContain("AAIS_RESEARCH_OPERATIONAL_HEALTH");
+      const serialized = JSON.stringify(body);
+      expect(serialized).not.toContain("participant-1");
+      expect(serialized).not.toContain("approved-researcher-1");
+      expect(serialized).not.toContain("research-database-secret");
+    },
+  );
+
   it("blocks formal research readiness without the pinned LRS receipt verification key", async () => {
     vi.stubEnv("NODE_ENV", "development");
     vi.stubEnv("AAIS_READINESS_MODE", "enterprise");
@@ -810,7 +1132,7 @@ describe("AAIS readiness route", () => {
     vi.stubEnv("AAIS_RESEARCH_LRS_RECEIPT_VERIFYING_KEY_SPKI", "");
     const { GET } = await import("@/app/api/system/readiness/route");
 
-    const response = await GET();
+    const response = await GET(createAuthorizedReadinessRequest());
     const body = await response.json();
 
     expect(response.status).toBe(503);
@@ -833,7 +1155,7 @@ describe("AAIS readiness route", () => {
     vi.stubEnv("AAIS_RESEARCH_MODE", "false");
     const { GET } = await import("@/app/api/system/readiness/route");
 
-    const response = await GET();
+    const response = await GET(createAuthorizedReadinessRequest());
     const body = await response.json();
 
     expect(response.status).toBe(503);
@@ -873,7 +1195,7 @@ describe("AAIS readiness route", () => {
     stubResearchEnv();
     const { GET } = await import("@/app/api/system/readiness/route");
 
-    const response = await GET();
+    const response = await GET(createAuthorizedReadinessRequest());
     const body = await response.json();
 
     expect(response.status).toBe(200);
@@ -906,7 +1228,7 @@ describe("AAIS readiness route", () => {
     vi.stubEnv("AAIS_RESEARCH_LEGACY_ARCHIVE_RECEIPT_SHA256", "");
     const { GET } = await import("@/app/api/system/readiness/route");
 
-    const response = await GET();
+    const response = await GET(createAuthorizedReadinessRequest());
     const body = await response.json();
 
     expect(response.status).toBe(503);
@@ -951,7 +1273,7 @@ describe("AAIS readiness route", () => {
     );
     const { GET } = await import("@/app/api/system/readiness/route");
 
-    const response = await GET();
+    const response = await GET(createAuthorizedReadinessRequest());
     const body = await response.json();
 
     expect(response.status).toBe(503);
@@ -981,7 +1303,7 @@ describe("AAIS readiness route", () => {
     vi.stubEnv("AAIS_RESEARCH_LRS_DELETION_SCHEDULE_ID", "");
     const { GET } = await import("@/app/api/system/readiness/route");
 
-    const response = await GET();
+    const response = await GET(createAuthorizedReadinessRequest());
     const body = await response.json();
 
     expect(response.status).toBe(503);
@@ -1013,7 +1335,7 @@ describe("AAIS readiness route", () => {
     vi.stubEnv("AAIS_RESEARCH_LRS_RECEIPT_VERIFYING_KEY_SPKI", "");
     const { GET } = await import("@/app/api/system/readiness/route");
 
-    const response = await GET();
+    const response = await GET(createAuthorizedReadinessRequest());
     const body = await response.json();
 
     expect(response.status).toBe(200);
@@ -1041,7 +1363,7 @@ describe("AAIS readiness route", () => {
     stubResearchEnv({ participantCount: 29 });
     const { GET } = await import("@/app/api/system/readiness/route");
 
-    const response = await GET();
+    const response = await GET(createAuthorizedReadinessRequest());
     const body = await response.json();
 
     expect(response.status).toBe(503);
@@ -1068,7 +1390,7 @@ describe("AAIS readiness route", () => {
     vi.stubEnv("AAIS_RESEARCH_MODE", "true");
     const { GET } = await import("@/app/api/system/readiness/route");
 
-    const response = await GET();
+    const response = await GET(createAuthorizedReadinessRequest());
     const body = await response.json();
 
     expect(response.status).toBe(503);
@@ -1115,7 +1437,7 @@ describe("AAIS readiness route", () => {
     researchDatabaseProbeMode = "missing_schema";
     const { GET } = await import("@/app/api/system/readiness/route");
 
-    const response = await GET();
+    const response = await GET(createAuthorizedReadinessRequest());
     const body = await response.json();
 
     expect(response.status).toBe(503);
@@ -1136,6 +1458,83 @@ describe("AAIS readiness route", () => {
     expect(JSON.stringify(body)).not.toContain("research database unavailable");
   });
 
+  it.each([
+    ["the raw-write lease table or scoped expiry index", "missing_raw_write_lease_schema"],
+    ["the raw-write lease and withdrawal barrier functions", "missing_research_write_barrier_functions"],
+    ["the retention stale-lease receipt column", "missing_retention_stale_lease_column"],
+  ] as const)("fails research readiness closed without %s", async (_label, mode) => {
+    vi.stubEnv("NODE_ENV", "development");
+    vi.stubEnv("AAIS_READINESS_MODE", "enterprise");
+    stubResearchEnv();
+    researchDatabaseProbeMode = mode;
+    const { GET } = await import("@/app/api/system/readiness/route");
+
+    const response = await GET(createAuthorizedReadinessRequest());
+    const body = await response.json();
+
+    expect(response.status).toBe(503);
+    expect(body.checks.research).toMatchObject({
+      status: "blocked",
+      applicationReady: false,
+      studyLaunchReady: false,
+      storage: {
+        status: "blocked",
+        probe: "connected",
+        schema: "missing_or_unreachable",
+      },
+    });
+    expect(body.issues).toContain("AAIS_RESEARCH_DATABASE_SCHEMA");
+    expect(JSON.stringify(body)).not.toContain("research-database-secret");
+  });
+
+  it("fails research readiness closed when migration 0022 export serialization is missing", async () => {
+    vi.stubEnv("NODE_ENV", "development");
+    vi.stubEnv("AAIS_READINESS_MODE", "enterprise");
+    stubResearchEnv();
+    researchDatabaseProbeMode = "missing_withdrawal_safe_export";
+    const { GET } = await import("@/app/api/system/readiness/route");
+
+    const response = await GET(createAuthorizedReadinessRequest());
+    const body = await response.json();
+
+    expect(response.status).toBe(503);
+    expect(body.checks.research).toMatchObject({
+      status: "blocked",
+      storage: {
+        status: "blocked",
+        probe: "connected",
+        schema: "missing_or_unreachable",
+      },
+    });
+    expect(body.issues).toEqual(expect.arrayContaining([
+      "AAIS_RESEARCH_DATABASE_SCHEMA",
+    ]));
+  });
+
+  it("fails research readiness closed when migration 0024 event cap guard is missing", async () => {
+    vi.stubEnv("NODE_ENV", "development");
+    vi.stubEnv("AAIS_READINESS_MODE", "enterprise");
+    stubResearchEnv();
+    researchDatabaseProbeMode = "missing_visit_event_cap";
+    const { GET } = await import("@/app/api/system/readiness/route");
+
+    const response = await GET(createAuthorizedReadinessRequest());
+    const body = await response.json();
+
+    expect(response.status).toBe(503);
+    expect(body.checks.research).toMatchObject({
+      status: "blocked",
+      storage: {
+        status: "blocked",
+        probe: "connected",
+        schema: "missing_or_unreachable",
+      },
+    });
+    expect(body.issues).toEqual(expect.arrayContaining([
+      "AAIS_RESEARCH_DATABASE_SCHEMA",
+    ]));
+  });
+
   it("fails research readiness closed when the dedicated database is unreachable", async () => {
     vi.stubEnv("NODE_ENV", "development");
     vi.stubEnv("AAIS_READINESS_MODE", "enterprise");
@@ -1143,7 +1542,7 @@ describe("AAIS readiness route", () => {
     researchDatabaseProbeMode = "error";
     const { GET } = await import("@/app/api/system/readiness/route");
 
-    const response = await GET();
+    const response = await GET(createAuthorizedReadinessRequest());
     const body = await response.json();
 
     expect(response.status).toBe(503);
@@ -1171,7 +1570,7 @@ describe("AAIS readiness route", () => {
     vi.stubEnv("LRS_PASSWORD", "generic-lrs-secret-that-must-not-leak");
     const { GET } = await import("@/app/api/system/readiness/route");
 
-    const response = await GET();
+    const response = await GET(createAuthorizedReadinessRequest());
     const body = await response.json();
 
     expect(response.status).toBe(503);
@@ -1265,13 +1664,145 @@ describe("AAIS readiness route", () => {
     expect(serialized).not.toContain("aais-2026-06-30-rc1");
   });
 
+  it("does not accept a matching but weak readiness bearer secret", async () => {
+    vi.stubEnv("AAIS_READINESS_BEARER_TOKEN", "x");
+    const { GET } = await import("@/app/api/system/readiness/route");
+
+    const response = await GET(new Request("http://localhost/api/system/readiness", {
+      headers: { authorization: "Bearer x" },
+    }));
+
+    expect(response.status).toBe(403);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+  });
+
+  it("authorizes before probing and singleflights concurrent public readiness checks", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-20T00:00:00.000Z"));
+    vi.stubEnv("AAIS_READINESS_BEARER_TOKEN", "readiness-token-with-at-least-32-characters");
+    const reportMock = vi.fn(async (): Promise<{ status: "ready" | "not_ready" }> => ({
+      status: "ready",
+    }));
+    vi.doMock("@/lib/server/aais-readiness", () => ({
+      getAaisReadinessReport: reportMock,
+    }));
+    vi.resetModules();
+    try {
+      const { GET } = await import("@/app/api/system/readiness/route");
+      const forbidden = await GET(new Request("http://localhost/api/system/readiness", {
+        headers: { authorization: "Bearer wrong-readiness-token" },
+      }));
+      expect(forbidden.status).toBe(403);
+      expect(reportMock).not.toHaveBeenCalled();
+
+      const publicResponses = await Promise.all(Array.from({ length: 50 }, () =>
+        GET(new Request("http://localhost/api/system/readiness"))
+      ));
+      expect(reportMock).toHaveBeenCalledTimes(1);
+      expect(publicResponses.every((response) => response.status === 200)).toBe(true);
+      expect(publicResponses[0]?.headers.get("cache-control")).toBe(
+        "no-store",
+      );
+      await expect(publicResponses[0]?.json()).resolves.toEqual({ status: "ready" });
+
+      const cachedReady = await GET(new Request("http://localhost/api/system/readiness"));
+      expect(cachedReady.status).toBe(200);
+      expect(reportMock).toHaveBeenCalledTimes(1);
+
+      vi.advanceTimersByTime(1_001);
+      reportMock.mockResolvedValueOnce({ status: "not_ready" });
+      const refreshed = await GET(new Request("http://localhost/api/system/readiness"));
+      expect(refreshed.status).toBe(503);
+      expect(reportMock).toHaveBeenCalledTimes(2);
+
+      const cachedNotReady = await GET(new Request("http://localhost/api/system/readiness"));
+      expect(cachedNotReady.status).toBe(503);
+      expect(reportMock).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+      vi.doUnmock("@/lib/server/aais-readiness");
+      vi.resetModules();
+    }
+  });
+
+  it("bounds hung readiness probes without spawning duplicate background checks", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-20T00:00:00.000Z"));
+    vi.stubEnv("AAIS_READINESS_BEARER_TOKEN", "readiness-token-with-at-least-32-characters");
+    let resolveReport!: (report: { status: "ready" | "not_ready" }) => void;
+    const pendingReport = new Promise<{ status: "ready" | "not_ready" }>((resolve) => {
+      resolveReport = resolve;
+    });
+    const reportMock = vi.fn(() => pendingReport);
+    vi.doMock("@/lib/server/aais-readiness", () => ({
+      getAaisReadinessReport: reportMock,
+    }));
+    vi.resetModules();
+    try {
+      const { GET } = await import("@/app/api/system/readiness/route");
+      const publicResponsePromise = GET(new Request("http://localhost/api/system/readiness"));
+      await vi.advanceTimersByTimeAsync(5_001);
+      const publicResponse = await publicResponsePromise;
+
+      expect(publicResponse.status).toBe(503);
+      await expect(publicResponse.json()).resolves.toEqual({ status: "not_ready" });
+      expect(reportMock).toHaveBeenCalledTimes(1);
+
+      const cachedResponse = await GET(new Request("http://localhost/api/system/readiness"));
+      expect(cachedResponse.status).toBe(503);
+      expect(reportMock).toHaveBeenCalledTimes(1);
+
+      const authorizedResponsePromise = GET(new Request(
+        "http://localhost/api/system/readiness",
+        {
+          headers: {
+            authorization: "Bearer readiness-token-with-at-least-32-characters",
+          },
+        },
+      ));
+      await vi.advanceTimersByTimeAsync(5_001);
+      const authorizedResponse = await authorizedResponsePromise;
+      const authorizedBody = await authorizedResponse.json();
+      expect(authorizedResponse.status).toBe(503);
+      expect(authorizedResponse.headers.get("cache-control")).toBe("no-store");
+      expect(authorizedBody).toMatchObject({
+        error: { code: "AAIS_READINESS_TIMEOUT" },
+        secrets: "redacted",
+      });
+      expect(reportMock).toHaveBeenCalledTimes(1);
+
+      resolveReport({ status: "ready" });
+      await Promise.resolve();
+    } finally {
+      vi.useRealTimers();
+      vi.doUnmock("@/lib/server/aais-readiness");
+      vi.resetModules();
+    }
+  });
+
   it("returns the full readiness report to admin sessions", async () => {
     vi.stubEnv("AAIS_SESSION_SECRET", "session-secret-that-must-not-leak");
+    // Admin authentication itself now requires the durable revocation store in
+    // production. The file-level pg fake answers this URL without contacting a
+    // database, allowing this test to remain focused on report redaction.
+    vi.stubEnv("AAIS_DATABASE_URL", "postgres://aais@db.example.test/aais");
     vi.stubEnv("AAIS_RELEASE_ID", "aais-2026-06-30-rc1");
+    vi.stubEnv("AAIS_OIDC_ISSUER", "https://idp.example.test");
+    vi.stubEnv("AAIS_OIDC_CLIENT_ID", "aais-client");
+    vi.stubEnv("AAIS_OIDC_CLIENT_SECRET", "oidc-secret-that-must-not-leak");
+    vi.stubEnv("AAIS_OIDC_REDIRECT_URI", "https://aais.example.test/api/auth/oidc/callback");
+    vi.stubEnv("AAIS_OIDC_AUTHORIZATION_ENDPOINT", "https://idp.example.test/authorize");
+    vi.stubEnv("AAIS_OIDC_TOKEN_ENDPOINT", "https://idp.example.test/token");
+    vi.stubEnv("AAIS_OIDC_JWKS_URI", "https://idp.example.test/jwks");
+    const { getAaisOidcSessionPolicyFingerprint } = await import("@/lib/server/aais-oidc");
     const adminToken = createAaisSessionToken({
-      id: "admin-a",
+      id: `oidc:v2:${"a".repeat(64)}`,
       displayName: "Admin A",
       role: "admin",
+    }, new Date(), {
+      authSource: "oidc",
+      oidcPolicyFingerprint: getAaisOidcSessionPolicyFingerprint() ?? "",
+      ttlSeconds: 15 * 60,
     });
     const { GET } = await import("@/app/api/system/readiness/route");
 
@@ -1299,7 +1830,7 @@ describe("AAIS readiness route", () => {
     vi.stubEnv("VERCEL_GIT_COMMIT_SHA", "");
     const { GET } = await import("@/app/api/system/readiness/route");
 
-    const response = await GET();
+    const response = await GET(createAuthorizedReadinessRequest());
     const body = await response.json();
 
     expect(response.status).toBe(503);
@@ -1336,7 +1867,7 @@ describe("AAIS readiness route", () => {
     vi.stubEnv("AAIS_OIDC_ADMIN_EMAILS", "admin@example.test");
     const { GET } = await import("@/app/api/system/readiness/route");
 
-    const response = await GET();
+    const response = await GET(createAuthorizedReadinessRequest());
     const body = await response.json();
 
     expect(response.status).toBe(200);
@@ -1383,7 +1914,7 @@ describe("AAIS readiness route", () => {
     vi.stubEnv("AAIS_OIDC_TEACHER_GROUPS", "aais-teachers");
     const { GET } = await import("@/app/api/system/readiness/route");
 
-    const response = await GET();
+    const response = await GET(createAuthorizedReadinessRequest());
     const body = await response.json();
 
     expect(response.status).toBe(200);
@@ -1414,7 +1945,7 @@ describe("AAIS readiness route", () => {
     stubMonitoringEnv();
     const { GET } = await import("@/app/api/system/readiness/route");
 
-    const response = await GET();
+    const response = await GET(createAuthorizedReadinessRequest());
     const body = await response.json();
 
     expect(response.status).toBe(200);
@@ -1449,19 +1980,19 @@ describe("AAIS readiness route", () => {
     expect(JSON.stringify(body)).not.toContain("database-secret");
   });
 
-  it("reports missing operational evidence as warnings in traffic readiness mode", async () => {
+  it("fails closed when the scheduled auth-email worker secret is missing in traffic mode", async () => {
     vi.stubEnv("AAIS_SESSION_SECRET", "session-secret-that-must-not-leak");
     vi.stubEnv("AAIS_TRIAL_ACCOUNTS_JSON", trialAccountConfig);
     vi.stubEnv("DATABASE_URL", "postgres://aais:database-secret@ep-prod.us-east-1.aws.neon.tech/aais");
     vi.stubEnv("AAIS_READINESS_MODE", "traffic");
     const { GET } = await import("@/app/api/system/readiness/route");
 
-    const response = await GET();
+    const response = await GET(createAuthorizedReadinessRequest());
     const body = await response.json();
 
-    expect(response.status).toBe(200);
+    expect(response.status).toBe(503);
     expect(body).toMatchObject({
-      status: "ready",
+      status: "not_ready",
       readinessMode: "traffic",
       checks: {
         monitoring: {
@@ -1484,9 +2015,16 @@ describe("AAIS readiness route", () => {
             alertsConfigured: false,
           },
         },
+        authDelivery: {
+          status: "invalid",
+          operatorAuthorized: false,
+          schema: "current",
+        },
       },
     });
-    expect(body.issues).toEqual([]);
+    expect(body.issues).toEqual(expect.arrayContaining([
+      "AAIS_AUTH_EMAIL_OUTBOX_OPERATOR_SECRET",
+    ]));
     expect(body.warnings).toEqual(
       expect.arrayContaining([
         "LRS_ENDPOINT/LRS_USERNAME/LRS_PASSWORD",
@@ -1504,7 +2042,7 @@ describe("AAIS readiness route", () => {
     vi.stubEnv("AAIS_SESSION_SECRET", "session-secret-that-must-not-leak");
     vi.stubEnv("AAIS_TRIAL_ACCOUNTS_JSON", trialAccountConfig);
     vi.stubEnv("DATABASE_URL", "postgres://aais:database-secret@ep-prod.us-east-1.aws.neon.tech/aais");
-    vi.stubEnv("CRON_SECRET", "cron-secret-that-must-not-leak");
+    vi.stubEnv("CRON_SECRET", "cron-secret-that-must-not-leak-2026");
     vi.stubEnv("AAIS_READINESS_MODE", "traffic");
     vi.stubEnv("AAIS_AI_PROVIDER", "qwen");
     vi.stubEnv("DASHSCOPE_API_KEY", "dashscope-secret-that-must-not-leak");
@@ -1514,7 +2052,7 @@ describe("AAIS readiness route", () => {
     vi.stubEnv("AAIS_AI_EVAL_MANIFEST_JSON", JSON.stringify(passingAiEvalManifest()));
     const { GET } = await import("@/app/api/system/readiness/route");
 
-    const response = await GET();
+    const response = await GET(createAuthorizedReadinessRequest());
     const body = await response.json();
 
     expect(response.status).toBe(200);
@@ -1555,7 +2093,7 @@ describe("AAIS readiness route", () => {
     vi.stubEnv("AAIS_AI_EVAL_VERSION", "eval-2026-07-19-qwen3.7-max-v1");
     const { GET } = await import("@/app/api/system/readiness/route");
 
-    const response = await GET();
+    const response = await GET(createAuthorizedReadinessRequest());
     const body = await response.json();
 
     expect(response.status).toBe(503);
@@ -1599,7 +2137,7 @@ describe("AAIS readiness route", () => {
     })));
     const { GET } = await import("@/app/api/system/readiness/route");
 
-    const response = await GET();
+    const response = await GET(createAuthorizedReadinessRequest());
     const body = await response.json();
 
     expect(response.status).toBe(503);
@@ -1634,7 +2172,7 @@ describe("AAIS readiness route", () => {
     vi.stubEnv("AAIS_AI_FALLBACK_MODEL", "unevaluated-model");
     const { GET } = await import("@/app/api/system/readiness/route");
 
-    const response = await GET();
+    const response = await GET(createAuthorizedReadinessRequest());
     const body = await response.json();
 
     expect(response.status).toBe(503);
@@ -1667,7 +2205,7 @@ describe("AAIS readiness route", () => {
     vi.stubEnv("AAIS_OIDC_TEACHER_GROUPS", "aais-teachers");
     const { GET } = await import("@/app/api/system/readiness/route");
 
-    const response = await GET();
+    const response = await GET(createAuthorizedReadinessRequest());
     const body = await response.json();
 
     expect(response.status).toBe(200);
@@ -1698,7 +2236,7 @@ describe("AAIS readiness route", () => {
     vi.stubEnv("AAIS_OIDC_JWKS_URI", "https://idp.example.test/.well-known/jwks.json");
     const { GET } = await import("@/app/api/system/readiness/route");
 
-    const response = await GET();
+    const response = await GET(createAuthorizedReadinessRequest());
     const body = await response.json();
 
     expect(response.status).toBe(503);
@@ -1748,7 +2286,7 @@ describe("AAIS readiness route", () => {
     vi.stubEnv("AAIS_AI_PROVIDER", "deterministic");
     const { GET } = await import("@/app/api/system/readiness/route");
 
-    const response = await GET();
+    const response = await GET(createAuthorizedReadinessRequest());
     const body = await response.json();
 
     expect(response.status).toBe(503);
@@ -1772,7 +2310,7 @@ describe("AAIS readiness route", () => {
     vi.stubEnv("AAIS_READINESS_MODE", "enterprise");
     const { GET } = await import("@/app/api/system/readiness/route");
 
-    const response = await GET();
+    const response = await GET(createAuthorizedReadinessRequest());
     const body = await response.json();
 
     expect(response.status).toBe(503);
@@ -1794,6 +2332,97 @@ describe("AAIS readiness route", () => {
     expect(body.secrets).toBe("redacted");
   });
 
+  it("reports an explicitly configured weak production session secret as invalid", async () => {
+    vi.stubEnv("AAIS_SESSION_SECRET", "x");
+    const { GET } = await import("@/app/api/system/readiness/route");
+
+    const response = await GET(createAuthorizedReadinessRequest());
+    const body = await response.json();
+
+    expect(response.status).toBe(503);
+    expect(body.checks.session).toEqual({ status: "invalid" });
+    expect(body.issues).toContain("AAIS_SESSION_SECRET");
+    expect(JSON.stringify(body)).not.toContain('"x"');
+  });
+
+  it.each([
+    { label: "missing", value: "", issue: "AAIS_PRODUCT_PSEUDONYM_SECRET" },
+    { label: "malformed", value: "weak", issue: "AAIS_PRODUCT_PSEUDONYM_SECRET" },
+  ])("fails closed for $label production product-pseudonym key material", async ({ value, issue }) => {
+    vi.stubEnv("AAIS_PRODUCT_PSEUDONYM_SECRET", value);
+    const { GET } = await import("@/app/api/system/readiness/route");
+
+    const response = await GET(createAuthorizedReadinessRequest());
+    const body = await response.json();
+
+    expect(response.status).toBe(503);
+    expect(body.checks.productPseudonym.status).toBe(value ? "invalid" : "missing");
+    expect(body.issues).toContain(issue);
+    expect(JSON.stringify(body)).not.toContain(value || "product-pseudonym-secret");
+  });
+
+  it("fails closed when the product-pseudonym key reuses another protected secret", async () => {
+    vi.stubEnv("AAIS_SESSION_SECRET", productPseudonymSecret);
+    const { GET } = await import("@/app/api/system/readiness/route");
+
+    const response = await GET(createAuthorizedReadinessRequest());
+    const body = await response.json();
+
+    expect(response.status).toBe(503);
+    expect(body.checks.productPseudonym).toMatchObject({
+      status: "invalid",
+      configured: true,
+      formatValid: true,
+      distinct: false,
+      algorithm: "hmac-sha256-128",
+      emitVersion: "v2",
+    });
+    expect(body.issues).toContain("AAIS_PRODUCT_PSEUDONYM_SECRET_DISTINCT");
+    expect(JSON.stringify(body)).not.toContain(productPseudonymSecret);
+  });
+
+  it.each([
+    publishedProductPseudonymSecret,
+    developmentDefaultProductPseudonymSecret,
+  ])("fails closed when production uses publicly known product-pseudonym key material", async (secret) => {
+    vi.stubEnv("AAIS_PRODUCT_PSEUDONYM_SECRET", secret);
+    const { GET } = await import("@/app/api/system/readiness/route");
+
+    const response = await GET(createAuthorizedReadinessRequest());
+    const body = await response.json();
+
+    expect(response.status).toBe(503);
+    expect(body.checks.productPseudonym).toMatchObject({
+      status: "invalid",
+      configured: true,
+      formatValid: true,
+      distinct: false,
+    });
+    expect(body.issues).toContain("AAIS_PRODUCT_PSEUDONYM_SECRET_DISTINCT");
+    expect(JSON.stringify(body)).not.toContain(secret);
+  });
+
+  it("fails closed when a research key uses the same bytes under standard base64", async () => {
+    const sharedBytes = Buffer.alloc(32, 0xff);
+    const productSecret = sharedBytes.toString("base64url");
+    const sameBytes = sharedBytes.toString("base64").replace(/=+$/, "");
+    vi.stubEnv("AAIS_PRODUCT_PSEUDONYM_SECRET", productSecret);
+    vi.stubEnv("AAIS_RESEARCH_IDENTITY_ENCRYPTION_KEY", sameBytes);
+    const { GET } = await import("@/app/api/system/readiness/route");
+
+    const response = await GET(createAuthorizedReadinessRequest());
+    const body = await response.json();
+
+    expect(response.status).toBe(503);
+    expect(body.checks.productPseudonym).toMatchObject({
+      status: "invalid",
+      distinct: false,
+    });
+    expect(body.issues).toContain("AAIS_PRODUCT_PSEUDONYM_SECRET_DISTINCT");
+    expect(JSON.stringify(body)).not.toContain(productSecret);
+    expect(JSON.stringify(body)).not.toContain(sameBytes);
+  });
+
   it("reports Qwen DashScope alias configuration as live AI in development", async () => {
     vi.stubEnv("NODE_ENV", "development");
     vi.stubEnv("AAIS_AI_PROVIDER", "qwen");
@@ -1801,7 +2430,7 @@ describe("AAIS readiness route", () => {
     vi.stubEnv("AAIS_AI_MODEL", "qwen3.8-max");
     const { GET } = await import("@/app/api/system/readiness/route");
 
-    const response = await GET();
+    const response = await GET(createAuthorizedReadinessRequest());
     const body = await response.json();
 
     expect(response.status).toBe(200);
@@ -1836,6 +2465,23 @@ describe("AAIS readiness route", () => {
     expect(JSON.stringify(body)).not.toContain("dashscope.aliyuncs.com");
   });
 
+  it("fails production readiness closed for an unsafe AI provider endpoint", async () => {
+    vi.stubEnv("AAIS_AI_PROVIDER", "openai-compatible");
+    vi.stubEnv("AAIS_AI_ENDPOINT", "http://ai.example.test/v1/chat/completions?tenant=learner");
+    vi.stubEnv("AAIS_AI_API_KEY", "ai-secret-that-must-not-leak");
+    vi.stubEnv("AAIS_AI_MODEL", "enterprise-model");
+    const { GET } = await import("@/app/api/system/readiness/route");
+
+    const response = await GET(createAuthorizedReadinessRequest());
+    const body = await response.json();
+
+    expect(response.status).toBe(503);
+    expect(body.checks.ai.status).toBe("invalid");
+    expect(body.issues).toContain("AAIS_AI_ENDPOINT_CONFIGURATION");
+    expect(JSON.stringify(body)).not.toContain("ai-secret-that-must-not-leak");
+    expect(JSON.stringify(body)).not.toContain("ai.example.test");
+  });
+
   it("requires a verified AI evaluation manifest before production live AI is ready", async () => {
     vi.stubEnv("AAIS_SESSION_SECRET", "session-secret-that-must-not-leak");
     vi.stubEnv("AAIS_TRIAL_ACCOUNTS_JSON", trialAccountConfig);
@@ -1860,7 +2506,7 @@ describe("AAIS readiness route", () => {
     vi.stubEnv("AAIS_AI_EVAL_MANIFEST_PATH", path.join(tempDir, "missing.json"));
     const { GET } = await import("@/app/api/system/readiness/route");
 
-    const response = await GET();
+    const response = await GET(createAuthorizedReadinessRequest());
     const body = await response.json();
 
     expect(response.status).toBe(503);
@@ -1901,7 +2547,7 @@ describe("AAIS readiness route", () => {
     vi.stubEnv("AAIS_AI_EVAL_MANIFEST_JSON", JSON.stringify(passingAiEvalManifest()));
     const { GET } = await import("@/app/api/system/readiness/route");
 
-    const response = await GET();
+    const response = await GET(createAuthorizedReadinessRequest());
     const body = await response.json();
 
     expect(response.status).toBe(200);
@@ -1952,7 +2598,7 @@ describe("AAIS readiness route", () => {
     })));
     const { GET } = await import("@/app/api/system/readiness/route");
 
-    const response = await GET();
+    const response = await GET(createAuthorizedReadinessRequest());
     const body = await response.json();
 
     expect(response.status).toBe(503);
@@ -1995,7 +2641,7 @@ describe("AAIS readiness route", () => {
     vi.stubEnv("AAIS_AI_EVAL_MANIFEST_PATH", manifestPath);
     const { GET } = await import("@/app/api/system/readiness/route");
 
-    const response = await GET();
+    const response = await GET(createAuthorizedReadinessRequest());
     const body = await response.json();
 
     expect(response.status).toBe(503);
@@ -2023,7 +2669,7 @@ describe("AAIS readiness route", () => {
     vi.stubEnv("AAIS_OIDC_JWKS_URI", "https://idp.example.test/.well-known/jwks.json");
     const { GET } = await import("@/app/api/system/readiness/route");
 
-    const response = await GET();
+    const response = await GET(createAuthorizedReadinessRequest());
     const body = await response.json();
 
     expect(response.status).toBe(503);
@@ -2043,8 +2689,168 @@ describe("AAIS readiness route", () => {
     expect(JSON.stringify(body)).not.toContain("database unavailable");
   });
 
-  it("fails closed when production database migrations have not created required tables", async () => {
-    databaseProbeMode = "missing_schema";
+  it("fails closed instead of reporting a zero backlog when outbox status is unavailable", async () => {
+    databaseProbeMode = "outbox_error";
+    vi.stubEnv("AAIS_DATABASE_URL", "postgres://aais:database-secret@example.test/aais");
+    vi.stubEnv("LRS_ENDPOINT", "https://lrs.example.test/xapi");
+    vi.stubEnv("LRS_USERNAME", "lrs-user");
+    vi.stubEnv("LRS_PASSWORD", "lrs-password-that-must-not-leak");
+    const { GET } = await import("@/app/api/system/readiness/route");
+
+    const response = await GET(createAuthorizedReadinessRequest());
+    const body = await response.json();
+
+    expect(response.status).toBe(503);
+    expect(body.checks.lrs).toMatchObject({
+      status: "blocked",
+      outbox: {
+        status: "failed",
+      },
+    });
+    expect(body.issues).toContain("AAIS_LRS_OUTBOX_STATUS");
+    expect(JSON.stringify(body)).not.toContain("outbox status unavailable");
+    expect(JSON.stringify(body)).not.toContain("database-secret");
+  });
+
+  it("fails closed when the product LRS outbox contains dead letters", async () => {
+    databaseProbeMode = "lrs_dead_letter";
+    vi.stubEnv("AAIS_DATABASE_URL", "postgres://aais:database-secret@example.test/aais");
+    vi.stubEnv("LRS_ENDPOINT", "https://lrs.example.test/xapi");
+    vi.stubEnv("LRS_USERNAME", "lrs-user");
+    vi.stubEnv("LRS_PASSWORD", "lrs-password-that-must-not-leak");
+    const { GET } = await import("@/app/api/system/readiness/route");
+
+    const response = await GET(createAuthorizedReadinessRequest());
+    const body = await response.json();
+
+    expect(response.status).toBe(503);
+    expect(body.checks.lrs).toMatchObject({
+      status: "blocked",
+      outbox: {
+        status: "degraded",
+        metrics: { deadLetter: 2, total: 2 },
+      },
+    });
+    expect(body.issues).toContain("AAIS_LRS_OUTBOX_DEAD_LETTER");
+    expect(JSON.stringify(body)).not.toContain("database-secret");
+  });
+
+  it.each([
+    ["auth_email_dead_letter", { deadLetter: 1, uncertain: 0 }],
+    ["auth_email_uncertain", { deadLetter: 0, uncertain: 1 }],
+    ["auth_email_retry_uncertain", { deadLetter: 0, uncertain: 1 }],
+  ] as const)(
+    "fails closed when authentication delivery queue health is %s",
+    async (mode, metrics) => {
+      databaseProbeMode = mode;
+      vi.stubEnv("AAIS_DATABASE_URL", "postgres://aais:database-secret@example.test/aais");
+      const { GET } = await import("@/app/api/system/readiness/route");
+
+      const response = await GET(createAuthorizedReadinessRequest());
+      const body = await response.json();
+
+      expect(response.status).toBe(503);
+      expect(body.checks.authDelivery).toMatchObject({
+        status: "invalid",
+        schema: "current",
+        queue: {
+          status: "degraded",
+          metrics,
+        },
+      });
+      expect(body.issues).toContain("AAIS_AUTH_EMAIL_OUTBOX_HEALTH");
+      expect(JSON.stringify(body)).not.toContain("database-secret");
+    },
+  );
+
+  it("fails closed when production auth-email delivery configuration is incomplete", async () => {
+    vi.stubEnv("AAIS_SESSION_SECRET", "session-secret-that-must-not-leak");
+    vi.stubEnv("AAIS_TRIAL_ACCOUNTS_JSON", trialAccountConfig);
+    vi.stubEnv("AAIS_DATABASE_URL", "postgres://aais:database-secret@example.test/aais");
+    vi.stubEnv("CRON_SECRET", "cron-secret-that-must-not-leak-2026");
+    vi.stubEnv("AAIS_APP_BASE_URL", "http://localhost:3000");
+    vi.stubEnv("RESEND_API_KEY", "");
+    vi.stubEnv("AAIS_AUTH_EMAIL_FROM", "");
+    const { GET } = await import("@/app/api/system/readiness/route");
+
+    const response = await GET(createAuthorizedReadinessRequest());
+    const body = await response.json();
+
+    expect(response.status).toBe(503);
+    expect(body.checks.authDelivery).toMatchObject({
+      status: "invalid",
+      configurationStatus: "invalid",
+      appBaseUrlConfigured: true,
+      providerConfigured: false,
+      schema: "current",
+    });
+    expect(body.issues).toEqual(expect.arrayContaining([
+      "AAIS_AUTH_DELIVERY_CONFIGURATION",
+    ]));
+    expect(JSON.stringify(body)).not.toContain("database-secret");
+  });
+
+  it("fails closed when migration 0020 auth-email outbox schema is missing", async () => {
+    databaseProbeMode = "missing_auth_email_outbox";
+    vi.stubEnv("AAIS_SESSION_SECRET", "session-secret-that-must-not-leak");
+    vi.stubEnv("AAIS_TRIAL_ACCOUNTS_JSON", trialAccountConfig);
+    vi.stubEnv("AAIS_DATABASE_URL", "postgres://aais:database-secret@example.test/aais");
+    vi.stubEnv("CRON_SECRET", "cron-secret-that-must-not-leak-2026");
+    const { GET } = await import("@/app/api/system/readiness/route");
+
+    const response = await GET(createAuthorizedReadinessRequest());
+    const body = await response.json();
+
+    expect(response.status).toBe(503);
+    expect(body.checks.storage).toMatchObject({ status: "ok", probe: "connected" });
+    expect(body.checks.authDelivery).toMatchObject({
+      status: "invalid",
+      schema: "missing_or_unreachable",
+    });
+    expect(body.issues).toEqual(expect.arrayContaining([
+      "AAIS_AUTH_EMAIL_OUTBOX_SCHEMA",
+    ]));
+  });
+
+  it("fails closed when migration 0021 operator reconciliation schema is missing", async () => {
+    databaseProbeMode = "missing_auth_email_reconciliation";
+    vi.stubEnv("AAIS_SESSION_SECRET", "session-secret-that-must-not-leak");
+    vi.stubEnv("AAIS_TRIAL_ACCOUNTS_JSON", trialAccountConfig);
+    vi.stubEnv("AAIS_DATABASE_URL", "postgres://aais:database-secret@example.test/aais");
+    vi.stubEnv("CRON_SECRET", "cron-secret-that-must-not-leak-2026");
+    const { GET } = await import("@/app/api/system/readiness/route");
+
+    const response = await GET(createAuthorizedReadinessRequest());
+    const body = await response.json();
+
+    expect(response.status).toBe(503);
+    expect(body.checks.authDelivery).toMatchObject({
+      status: "invalid",
+      schema: "missing_or_unreachable",
+      reconciliation: {
+        auth: "admin_session_csrf",
+        evidenceRequired: true,
+        automaticUncertainRelease: false,
+      },
+    });
+    expect(body.issues).toEqual(expect.arrayContaining([
+      "AAIS_AUTH_EMAIL_OUTBOX_SCHEMA",
+    ]));
+  });
+
+  it.each([
+    ["required tables", "missing_schema"],
+    ["the learner LRS privacy delivery fence", "missing_delivery_fence"],
+    ["the product LRS delivery reconciliation ledger", "missing_lrs_delivery_reconciliation"],
+    ["a consistent product LRS delivery attempt", "inconsistent_lrs_delivery_attempt"],
+    ["no stale product LRS delivery reconciliation", "stale_lrs_delivery_attempt"],
+    ["the exact reservation lease column", "missing_lease"],
+    ["the dispatched reservation constraints", "missing_dispatch_constraint"],
+    ["the atomic learner deletion function", "missing_delete_function"],
+    ["the active-admin database invariant", "missing_admin_invariant"],
+    ["the auth rate-limit retention column and index", "missing_auth_rate_retention"],
+  ] as const)("fails closed when production migrations have not created %s", async (_label, mode) => {
+    databaseProbeMode = mode;
     vi.stubEnv("AAIS_SESSION_SECRET", "session-secret-that-must-not-leak");
     vi.stubEnv("AAIS_TRIAL_ACCOUNTS_JSON", trialAccountConfig);
     vi.stubEnv("AAIS_DATABASE_URL", "postgres://aais:database-secret@example.test/aais");
@@ -2060,7 +2866,7 @@ describe("AAIS readiness route", () => {
     vi.stubEnv("AAIS_OIDC_JWKS_URI", "https://idp.example.test/.well-known/jwks.json");
     const { GET } = await import("@/app/api/system/readiness/route");
 
-    const response = await GET();
+    const response = await GET(createAuthorizedReadinessRequest());
     const body = await response.json();
 
     expect(response.status).toBe(503);
@@ -2094,7 +2900,7 @@ describe("AAIS readiness route", () => {
     vi.stubEnv("AAIS_OIDC_JWKS_URI", "https://idp.example.test/.well-known/jwks.json");
     const { GET } = await import("@/app/api/system/readiness/route");
 
-    const response = await GET();
+    const response = await GET(createAuthorizedReadinessRequest());
     const body = await response.json();
 
     expect(response.status).toBe(503);
@@ -2140,7 +2946,7 @@ describe("AAIS readiness route", () => {
     vi.stubEnv("AAIS_OIDC_JWKS_URI", "https://idp.example.test/.well-known/jwks.json");
     const { GET } = await import("@/app/api/system/readiness/route");
 
-    const response = await GET();
+    const response = await GET(createAuthorizedReadinessRequest());
     const body = await response.json();
 
     expect(response.status).toBe(503);
@@ -2182,7 +2988,7 @@ describe("AAIS readiness route", () => {
     vi.stubEnv("AAIS_OIDC_JWKS_URI", "https://idp.example.test/.well-known/jwks.json");
     const { GET } = await import("@/app/api/system/readiness/route");
 
-    const response = await GET();
+    const response = await GET(createAuthorizedReadinessRequest());
     const body = await response.json();
 
     expect(response.status).toBe(503);

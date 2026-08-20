@@ -1,7 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
-import { neon } from "@neondatabase/serverless";
-import { Pool } from "pg";
 import type { AaisSessionActor } from "@/lib/server/aais-session";
 import {
   AAIS_RESEARCH_MAX_PARTICIPANTS,
@@ -19,15 +17,25 @@ import {
 } from "@/lib/server/aais-research-contract";
 import { getAaisLearningStore } from "@/lib/server/aais-learning-store";
 import {
+  createAaisNeonQueryClient,
+  createAaisPostgresPool,
+} from "@/lib/server/aais-postgres-pool";
+import {
   AAIS_RESEARCH_LRS_REQUEST_TIMEOUT_MS,
   deleteAaisResearchStatement,
+  getAaisResearchLrsConfiguration,
   sendAaisResearchStatement,
+  type AaisResearchLrsConfiguration,
   type AaisResearchOutboxPayload,
 } from "@/lib/server/aais-research-lrs";
 import { assertAaisResearchCollectionLaunchGate } from "@/lib/server/aais-research-launch";
 
 const aaisResearchLrsLeaseDurationMs = 120_000;
 const aaisResearchLrsLeaseGuardMs = 5_000;
+const aaisResearchWorkerDefaultLimit = 10;
+const aaisResearchWorkerMaxLimit = 25;
+const aaisResearchWorkerMaxRuntimeMs = 20_000;
+const aaisResearchWorkerFinalizeGuardMs = 1_000;
 
 export type AaisResearchDatabaseClient = {
   query(sql: string, params?: unknown[]): Promise<{ rows: Array<Record<string, unknown>> }>;
@@ -59,6 +67,13 @@ export class AaisResearchEventConflictError extends Error {
   constructor() {
     super("AAIS research client event id is already bound to a different payload.");
     this.name = "AaisResearchEventConflictError";
+  }
+}
+
+export class AaisResearchEventLimitError extends Error {
+  constructor() {
+    super("AAIS research visit event limit has been reached.");
+    this.name = "AaisResearchEventLimitError";
   }
 }
 
@@ -356,6 +371,9 @@ export function createAaisResearchStore(input: CreateStoreInput = {}) {
         if (message.includes("research event idempotency conflict")) {
           throw new AaisResearchEventConflictError();
         }
+        if (message.includes("research visit event limit reached")) {
+          throw new AaisResearchEventLimitError();
+        }
         if (message.includes("visit is not active")) {
           throw new AaisResearchVisitInactiveError();
         }
@@ -381,29 +399,36 @@ export function createAaisResearchStore(input: CreateStoreInput = {}) {
       const limit = normalizeLimit(inputValue.limit, 10_000);
       const format = inputValue.format === "json" ? "json" : "csv";
       const purpose = requireExportPurpose(inputValue.purpose);
-      const result = await database.query(
-        `select
-          event_id, participant_id, study_run_id, visit_id, project_id, study_id,
-          environment, lrs_namespace, condition, schema_version, app_version,
-          commit_sha, event_sequence, client_time, server_received_at, event_name,
-          outcome, retry_count, disconnect_count, ai_latency_ms, detail, lrs_eligible
-        from aais_research_events
-        where project_id = $1
-          and study_id = $2
-          and environment = $3
-          and lrs_namespace = $4
-          and study_run_id = $5::uuid
-        order by participant_id, visit_id, event_sequence
-        limit $6`,
-        [
-          configuration.projectId,
-          configuration.studyId,
-          configuration.environment,
-          configuration.lrsNamespace,
-          studyRunId,
-          limit,
-        ],
-      );
+      let result: { rows: Array<Record<string, unknown>> };
+      try {
+        result = await database.query(
+          `select * from public.aais_research_export_events(
+            $1, $2, $3, $4, $5::uuid, $6::integer
+          )`,
+          [
+            configuration.projectId,
+            configuration.studyId,
+            configuration.environment,
+            configuration.lrsNamespace,
+            studyRunId,
+            limit,
+          ],
+        );
+      } catch (error) {
+        const message = getDatabaseErrorMessage(error);
+        if (message.includes("research study run not found")) {
+          throw new AaisResearchVisitNotFoundError();
+        }
+        if (message.includes("research study run is not exportable")) {
+          throw new AaisResearchVisitInactiveError();
+        }
+        if (["42P01", "42703", "42883"].includes(getDatabaseErrorCode(error))) {
+          throw new AaisResearchConfigurationError(
+            "AAIS research withdrawal-safe export function is unavailable.",
+          );
+        }
+        throw error;
+      }
       const events = result.rows.map(normalizeExportEvent);
       const generatedAt = now().toISOString();
       const body = format === "json"
@@ -625,11 +650,27 @@ export function createAaisResearchStore(input: CreateStoreInput = {}) {
     },
 
     async runRetention(limitValue?: number) {
-      const limit = normalizeLimit(limitValue, 100);
+      const limit = normalizeAaisResearchWorkerLimit(limitValue);
       const cutoffAt = now();
-      const rawCandidates = await database.query(
-        `select v.visit_id, v.participant_id, i.ciphertext, i.iv,
-          i.authentication_tag, i.key_version
+      const workerDeadlineAt = cutoffAt.getTime() + aaisResearchWorkerMaxRuntimeMs;
+      const hasFinalizeHeadroom = () =>
+        workerDeadlineAt - now().getTime() > aaisResearchWorkerFinalizeGuardMs;
+      let stoppedReason: "empty" | "limit" | "runtime_budget" | null = null;
+
+      // Read this gate before doing any deletion so a partial count receipt can
+      // still report the governance-blocking state without starting new work
+      // after the invocation budget has been exhausted.
+      const activeOverdueResult = await database.query(
+        `select count(*)::integer as count,
+          (
+            select count(*)::integer
+            from aais_research_raw_write_leases stale_lease
+            where stale_lease.project_id = $1
+              and stale_lease.study_id = $2
+              and stale_lease.environment = $3
+              and stale_lease.lrs_namespace = $4
+              and stale_lease.expires_at <= $5::timestamptz
+          ) as stale_raw_text_write_lease_count
         from aais_research_visits v
         join aais_research_identity.aais_research_identity_map i
           on i.participant_id = v.participant_id
@@ -641,25 +682,67 @@ export function createAaisResearchStore(input: CreateStoreInput = {}) {
           and v.study_id = $2
           and v.environment = $3
           and v.lrs_namespace = $4
-          and v.status = 'completed'
-          and v.raw_text_deleted_at is null
-          and v.raw_text_retention_due_at is not null
-          and least(v.raw_text_retention_due_at, i.retention_due_at) <= $5::timestamptz
-          and not exists (
-            select 1
-            from aais_research_raw_write_leases l
-            where l.project_id = v.project_id
-              and l.study_id = v.study_id
-              and l.environment = v.environment
-              and l.lrs_namespace = v.lrs_namespace
-              and l.visit_id = v.visit_id
-          )
-        order by least(v.raw_text_retention_due_at, i.retention_due_at), v.visit_id
-        limit $6`,
-        scopeParams(configuration, [cutoffAt.toISOString(), limit]),
+          and v.status = 'active'
+          and i.retention_due_at <= $5::timestamptz`,
+        scopeParams(configuration, [cutoffAt.toISOString()]),
       );
+      const blockedActiveVisitCount = readInteger(
+        requireRow(activeOverdueResult.rows[0], "research retention active count"),
+        "count",
+      );
+      const staleRawTextWriteLeaseCount = readInteger(
+        requireRow(activeOverdueResult.rows[0], "research retention active count"),
+        "stale_raw_text_write_lease_count",
+      );
+      if (!hasFinalizeHeadroom()) {
+        stoppedReason = "runtime_budget";
+      }
+
+      let rawCandidateRows: Array<Record<string, unknown>> = [];
+      if (!stoppedReason) {
+        const rawCandidates = await database.query(
+          `select v.visit_id, v.participant_id, i.ciphertext, i.iv,
+            i.authentication_tag, i.key_version
+          from aais_research_visits v
+          join aais_research_identity.aais_research_identity_map i
+            on i.participant_id = v.participant_id
+            and i.project_id = v.project_id
+            and i.study_id = v.study_id
+            and i.environment = v.environment
+            and i.lrs_namespace = v.lrs_namespace
+          where v.project_id = $1
+            and v.study_id = $2
+            and v.environment = $3
+            and v.lrs_namespace = $4
+            and v.status = 'completed'
+            and v.raw_text_deleted_at is null
+            and v.raw_text_retention_due_at is not null
+            and least(v.raw_text_retention_due_at, i.retention_due_at) <= $5::timestamptz
+            and not exists (
+              select 1
+              from aais_research_raw_write_leases l
+              where l.project_id = v.project_id
+                and l.study_id = v.study_id
+                and l.environment = v.environment
+                and l.lrs_namespace = v.lrs_namespace
+                and l.visit_id = v.visit_id
+            )
+          order by least(v.raw_text_retention_due_at, i.retention_due_at), v.visit_id
+          limit $6`,
+          scopeParams(configuration, [cutoffAt.toISOString(), limit]),
+        );
+        rawCandidateRows = rawCandidates.rows;
+        if (!hasFinalizeHeadroom()) {
+          stoppedReason = "runtime_budget";
+        }
+      }
+
       let rawTextDeletedCount = 0;
-      for (const row of rawCandidates.rows) {
+      for (const row of stoppedReason ? [] : rawCandidateRows) {
+        if (!hasFinalizeHeadroom()) {
+          stoppedReason = "runtime_budget";
+          break;
+        }
         if (readString(row, "key_version") !== configuration.identityKeyVersion) {
           throw new AaisResearchConfigurationError(
             "AAIS research identity key version is not available for retention.",
@@ -690,97 +773,136 @@ export function createAaisResearchStore(input: CreateStoreInput = {}) {
           ]),
         );
         rawTextDeletedCount += updateResult.rows.length;
+        if (!hasFinalizeHeadroom()) {
+          stoppedReason = "runtime_budget";
+          break;
+        }
       }
 
-      const activeOverdueResult = await database.query(
-        `select count(*)::integer as count
-        from aais_research_visits v
-        join aais_research_identity.aais_research_identity_map i
-          on i.participant_id = v.participant_id
-          and i.project_id = v.project_id
-          and i.study_id = v.study_id
-          and i.environment = v.environment
-          and i.lrs_namespace = v.lrs_namespace
-        where v.project_id = $1
-          and v.study_id = $2
-          and v.environment = $3
-          and v.lrs_namespace = $4
-          and v.status = 'active'
-          and i.retention_due_at <= $5::timestamptz`,
-        scopeParams(configuration, [cutoffAt.toISOString()]),
-      );
-      const blockedActiveVisitCount = readInteger(
-        requireRow(activeOverdueResult.rows[0], "research retention active count"),
-        "count",
-      );
+      let identityDeletedCount = 0;
+      if (!stoppedReason && hasFinalizeHeadroom()) {
+        const identityResult = await database.query(
+          `with due as (
+            select i.participant_id
+            from aais_research_identity.aais_research_identity_map i
+            join aais_research_visits v
+              on v.participant_id = i.participant_id
+              and v.project_id = i.project_id
+              and v.study_id = i.study_id
+              and v.environment = i.environment
+              and v.lrs_namespace = i.lrs_namespace
+            where i.project_id = $1
+              and i.study_id = $2
+              and i.environment = $3
+              and i.lrs_namespace = $4
+              and i.retention_due_at <= $5::timestamptz
+              and v.status = 'completed'
+              and v.raw_text_deleted_at is not null
+            order by i.retention_due_at, i.participant_id
+            for update of i skip locked
+            limit $6
+          )
+          delete from aais_research_identity.aais_research_identity_map i
+          using due
+          where i.participant_id = due.participant_id
+          returning i.participant_id`,
+          scopeParams(configuration, [cutoffAt.toISOString(), limit]),
+        );
+        identityDeletedCount = identityResult.rows.length;
+        if (!hasFinalizeHeadroom()) {
+          stoppedReason = "runtime_budget";
+        }
+      } else if (!stoppedReason) {
+        stoppedReason = "runtime_budget";
+      }
 
-      const identityResult = await database.query(
-        `with due as (
-          select i.participant_id
-          from aais_research_identity.aais_research_identity_map i
-          join aais_research_visits v
-            on v.participant_id = i.participant_id
-            and v.project_id = i.project_id
-            and v.study_id = i.study_id
-            and v.environment = i.environment
-            and v.lrs_namespace = i.lrs_namespace
-          where i.project_id = $1
-            and i.study_id = $2
-            and i.environment = $3
-            and i.lrs_namespace = $4
-            and i.retention_due_at <= $5::timestamptz
-            and v.status = 'completed'
-            and v.raw_text_deleted_at is not null
-          order by i.retention_due_at, i.participant_id
-          for update of i skip locked
-          limit $6
-        )
-        delete from aais_research_identity.aais_research_identity_map i
-        using due
-        where i.participant_id = due.participant_id
-        returning i.participant_id`,
-        scopeParams(configuration, [cutoffAt.toISOString(), limit]),
-      );
+      const factCounts = {
+        localEventDeletedCount: 0,
+        lrsDeletionRequestCount: 0,
+        participationLedgerDeletedCount: 0,
+        withdrawalDeletedCount: 0,
+        visitDeletedCount: 0,
+        participantDeletedCount: 0,
+        exportAuditDeletedCount: 0,
+        retentionReceiptDeletedCount: 0,
+        lrsDeletionReceiptDeletedCount: 0,
+        legacyArchiveReceiptDeletedCount: 0,
+      };
+      if (!stoppedReason && hasFinalizeHeadroom()) {
+        const factResult = await database.query(
+          `select * from aais_research_apply_fact_retention(
+            $1, $2, $3, $4, $5, $6::timestamptz, $7::integer
+          )`,
+          scopeParams(configuration, [
+            configuration.lrsStoreId,
+            cutoffAt.toISOString(),
+            limit,
+          ]),
+        );
+        const factRow = requireRow(factResult.rows[0], "research fact retention");
+        factCounts.localEventDeletedCount = readInteger(
+          factRow,
+          "local_event_deleted_count",
+        );
+        factCounts.lrsDeletionRequestCount = readInteger(
+          factRow,
+          "lrs_deletion_request_count",
+        );
+        factCounts.participationLedgerDeletedCount = readInteger(
+          factRow,
+          "participation_ledger_deleted_count",
+        );
+        factCounts.withdrawalDeletedCount = readInteger(
+          factRow,
+          "withdrawal_deleted_count",
+        );
+        factCounts.visitDeletedCount = readInteger(factRow, "visit_deleted_count");
+        factCounts.participantDeletedCount = readInteger(
+          factRow,
+          "participant_deleted_count",
+        );
+        factCounts.exportAuditDeletedCount = readInteger(
+          factRow,
+          "export_audit_deleted_count",
+        );
+        factCounts.retentionReceiptDeletedCount = readInteger(
+          factRow,
+          "retention_receipt_deleted_count",
+        );
+        factCounts.lrsDeletionReceiptDeletedCount = readInteger(
+          factRow,
+          "lrs_deletion_receipt_deleted_count",
+        );
+        factCounts.legacyArchiveReceiptDeletedCount = readInteger(
+          factRow,
+          "legacy_archive_receipt_deleted_count",
+        );
+        if (!hasFinalizeHeadroom()) {
+          stoppedReason = "runtime_budget";
+        }
+      } else if (!stoppedReason) {
+        stoppedReason = "runtime_budget";
+      }
 
-      const factResult = await database.query(
-        `select * from aais_research_apply_fact_retention(
-          $1, $2, $3, $4, $5, $6::timestamptz, $7::integer
-        )`,
-        scopeParams(configuration, [
-          configuration.lrsStoreId,
-          cutoffAt.toISOString(),
-          limit,
-        ]),
-      );
-      const factRow = requireRow(factResult.rows[0], "research fact retention");
+      if (!stoppedReason) {
+        stoppedReason = rawCandidateRows.length >= limit
+          || identityDeletedCount >= limit
+          || factCounts.localEventDeletedCount >= limit
+          ? "limit"
+          : "empty";
+      }
       const result = {
         cutoffAt: cutoffAt.toISOString(),
         rawTextDeletedCount,
-        identityDeletedCount: identityResult.rows.length,
-        localEventDeletedCount: readInteger(factRow, "local_event_deleted_count"),
-        lrsDeletionRequestCount: readInteger(factRow, "lrs_deletion_request_count"),
-        participationLedgerDeletedCount: readInteger(
-          factRow,
-          "participation_ledger_deleted_count",
-        ),
-        withdrawalDeletedCount: readInteger(factRow, "withdrawal_deleted_count"),
-        visitDeletedCount: readInteger(factRow, "visit_deleted_count"),
-        participantDeletedCount: readInteger(factRow, "participant_deleted_count"),
-        exportAuditDeletedCount: readInteger(factRow, "export_audit_deleted_count"),
-        retentionReceiptDeletedCount: readInteger(
-          factRow,
-          "retention_receipt_deleted_count",
-        ),
-        lrsDeletionReceiptDeletedCount: readInteger(
-          factRow,
-          "lrs_deletion_receipt_deleted_count",
-        ),
-        legacyArchiveReceiptDeletedCount: readInteger(
-          factRow,
-          "legacy_archive_receipt_deleted_count",
-        ),
+        identityDeletedCount,
+        ...factCounts,
         blockedActiveVisitCount,
-        status: blockedActiveVisitCount > 0 ? "blocked" as const : "success" as const,
+        staleRawTextWriteLeaseCount,
+        status: blockedActiveVisitCount > 0 || staleRawTextWriteLeaseCount > 0
+          ? "blocked" as const
+          : "success" as const,
+        stoppedReason,
+        hasMore: stoppedReason !== "empty",
       };
       await database.query(
         `insert into aais_research_retention_runs (
@@ -791,11 +913,12 @@ export function createAaisResearchStore(input: CreateStoreInput = {}) {
           visit_deleted_count, participant_deleted_count,
           export_audit_deleted_count, retention_receipt_deleted_count,
           lrs_deletion_receipt_deleted_count, legacy_archive_receipt_deleted_count,
-          blocked_active_visit_count, status, created_at, retention_due_at
+          blocked_active_visit_count, stale_raw_text_write_lease_count,
+          status, created_at, retention_due_at
         ) values (
           $5::uuid, $1, $2, $3, $4, $6::timestamptz, $7, $8, $9, $10,
           $11, $12, $13, $14, $15, $16, $17, $18, $19, $20,
-          $6::timestamptz, $21::timestamptz
+          $21, $6::timestamptz, $22::timestamptz
         )`,
         scopeParams(configuration, [
           createUuid(),
@@ -813,6 +936,7 @@ export function createAaisResearchStore(input: CreateStoreInput = {}) {
           result.lrsDeletionReceiptDeletedCount,
           result.legacyArchiveReceiptDeletedCount,
           result.blockedActiveVisitCount,
+          result.staleRawTextWriteLeaseCount,
           result.status,
           addDays(cutoffAt, configuration.factRetentionDays).toISOString(),
         ]),
@@ -902,15 +1026,25 @@ export function createAaisResearchStore(input: CreateStoreInput = {}) {
     },
 
     async flushLrsOutbox(limitValue?: number) {
-      const limit = normalizeLimit(limitValue, 100);
+      const limit = normalizeAaisResearchWorkerLimit(limitValue);
+      const lrsConfiguration = getAaisResearchWorkerLrsConfiguration(
+        runtimeEnv,
+        configuration.lrsStoreId,
+      );
+      const workerDeadlineAt = now().getTime() + aaisResearchWorkerMaxRuntimeMs;
       const processedIds: string[] = [];
       let selected = 0;
       let sent = 0;
       let retried = 0;
       let deadLetter = 0;
+      let stoppedReason: "empty" | "limit" | "runtime_budget" = "limit";
       while (selected < limit) {
+        if (workerDeadlineAt - now().getTime() <= aaisResearchWorkerFinalizeGuardMs) {
+          stoppedReason = "runtime_budget";
+          break;
+        }
         const claimId = createUuid();
-        const claimStartedAt = Date.now();
+        const claimStartedAt = now().getTime();
         const claimResult = await database.query(
           `with candidate as (
             select outbox_id, event_id, project_id, study_id, environment, lrs_namespace
@@ -922,7 +1056,14 @@ export function createAaisResearchStore(input: CreateStoreInput = {}) {
               and o.lrs_eligible = true
               and not (o.outbox_id = any($5::uuid[]))
               and (
-                o.status in ('pending', 'retry')
+                o.status = 'pending'
+                or (
+                  o.status = 'retry'
+                  and o.updated_at <= now() - (
+                    least(300, power(2, least(o.attempts, 8))::integer)
+                    * interval '1 second'
+                  )
+                )
                 or (o.status = 'sending' and o.lease_expires_at <= now())
               )
             order by o.created_at, o.outbox_id
@@ -974,13 +1115,17 @@ export function createAaisResearchStore(input: CreateStoreInput = {}) {
         );
         const row = claimResult.rows[0];
         if (!row) {
+          stoppedReason = "empty";
           break;
         }
         const outboxId = readString(row, "outbox_id");
         processedIds.push(outboxId);
         selected += 1;
-        const attempts = readInteger(row, "attempts");
-        const timeoutMs = getClaimRequestTimeoutMs(claimStartedAt);
+        const timeoutMs = getClaimRequestTimeoutMs(
+          claimStartedAt,
+          now().getTime(),
+          workerDeadlineAt,
+        );
         if (timeoutMs === null) {
           const released = await releaseExpiredOutboxClaim(
             database,
@@ -1006,18 +1151,29 @@ export function createAaisResearchStore(input: CreateStoreInput = {}) {
         } catch {
           deliveryError = "research_lrs_payload_fact_mismatch";
         }
-        try {
-          if (!payload) {
-            throw new AaisResearchConfigurationError(deliveryError);
-          }
-          delivery = await sendAaisResearchStatement({
-            payload,
-            env: runtimeEnv,
-            fetchImpl: input.fetchImpl,
-            timeoutMs,
-          });
-        } catch {
+        if (!payload) {
           delivery = { ok: false, httpStatus: null };
+        } else {
+          try {
+            delivery = await sendAaisResearchStatement({
+              payload,
+              configuration: lrsConfiguration,
+              env: runtimeEnv,
+              fetchImpl: input.fetchImpl,
+              timeoutMs,
+            });
+          } catch (error) {
+            if (error instanceof AaisResearchConfigurationError) {
+              await releaseExpiredOutboxClaim(
+                database,
+                configuration,
+                outboxId,
+                claimId,
+              );
+              throw error;
+            }
+            delivery = { ok: false, httpStatus: null };
+          }
         }
         if (delivery.ok) {
           const updateResult = await database.query(
@@ -1040,7 +1196,13 @@ export function createAaisResearchStore(input: CreateStoreInput = {}) {
             sent += 1;
           }
         } else {
-          const nextStatus = attempts + 1 >= 5 ? "dead_letter" : "retry";
+          const nextStatus = !payload
+            || isKnownPermanentAaisResearchLrsStatus(delivery.httpStatus)
+            ? "dead_letter"
+            : "retry";
+          if (nextStatus === "dead_letter" && payload) {
+            deliveryError = "research_lrs_permanent_http_error";
+          }
           const updateResult = await database.query(
             `update aais_research_lrs_outbox
             set status = $7, attempts = attempts + 1, last_http_status = $8,
@@ -1072,19 +1234,36 @@ export function createAaisResearchStore(input: CreateStoreInput = {}) {
           }
         }
       }
-      return { selected, sent, retried, deadLetter };
+      return {
+        selected,
+        sent,
+        retried,
+        deadLetter,
+        stoppedReason,
+        hasMore: stoppedReason !== "empty",
+      };
     },
 
     async flushLrsDeletions(limitValue?: number) {
-      const limit = normalizeLimit(limitValue, 100);
+      const limit = normalizeAaisResearchWorkerLimit(limitValue);
+      const lrsConfiguration = getAaisResearchWorkerLrsConfiguration(
+        runtimeEnv,
+        configuration.lrsStoreId,
+      );
+      const workerDeadlineAt = now().getTime() + aaisResearchWorkerMaxRuntimeMs;
       const processedIds: string[] = [];
       let selected = 0;
       let confirmed = 0;
       let retried = 0;
       let deadLetter = 0;
+      let stoppedReason: "empty" | "limit" | "runtime_budget" = "limit";
       while (selected < limit) {
+        if (workerDeadlineAt - now().getTime() <= aaisResearchWorkerFinalizeGuardMs) {
+          stoppedReason = "runtime_budget";
+          break;
+        }
         const claimId = createUuid();
-        const claimStartedAt = Date.now();
+        const claimStartedAt = now().getTime();
         const claimResult = await database.query(
           `with candidate as (
             select deletion_id
@@ -1114,13 +1293,17 @@ export function createAaisResearchStore(input: CreateStoreInput = {}) {
         );
         const row = claimResult.rows[0];
         if (!row) {
+          stoppedReason = "empty";
           break;
         }
         const deletionId = readString(row, "deletion_id");
         processedIds.push(deletionId);
         selected += 1;
-        const attempts = readInteger(row, "attempts");
-        const timeoutMs = getClaimRequestTimeoutMs(claimStartedAt);
+        const timeoutMs = getClaimRequestTimeoutMs(
+          claimStartedAt,
+          now().getTime(),
+          workerDeadlineAt,
+        );
         if (timeoutMs === null) {
           const released = await releaseExpiredDeletionClaim(
             database,
@@ -1143,21 +1326,57 @@ export function createAaisResearchStore(input: CreateStoreInput = {}) {
             receiptSignature: string;
           } | null;
         };
+        let payloadInvalid = false;
+        let statementId = "";
+        let expectedStoreId = "";
         try {
-          delivery = await deleteAaisResearchStatement({
-            statementId: readString(row, "statement_id"),
-            expectedStoreId: readString(row, "lrs_store_id"),
-            env: runtimeEnv,
-            fetchImpl: input.fetchImpl,
-            timeoutMs,
-          });
+          statementId = requireUuid(
+            readString(row, "statement_id"),
+            "research LRS deletion statement id",
+          );
+          expectedStoreId = readString(row, "lrs_store_id");
+          if (expectedStoreId !== configuration.lrsStoreId) {
+            throw new AaisResearchConfigurationError(
+              "AAIS research LRS deletion row has an invalid store id.",
+            );
+          }
         } catch {
+          payloadInvalid = true;
+        }
+        if (payloadInvalid) {
           delivery = {
             ok: false,
             httpStatus: null,
             receiptSha256: null,
             absenceConfirmation: null,
           };
+        } else {
+          try {
+            delivery = await deleteAaisResearchStatement({
+              statementId,
+              expectedStoreId,
+              configuration: lrsConfiguration,
+              env: runtimeEnv,
+              fetchImpl: input.fetchImpl,
+              timeoutMs,
+            });
+          } catch (error) {
+            if (error instanceof AaisResearchConfigurationError) {
+              await releaseExpiredDeletionClaim(
+                database,
+                configuration,
+                deletionId,
+                claimId,
+              );
+              throw error;
+            }
+            delivery = {
+              ok: false,
+              httpStatus: null,
+              receiptSha256: null,
+              absenceConfirmation: null,
+            };
+          }
         }
         if (delivery.absenceConfirmation) {
           const updateResult = await database.query(
@@ -1196,17 +1415,28 @@ export function createAaisResearchStore(input: CreateStoreInput = {}) {
           const awaitingProviderConfirmation = delivery.ok || delivery.httpStatus === 404;
           const nextStatus = awaitingProviderConfirmation
             ? "retry"
-            : attempts + 1 >= 5 ? "dead_letter" : "retry";
+            : payloadInvalid || isKnownPermanentAaisResearchLrsStatus(delivery.httpStatus)
+              ? "dead_letter"
+              : "retry";
+          const retryBackoffSeconds = getAaisResearchLrsRetryBackoffSeconds(
+            readInteger(row, "attempts") + 1,
+          );
           const updateResult = await database.query(
             `update aais_research_lrs_deletions
             set status = $8, attempts = attempts + 1, last_http_status = $9,
               receipt_sha256 = $10,
               last_error = case when $11::boolean
                 then 'research_lrs_absence_confirmation_pending'
+                when $12::boolean then 'research_lrs_delete_payload_invalid'
+                when $8 = 'dead_letter' then 'research_lrs_delete_permanent_http_error'
                 else 'research_lrs_delete_http_error'
               end,
               provider_absence_confirmed_at = null, provider_receipt_key_id = null,
               provider_receipt_signature = null,
+              not_before = case when $8 = 'retry'
+                then greatest(not_before, now() + ($13::integer * interval '1 second'))
+                else not_before
+              end,
               updated_at = now(), deletion_claim_id = null, lease_expires_at = null
             where project_id = $1
               and study_id = $2
@@ -1225,6 +1455,8 @@ export function createAaisResearchStore(input: CreateStoreInput = {}) {
               delivery.httpStatus,
               delivery.receiptSha256,
               awaitingProviderConfirmation,
+              payloadInvalid,
+              retryBackoffSeconds,
             ]),
           );
           if (updateResult.rows.length > 0) {
@@ -1236,7 +1468,281 @@ export function createAaisResearchStore(input: CreateStoreInput = {}) {
           }
         }
       }
-      return { selected, confirmed, retried, deadLetter };
+      return {
+        selected,
+        confirmed,
+        retried,
+        deadLetter,
+        stoppedReason,
+        hasMore: stoppedReason !== "empty",
+      };
+    },
+
+    async requeueLrsOutboxDeadLetters(limitValue?: number) {
+      const limit = normalizeAaisResearchWorkerLimit(limitValue);
+      getAaisResearchWorkerLrsConfiguration(runtimeEnv, configuration.lrsStoreId);
+      const workerDeadlineAt = now().getTime() + aaisResearchWorkerMaxRuntimeMs;
+      const processedIds: string[] = [];
+      let selected = 0;
+      let requeued = 0;
+      let rejected = 0;
+      let stoppedReason: "empty" | "limit" | "runtime_budget" = "limit";
+      while (selected < limit) {
+        if (workerDeadlineAt - now().getTime() <= aaisResearchWorkerFinalizeGuardMs) {
+          stoppedReason = "runtime_budget";
+          break;
+        }
+        const claimId = createUuid();
+        const claimResult = await database.query(
+          `with candidate as (
+            select outbox_id, event_id, project_id, study_id, environment, lrs_namespace
+            from aais_research_lrs_outbox o
+            where o.project_id = $1
+              and o.study_id = $2
+              and o.environment = $3
+              and o.lrs_namespace = $4
+              and o.lrs_eligible = true
+              and o.status = 'dead_letter'
+              and not (o.outbox_id = any($5::uuid[]))
+            order by o.created_at, o.outbox_id
+            for update skip locked
+            limit 1
+          )
+          update aais_research_lrs_outbox o
+          set status = 'sending', delivery_claim_id = $6::uuid,
+            lease_expires_at = now() + interval '2 minutes', updated_at = now()
+          from candidate c
+          left join aais_research_events e
+            on e.event_id = c.event_id
+            and e.project_id = c.project_id
+            and e.study_id = c.study_id
+            and e.environment = c.environment
+            and e.lrs_namespace = c.lrs_namespace
+          where o.outbox_id = c.outbox_id
+          returning
+            o.outbox_id, o.event_id, o.statement_id, o.payload, o.attempts,
+            o.project_id as outbox_project_id,
+            o.study_id as outbox_study_id,
+            o.environment as outbox_environment,
+            o.lrs_namespace as outbox_lrs_namespace,
+            o.lrs_eligible as outbox_lrs_eligible,
+            e.event_id as fact_event_id,
+            e.client_event_id as fact_client_event_id,
+            e.participant_id as fact_participant_id,
+            e.study_run_id as fact_study_run_id,
+            e.visit_id as fact_visit_id,
+            e.project_id as fact_project_id,
+            e.study_id as fact_study_id,
+            e.environment as fact_environment,
+            e.lrs_namespace as fact_lrs_namespace,
+            e.condition as fact_condition,
+            e.schema_version as fact_schema_version,
+            e.app_version as fact_app_version,
+            e.commit_sha as fact_commit_sha,
+            e.event_sequence as fact_event_sequence,
+            e.client_time as fact_client_time,
+            e.server_received_at as fact_server_received_at,
+            e.event_name as fact_event_name,
+            e.outcome as fact_outcome,
+            e.retry_count as fact_retry_count,
+            e.disconnect_count as fact_disconnect_count,
+            e.ai_latency_ms as fact_ai_latency_ms,
+            e.detail as fact_detail,
+            e.lrs_eligible as fact_lrs_eligible`,
+          scopeParams(configuration, [processedIds, claimId]),
+        );
+        const row = claimResult.rows[0];
+        if (!row) {
+          stoppedReason = "empty";
+          break;
+        }
+        const outboxId = requireUuid(readString(row, "outbox_id"), "research LRS outbox id");
+        processedIds.push(outboxId);
+        selected += 1;
+        let payloadValid = true;
+        try {
+          readOutboxPayload(row.payload, {
+            configuration,
+            eventId: readString(row, "event_id"),
+            statementId: readString(row, "statement_id"),
+            claimedRow: row,
+          });
+        } catch {
+          payloadValid = false;
+        }
+        const updateResult = payloadValid
+          ? await database.query(
+            `update aais_research_lrs_outbox
+            set status = 'retry', attempts = 0, last_http_status = null,
+              last_error = 'research_lrs_dead_letter_requeued', updated_at = now(),
+              delivery_claim_id = null, lease_expires_at = null
+            where project_id = $1
+              and study_id = $2
+              and environment = $3
+              and lrs_namespace = $4
+              and outbox_id = $5::uuid
+              and delivery_claim_id = $6::uuid
+              and lrs_eligible = true
+              and status = 'sending'
+            returning outbox_id`,
+            scopeParams(configuration, [outboxId, claimId]),
+          )
+          : await database.query(
+            `update aais_research_lrs_outbox
+            set status = 'dead_letter',
+              last_error = $7, updated_at = now(),
+              delivery_claim_id = null, lease_expires_at = null
+            where project_id = $1
+              and study_id = $2
+              and environment = $3
+              and lrs_namespace = $4
+              and outbox_id = $5::uuid
+              and delivery_claim_id = $6::uuid
+              and lrs_eligible = true
+              and status = 'sending'
+            returning outbox_id`,
+            scopeParams(configuration, [
+              outboxId,
+              claimId,
+              "research_lrs_payload_fact_mismatch",
+            ]),
+          );
+        if (updateResult.rows.length > 0) {
+          if (payloadValid) {
+            requeued += 1;
+          } else {
+            rejected += 1;
+          }
+        }
+      }
+      return {
+        selected,
+        requeued,
+        rejected,
+        stoppedReason,
+        hasMore: stoppedReason !== "empty",
+      };
+    },
+
+    async requeueLrsDeletionDeadLetters(limitValue?: number) {
+      const limit = normalizeAaisResearchWorkerLimit(limitValue);
+      getAaisResearchWorkerLrsConfiguration(runtimeEnv, configuration.lrsStoreId);
+      const workerDeadlineAt = now().getTime() + aaisResearchWorkerMaxRuntimeMs;
+      const processedIds: string[] = [];
+      let selected = 0;
+      let requeued = 0;
+      let rejected = 0;
+      let stoppedReason: "empty" | "limit" | "runtime_budget" = "limit";
+      while (selected < limit) {
+        if (workerDeadlineAt - now().getTime() <= aaisResearchWorkerFinalizeGuardMs) {
+          stoppedReason = "runtime_budget";
+          break;
+        }
+        const claimId = createUuid();
+        const claimResult = await database.query(
+          `with candidate as (
+            select deletion_id
+            from aais_research_lrs_deletions
+            where project_id = $1
+              and study_id = $2
+              and environment = $3
+              and lrs_namespace = $4
+              and lrs_store_id = $5
+              and status = 'dead_letter'
+              and not (deletion_id = any($6::uuid[]))
+            order by created_at, deletion_id
+            for update skip locked
+            limit 1
+          )
+          update aais_research_lrs_deletions d
+          set status = 'deleting', deletion_claim_id = $7::uuid,
+            lease_expires_at = now() + interval '2 minutes', updated_at = now()
+          from candidate c
+          where d.deletion_id = c.deletion_id
+          returning d.deletion_id, d.statement_id, d.lrs_store_id, d.attempts`,
+          scopeParams(configuration, [configuration.lrsStoreId, processedIds, claimId]),
+        );
+        const row = claimResult.rows[0];
+        if (!row) {
+          stoppedReason = "empty";
+          break;
+        }
+        const deletionId = requireUuid(
+          readString(row, "deletion_id"),
+          "research LRS deletion id",
+        );
+        processedIds.push(deletionId);
+        selected += 1;
+        let payloadValid = true;
+        try {
+          requireUuid(
+            readString(row, "statement_id"),
+            "research LRS deletion statement id",
+          );
+          if (readString(row, "lrs_store_id") !== configuration.lrsStoreId) {
+            throw new AaisResearchConfigurationError(
+              "AAIS research LRS deletion row has an invalid store id.",
+            );
+          }
+        } catch {
+          payloadValid = false;
+        }
+        const updateResult = payloadValid
+          ? await database.query(
+            `update aais_research_lrs_deletions
+            set status = 'retry', attempts = 0, last_http_status = null,
+              receipt_sha256 = null,
+              provider_absence_confirmed_at = null, provider_receipt_key_id = null,
+              provider_receipt_signature = null,
+              last_error = 'research_lrs_dead_letter_requeued', not_before = now(),
+              updated_at = now(), deletion_claim_id = null, lease_expires_at = null
+            where project_id = $1
+              and study_id = $2
+              and environment = $3
+              and lrs_namespace = $4
+              and lrs_store_id = $5
+              and deletion_id = $6::uuid
+              and deletion_claim_id = $7::uuid
+              and status = 'deleting'
+            returning deletion_id`,
+            scopeParams(configuration, [configuration.lrsStoreId, deletionId, claimId]),
+          )
+          : await database.query(
+            `update aais_research_lrs_deletions
+            set status = 'dead_letter',
+              last_error = $8, updated_at = now(),
+              deletion_claim_id = null, lease_expires_at = null
+            where project_id = $1
+              and study_id = $2
+              and environment = $3
+              and lrs_namespace = $4
+              and lrs_store_id = $5
+              and deletion_id = $6::uuid
+              and deletion_claim_id = $7::uuid
+              and status = 'deleting'
+            returning deletion_id`,
+            scopeParams(configuration, [
+              configuration.lrsStoreId,
+              deletionId,
+              claimId,
+              "research_lrs_delete_payload_invalid",
+            ]),
+          );
+        if (updateResult.rows.length > 0) {
+          if (payloadValid) {
+            requeued += 1;
+          } else {
+            rejected += 1;
+          }
+        }
+      }
+      return {
+        selected,
+        requeued,
+        rejected,
+        stoppedReason,
+        hasMore: stoppedReason !== "empty",
+      };
     },
   };
 }
@@ -1326,22 +1832,9 @@ function createResearchDatabaseClient(
   configuration: AaisResearchConfiguration,
 ): AaisResearchDatabaseClient {
   if (configuration.databaseDriver === "neon-serverless") {
-    const sql = neon(configuration.databaseUrl);
-    return {
-      async query(query, params = []) {
-        const result = await sql.query(query, params);
-        if (Array.isArray(result)) {
-          return { rows: result as Array<Record<string, unknown>> };
-        }
-        if (result && typeof result === "object" && "rows" in result) {
-          return { rows: (result as { rows: Array<Record<string, unknown>> }).rows };
-        }
-        return { rows: [] };
-      },
-      async end() {},
-    };
+    return createAaisNeonQueryClient(configuration.databaseUrl);
   }
-  return new Pool({ connectionString: configuration.databaseUrl }) as AaisResearchDatabaseClient;
+  return createAaisPostgresPool(configuration.databaseUrl) as AaisResearchDatabaseClient;
 }
 
 function requireActorRole(
@@ -1438,6 +1931,42 @@ function normalizeLimit(value: number | undefined, fallback: number) {
   return Math.min(value, 10_000);
 }
 
+export function normalizeAaisResearchWorkerLimit(value?: number) {
+  if (value === undefined) {
+    return aaisResearchWorkerDefaultLimit;
+  }
+  if (!Number.isSafeInteger(value) || value < 1) {
+    throw new AaisResearchValidationError("AAIS research worker limit is invalid.");
+  }
+  return Math.min(value, aaisResearchWorkerMaxLimit);
+}
+
+function getAaisResearchWorkerLrsConfiguration(
+  env: Record<string, string | undefined>,
+  expectedStoreId: string,
+): AaisResearchLrsConfiguration {
+  const lrsConfiguration = getAaisResearchLrsConfiguration(env);
+  if (lrsConfiguration.storeId !== expectedStoreId) {
+    throw new AaisResearchConfigurationError(
+      "AAIS research LRS store id does not match the research database scope.",
+    );
+  }
+  return lrsConfiguration;
+}
+
+function isKnownPermanentAaisResearchLrsStatus(status: number | null) {
+  return status === 400
+    || status === 409
+    || status === 413
+    || status === 415
+    || status === 422;
+}
+
+function getAaisResearchLrsRetryBackoffSeconds(attempts: number) {
+  const exponent = Math.min(Math.max(attempts, 0), 8);
+  return Math.min(300, 2 ** exponent);
+}
+
 function requireExportPurpose(value: string): ExportPurpose {
   if (["approved_analysis", "reconciliation", "quality_audit", "replication"].includes(value)) {
     return value as ExportPurpose;
@@ -1445,11 +1974,17 @@ function requireExportPurpose(value: string): ExportPurpose {
   throw new AaisResearchValidationError("AAIS research export purpose is invalid.");
 }
 
-function getClaimRequestTimeoutMs(claimStartedAt: number) {
-  const remainingMs = aaisResearchLrsLeaseDurationMs - (Date.now() - claimStartedAt);
+function getClaimRequestTimeoutMs(
+  claimStartedAt: number,
+  currentTime: number,
+  workerDeadlineAt: number,
+) {
+  const remainingMs = aaisResearchLrsLeaseDurationMs - (currentTime - claimStartedAt);
+  const workerRemainingMs = workerDeadlineAt - currentTime;
   const timeoutMs = Math.min(
     AAIS_RESEARCH_LRS_REQUEST_TIMEOUT_MS,
     remainingMs - aaisResearchLrsLeaseGuardMs,
+    workerRemainingMs - aaisResearchWorkerFinalizeGuardMs,
   );
   return timeoutMs >= 1 ? Math.floor(timeoutMs) : null;
 }
@@ -1858,6 +2393,13 @@ function normalizeUnknownDateString(value: unknown) {
 
 function getDatabaseErrorMessage(error: unknown) {
   return error instanceof Error ? error.message.toLowerCase() : "";
+}
+
+function getDatabaseErrorCode(error: unknown) {
+  if (!error || typeof error !== "object" || !("code" in error)) {
+    return "";
+  }
+  return typeof error.code === "string" ? error.code : "";
 }
 
 export function deriveAaisResearchEventCounters(event: AaisResearchEventInput) {

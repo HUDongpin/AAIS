@@ -1,8 +1,8 @@
 "use client";
 
 import { useEffect, useState, type ReactNode } from "react";
-import { useRouter } from "next/navigation";
 import { deleteAaisAppSession } from "@/components/pages/learning/learning-session-client";
+import { replaceAaisBrowserLocation } from "@/lib/client/aais-browser-navigation";
 import {
   clearAaisResearchTelemetryForActor,
   startAaisResearchTelemetry,
@@ -92,7 +92,6 @@ export function LearningResearchBoundaryNotice({
   overlay?: boolean;
   state: Exclude<AaisResearchTelemetryBoundaryState, "ready">;
 }) {
-  const router = useRouter();
   const copy = getLearningCopy(locale).researchBoundary;
   const [exitBusy, setExitBusy] = useState(false);
   const [exitError, setExitError] = useState("");
@@ -104,11 +103,14 @@ export function LearningResearchBoundaryNotice({
     setExitBusy(true);
     setExitError("");
     try {
-      await deleteAaisAppSession();
+      const logoutResult = await deleteAaisAppSession();
+      if (!logoutResult.sessionRevoked && !logoutResult.sessionAbsent) {
+        throw new Error("AAIS safe logout revocation was not acknowledged.");
+      }
       clearAaisResearchTelemetryForActor();
       window.localStorage.removeItem("aais_student_id");
       window.localStorage.removeItem("aais_display_name");
-      router.replace("/login");
+      replaceAaisBrowserLocation("/login");
     } catch {
       setExitError(copy.safeExitFailed);
       setExitBusy(false);

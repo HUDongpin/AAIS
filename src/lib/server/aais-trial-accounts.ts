@@ -1,5 +1,7 @@
-import { randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
 import type { AaisSessionActor } from "@/lib/server/aais-session";
+import { verifyAaisPasswordCandidate } from "@/lib/server/aais-password-kdf";
+import { requireAaisSessionSecret } from "@/lib/server/aais-session-secret";
 
 type PasswordRecord = {
   algorithm: "scrypt";
@@ -47,15 +49,25 @@ const builtInLearnerTrialAccounts: TrialAccountRecord[] = [
     id: "Bobie",
     displayName: "Bobie",
     role: "student",
-    password: createPasswordRecord("12345", "aais-dev-bobie"),
+    password: {
+      algorithm: "scrypt",
+      salt: "aais-dev-bobie",
+      hash: "zytgkwvZiyugfkxf6cZL_L2Zj9n-fC53TGaKJbWTvbs",
+    },
   },
   {
     id: "Phoebe",
     displayName: "Phoebe",
     role: "student",
-    password: createPasswordRecord("12345", "aais-dev-phoebe"),
+    password: {
+      algorithm: "scrypt",
+      salt: "aais-dev-phoebe",
+      hash: "3Y6ksi7dXQPO8Yjc_Pt2qTvSTKNGxvB5owapxTlcDZw",
+    },
   },
 ];
+
+const trialActorIdPrefix = "trial:v1:";
 
 export function createPasswordRecord(password: string, salt = randomBytes(16).toString("base64url")) {
   return {
@@ -65,7 +77,10 @@ export function createPasswordRecord(password: string, salt = randomBytes(16).to
   };
 }
 
-export function authenticateAaisTrialAccount(accountId: string, password: string): AccountLookupResult {
+export async function authenticateAaisTrialAccount(
+  accountId: string,
+  password: string,
+): Promise<AccountLookupResult> {
   if (!isAaisTrialLoginEnabled()) {
     return {
       status: "not_configured",
@@ -73,12 +88,17 @@ export function authenticateAaisTrialAccount(accountId: string, password: string
   }
   const accounts = readTrialAccounts();
   if (!accounts) {
+    await verifyAaisPasswordCandidate(password, null);
     return {
       status: "not_configured",
     };
   }
   const account = accounts.find((candidate) => candidate.id === accountId);
-  if (!account || !passwordMatches(password, account.password)) {
+  const passwordValid = await verifyAaisPasswordCandidate(
+    password,
+    account?.password ?? null,
+  );
+  if (!account || !passwordValid) {
     return {
       status: "invalid",
     };
@@ -86,11 +106,92 @@ export function authenticateAaisTrialAccount(accountId: string, password: string
   return {
     status: "ok",
     actor: {
-      id: account.id,
+      id: createAaisTrialActorId(account.id),
       role: account.role,
       displayName: account.displayName,
     },
   };
+}
+
+export function resolveAaisTrialSessionActor(actorId: string): AaisSessionActor | null {
+  const account = findTrialAccountByActorId(actorId);
+  return account
+    ? {
+        id: createAaisTrialActorId(account.id),
+        role: account.role,
+        displayName: account.displayName,
+      }
+    : null;
+}
+
+export function getAaisTrialSessionPolicyFingerprint(actorId: string) {
+  const account = findTrialAccountByActorId(actorId);
+  return account ? createTrialSessionPolicyFingerprint(account) : null;
+}
+
+export function verifyAaisTrialSessionActor(input: {
+  actorId: string;
+  role: AaisSessionActor["role"];
+  policyFingerprint: string;
+}): AaisSessionActor | null {
+  const account = findTrialAccountByActorId(input.actorId);
+  if (!account) {
+    return null;
+  }
+  const currentFingerprint = createTrialSessionPolicyFingerprint(account);
+  if (!policyFingerprintsMatch(input.policyFingerprint, currentFingerprint)) {
+    return null;
+  }
+  const actor = {
+    id: createAaisTrialActorId(account.id),
+    role: account.role,
+    displayName: account.displayName,
+  };
+  return actor.role === input.role ? actor : null;
+}
+
+export function createAaisTrialActorId(accountId: string) {
+  const digest = createHash("sha256")
+    .update("aais-trial-actor:v1\0", "utf8")
+    .update(accountId, "utf8")
+    .digest("hex");
+  return `${trialActorIdPrefix}${digest}`;
+}
+
+function createTrialSessionPolicyFingerprint(account: TrialAccountRecord) {
+  const actorId = createAaisTrialActorId(account.id);
+  const passwordRecordDigest = createHash("sha256")
+    .update("aais.trial.password-record:v1\0", "utf8")
+    .update(account.password.algorithm, "utf8")
+    .update("\0", "utf8")
+    .update(account.password.salt, "utf8")
+    .update("\0", "utf8")
+    .update(account.password.hash, "utf8")
+    .digest("hex");
+  return createHmac("sha256", requireAaisSessionSecret())
+    .update("aais.trial.session-policy:v1\0", "utf8")
+    .update(actorId, "utf8")
+    .update("\0", "utf8")
+    .update(account.role, "utf8")
+    .update("\0", "utf8")
+    .update(passwordRecordDigest, "utf8")
+    .digest("hex");
+}
+
+function policyFingerprintsMatch(actual: string, expected: string) {
+  if (!/^[a-f0-9]{64}$/.test(actual) || !/^[a-f0-9]{64}$/.test(expected)) {
+    return false;
+  }
+  return timingSafeEqual(Buffer.from(actual, "hex"), Buffer.from(expected, "hex"));
+}
+
+function findTrialAccountByActorId(actorId: string) {
+  if (!isAaisTrialLoginEnabled() || !actorId.startsWith(trialActorIdPrefix)) {
+    return null;
+  }
+  return readTrialAccounts()?.find(
+    (candidate) => createAaisTrialActorId(candidate.id) === actorId,
+  ) ?? null;
 }
 
 export function getAaisTrialAccountConfigurationStatus(): AaisTrialAccountConfigurationStatus {
@@ -212,6 +313,7 @@ function requireTrialAccount(account: Partial<TrialAccountRecord>): TrialAccount
   if (
     typeof account.id !== "string"
     || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(account.id)
+    || /^(?:oidc|aais|trial):/i.test(account.id)
     || typeof account.displayName !== "string"
     || account.displayName.trim().length === 0
     || !isAaisSessionRole(account.role)
@@ -239,12 +341,6 @@ function mergeConfiguredAccountsWithBuiltInLearners(configuredAccounts: TrialAcc
     ...configuredAccounts,
     ...builtInLearnerTrialAccounts.filter((account) => !configuredIds.has(account.id)),
   ];
-}
-
-function passwordMatches(password: string, record: PasswordRecord) {
-  const actual = scryptSync(password, record.salt, 32);
-  const expected = Buffer.from(record.hash, "base64url");
-  return actual.length === expected.length && timingSafeEqual(actual, expected);
 }
 
 function isProductionRuntime() {

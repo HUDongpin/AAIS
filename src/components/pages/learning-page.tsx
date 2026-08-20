@@ -1,16 +1,20 @@
 "use client";
-import { useEffect, useRef, useState } from "react";
-import { artifactSaveDebounceMs } from "@/components/pages/learning/learning-page-constants";
+import { useState } from "react";
 import { ContentResizeSeparator, ContentSidePanel } from "@/components/pages/learning/content-side-panel";
 import { GuidePanel } from "@/components/pages/learning/guide-panel";
 import { LearningAccountFeedback, LearningTopBar } from "@/components/pages/learning/learning-top-bar";
 import { getLearningCopy } from "@/components/pages/learning/learning-copy";
 import { useLearningAccount } from "@/components/pages/learning/use-learning-account";
 import { useContentPanelResize } from "@/components/pages/learning/use-content-panel-resize";
+import { useLearningArtifactSave } from "@/components/pages/learning/use-learning-artifact-save";
 import { useLearningGuide } from "@/components/pages/learning/use-learning-guide";
 import { useLearningDocumentArchive } from "@/components/pages/learning/use-learning-document-archive";
 import { useLearningWorkspaceSession } from "@/components/pages/learning/use-learning-workspace-session";
-import { clientNowMs, createArtifactSaveEventDetail, isUserCancelledFilePicker, type PendingArtifactSave } from "@/components/pages/learning/client-helpers";
+import {
+  clientNowMs,
+  isUserCancelledFilePicker,
+  readArtifactDraftJournal,
+} from "@/components/pages/learning/client-helpers";
 import { LearningResearchWorkspaceBoundary, type LearningResearchBoundary } from "@/components/pages/learning/research-telemetry-boundary";
 import { admitAaisResearchAction, captureAaisResearchActorGeneration, classifyAaisResearchClientError, createAaisResearchOperationId, recordAaisResearchEvent } from "@/lib/client/aais-research-telemetry";
 import { createLearningDocumentFileName, createLearningDocumentMarkdown, saveMarkdownDocumentToLocal } from "@/components/pages/learning/document-markdown";
@@ -26,41 +30,94 @@ export function LearningPage({ actor, locale: initialLocale = "zh-CN", research 
 }) {
   return (
     <LearningResearchWorkspaceBoundary locale={initialLocale} research={research}>
-      <LearningWorkbench actor={actor} initialLocale={initialLocale} />
+      <LearningWorkbench
+        actor={actor}
+        initialLocale={initialLocale}
+        researchRequired={research.required}
+      />
     </LearningResearchWorkspaceBoundary>
   );
 }
-function LearningWorkbench({ actor, initialLocale }: { actor: LearningPageActor; initialLocale: Locale }) {
+function LearningWorkbench({ actor, initialLocale, researchRequired }: {
+  actor: LearningPageActor;
+  initialLocale: Locale;
+  researchRequired: boolean;
+}) {
   const locale = useLearningLocale(initialLocale);
   const copy = getLearningCopy(locale);
   const studentId = actor.id;
+  const [initialDraftJournal] = useState(
+    () => researchRequired ? null : readArtifactDraftJournal(studentId),
+  );
+  const [documentTaskId, setDocumentTaskId] = useState<string | null>(
+    () => initialDraftJournal?.taskId ?? null,
+  );
   const [activeTab, setActiveTab] = useState<ContentTab>("display");
   const [activeContentId, setActiveContentId] = useState<ContentItemId | null>(null);
-  const [documentTitle, setDocumentTitle] = useState("");
-  const [activeHistoryDocumentId, setActiveHistoryDocumentId] = useState<string | null>(null);
-  const [artifactSaveBusy, setArtifactSaveBusy] = useState(false);
-  const [artifactSaveStatus, setArtifactSaveStatus] = useState("");
-  const [artifactSaveError, setArtifactSaveError] = useState("");
+  const [documentArchiveBusy, setDocumentArchiveBusy] = useState(false);
   const [documentCloseError, setDocumentCloseError] = useState("");
   const [documentDownloadBusy, setDocumentDownloadBusy] = useState(false);
   const [documentDownloadStatus, setDocumentDownloadStatus] = useState("");
   const [documentDownloadError, setDocumentDownloadError] = useState("");
-  const artifactSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const artifactSaveInFlightRef = useRef(false);
-  const pendingArtifactSaveRef = useRef<PendingArtifactSave | null>(null);
   const {
+    activeHistoryDocumentId,
     activeTaskId,
     artifactText,
     backendError,
+    documentTitle,
+    getArtifactRevision,
     historyDocuments,
     lastSavedArtifactLengthRef,
+    learnerDataGeneration,
     patchSession,
     persistedGuideMessages,
     resetWorkspaceSession,
     setArtifactText,
+    setActiveHistoryDocumentId,
     setBackendError,
+    setDocumentTitle,
     setHistoryDocuments,
-  } = useLearningWorkspaceSession(locale);
+    waitForLearnerDataGeneration,
+  } = useLearningWorkspaceSession(
+    locale,
+    {
+      activeDocumentId: initialDraftJournal?.activeDocumentId ?? null,
+      artifactText: initialDraftJournal?.value ?? "",
+      documentTitle: initialDraftJournal?.title ?? "",
+    },
+  );
+  const editingTaskId = documentTaskId ?? activeTaskId;
+  const {
+    archiveIntentRef,
+    artifactSaveBusy,
+    artifactSaveError,
+    artifactSaveStatus,
+    cancelPendingArtifactSave,
+    completeArtifactArchive,
+    documentTitleRef,
+    flushPendingArtifactSave,
+    hasPendingArtifactSave,
+    hasUncommittedArtifactSave,
+    isOperationCurrent,
+    resetArtifactSaveState,
+    restorePendingArtifactSave,
+    scheduleArtifactSave,
+    setArtifactSaveBusy,
+    setArtifactSaveError,
+    setArtifactSaveStatus,
+  } = useLearningArtifactSave({
+    activeHistoryDocumentId,
+    copy,
+    documentTitle,
+    getArtifactRevision,
+    initialDraftJournal,
+    lastSavedArtifactLengthRef,
+    learnerDataGeneration,
+    patchSession,
+    researchRequired,
+    setBackendError,
+    studentId,
+  });
   const {
     contentPanelWidth,
     getMaxContentPanelWidth,
@@ -81,15 +138,25 @@ function LearningWorkbench({ actor, initialLocale }: { actor: LearningPageActor;
     guideMessages,
     hasGuideSubmission,
     removeGuideAttachment,
+    resetGuideState,
     sendGuideMessage,
     setGuideDraft,
     setGuideError,
     submitGuideQuestion,
   } = useLearningGuide({
-    activeTaskId,
+    activeTaskId: editingTaskId,
     artifactText,
-    displayName: actor.displayName, locale, persistedGuideMessages, studentId,
+    displayName: actor.displayName,
+    waitForLearnerDataGeneration,
+    locale,
+    persistedGuideMessages,
+    studentId,
   });
+  const operationBusy = guideBusy
+    || guideAttachmentBusy
+    || hasUncommittedArtifactSave()
+    || documentArchiveBusy
+    || documentDownloadBusy;
   const {
     accountError,
     accountMenuOpen,
@@ -97,143 +164,31 @@ function LearningWorkbench({ actor, initialLocale }: { actor: LearningPageActor;
     handleDeleteLearnerData,
     handleExportLearnerData,
     handleLogout,
+    learnerDeleteBusy,
     loggingOut,
     privacyBusy,
     toggleAccountMenu,
   } = useLearningAccount({
-    operationBusy:
-      guideBusy || guideAttachmentBusy || artifactSaveBusy || documentDownloadBusy,
-    onLearnerDataDeleteStarted: resetLearnerWorkspace,
+    learnerDataGeneration,
+    operationBusy,
+    onLearnerDataDeleteSucceeded: resetLearnerWorkspace,
     locale,
     studentId,
   });
 
-  function resetLearnerWorkspace() {
-    setArtifactSaveStatus("");
-    setArtifactSaveError("");
+  function resetLearnerWorkspace(nextDataGeneration: number) {
+    resetArtifactSaveState();
+    setDocumentTaskId(null);
     setDocumentCloseError("");
     setDocumentDownloadStatus("");
     setDocumentDownloadError("");
-    if (artifactSaveTimerRef.current) {
-      clearTimeout(artifactSaveTimerRef.current);
-      artifactSaveTimerRef.current = null;
-    }
-    pendingArtifactSaveRef.current = null;
-    resetWorkspaceSession();
+    resetGuideState();
+    resetWorkspaceSession(nextDataGeneration);
     setActiveTab("display");
     setActiveContentId(null);
     setDocumentTitle("");
     setHistoryDocuments([]);
     setActiveHistoryDocumentId(null);
-  }
-  function flushPendingArtifactSave(trigger = "manual") {
-    const pending = pendingArtifactSaveRef.current;
-    if (artifactSaveTimerRef.current) {
-      clearTimeout(artifactSaveTimerRef.current);
-      artifactSaveTimerRef.current = null;
-    }
-    if (!pending) {
-      return true;
-    }
-    if (artifactSaveInFlightRef.current) {
-      setArtifactSaveStatus(copy.document.saveQueuedWhileSaving);
-      return true;
-    }
-    const operationId = createAaisResearchOperationId("artifact-save");
-    const telemetryActorGeneration = captureAaisResearchActorGeneration();
-    const startedAt = clientNowMs();
-    const previousCharacters = lastSavedArtifactLengthRef.current;
-    const eventDetail = createArtifactSaveEventDetail({
-      operationId,
-      pending,
-      previousCharacters,
-      trigger,
-    });
-    if (!admitAaisResearchAction({
-      actorGeneration: telemetryActorGeneration,
-      eventName: "document_artifact_save",
-      outcome: "attempted",
-      detail: eventDetail,
-    })) {
-      pendingArtifactSaveRef.current = pending;
-      setArtifactSaveStatus(copy.document.saveResearchPaused);
-      return false;
-    }
-    pendingArtifactSaveRef.current = null;
-    artifactSaveInFlightRef.current = true;
-    setArtifactSaveBusy(true);
-    setArtifactSaveStatus(copy.document.saving);
-    setArtifactSaveError("");
-    void patchSession({
-      action: "save-artifact",
-      taskId: pending.taskId,
-      artifactText: pending.value,
-    })
-      .then(() => {
-        lastSavedArtifactLengthRef.current = pending.value.length;
-        if (!pendingArtifactSaveRef.current) {
-          setArtifactSaveStatus(copy.document.saved);
-        }
-        recordAaisResearchEvent({
-          actorGeneration: telemetryActorGeneration,
-          eventName: "document_artifact_save",
-          outcome: "success",
-          latencyMs: clientNowMs() - startedAt,
-          detail: eventDetail,
-        });
-      })
-      .catch((error) => {
-        const message = copy.document.saveFailed;
-        setBackendError(message);
-        setArtifactSaveStatus("");
-        setArtifactSaveError(message);
-        recordAaisResearchEvent({
-          actorGeneration: telemetryActorGeneration,
-          eventName: "document_artifact_save",
-          outcome: "failure",
-          latencyMs: clientNowMs() - startedAt,
-          detail: {
-            ...eventDetail,
-            error_kind: classifyAaisResearchClientError(error),
-          },
-        });
-      })
-      .finally(() => {
-        artifactSaveInFlightRef.current = false;
-        setArtifactSaveBusy(false);
-        if (pendingArtifactSaveRef.current) {
-          flushPendingArtifactSave("queued");
-        }
-      });
-    return true;
-  }
-
-  function scheduleArtifactSave(taskId: string, value: string) {
-    setArtifactSaveStatus(copy.document.saveQueued);
-    setArtifactSaveError("");
-    pendingArtifactSaveRef.current = {
-      taskId,
-      value,
-    };
-    if (artifactSaveTimerRef.current) {
-      clearTimeout(artifactSaveTimerRef.current);
-    }
-    artifactSaveTimerRef.current = setTimeout(
-      () => flushPendingArtifactSave("debounce"),
-      artifactSaveDebounceMs,
-    );
-  }
-
-  function cancelPendingArtifactSave() {
-    if (artifactSaveTimerRef.current) {
-      clearTimeout(artifactSaveTimerRef.current);
-      artifactSaveTimerRef.current = null;
-    }
-    pendingArtifactSaveRef.current = null;
-  }
-
-  function restorePendingArtifactSave(taskId: string, value: string) {
-    scheduleArtifactSave(taskId, value);
   }
 
   function recordArtifact(value: string) {
@@ -241,10 +196,24 @@ function LearningWorkbench({ actor, initialLocale }: { actor: LearningPageActor;
     setDocumentDownloadError("");
     setDocumentCloseError("");
     setArtifactText(value);
-    scheduleArtifactSave(activeTaskId, value);
+    scheduleArtifactSave(editingTaskId, value);
+  }
+
+  function recordDocumentTitle(value: string) {
+    documentTitleRef.current = value;
+    setDocumentTitle(value);
+    scheduleArtifactSave(editingTaskId, artifactText, { documentTitle: value });
   }
 
   function selectContentTab(nextTab: ContentTab) {
+    if (
+      activeTab === "editor"
+      && nextTab !== "editor"
+      && hasUncommittedArtifactSave()
+    ) {
+      flushPendingArtifactSave("navigation");
+      return;
+    }
     if (!admitAaisResearchAction({
       eventName: "content_tab_selected",
       outcome: "success",
@@ -258,19 +227,24 @@ function LearningWorkbench({ actor, initialLocale }: { actor: LearningPageActor;
     setActiveTab(nextTab);
     if (nextTab === "display") {
       setActiveContentId(null);
-      setActiveHistoryDocumentId(null);
     }
   }
 
   const saveAndCloseDocument = useLearningDocumentArchive({
     activeHistoryDocumentId,
-    activeTaskId,
+    activeTaskId: editingTaskId,
+    archiveIntentRef,
     artifactSaveBusy,
     artifactText,
     cancelPendingArtifactSave,
     documentTitle,
-    hasPendingArtifactSave: () => Boolean(pendingArtifactSaveRef.current),
+    hasPendingArtifactSave,
     locale,
+    isOperationCurrent,
+    onArchiveSucceeded: () => {
+      completeArtifactArchive();
+      setDocumentTaskId(null);
+    },
     patchSession,
     restorePendingArtifactSave,
     setActiveContentId,
@@ -279,6 +253,7 @@ function LearningWorkbench({ actor, initialLocale }: { actor: LearningPageActor;
     setArtifactSaveBusy,
     setArtifactSaveError,
     setArtifactSaveStatus,
+    setDocumentArchiveBusy,
     setDocumentCloseError,
     setDocumentTitle,
   });
@@ -296,7 +271,7 @@ function LearningWorkbench({ actor, initialLocale }: { actor: LearningPageActor;
     }
     const downloadDetail = {
       operation_id: operationId,
-      task_id: activeTaskId,
+      task_id: editingTaskId,
       download_method: downloadMethod,
       artifact_length: artifactText.length,
     };
@@ -313,7 +288,7 @@ function LearningWorkbench({ actor, initialLocale }: { actor: LearningPageActor;
     setDocumentDownloadError("");
     try {
       await saveMarkdownDocumentToLocal({
-        fileName: createLearningDocumentFileName(activeTaskId),
+        fileName: createLearningDocumentFileName(editingTaskId),
         markdown: createLearningDocumentMarkdown(artifactText),
       });
       setDocumentDownloadStatus(copy.document.downloadReady);
@@ -347,6 +322,10 @@ function LearningWorkbench({ actor, initialLocale }: { actor: LearningPageActor;
   }
 
   function openHistoryDocument(document: SavedLearningDocument) {
+    if (hasUncommittedArtifactSave()) {
+      flushPendingArtifactSave("history-navigation");
+      return;
+    }
     if (!admitAaisResearchAction({
       eventName: "history_document_opened",
       outcome: "success",
@@ -360,13 +339,19 @@ function LearningWorkbench({ actor, initialLocale }: { actor: LearningPageActor;
     })) {
       return;
     }
+    documentTitleRef.current = document.title;
     setDocumentTitle(document.title);
     setArtifactText(document.html);
     setActiveHistoryDocumentId(document.id);
+    setDocumentTaskId(document.taskId);
     setActiveContentId(null);
     setActiveTab("editor");
   }
   function openContentItem(contentId: ContentItemId) {
+    if (hasUncommittedArtifactSave()) {
+      flushPendingArtifactSave("content-navigation");
+      return;
+    }
     if (!admitAaisResearchAction({
       eventName: "content_item_opened",
       outcome: "success",
@@ -381,6 +366,10 @@ function LearningWorkbench({ actor, initialLocale }: { actor: LearningPageActor;
   }
 
   function returnToContentMenu() {
+    if (hasUncommittedArtifactSave()) {
+      flushPendingArtifactSave("content-navigation");
+      return;
+    }
     if (!admitAaisResearchAction({
       eventName: "content_item_back",
       outcome: "success",
@@ -393,12 +382,6 @@ function LearningWorkbench({ actor, initialLocale }: { actor: LearningPageActor;
     }
     setActiveContentId(null);
   }
-
-  useEffect(() => () => {
-    if (artifactSaveTimerRef.current) {
-      clearTimeout(artifactSaveTimerRef.current);
-    }
-  }, []);
 
   return (
     <div
@@ -425,8 +408,8 @@ function LearningWorkbench({ actor, initialLocale }: { actor: LearningPageActor;
           loggingOut={loggingOut}
           locale={locale}
           privacyBusy={privacyBusy}
-          onDeleteLearnerData={() => { void handleDeleteLearnerData(); }}
-          onExportLearnerData={() => { void handleExportLearnerData(); }}
+          onDeleteLearnerData={handleDeleteLearnerData}
+          onExportLearnerData={handleExportLearnerData}
           onLogout={handleLogout}
           onToggleAccountMenu={toggleAccountMenu}
         />
@@ -435,8 +418,10 @@ function LearningWorkbench({ actor, initialLocale }: { actor: LearningPageActor;
 
         <div
           ref={splitLayoutRef}
+          aria-busy={learnerDeleteBusy}
           data-testid="learning-split-layout"
           data-content-panel-width={Math.round(contentPanelWidth)}
+          inert={learnerDeleteBusy || undefined}
           className="aais-learning-split-layout grid min-h-0 flex-1 lg:overflow-hidden"
         >
           <GuidePanel
@@ -479,14 +464,19 @@ function LearningWorkbench({ actor, initialLocale }: { actor: LearningPageActor;
             documentDownloadError={documentDownloadError}
             documentDownloadStatus={documentDownloadStatus}
             documentTitle={documentTitle}
+            documentArchiveBusy={documentArchiveBusy}
+            documentNavigationLocked={hasUncommittedArtifactSave()}
             flushPendingArtifactSave={() => flushPendingArtifactSave("blur")}
             historyDocuments={historyDocuments}
             locale={locale}
-            onDocumentTitleChange={setDocumentTitle}
+            onDocumentTitleChange={recordDocumentTitle}
             onDownloadDocument={() => { void downloadDocumentToLocal(); }}
             onOpenDocument={openHistoryDocument}
             onRecordArtifact={recordArtifact}
             onSaveAndCloseDocument={saveAndCloseDocument}
+            onSaveAndClosePointerDown={() => {
+              archiveIntentRef.current = true;
+            }}
             selectContentTab={selectContentTab}
             onBackContent={returnToContentMenu}
             onOpenContent={openContentItem}

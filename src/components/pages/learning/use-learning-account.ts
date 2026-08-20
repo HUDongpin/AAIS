@@ -7,7 +7,7 @@ import {
 import { replaceAaisBrowserLocation } from "@/lib/client/aais-browser-navigation";
 import {
   createLearnerDataFileName,
-  saveJsonDocumentToLocal,
+  prepareJsonDocumentSaveToLocal,
 } from "@/components/pages/learning/document-markdown";
 import { getLearningCopy } from "@/components/pages/learning/learning-copy";
 import {
@@ -24,15 +24,17 @@ import {
 import type { Locale } from "@/data/aais";
 
 type UseLearningAccountInput = {
+  learnerDataGeneration: number | null;
   operationBusy: boolean;
-  onLearnerDataDeleteStarted: () => void;
+  onLearnerDataDeleteSucceeded: (nextGeneration: number) => void;
   locale?: Locale;
   studentId: string;
 };
 
 export function useLearningAccount({
+  learnerDataGeneration,
   operationBusy,
-  onLearnerDataDeleteStarted,
+  onLearnerDataDeleteSucceeded,
   locale = "zh-CN",
   studentId,
 }: UseLearningAccountInput) {
@@ -40,6 +42,7 @@ export function useLearningAccount({
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
   const [privacyBusy, setPrivacyBusy] = useState(false);
+  const [learnerDeleteBusy, setLearnerDeleteBusy] = useState(false);
   const [accountStatus, setAccountStatus] = useState("");
   const [accountError, setAccountError] = useState("");
 
@@ -85,7 +88,7 @@ export function useLearningAccount({
     }
     try {
       const logoutResult = await deleteAaisAppSession(researchLogout);
-      if (!logoutResult.sessionRevoked) {
+      if (!logoutResult.sessionRevoked && !logoutResult.sessionAbsent) {
         throw new Error("AAIS logout revocation was not acknowledged.");
       }
       if (researchLogout && !logoutResult.researchAcknowledged) {
@@ -134,6 +137,11 @@ export function useLearningAccount({
     if (privacyBusy) {
       return;
     }
+    if (operationBusy || loggingOut) {
+      setAccountStatus("");
+      setAccountError(copy.account.waitForExportOperation);
+      return;
+    }
     const telemetryActorGeneration = captureAaisResearchActorGeneration();
     const operationId = createAaisResearchOperationId("learner-export");
     const startedAt = clientNowMs();
@@ -151,11 +159,13 @@ export function useLearningAccount({
     setAccountStatus(copy.account.exporting);
     setAccountError("");
     try {
-      const data = await fetchLearnerPrivacyData();
-      await saveJsonDocumentToLocal({
+      // The picker must be invoked from the original click activation. Waiting
+      // for the export response first causes browsers to reject the picker.
+      const saveDocument = await prepareJsonDocumentSaveToLocal({
         fileName: createLearnerDataFileName(studentId),
-        data,
       });
+      const data = await fetchLearnerPrivacyData();
+      await saveDocument(data);
       setAccountStatus(copy.account.exported);
       setAccountMenuOpen(false);
       recordAaisResearchEvent({
@@ -169,7 +179,7 @@ export function useLearningAccount({
       });
     } catch (error) {
       setAccountStatus("");
-      setAccountError(copy.account.exportFailed);
+      setAccountError(isUserCancelledFilePicker(error) ? "" : copy.account.exportFailed);
       recordAaisResearchEvent({
         actorGeneration: telemetryActorGeneration,
         eventName: "learner_data_export",
@@ -189,6 +199,10 @@ export function useLearningAccount({
 
   async function handleDeleteLearnerData() {
     if (privacyBusy) {
+      return;
+    }
+    if (operationBusy || loggingOut) {
+      setAccountError(copy.account.waitForOperation);
       return;
     }
     const telemetryActorGeneration = captureAaisResearchActorGeneration();
@@ -221,11 +235,15 @@ export function useLearningAccount({
       return;
     }
     setPrivacyBusy(true);
+    setLearnerDeleteBusy(true);
     setAccountStatus(copy.account.deleting);
     setAccountError("");
-    onLearnerDataDeleteStarted();
     try {
-      await deleteLearnerPrivacyData();
+      if (learnerDataGeneration === null) {
+        throw new Error("AAIS learner data generation is unavailable.");
+      }
+      const deletionResult = await deleteLearnerPrivacyData(learnerDataGeneration);
+      onLearnerDataDeleteSucceeded(deletionResult.deletion.nextGeneration);
       setAccountStatus(copy.account.deleted);
       setAccountMenuOpen(false);
       recordAaisResearchEvent({
@@ -253,6 +271,7 @@ export function useLearningAccount({
         },
       });
     } finally {
+      setLearnerDeleteBusy(false);
       setPrivacyBusy(false);
     }
   }
@@ -280,6 +299,7 @@ export function useLearningAccount({
     handleExportLearnerData,
     handleLogout,
     loggingOut,
+    learnerDeleteBusy,
     privacyBusy,
     toggleAccountMenu,
   };
@@ -304,5 +324,8 @@ async function flushResearchTelemetryBeforeActorClear(maxWaitMs = 5_000) {
 }
 
 function isUserCancelledFilePicker(error: unknown) {
-  return error instanceof Error && error.name === "AbortError";
+  return typeof error === "object"
+    && error !== null
+    && "name" in error
+    && error.name === "AbortError";
 }

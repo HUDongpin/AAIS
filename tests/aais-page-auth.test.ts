@@ -37,7 +37,7 @@ describe("AAIS protected page auth", () => {
       id: "Bobie",
       role: "student",
       displayName: "Bobie",
-    });
+    }, new Date(), { authSource: "development" });
 
     const actor = await requireAaisPageSession("/learning");
 
@@ -61,7 +61,7 @@ describe("AAIS protected page auth", () => {
       id: "teacher-a",
       role: "teacher",
       displayName: "Teacher A",
-    });
+    }, new Date(), { authSource: "development" });
 
     const actor = await requireAaisEducatorPageSession("/dashboard");
 
@@ -75,7 +75,7 @@ describe("AAIS protected page auth", () => {
       id: "S001",
       role: "student",
       displayName: "S001",
-    });
+    }, new Date(), { authSource: "development" });
 
     await expect(requireAaisEducatorPageSession("/dashboard")).rejects.toThrow(
       "redirect:/learning",
