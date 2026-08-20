@@ -3,7 +3,11 @@
   "crons": [
     {
       "path": "/api/learning/lrs/outbox/flush",
-      "schedule": "7 3 * * *"
+      "schedule": "*/5 * * * *"
+    },
+    {
+      "path": "/api/auth/email-outbox/flush",
+      "schedule": "*/5 * * * *"
     }
   ]
 }

@@ -5,20 +5,13 @@ import path from "node:path";
 import { Pool } from "pg";
 import { getAaisMigrationDatabaseConfiguration } from "./run-postgres-migrations.mjs";
 
-const defaultLoginRateLimitWindowSeconds = 15 * 60;
-
 export async function cleanupAaisRetentionRows(input) {
   const database = input.database;
   const dryRun = input.dryRun !== false;
   const now = input.now ?? new Date();
-  const loginWindowSeconds = normalizePositiveInteger(
-    input.loginRateLimitWindowSeconds,
-    defaultLoginRateLimitWindowSeconds,
-    24 * 60 * 60,
-  );
   const counts = dryRun
-    ? await countExpiredRows(database, now, loginWindowSeconds)
-    : await deleteExpiredRows(database, now, loginWindowSeconds);
+    ? await countExpiredRows(database, now)
+    : await deleteExpiredRows(database, now);
 
   return {
     schemaVersion: 1,
@@ -29,8 +22,7 @@ export async function cleanupAaisRetentionRows(input) {
     retention: {
       authTokens: "expires_at <= checkedAt",
       sessionRevocations: "expires_at <= checkedAt",
-      loginRateLimits: "locked_until <= checkedAt or first_failure_at + window <= checkedAt",
-      loginRateLimitWindowSeconds: loginWindowSeconds,
+      loginRateLimits: "expires_at <= checkedAt",
     },
     redaction: {
       rowIds: "omitted",
@@ -42,7 +34,7 @@ export async function cleanupAaisRetentionRows(input) {
   };
 }
 
-async function countExpiredRows(database, now, loginWindowSeconds) {
+async function countExpiredRows(database, now) {
   const [authTokens, sessionRevocations, loginRateLimits] = await Promise.all([
     countRows(database, `
       select count(*)::int as count
@@ -57,10 +49,8 @@ async function countExpiredRows(database, now, loginWindowSeconds) {
     countRows(database, `
       select count(*)::int as count
         from aais_login_rate_limits
-       where (locked_until is not null and locked_until <= $1::timestamptz)
-          or (locked_until is null
-              and first_failure_at <= $1::timestamptz - ($2::int * interval '1 second'))`,
-    [now, loginWindowSeconds]),
+       where expires_at <= $1::timestamptz`,
+    [now]),
   ]);
   return {
     authTokens,
@@ -69,7 +59,7 @@ async function countExpiredRows(database, now, loginWindowSeconds) {
   };
 }
 
-async function deleteExpiredRows(database, now, loginWindowSeconds) {
+async function deleteExpiredRows(database, now) {
   const [authTokens, sessionRevocations, loginRateLimits] = await Promise.all([
     deleteRows(database, `
       with deleted as (
@@ -90,13 +80,11 @@ async function deleteExpiredRows(database, now, loginWindowSeconds) {
     deleteRows(database, `
       with deleted as (
         delete from aais_login_rate_limits
-         where (locked_until is not null and locked_until <= $1::timestamptz)
-            or (locked_until is null
-                and first_failure_at <= $1::timestamptz - ($2::int * interval '1 second'))
+         where expires_at <= $1::timestamptz
          returning rate_limit_key
       )
       select count(*)::int as count from deleted`,
-    [now, loginWindowSeconds]),
+    [now]),
   ]);
   return {
     authTokens,
@@ -154,7 +142,7 @@ function printHelp() {
     "Cleans expired AAIS security rows from Postgres without reading secrets:",
     "  - aais_user_auth_tokens where expires_at has passed",
     "  - aais_session_revocations where expires_at has passed",
-    "  - aais_login_rate_limits whose active window or lock has expired",
+    "  - aais_login_rate_limits where expires_at has passed",
     "",
     "Default mode is --dry-run. Use --approved to delete rows.",
     "",
@@ -179,7 +167,6 @@ async function main() {
     const report = await cleanupAaisRetentionRows({
       database: pool,
       dryRun: options.dryRun,
-      loginRateLimitWindowSeconds: process.env.AAIS_LOGIN_RATE_LIMIT_WINDOW_SECONDS,
     });
     const output = {
       ...report,
@@ -198,14 +185,6 @@ async function main() {
   } finally {
     await pool.end();
   }
-}
-
-function normalizePositiveInteger(value, fallback, max) {
-  const parsed = Number(value);
-  if (Number.isInteger(parsed) && parsed > 0 && parsed <= max) {
-    return parsed;
-  }
-  return fallback;
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {

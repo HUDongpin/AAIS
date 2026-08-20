@@ -172,6 +172,9 @@ describe("AAIS research data governance documentation", () => {
       "The controlled researcher export reads only from Postgres research event rows",
       "excludes identity-map and raw-text fields",
       "Legacy product event exports and product/teacher analytics are disabled",
+      "Each application security entry is emitted once",
+      "fixed route, operation, HTTP status, fixed error kind, authentication mode, and `secrets: redacted`",
+      "It never contains a cookie, bearer credential, CSRF value, `studyRunId`, raw actor id, request or response body, or original error text",
     ]);
   });
 

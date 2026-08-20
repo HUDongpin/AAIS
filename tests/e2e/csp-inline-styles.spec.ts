@@ -1,5 +1,8 @@
 import { expect, test, type Page } from "@playwright/test";
-import { authenticateAaisE2eActor } from "./aais-e2e-helpers";
+import {
+  authenticateAaisE2eActor,
+  waitForAaisLearningClientReady,
+} from "./aais-e2e-helpers";
 
 type CapturedCspViolation = {
   blockedUri: string;
@@ -46,12 +49,16 @@ test("strict CSP permits the login and authenticated editor workflows without in
     displayName: "CSP E2E",
   });
   await page.goto("/learning");
+  await waitForAaisLearningClientReady(page);
 
   const learningShell = page.getByTestId("learning-shell");
   const splitLayout = page.getByTestId("learning-split-layout");
   const contentPanel = page.getByRole("complementary", { name: "学习内容与文档" });
   const separator = page.getByRole("separator", { name: "调整内容展示区域宽度" });
   await expect(learningShell).toBeVisible();
+  await expect(splitLayout).toBeVisible();
+  await expect(contentPanel).toBeVisible();
+  await expect(separator).toBeVisible();
   await expect(learningShell.locator("[style]")).toHaveCount(0);
 
   const initialWidth = Number(await splitLayout.getAttribute("data-content-panel-width"));

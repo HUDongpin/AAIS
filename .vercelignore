@@ -5,6 +5,7 @@
 .playwright-cli/
 .vercel/
 All API Keys.docx
+/*.docx
 .env
 .env.*
 !.env.example
@@ -12,6 +13,7 @@ node_modules/
 output/
 test-results/
 technical-review/
+docs/figures/
 tests/
 aais-load-sanity*.json
 .aais-load-users*.json

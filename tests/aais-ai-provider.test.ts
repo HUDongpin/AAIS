@@ -3,6 +3,11 @@ import {
   createConfiguredAaisModelProvider,
   createOpenAiCompatibleAaisProvider,
 } from "@/lib/ai/aais-ai-provider";
+import {
+  createManualAaisAiRuntimeProfile,
+  readAaisAiRuntimeConfig,
+  studentRuntimeMaxRetries,
+} from "@/lib/ai/aais-ai-runtime-config";
 import { aaisCognitiveApprenticeshipBackground } from "@/data/aais";
 import { getAaisAiEvalApproval } from "@/lib/server/aais-ai-eval-manifest";
 
@@ -12,6 +17,137 @@ afterEach(() => {
 });
 
 describe("AAIS governed AI provider", () => {
+  it("fails closed on oversized streaming provider JSON and cancels the body", async () => {
+    let cancelled = false;
+    const responseBody = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array(300 * 1024));
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+    const fetchMock = vi.fn<typeof fetch>(async () => new Response(responseBody));
+    const provider = createOpenAiCompatibleAaisProvider({
+      endpoint: "https://ai.example.test/v1/chat/completions",
+      apiKey: "secret-api-key",
+      model: "enterprise-model",
+      fetchImpl: fetchMock,
+      timeoutMs: 1_000,
+      maxRetries: 0,
+    });
+
+    const result = await provider.generate({
+      agentId: "A1",
+      label: "导学智能体",
+      locale: "zh-CN",
+      phase: "training",
+      taskId: "training_task_1",
+      learnerInput: "请给我下一步。",
+      workspaceState: { currentStep: "guide" },
+      fallbackText: "本地 fallback",
+    });
+
+    expect(cancelled).toBe(true);
+    expect(result).toMatchObject({
+      text: "本地 fallback",
+      runtime: {
+        status: "fallback",
+        guardrail: {
+          reasons: ["provider-error"],
+        },
+      },
+    });
+  });
+
+  it.each([
+    "http://ai.example.test/v1/chat/completions",
+    "https://user:password@ai.example.test/v1/chat/completions",
+    "https://ai.example.test/v1/chat/completions?tenant=learner",
+    "https://ai.example.test/v1/chat/completions?",
+    "https://ai.example.test/v1/chat/completions#fragment",
+    "https://ai.example.test/v1/chat/completions#",
+  ])("marks unsafe production AI endpoint configuration invalid: %s", (endpoint) => {
+    const configured = readAaisAiRuntimeConfig({
+      ...process.env,
+      NODE_ENV: "production",
+      AAIS_AI_PROVIDER: "openai-compatible",
+      AAIS_AI_ENDPOINT: endpoint,
+      AAIS_AI_API_KEY: "secret-api-key",
+      AAIS_AI_MODEL: "enterprise-model",
+    });
+
+    expect(configured.configurationStatus.primary).toBe("invalid");
+    expect(configured.primary).toBeNull();
+    expect(configured.profile.mode).toBe("deterministic");
+  });
+
+  it("caps configured and manual retry counts so provider work has a finite upper bound", () => {
+    const configured = readAaisAiRuntimeConfig({
+      ...process.env,
+      AAIS_AI_PROVIDER: "openai-compatible",
+      AAIS_AI_ENDPOINT: "https://ai.example.test/v1/chat/completions",
+      AAIS_AI_API_KEY: "secret-api-key",
+      AAIS_AI_MODEL: "enterprise-model",
+      AAIS_AI_MAX_RETRIES: "1000000",
+      AAIS_AI_FALLBACK_ENDPOINT: "https://fallback.example.test/v1/chat/completions",
+      AAIS_AI_FALLBACK_API_KEY: "fallback-secret-key",
+      AAIS_AI_FALLBACK_MODEL: "fallback-model",
+      AAIS_AI_FALLBACK_MAX_RETRIES: "999999",
+    });
+    const manual = createManualAaisAiRuntimeProfile({
+      model: "manual-model",
+      maxRetries: Number.MAX_SAFE_INTEGER,
+    });
+    const invalidManual = createManualAaisAiRuntimeProfile({
+      model: "manual-model",
+      maxRetries: Number.NaN,
+    });
+    const fractionalManual = createManualAaisAiRuntimeProfile({
+      model: "manual-model",
+      maxRetries: 2.9,
+    });
+
+    expect(configured.primary?.maxRetries).toBe(studentRuntimeMaxRetries);
+    expect(configured.fallback?.maxRetries).toBe(studentRuntimeMaxRetries);
+    expect(configured.profile.primary?.maxRetries).toBe(studentRuntimeMaxRetries);
+    expect(configured.profile.fallback?.maxRetries).toBe(studentRuntimeMaxRetries);
+    expect(manual.primary?.maxRetries).toBe(studentRuntimeMaxRetries);
+    expect(invalidManual.primary?.maxRetries).toBe(1);
+    expect(fractionalManual.primary?.maxRetries).toBe(2);
+  });
+
+  it("defensively caps direct provider retry inputs at the same finite upper bound", async () => {
+    const fetchMock = vi.fn<typeof fetch>(async () =>
+      new Response("temporary failure", { status: 503 }),
+    );
+    const provider = createOpenAiCompatibleAaisProvider({
+      endpoint: "https://ai.example.test/v1/chat/completions",
+      apiKey: "secret-api-key",
+      model: "enterprise-model",
+      fetchImpl: fetchMock,
+      timeoutMs: 1_000,
+      maxRetries: Number.MAX_SAFE_INTEGER,
+    });
+
+    const result = await provider.generate({
+      agentId: "A1",
+      label: "导学智能体",
+      locale: "zh-CN",
+      phase: "training",
+      taskId: "training_task_1",
+      learnerInput: "请给我一个有限重试的提示。",
+      workspaceState: { currentStep: "guide" },
+      fallbackText: "本地 fallback",
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(studentRuntimeMaxRetries + 1);
+    expect(result.runtime).toMatchObject({
+      attempts: studentRuntimeMaxRetries + 1,
+      status: "fallback",
+    });
+  });
+
   it("retries transient provider failures and returns redacted runtime metadata", async () => {
     const fetchMock = vi.fn<typeof fetch>()
       .mockResolvedValueOnce(new Response("temporary failure", { status: 503 }))
@@ -386,6 +522,47 @@ describe("AAIS governed AI provider", () => {
     });
   });
 
+  it("propagates an external cancellation without retrying or returning fallback", async () => {
+    const controller = new AbortController();
+    let notifyFetchStarted!: () => void;
+    const fetchStarted = new Promise<void>((resolve) => {
+      notifyFetchStarted = resolve;
+    });
+    const fetchMock = vi.fn<typeof fetch>((_url, init) => {
+      notifyFetchStarted();
+      const signal = init?.signal as AbortSignal;
+      return new Promise<Response>((_resolve, reject) => {
+        signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+      });
+    });
+    const provider = createOpenAiCompatibleAaisProvider({
+      endpoint: "https://ai.example.test/v1/chat/completions",
+      apiKey: "secret-api-key",
+      model: "enterprise-model",
+      fetchImpl: fetchMock,
+      timeoutMs: 30_000,
+      maxRetries: 3,
+    });
+
+    const result = provider.generate({
+      agentId: "A1",
+      label: "小张",
+      locale: "zh-CN",
+      phase: "training",
+      taskId: "training_task_1",
+      learnerInput: "取消这次请求。",
+      workspaceState: { currentStep: "guide" },
+      fallbackText: "不应返回的 fallback",
+      signal: controller.signal,
+    });
+    await fetchStarted;
+    controller.abort();
+
+    await expect(result).rejects.toMatchObject({ name: "AbortError" });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect((fetchMock.mock.calls[0]?.[1]?.signal as AbortSignal).aborted).toBe(true);
+  });
+
   it("uses DashScope Qwen defaults when a Qwen API key is available", async () => {
     vi.stubEnv("DASHSCOPE_API_KEY", "dashscope-secret-key");
     const fetchMock = vi.fn<typeof fetch>(async () =>
@@ -479,6 +656,40 @@ describe("AAIS governed AI provider", () => {
         provider: "deterministic",
         status: "fallback",
       },
+    });
+  });
+
+  it("keeps the whole configured chain deterministic when a fallback endpoint is unsafe", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("AAIS_AI_PROVIDER", "qwen");
+    vi.stubEnv("DASHSCOPE_API_KEY", "dashscope-secret-key");
+    vi.stubEnv("AAIS_AI_MODEL", "qwen3.7-max");
+    vi.stubEnv("AAIS_AI_EVAL_APPROVED", "true");
+    vi.stubEnv("AAIS_AI_EVAL_VERSION", "eval-2026-07-19-qwen3.7-max-v1");
+    vi.stubEnv(
+      "AAIS_AI_FALLBACK_ENDPOINT",
+      "https://fallback.example.test/v1/chat/completions?tenant=learner",
+    );
+    vi.stubEnv("AAIS_AI_FALLBACK_API_KEY", "fallback-secret-key");
+    vi.stubEnv("AAIS_AI_FALLBACK_MODEL", "fallback-model");
+    const fetchMock = vi.fn<typeof fetch>();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await createConfiguredAaisModelProvider().generate({
+      agentId: "A1",
+      label: "导学智能体",
+      locale: "zh-CN",
+      phase: "training",
+      taskId: "training_task_1",
+      learnerInput: "请给我下一步。",
+      workspaceState: { currentStep: "guide" },
+      fallbackText: "本地 fallback",
+    });
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(result).toMatchObject({
+      text: "本地 fallback",
+      runtime: { provider: "deterministic", status: "fallback" },
     });
   });
 

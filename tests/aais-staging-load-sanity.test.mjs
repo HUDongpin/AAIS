@@ -27,7 +27,13 @@ describe("AAIS staging load sanity runner", () => {
       }
       if (url.endsWith("/api/learning/session") && init.method === "GET") {
         expect(init.headers.cookie).toContain("aais_session=session-");
-        return jsonResponse({ session: { activeTaskId: "practice_task_1" } });
+        return jsonResponse({
+          session: {
+            activeTaskId: "practice_task_1",
+            dataGeneration: 3,
+            tasks: [{ taskId: "practice_task_1", artifactRevision: 7 }],
+          },
+        });
       }
       if (url.endsWith("/api/learning/session") && init.method === "PATCH") {
         expect(init.headers.cookie).toContain("aais_session=session-");
@@ -36,6 +42,9 @@ describe("AAIS staging load sanity runner", () => {
         expect(body).toMatchObject({
           action: "save-artifact",
           taskId: "practice_task_1",
+          dataGeneration: 3,
+          expectedArtifactRevision: 7,
+          mutationId: expect.stringMatching(/^staging-load-student-/),
         });
         expect(body.artifactText).toContain("synthetic note");
         return jsonResponse({ session: { activeTaskId: "practice_task_1" } });

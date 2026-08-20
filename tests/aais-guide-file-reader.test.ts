@@ -71,6 +71,36 @@ describe("AAIS guide file reader", () => {
     }])).toThrow("exceeds the 20 MB upload limit");
   });
 
+  it("localizes attachment validation and read failures for the active English locale", async () => {
+    const oversizedFile = {
+      name: "too-large.csv",
+      type: "text/csv",
+      size: aaisGuideAttachmentLimits.maxFileSizeBytes + 1,
+    } as File;
+    await expect(readAaisGuideFileAttachment(oversizedFile, "en-US")).rejects.toThrow(
+      "File too-large.csv exceeds the 20 MB upload limit.",
+    );
+
+    const unsupportedFile = new File(["data"], "sample.pages", {
+      type: "application/octet-stream",
+    });
+    await expect(readAaisGuideFileAttachment(unsupportedFile, "en-US")).rejects.toThrow(
+      "File sample.pages is not a supported file type.",
+    );
+
+    const unreadableFile = {
+      name: "broken.txt",
+      type: "text/plain",
+      size: 10,
+      text: vi.fn(async () => {
+        throw new Error("raw browser failure");
+      }),
+    } as unknown as File;
+    await expect(readAaisGuideFileAttachment(unreadableFile, "en-US")).rejects.toThrow(
+      "File broken.txt could not be read.",
+    );
+  });
+
   it("loads PDFs through the configured worker entry and stops at the context cap", async () => {
     const destroy = vi.fn(async () => undefined);
     const getTextContent = vi.fn(async () => ({

@@ -486,6 +486,73 @@ describe("AAIS research telemetry client", () => {
     stop();
   });
 
+  it("terminally blocks an event queue that has reached the governed research limit", async () => {
+    const boundaryStates: string[] = [];
+    const visit = createVisitFixture("event-limit");
+    let eventAttempts = 0;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input) === "/api/research/visit") {
+        return Response.json({ visit });
+      }
+      eventAttempts += 1;
+      return Response.json({
+        error: { code: "AAIS_RESEARCH_EVENT_LIMIT_REACHED" },
+      }, { status: 429 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const stop = startAaisResearchTelemetry({
+      required: true,
+      initialVisit: visit,
+      onBoundaryStateChange: (state) => boundaryStates.push(state),
+    });
+    await flushAaisResearchTelemetry();
+
+    recordAaisResearchEvent({
+      eventName: "content_item_opened",
+      outcome: "success",
+      detail: { content_id: "theory" },
+    });
+    await flushAaisResearchTelemetry();
+
+    expect(eventAttempts).toBe(1);
+    expect(boundaryStates.at(-1)).toBe("terminal-blocked");
+    expect(JSON.parse(window.localStorage.getItem(queueStorageKey) ?? "[]")).toHaveLength(1);
+    expect(window.localStorage.getItem(terminalStorageKey)).toBe("blocked");
+    stop();
+  });
+
+  it("keeps an ordinary 429 event response temporary and retryable", async () => {
+    const boundaryStates: string[] = [];
+    const visit = createVisitFixture("generic-rate-limit");
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input) === "/api/research/visit") {
+        return Response.json({ visit });
+      }
+      return Response.json({
+        error: { code: "AAIS_RATE_LIMITED" },
+      }, { status: 429 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const stop = startAaisResearchTelemetry({
+      required: true,
+      initialVisit: visit,
+      onBoundaryStateChange: (state) => boundaryStates.push(state),
+    });
+    await flushAaisResearchTelemetry();
+
+    recordAaisResearchEvent({
+      eventName: "content_item_opened",
+      outcome: "success",
+      detail: { content_id: "theory" },
+    });
+    await flushAaisResearchTelemetry();
+
+    expect(boundaryStates.at(-1)).toBe("offline-or-temporary");
+    expect(JSON.parse(window.localStorage.getItem(queueStorageKey) ?? "[]")).toHaveLength(1);
+    expect(window.localStorage.getItem(terminalStorageKey)).toBeNull();
+    stop();
+  });
+
   it("terminally blocks instead of accepting a mismatched Postgres acknowledgement", async () => {
     const boundaryStates: string[] = [];
     const visit = createVisitFixture("bad-ack");

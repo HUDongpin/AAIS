@@ -6,6 +6,7 @@ import { DocumentEditor } from "@/components/pages/learning/document-editor";
 import { GuidePanel } from "@/components/pages/learning/guide-panel";
 import { LearningTopBar } from "@/components/pages/learning/learning-top-bar";
 import type {
+  AaisClientTaskRecord,
   ContentItemId,
   ContentTab,
   SavedLearningDocument,
@@ -37,7 +38,6 @@ describe("learning page components", () => {
         }]}
         hasGuideSubmission={false}
         onRemoveAttachment={vi.fn()}
-        onSubmitGuideQuestion={vi.fn()}
         sendGuideMessage={vi.fn()}
         setGuideDraft={vi.fn()}
         setGuideError={vi.fn()}
@@ -53,21 +53,26 @@ describe("learning page components", () => {
     const onExportLearnerData = vi.fn();
     const onLogout = vi.fn();
 
-    render(
+    const renderTopBar = (privacyBusy: boolean) => (
       <LearningTopBar
         accountMenuOpen
         displayName="Bobie"
         loggingOut={false}
-        privacyBusy={false}
+        privacyBusy={privacyBusy}
         onDeleteLearnerData={onDeleteLearnerData}
         onExportLearnerData={onExportLearnerData}
         onLogout={onLogout}
         onToggleAccountMenu={vi.fn()}
-      />,
+      />
     );
+    const { rerender } = render(renderTopBar(false));
 
     fireEvent.click(screen.getByRole("menuitem", { name: "导出学习数据" }));
+    rerender(renderTopBar(true));
+    rerender(renderTopBar(false));
     fireEvent.click(screen.getByRole("menuitem", { name: "删除学习数据" }));
+    rerender(renderTopBar(true));
+    rerender(renderTopBar(false));
     fireEvent.click(screen.getByRole("menuitem", { name: "退出" }));
 
     expect(onExportLearnerData).toHaveBeenCalledTimes(1);
@@ -95,8 +100,7 @@ describe("learning page components", () => {
     expect((screen.getByRole("menuitem", { name: "退出" }) as HTMLButtonElement).disabled).toBe(true);
   });
 
-  it("keeps GuidePanel quick starts, draft input, and attachment removal wired", () => {
-    const onSubmitGuideQuestion = vi.fn();
+  it("keeps GuidePanel draft input and attachment removal wired without temporary quick starts", () => {
     const onRemoveAttachment = vi.fn();
     const setGuideDraft = vi.fn();
     const setGuideError = vi.fn();
@@ -132,14 +136,19 @@ describe("learning page components", () => {
         ]}
         hasGuideSubmission
         onRemoveAttachment={onRemoveAttachment}
-        onSubmitGuideQuestion={onSubmitGuideQuestion}
         sendGuideMessage={sendGuideMessage}
         setGuideDraft={setGuideDraft}
         setGuideError={setGuideError}
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "明确学习目标" }));
+    expect(screen.queryByRole("button", { name: "明确学习目标" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "开始示范" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "我卡住了，给我支架" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "整理反思记录" })).toBeNull();
+    const hiddenFileInput = screen.getByLabelText("选择上传文件") as HTMLInputElement;
+    expect(hiddenFileInput.tabIndex).toBe(-1);
+    expect(hiddenFileInput.getAttribute("aria-hidden")).toBe("true");
     fireEvent.change(screen.getByLabelText("向智能导学输入你的想法"), {
       target: {
         value: "请帮我整理下一步",
@@ -148,13 +157,6 @@ describe("learning page components", () => {
     fireEvent.click(screen.getByRole("button", { name: "移除 notes.pdf" }));
     fireEvent.submit(screen.getByLabelText("向智能导学输入你的想法").closest("form") as HTMLFormElement);
 
-    expect(onSubmitGuideQuestion).toHaveBeenCalledWith(
-      "请帮我明确这个学习任务的目标，并拆成下一步。",
-      {
-        quickStartId: "clarify_goal",
-        source: "quick_start",
-      },
-    );
     expect(setGuideDraft).toHaveBeenCalledWith("请帮我整理下一步");
     expect(setGuideError).toHaveBeenCalledWith("");
     expect(onRemoveAttachment).toHaveBeenCalledWith("attachment-1");
@@ -184,7 +186,6 @@ describe("learning page components", () => {
         guideMessages={[]}
         hasGuideSubmission
         onRemoveAttachment={vi.fn()}
-        onSubmitGuideQuestion={vi.fn()}
         sendGuideMessage={vi.fn()}
         setGuideDraft={vi.fn()}
         setGuideError={vi.fn()}
@@ -201,8 +202,8 @@ describe("learning page components", () => {
       "智能服务暂时不可用。",
       "学习记录服务暂时不可用。",
     ]);
-    expect((screen.getByRole("button", { name: "明确学习目标" }) as HTMLButtonElement).disabled).toBe(true);
-    expect((screen.getByRole("button", { name: "Upload file" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.queryByRole("button", { name: "明确学习目标" })).toBeNull();
+    expect((screen.getByRole("button", { name: "上传文件" }) as HTMLButtonElement).disabled).toBe(true);
     expect((screen.getByRole("button", { name: "发送" }) as HTMLButtonElement).disabled).toBe(true);
     expect((screen.getByRole("button", { name: "移除 notes.pdf" }) as HTMLButtonElement).disabled).toBe(true);
   });
@@ -222,7 +223,6 @@ describe("learning page components", () => {
         guideMessages={[]}
         hasGuideSubmission
         onRemoveAttachment={vi.fn()}
-        onSubmitGuideQuestion={vi.fn()}
         sendGuideMessage={vi.fn()}
         setGuideDraft={vi.fn()}
         setGuideError={vi.fn()}
@@ -234,9 +234,9 @@ describe("learning page components", () => {
     expect(status.getAttribute("aria-live")).toBe("polite");
     expect(status.getAttribute("aria-atomic")).toBe("true");
     expect(status.closest("section")?.getAttribute("aria-busy")).toBe("true");
-    expect((screen.getByRole("button", { name: "Upload file" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "上传文件" }) as HTMLButtonElement).disabled).toBe(true);
     expect((screen.getByRole("button", { name: "发送" }) as HTMLButtonElement).disabled).toBe(true);
-    expect((screen.getByRole("button", { name: "明确学习目标" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.queryByRole("button", { name: "明确学习目标" })).toBeNull();
   });
 
   it("keeps ContentSidePanel display menu and history document callbacks isolated", () => {
@@ -253,7 +253,7 @@ describe("learning page components", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "理论知识" }));
+    fireEvent.click(screen.getByRole("button", { name: /任务卡片/ }));
     expect(onOpenContent).toHaveBeenCalledWith("theory");
 
     rerender(
@@ -269,6 +269,111 @@ describe("learning page components", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "历史文档文件夹：学习记录" }));
     expect(onOpenDocument).toHaveBeenCalledWith(historyDocument);
+  });
+
+  it("renders server-backed task cards as a sequential locked flow", () => {
+    const onCompleteTask = vi.fn();
+    const onSelectTask = vi.fn();
+    const initialTasks = createTaskCardRecords([
+      "active",
+      "locked",
+      "locked",
+      "locked",
+    ]);
+    const { rerender } = render(
+      <ContentSidePanel
+        {...createContentSidePanelProps({
+          activeContentId: "theory",
+          activeTaskId: "training_task_1",
+          onCompleteTask,
+          onSelectTask,
+          tasks: initialTasks,
+        })}
+      />,
+    );
+
+    expect(document.querySelector('[data-task-card="training_task_1"]')?.getAttribute("data-task-status"))
+      .toBe("active");
+    expect(document.querySelector('[data-task-card="practice_task_1"]')?.getAttribute("data-task-status"))
+      .toBe("locked");
+    expect((screen.getByRole("button", {
+      name: "L1 挑战：复述与计划，已锁定",
+    }) as HTMLButtonElement).disabled).toBe(true);
+
+    fireEvent.click(screen.getByRole("button", {
+      name: "完成任务：专家示范后的案例训练",
+    }));
+    expect(onCompleteTask).toHaveBeenCalledWith("training_task_1");
+    expect(onSelectTask).not.toHaveBeenCalled();
+
+    rerender(
+      <ContentSidePanel
+        {...createContentSidePanelProps({
+          activeContentId: "theory",
+          activeTaskId: "training_task_1",
+          onCompleteTask,
+          onSelectTask,
+          tasks: createTaskCardRecords([
+            "completed",
+            "available",
+            "locked",
+            "locked",
+          ]),
+        })}
+      />,
+    );
+
+    expect(document.querySelector('[data-task-card="training_task_1"]')?.getAttribute("data-task-status"))
+      .toBe("completed");
+    expect(document.querySelector('[data-task-card="practice_task_1"]')?.getAttribute("data-task-status"))
+      .toBe("available");
+    fireEvent.click(screen.getByRole("button", {
+      name: "进入任务：L1 挑战：复述与计划",
+    }));
+    expect(onSelectTask).toHaveBeenCalledWith("practice_task_1");
+    expect(screen.getByText("已完成 1/4 个任务")).toBeTruthy();
+  });
+
+  it("disables content and history entry points while document navigation is locked", () => {
+    const onOpenContent = vi.fn();
+    const onOpenDocument = vi.fn();
+    const historyDocument = createSavedDocument();
+    const { rerender } = render(
+      <ContentSidePanel
+        {...createContentSidePanelProps({
+          documentNavigationLocked: true,
+          historyDocuments: [historyDocument],
+          onOpenContent,
+          onOpenDocument,
+        })}
+      />,
+    );
+
+    const historyEntry = screen.getByRole("button", { name: "历史文档" }) as HTMLButtonElement;
+    expect(historyEntry.disabled).toBe(true);
+    fireEvent.click(historyEntry);
+    expect(onOpenContent).not.toHaveBeenCalled();
+
+    rerender(
+      <ContentSidePanel
+        {...createContentSidePanelProps({
+          activeContentId: "history",
+          documentNavigationLocked: true,
+          historyDocuments: [historyDocument],
+          onOpenContent,
+          onOpenDocument,
+        })}
+      />,
+    );
+
+    const historyFolder = screen.getByRole("button", {
+      name: "历史文档文件夹：学习记录",
+    }) as HTMLButtonElement;
+    expect(historyFolder.disabled).toBe(true);
+    fireEvent.click(historyFolder);
+    expect(onOpenDocument).not.toHaveBeenCalled();
+    expect((screen.getByRole("button", { name: "返回内容展示" }) as HTMLButtonElement).disabled)
+      .toBe(true);
   });
 
   it("keeps DocumentEditor title, rich text, and blur persistence callbacks wired", () => {
@@ -302,10 +407,36 @@ describe("learning page components", () => {
     expect(onArtifactChange).toHaveBeenCalledWith("<h1>学习计划</h1><p>新记录</p>");
     expect(onArtifactBlur).toHaveBeenCalledTimes(1);
   });
+
+  it("sanitizes active pasted HTML before it reaches autosave state", () => {
+    const onArtifactChange = vi.fn();
+    render(
+      <DocumentEditor
+        artifactText=""
+        documentTitle=""
+        onArtifactChange={onArtifactChange}
+        onArtifactBlur={vi.fn()}
+        onDocumentTitleChange={vi.fn()}
+      />,
+    );
+    const editor = screen.getByRole("textbox", {
+      name: "在这里写下任务理解、计划、执行过程或最终产出。",
+    });
+    editor.innerHTML = '<p onclick="alert(1)">学习记录</p>'
+      + '<iframe src="https://attacker.example.test/frame"></iframe>'
+      + '<a href="https://attacker.example.test/collect">外部链接</a>';
+
+    fireEvent.input(editor);
+
+    expect(onArtifactChange).toHaveBeenLastCalledWith("<p>学习记录</p>外部链接");
+    expect(editor.innerHTML).toBe("<p>学习记录</p>外部链接");
+    expect(editor.innerHTML).not.toContain("attacker.example.test");
+  });
 });
 
 function createContentSidePanelProps(overrides: Partial<{
   activeContentId: ContentItemId | null;
+  activeTaskId: string;
   activeTab: ContentTab;
   artifactSaveBusy: boolean;
   artifactSaveError: string;
@@ -315,19 +446,26 @@ function createContentSidePanelProps(overrides: Partial<{
   documentDownloadError: string;
   documentDownloadStatus: string;
   documentTitle: string;
+  documentNavigationLocked: boolean;
   flushPendingArtifactSave: () => void;
   historyDocuments: SavedLearningDocument[];
   onDocumentTitleChange: (value: string) => void;
   onDownloadDocument: () => void;
   onBackContent: () => void;
+  onCompleteTask: (taskId: string) => void;
   onOpenContent: (id: ContentItemId) => void;
   onOpenDocument: (document: SavedLearningDocument) => void;
   onRecordArtifact: (value: string) => void;
   onSaveAndCloseDocument: () => void;
+  onSelectTask: (taskId: string) => void;
   selectContentTab: (nextTab: ContentTab) => void;
+  taskActionBusy: boolean;
+  taskActionError: string;
+  tasks: AaisClientTaskRecord[];
 }> = {}) {
   return {
     activeContentId: null,
+    activeTaskId: "training_task_1",
     activeTab: "display" as ContentTab,
     artifactSaveBusy: false,
     artifactSaveError: "",
@@ -337,18 +475,42 @@ function createContentSidePanelProps(overrides: Partial<{
     documentDownloadError: "",
     documentDownloadStatus: "",
     documentTitle: "",
+    documentNavigationLocked: false,
     flushPendingArtifactSave: vi.fn(),
     historyDocuments: [],
     onDocumentTitleChange: vi.fn(),
     onDownloadDocument: vi.fn(),
     onBackContent: vi.fn(),
+    onCompleteTask: vi.fn(),
     onOpenContent: vi.fn(),
     onOpenDocument: vi.fn(),
     onRecordArtifact: vi.fn(),
     onSaveAndCloseDocument: vi.fn(),
+    onSelectTask: vi.fn(),
     selectContentTab: vi.fn(),
+    taskActionBusy: false,
+    taskActionError: "",
+    tasks: [],
     ...overrides,
   };
+}
+
+function createTaskCardRecords(
+  statuses: NonNullable<AaisClientTaskRecord["status"]>[],
+): AaisClientTaskRecord[] {
+  return [
+    "training_task_1",
+    "practice_task_1",
+    "practice_task_2",
+    "practice_task_3",
+  ].map((taskId, index) => ({
+    taskId,
+    phase: index === 0 ? "training" : "practice",
+    status: statuses[index],
+    artifactText: "",
+    artifactRevision: 0,
+    selfReportRevision: 0,
+  }));
 }
 
 function createSavedDocument(): SavedLearningDocument {

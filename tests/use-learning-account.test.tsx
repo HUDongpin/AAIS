@@ -8,6 +8,10 @@ const navigationMocks = vi.hoisted(() => ({
 }));
 const sessionMocks = vi.hoisted(() => ({
   deleteAppSession: vi.fn(),
+  fetchLearnerPrivacyData: vi.fn(),
+}));
+const documentMocks = vi.hoisted(() => ({
+  prepareJsonDocumentSaveToLocal: vi.fn(),
 }));
 const telemetryMocks = vi.hoisted(() => ({
   clearActor: vi.fn(),
@@ -20,7 +24,7 @@ const telemetryMocks = vi.hoisted(() => ({
 vi.mock("@/components/pages/learning/learning-session-client", () => ({
   deleteAaisAppSession: sessionMocks.deleteAppSession,
   deleteLearnerPrivacyData: vi.fn(),
-  fetchLearnerPrivacyData: vi.fn(),
+  fetchLearnerPrivacyData: sessionMocks.fetchLearnerPrivacyData,
 }));
 
 vi.mock("@/lib/client/aais-browser-navigation", () => ({
@@ -29,7 +33,7 @@ vi.mock("@/lib/client/aais-browser-navigation", () => ({
 
 vi.mock("@/components/pages/learning/document-markdown", () => ({
   createLearnerDataFileName: vi.fn(() => "learner-data.json"),
-  saveJsonDocumentToLocal: vi.fn(),
+  prepareJsonDocumentSaveToLocal: documentMocks.prepareJsonDocumentSaveToLocal,
 }));
 
 vi.mock("@/lib/client/aais-research-telemetry", () => ({
@@ -48,16 +52,20 @@ vi.mock("@/lib/client/aais-research-telemetry", () => ({
   recordAaisResearchEvent: telemetryMocks.record,
 }));
 
-function AccountHarness() {
+function AccountHarness({ operationBusy = false }: { operationBusy?: boolean }) {
   const account = useLearningAccount({
-    operationBusy: false,
-    onLearnerDataDeleteStarted: vi.fn(),
+    learnerDataGeneration: 1,
+    operationBusy,
+    onLearnerDataDeleteSucceeded: vi.fn(),
     studentId: "learner-01",
   });
   return (
     <>
       <button onClick={() => { void account.handleLogout(); }} type="button">
         退出
+      </button>
+      <button onClick={() => { void account.handleExportLearnerData(); }} type="button">
+        导出
       </button>
       <p>{account.accountError}</p>
       <p>{account.accountStatus}</p>
@@ -69,6 +77,8 @@ afterEach(() => {
   vi.restoreAllMocks();
   navigationMocks.replace.mockReset();
   sessionMocks.deleteAppSession.mockReset();
+  sessionMocks.fetchLearnerPrivacyData.mockReset();
+  documentMocks.prepareJsonDocumentSaveToLocal.mockReset();
   telemetryMocks.clearActor.mockReset();
   telemetryMocks.flush.mockReset();
   telemetryMocks.flush.mockImplementation(async () => undefined);
@@ -84,6 +94,7 @@ describe("useLearningAccount research logout boundary", () => {
     telemetryMocks.pendingCount = 2;
     sessionMocks.deleteAppSession.mockResolvedValue({
       researchAcknowledged: false,
+      sessionAbsent: false,
       sessionRevoked: true,
     });
     window.localStorage.setItem("aais_student_id", "learner-01");
@@ -118,5 +129,89 @@ describe("useLearningAccount research logout boundary", () => {
     expect(sessionMocks.deleteAppSession).not.toHaveBeenCalled();
     expect(telemetryMocks.clearActor).not.toHaveBeenCalled();
     expect(navigationMocks.replace).not.toHaveBeenCalled();
+  });
+
+  it("routes an already-absent formal-research session to the ACK-gap login", async () => {
+    telemetryMocks.logoutContext = {
+      expectedVisitId: "10000000-0000-4000-8000-000000000011",
+      failureClientEventId: "10000000-0000-4000-8000-000000000012",
+      finalClientTime: "2026-08-01T10:00:00.000Z",
+      operationId: "replaced-by-hook",
+      successClientEventId: "10000000-0000-4000-8000-000000000013",
+    };
+    sessionMocks.deleteAppSession.mockResolvedValue({
+      researchAcknowledged: false,
+      sessionAbsent: true,
+      sessionRevoked: false,
+    });
+    render(<AccountHarness />);
+
+    fireEvent.click(screen.getByRole("button", { name: "退出" }));
+
+    await waitFor(() => expect(navigationMocks.replace).toHaveBeenCalledWith(
+      "/login?researchLogout=ack-failed",
+    ));
+    expect(window.sessionStorage.getItem("aais_research_logout_ack_gap_v1")).toBe("1");
+    expect(telemetryMocks.clearActor).toHaveBeenCalledOnce();
+  });
+
+  it("acquires the JSON save target before awaiting the privacy response", async () => {
+    let resolveExport: ((value: unknown) => void) | undefined;
+    const exportResponse = new Promise<unknown>((resolve) => {
+      resolveExport = resolve;
+    });
+    const writeDocument = vi.fn(async () => undefined);
+    documentMocks.prepareJsonDocumentSaveToLocal.mockResolvedValue(writeDocument);
+    sessionMocks.fetchLearnerPrivacyData.mockReturnValue(exportResponse);
+    render(<AccountHarness />);
+
+    fireEvent.click(screen.getByRole("button", { name: "导出" }));
+
+    expect(documentMocks.prepareJsonDocumentSaveToLocal).toHaveBeenCalledWith({
+      fileName: "learner-data.json",
+    });
+    await waitFor(() => expect(sessionMocks.fetchLearnerPrivacyData).toHaveBeenCalledOnce());
+    expect(documentMocks.prepareJsonDocumentSaveToLocal.mock.invocationCallOrder[0]).toBeLessThan(
+      sessionMocks.fetchLearnerPrivacyData.mock.invocationCallOrder[0],
+    );
+    expect(writeDocument).not.toHaveBeenCalled();
+
+    resolveExport?.({ exportScope: "learner-data" });
+    await waitFor(() => expect(writeDocument).toHaveBeenCalledWith({
+      exportScope: "learner-data",
+    }));
+  });
+
+  it("refuses an export while another learning operation can still change learner data", async () => {
+    const writeDocument = vi.fn(async () => undefined);
+    documentMocks.prepareJsonDocumentSaveToLocal.mockResolvedValue(writeDocument);
+    sessionMocks.fetchLearnerPrivacyData.mockResolvedValue({ exportScope: "learner-data" });
+    render(<AccountHarness operationBusy />);
+
+    fireEvent.click(screen.getByRole("button", { name: "导出" }));
+
+    expect(await screen.findByText("请等待当前保存、下载或智能体操作完成后再导出学习数据。"))
+      .toBeTruthy();
+    expect(documentMocks.prepareJsonDocumentSaveToLocal).not.toHaveBeenCalled();
+    expect(sessionMocks.fetchLearnerPrivacyData).not.toHaveBeenCalled();
+    expect(writeDocument).not.toHaveBeenCalled();
+  });
+
+  it("treats save-picker cancellation as a user cancellation without fetching data", async () => {
+    const cancellation = new DOMException("The user aborted a request.", "AbortError");
+    documentMocks.prepareJsonDocumentSaveToLocal.mockRejectedValue(cancellation);
+    render(<AccountHarness />);
+
+    fireEvent.click(screen.getByRole("button", { name: "导出" }));
+
+    await waitFor(() => expect(telemetryMocks.record).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventName: "learner_data_export",
+        outcome: "failure",
+        detail: expect.objectContaining({ error_kind: "user_cancelled" }),
+      }),
+    ));
+    expect(sessionMocks.fetchLearnerPrivacyData).not.toHaveBeenCalled();
+    expect(screen.queryByText("学习数据导出未能完成，请稍后重试。")).toBeNull();
   });
 });

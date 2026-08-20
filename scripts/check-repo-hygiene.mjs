@@ -123,7 +123,10 @@ export function isForbiddenSourcePath(filePath) {
   if (!normalized || normalized === ".env.example") {
     return false;
   }
-  if (normalized === "All API Keys.docx") {
+  if (
+    normalized === "All API Keys.docx"
+    || (!normalized.includes("/") && /\.docx$/i.test(normalized))
+  ) {
     return true;
   }
   if (normalized === ".env" || normalized.startsWith(".env.")) {
@@ -201,7 +204,7 @@ function printHelp() {
     "Checks AAIS source hygiene without reading secret values:",
     "  - Git repository and remote presence",
     "  - dirty worktree counts",
-    "  - forbidden staged files such as .env*, output/, and All API Keys.docx",
+    "  - forbidden staged files such as .env*, output/, and root-level owner DOCX files",
     "  - local private artifact presence by path only",
   ].join("\n"));
 }

@@ -4,6 +4,9 @@ import {
   type AaisSessionActor,
 } from "@/lib/server/aais-session";
 import { isAaisSessionTokenRevoked } from "@/lib/server/aais-session-revocations";
+import { resolveAaisDatabaseSessionActor } from "@/lib/server/aais-users";
+import { verifyAaisTrialSessionActor } from "@/lib/server/aais-trial-accounts";
+import { getAaisOidcSessionPolicyFingerprint } from "@/lib/server/aais-oidc";
 
 export class AaisAuthError extends Error {
   constructor() {
@@ -35,10 +38,52 @@ export async function verifyAaisRequestSessionToken(
     if (await isAaisSessionTokenRevoked({ tokenHash: verified.tokenHash })) {
       return null;
     }
+    if (verified.authSource === "oidc") {
+      const currentPolicyFingerprint = getAaisOidcSessionPolicyFingerprint();
+      return verified.actor.id.startsWith("oidc:v2:")
+        && currentPolicyFingerprint !== null
+        && verified.oidcPolicyFingerprint === currentPolicyFingerprint
+        ? verified.actor
+        : null;
+    }
+    if (verified.authSource === "trial") {
+      return verified.trialPolicyFingerprint === null
+        ? null
+        : verifyAaisTrialSessionActor({
+            actorId: verified.actor.id,
+            role: verified.actor.role,
+            policyFingerprint: verified.trialPolicyFingerprint,
+          });
+    }
+    if (verified.authSource === "development") {
+      return isProductionRuntime() ? null : verified.actor;
+    }
+    // V1 cookies do not carry an authentication source. Guessing that source
+    // from an actor-id prefix (or from whichever backing store happens to be
+    // configured) can turn a database outage or configuration change into an
+    // authorization fail-open outside NODE_ENV=production. Current login
+    // routes mint source-bound v3 cookies; legacy v2 database cookies remain
+    // verifiable through their auth version below.
+    if (verified.authSource === null && verified.authVersion === null) {
+      return null;
+    }
+    const currentActor = await resolveAaisDatabaseSessionActor(verified.actor.id);
+    if (currentActor.status === "active") {
+      return currentActor.actor.id === verified.actor.id
+        && currentActor.actor.role === verified.actor.role
+        && verified.authVersion !== null
+        && currentActor.authVersion === verified.authVersion
+        ? currentActor.actor
+        : null;
+    }
+    return null;
   } catch {
     return null;
   }
-  return verified.actor;
+}
+
+function isProductionRuntime() {
+  return process.env.NODE_ENV === "production" || process.env.VERCEL_ENV === "production";
 }
 
 export function isAaisAuthError(error: unknown) {
@@ -56,5 +101,9 @@ function readCookie(cookieHeader: string | null, name: string) {
   if (!cookie) {
     return null;
   }
-  return decodeURIComponent(cookie.slice(name.length + 1));
+  try {
+    return decodeURIComponent(cookie.slice(name.length + 1));
+  } catch {
+    return null;
+  }
 }

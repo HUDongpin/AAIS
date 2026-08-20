@@ -1,5 +1,11 @@
 import type { Metadata } from "next";
+import { cookies } from "next/headers";
 import { LegalNoticePage } from "@/components/pages/legal-notice-page";
+import {
+  aaisLocaleCookieName,
+  defaultAaisLocale,
+  parseAaisLocale,
+} from "@/lib/aais-locale";
 
 export const metadata: Metadata = {
   title: "Terms | CAAIS",
@@ -8,13 +14,40 @@ export const metadata: Metadata = {
 
 export const dynamic = "force-dynamic";
 
-export default function Page() {
+type TermsPageProps = {
+  searchParams?: Promise<{ lang?: string | string[] }>;
+};
+
+export default async function Page({ searchParams }: TermsPageProps = {}) {
+  const params = await searchParams;
+  const requestedLocale = parseAaisLocale(
+    typeof params?.lang === "string" ? params.lang : undefined,
+  );
+  const cookieStore = await cookies();
+  const locale = requestedLocale
+    ?? parseAaisLocale(cookieStore.get(aaisLocaleCookieName)?.value)
+    ?? defaultAaisLocale;
+  const copy = termsCopy[locale];
   return (
     <LegalNoticePage
-      eyebrow="Responsible use"
-      title="使用条款"
-      summary="AAIS 是面向 Cognitive Apprenticeship 的学习支持系统。使用者应把它作为学习过程、教师判断和机构治理的辅助，而不是替代责任主体。"
-      sections={[
+      backHref={createLegalLoginHref(locale, requestedLocale !== null)}
+      backLabel={copy.backLabel}
+      eyebrow={copy.eyebrow}
+      locale={locale}
+      title={copy.title}
+      summary={copy.summary}
+      sections={copy.sections}
+    />
+  );
+}
+
+const termsCopy = {
+  "zh-CN": {
+    backLabel: "返回登录",
+    eyebrow: "负责任使用",
+    title: "使用条款",
+    summary: "AAIS 是面向 Cognitive Apprenticeship 的学习支持系统。使用者应把它作为学习过程、教师判断和机构治理的辅助，而不是替代责任主体。",
+    sections: [
         {
           title: "学习使用边界",
           items: [
@@ -39,7 +72,48 @@ export default function Page() {
             "外部 LMS、HRIS、BI 集成应使用受控导出和安全 join keys；AAIS 不应成为机构身份或人事数据的源系统。",
           ],
         },
-      ]}
-    />
-  );
+      ],
+  },
+  "en-US": {
+    backLabel: "Back to sign in",
+    eyebrow: "Responsible use",
+    title: "Terms of Use",
+    summary: "AAIS is a learning-support system for Cognitive Apprenticeship. It supports the learning process, teacher judgment, and institutional governance; it does not replace the people and institutions responsible for those decisions.",
+    sections: [
+      {
+        title: "Boundaries for learning use",
+        items: [
+          "Xiao Zhang provides learning scaffolds and Professor provides expert modelling, while backend mechanisms support supervision and reflection. System output must not be the sole basis for final grades, disciplinary action, or other high-risk decisions.",
+          "Learners should submit their own understanding, plans, reflections, and work products. They must not present an AI response as their own complete answer.",
+          "The teacher dashboard helps identify learning signals that may require follow-up. Teaching decisions must also consider classroom evidence, assignments, and institutional policy.",
+        ],
+      },
+      {
+        title: "Accounts and authorization",
+        items: [
+          "Production environments should protect learning and cohort data through institutional SSO, OIDC role mapping, and signed sessions.",
+          "Teacher and administrator accounts may access only the cohort analytics and exports within their authorized scope.",
+          "Users must not share accounts, cookies, CSRF tokens, OIDC callback evidence, or any provider, API, or database secret.",
+        ],
+      },
+      {
+        title: "Operations and evidence",
+        items: [
+          "Before production release, the service should pass product CI, Playwright end-to-end tests, database migration checks, deployment smoke checks, and the human release checklist.",
+          "Operations records should contain only status, variable names, hashes, Boolean evidence, and redacted metrics; they must not contain real secrets or transient sign-in material.",
+          "External LMS, HRIS, and BI integrations should use controlled exports and safe join keys. AAIS must not become the source system for institutional identity or human-resources data.",
+        ],
+      },
+    ],
+  },
+} as const;
+
+function createLegalLoginHref(
+  locale: "zh-CN" | "en-US",
+  hasExplicitLocale: boolean,
+) {
+  if (locale === "en-US") {
+    return "/login?lang=en-US";
+  }
+  return hasExplicitLocale ? "/login?lang=zh-CN" : "/login";
 }

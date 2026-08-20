@@ -2,24 +2,27 @@ import { NextResponse } from "next/server";
 import {
   type AaisCohortAnalyticsFilters,
   getAaisLearningStore,
+  isAaisEducatorScopeAuthorizationError,
+  isAaisLearnerSessionNotFoundError,
   isAaisLegacyResearchDataAccessDisabledError,
   isAaisLearningStorageConfigurationError,
   normalizeCohortAnalyticsFilters,
 } from "@/lib/server/aais-learning-store";
-import { isAaisAuthError, requireAaisSessionActor, resolveAaisStudentId } from "@/lib/server/aais-request-auth";
+import { isAaisAuthError, requireAaisSessionActor } from "@/lib/server/aais-request-auth";
 import { createAaisApiErrorResponse } from "@/lib/server/aais-api-error";
 
 export async function GET(request: Request) {
-  const url = new URL(request.url);
-  const format = url.searchParams.get("format") === "json" ? "json" : "csv";
-  const scope = url.searchParams.get("scope");
-
   try {
+    const actor = await requireAaisSessionActor(request);
+    const url = new URL(request.url);
+    const format = readExportFormat(url.searchParams);
+    const scope = readExportScope(url.searchParams);
     const exported = scope === "cohort"
-      ? await getAuthorizedCohortExport(request, format, url.searchParams)
-      : await getAaisLearningStore().exportEvents(await resolveAaisStudentId(request), format);
+      ? await getAuthorizedCohortExport(actor, format, url.searchParams)
+      : await getAaisLearningStore().exportEvents(actor.id, format);
     return new NextResponse(exported.body, {
       headers: {
+        "cache-control": "private, no-store",
         "content-type": exported.contentType,
         "content-disposition": `attachment; filename="${exported.fileName}"`,
       },
@@ -30,16 +33,40 @@ export async function GET(request: Request) {
 }
 
 async function getAuthorizedCohortExport(
-  request: Request,
+  actor: Awaited<ReturnType<typeof requireAaisSessionActor>>,
   format: "json" | "csv",
   params: URLSearchParams,
 ) {
-  const actor = await requireAaisSessionActor(request);
   if (actor.role !== "teacher" && actor.role !== "admin") {
     throw new AaisExportAuthorizationError();
   }
   const filters = readCohortAnalyticsFilters(params);
-  return getAaisLearningStore().exportCohortAnalytics(format, filters);
+  return getAaisLearningStore().exportEducatorCohortAnalytics(format, {
+    actorId: actor.id,
+    actorRole: actor.role,
+  }, filters);
+}
+
+function readExportFormat(params: URLSearchParams): "json" | "csv" {
+  const value = params.get("format")?.trim();
+  if (!value) {
+    return "csv";
+  }
+  if (value === "json" || value === "csv") {
+    return value;
+  }
+  throw new AaisExportQueryError();
+}
+
+function readExportScope(params: URLSearchParams): "owner" | "cohort" {
+  const value = params.get("scope")?.trim();
+  if (!value || value === "owner") {
+    return "owner";
+  }
+  if (value === "cohort") {
+    return value;
+  }
+  throw new AaisExportQueryError();
 }
 
 function readCohortAnalyticsFilters(params: URLSearchParams): AaisCohortAnalyticsFilters {
@@ -65,6 +92,12 @@ class AaisExportAuthorizationError extends Error {
   }
 }
 
+class AaisExportQueryError extends Error {
+  constructor() {
+    super("AAIS export query is invalid.");
+  }
+}
+
 function getErrorResponseInput(error: unknown) {
   if (isAaisAuthError(error)) {
     return {
@@ -79,6 +112,30 @@ function getErrorResponseInput(error: unknown) {
       code: "AAIS_COHORT_EXPORT_FORBIDDEN",
       message: "AAIS cohort export requires educator authorization.",
       status: 403,
+      extra: { secrets: "redacted" },
+    };
+  }
+  if (error instanceof AaisExportQueryError) {
+    return {
+      code: "AAIS_EXPORT_QUERY_INVALID",
+      message: "AAIS export query is invalid.",
+      status: 400,
+      extra: { secrets: "redacted" },
+    };
+  }
+  if (isAaisEducatorScopeAuthorizationError(error)) {
+    return {
+      code: "AAIS_COHORT_EXPORT_FORBIDDEN",
+      message: "AAIS cohort export requires an active educator enrollment.",
+      status: 403,
+      extra: { secrets: "redacted" },
+    };
+  }
+  if (isAaisLearnerSessionNotFoundError(error)) {
+    return {
+      code: "AAIS_LEARNER_SESSION_NOT_FOUND",
+      message: "AAIS learner session was not found.",
+      status: 404,
       extra: { secrets: "redacted" },
     };
   }
@@ -109,7 +166,7 @@ function getErrorResponseInput(error: unknown) {
   return {
     code: "AAIS_EXPORT_REQUEST_FAILED",
     message: "AAIS export request failed.",
-    status: 400,
+    status: 500,
     extra: { secrets: "redacted" },
     cause: error,
     route: "/api/learning/export",
