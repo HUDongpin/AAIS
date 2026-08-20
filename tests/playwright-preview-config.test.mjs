@@ -28,8 +28,8 @@ describe("Playwright deployed Preview configuration", () => {
     expect(config.use?.extraHTTPHeaders).toBeUndefined();
     expect(config.use?.trace).toBe("on-first-retry");
     expect(config.webServer?.env).toMatchObject({
-      AAIS_NEXT_DIST_DIR: ".next-e2e",
       NODE_ENV: "development",
+      VERCEL_ENV: "development",
     });
   });
 });
