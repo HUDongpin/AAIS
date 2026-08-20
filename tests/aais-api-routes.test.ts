@@ -2,7 +2,10 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createAaisCsrfToken, getAaisCsrfCookieName } from "@/lib/server/aais-csrf";
+import {
+  createAaisCsrfToken as createUncachedAaisCsrfToken,
+  getAaisCsrfCookieName,
+} from "@/lib/server/aais-csrf";
 import {
   createAaisOidcActorId,
   getAaisOidcSessionPolicyFingerprint,
@@ -25,8 +28,10 @@ vi.mock("@/lib/server/aais-session-revocations", async () => {
 });
 
 let tempDir: string;
+const testCsrfTokens = new Map<string, string>();
 
 beforeEach(async () => {
+  testCsrfTokens.clear();
   tempDir = await mkdtemp(path.join(tmpdir(), "aais-api-"));
   process.env.AAIS_DATA_DIR = tempDir;
   process.env.AAIS_SESSION_SECRET = "test-session-secret-with-at-least-32-characters";
@@ -3323,6 +3328,16 @@ function createAuthedCookie(
     displayName: id,
   }, new Date(), { authSource: "development" });
   return `aais_session=${sessionToken}; ${getAaisCsrfCookieName()}=${csrfToken}`;
+}
+
+function createAaisCsrfToken(actorId: string) {
+  const existingToken = testCsrfTokens.get(actorId);
+  if (existingToken) {
+    return existingToken;
+  }
+  const token = createUncachedAaisCsrfToken(actorId);
+  testCsrfTokens.set(actorId, token);
+  return token;
 }
 
 async function initializeLearnerSession(
