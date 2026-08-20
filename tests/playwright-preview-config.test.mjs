@@ -29,7 +29,7 @@ describe("Playwright deployed Preview configuration", () => {
     expect(config.use?.trace).toBe("on-first-retry");
     expect(config.webServer?.env).toMatchObject({
       NODE_ENV: "development",
-      VERCEL_ENV: "development",
+      VERCEL_ENV: "",
     });
   });
 });
