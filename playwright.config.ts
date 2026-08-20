@@ -44,8 +44,6 @@ export default defineConfig({
         reuseExistingServer: !process.env.CI,
         timeout: 120_000,
         env: {
-          NODE_ENV: "development",
-          VERCEL_ENV: "",
           AAIS_DATA_DIR: dataDir,
           AAIS_TRIAL_SMOKE_ACCOUNTS_JSON: e2eSmokeAccountsJson,
         },

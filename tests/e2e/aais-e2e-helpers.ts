@@ -54,6 +54,22 @@ export async function authenticateAaisE2eActor(page: Page, actor: AaisE2eActor) 
   await seedAaisSession(page, actor);
 }
 
+export async function stubLocalAaisCohortExport(page: Page) {
+  if (process.env.AAIS_E2E_BASE_URL) {
+    return;
+  }
+  await page.route("**/api/learning/export?**", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "text/csv;charset=utf-8",
+      headers: {
+        "content-disposition": 'attachment; filename="aais-cohort-analytics.csv"',
+      },
+      body: "learner_key,risk_level\nlearner-e2e,on-track\n",
+    });
+  });
+}
+
 export async function seedAaisSession(page: Page, actor: AaisE2eActor) {
   const baseURL = test.info().project.use.baseURL;
   if (!baseURL) {

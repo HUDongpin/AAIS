@@ -3,6 +3,7 @@ import {
   authenticateAaisE2eActor,
   getAaisE2eStudentAccount,
   getAaisE2eStudentPassword,
+  stubLocalAaisCohortExport,
 } from "./aais-e2e-helpers";
 
 test("login can be completed with keyboard focus and named landmarks", async ({ page }) => {
@@ -58,6 +59,7 @@ test("teacher dashboard exposes a named main region and keyboard export path", a
     role: "teacher",
     displayName: "Teacher E2E",
   });
+  await stubLocalAaisCohortExport(page);
 
   await page.goto("/dashboard");
 
