@@ -397,6 +397,9 @@ function LearningWorkbenchState({
       <main
         data-testid="learning-shell"
         data-client-ready={hydrationReady ? "true" : "false"}
+        aria-busy={!hydrationReady || undefined}
+        aria-hidden={!hydrationReady || undefined}
+        inert={!hydrationReady || undefined}
         className="flex min-h-[100dvh] w-full max-w-none flex-col bg-[#fcfcfc] text-[#0e0e0e] lg:h-[100dvh] lg:overflow-hidden"
         aria-labelledby="aais-learning-heading"
         aria-describedby="aais-learning-description"
@@ -407,7 +410,6 @@ function LearningWorkbenchState({
         <p id="aais-learning-description" className="sr-only">
           {copy.main.description}
         </p>
-
         <LearningTopBar
           accountMenuOpen={accountMenuOpen}
           displayName={actor.displayName}
@@ -419,9 +421,7 @@ function LearningWorkbenchState({
           onLogout={handleLogout}
           onToggleAccountMenu={toggleAccountMenu}
         />
-
         <LearningAccountFeedback error={accountError} status={accountStatus} />
-
         <div
           ref={splitLayoutRef}
           aria-busy={learnerDeleteBusy}
