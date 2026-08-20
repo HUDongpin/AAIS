@@ -47,8 +47,8 @@ function LearningWorkbench({ actor, initialLocale, researchRequired }: {
 }) {
   const { hydrationReady, initialDraftJournal } = useHydratedArtifactDraft(actor.id, researchRequired);
   return <LearningWorkbenchState
-    key={hydrationReady ? "hydrated" : "server"}
-    actor={actor}
+    key={hydrationReady ? "hydrated" : "server"} actor={actor}
+    hydrationReady={hydrationReady}
     initialDraftJournal={initialDraftJournal}
     initialLocale={initialLocale}
     researchRequired={researchRequired}
@@ -56,12 +56,12 @@ function LearningWorkbench({ actor, initialLocale, researchRequired }: {
 }
 
 function LearningWorkbenchState({
-  actor,
+  actor, hydrationReady,
   initialDraftJournal,
   initialLocale,
   researchRequired,
 }: {
-  actor: LearningPageActor;
+  actor: LearningPageActor; hydrationReady: boolean;
   initialDraftJournal: ArtifactDraftJournal | null;
   initialLocale: Locale;
   researchRequired: boolean;
@@ -396,6 +396,7 @@ function LearningWorkbenchState({
     >
       <main
         data-testid="learning-shell"
+        data-client-ready={hydrationReady ? "true" : "false"}
         className="flex min-h-[100dvh] w-full max-w-none flex-col bg-[#fcfcfc] text-[#0e0e0e] lg:h-[100dvh] lg:overflow-hidden"
         aria-labelledby="aais-learning-heading"
         aria-describedby="aais-learning-description"

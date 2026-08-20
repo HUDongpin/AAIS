@@ -1,5 +1,8 @@
 import { expect, test, type Page } from "@playwright/test";
-import { authenticateAaisE2eActor } from "./aais-e2e-helpers";
+import {
+  authenticateAaisE2eActor,
+  waitForAaisLearningClientReady,
+} from "./aais-e2e-helpers";
 
 type CapturedCspViolation = {
   blockedUri: string;
@@ -46,6 +49,7 @@ test("strict CSP permits the login and authenticated editor workflows without in
     displayName: "CSP E2E",
   });
   await page.goto("/learning");
+  await waitForAaisLearningClientReady(page);
 
   const learningShell = page.getByTestId("learning-shell");
   const splitLayout = page.getByTestId("learning-split-layout");

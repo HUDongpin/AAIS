@@ -4,6 +4,7 @@ import {
   getAaisE2eStudentAccount,
   getAaisE2eStudentPassword,
   stubLocalAaisCohortExport,
+  waitForAaisLearningClientReady,
 } from "./aais-e2e-helpers";
 
 test("login can be completed with keyboard focus and named landmarks", async ({ page }) => {
@@ -34,6 +35,7 @@ test("learning cockpit exposes a named main region and keyboard-operable content
   });
 
   await page.goto("/learning");
+  await waitForAaisLearningClientReady(page);
 
   const learningMain = page.getByRole("main", { name: "CAAIS 学习工作台" });
   await expect(learningMain).toBeVisible();
@@ -90,6 +92,7 @@ test("core screens meet minimum text contrast inside their main regions", async 
     displayName: "Contrast Student",
   });
   await page.goto("/learning");
+  await waitForAaisLearningClientReady(page);
   await expect(page.getByRole("main", { name: "CAAIS 学习工作台" })).toBeVisible();
   expect(await getContrastFailures(page, "main")).toEqual([]);
 

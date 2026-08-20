@@ -1,5 +1,8 @@
 import { expect, test } from "@playwright/test";
-import { authenticateAaisE2eActor } from "./aais-e2e-helpers";
+import {
+  authenticateAaisE2eActor,
+  waitForAaisLearningClientReady,
+} from "./aais-e2e-helpers";
 
 test("student guide turn shows fallback state when the AI route reports template guidance", async ({ page }) => {
   await page.route("**/api/learning/ai-guide", async (route) => {
@@ -46,6 +49,7 @@ test("student guide turn shows fallback state when the AI route reports template
   });
   await page.goto("/learning");
   await expect(page).toHaveURL(/\/learning$/);
+  await waitForAaisLearningClientReady(page);
 
   await page.getByLabel("向智能导学输入你的想法").fill("@教授 请示范一次元认知拆解");
   await page.getByRole("button", { name: "发送" }).click();

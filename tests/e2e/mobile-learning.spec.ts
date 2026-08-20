@@ -1,5 +1,8 @@
 import { expect, test } from "@playwright/test";
-import { authenticateAaisE2eActor } from "./aais-e2e-helpers";
+import {
+  authenticateAaisE2eActor,
+  waitForAaisLearningClientReady,
+} from "./aais-e2e-helpers";
 
 test.use({
   viewport: {
@@ -18,6 +21,7 @@ test("student learning cockpit remains usable on a phone-width viewport", async 
   });
 
   await page.goto("/learning");
+  await waitForAaisLearningClientReady(page);
 
   await expect(page.getByTestId("learning-shell")).toBeVisible();
   await expect(page.getByLabel("向智能导学输入你的想法")).toBeVisible();

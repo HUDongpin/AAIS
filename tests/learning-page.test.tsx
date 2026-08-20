@@ -135,6 +135,7 @@ describe("AAIS LearningPage", () => {
 
     const main = screen.getByRole("main", { name: "CAAIS 学习工作台" });
     expect(main.getAttribute("aria-describedby")).toBe("aais-learning-description");
+    expect(main.getAttribute("data-client-ready")).toBe("true");
     expect(main.textContent).not.toMatch(/\bA[12]\b/);
     expect(screen.getByText("使用智能导学、内容展示和文档编辑完成认知学徒学习任务。")).toBeTruthy();
     const brandText = screen.getByText("Cognitive Apprenticeship AI System (CAAIS)");

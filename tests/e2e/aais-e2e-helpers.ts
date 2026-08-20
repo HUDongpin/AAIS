@@ -70,6 +70,11 @@ export async function stubLocalAaisCohortExport(page: Page) {
   });
 }
 
+export async function waitForAaisLearningClientReady(page: Page) {
+  await expect(page.getByTestId("learning-shell"))
+    .toHaveAttribute("data-client-ready", "true");
+}
+
 export async function seedAaisSession(page: Page, actor: AaisE2eActor) {
   const baseURL = test.info().project.use.baseURL;
   if (!baseURL) {
