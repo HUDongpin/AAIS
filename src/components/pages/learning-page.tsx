@@ -1,5 +1,5 @@
 "use client";
-import { useMemo, useState, useSyncExternalStore } from "react";
+import { useState } from "react";
 import { ContentResizeSeparator, ContentSidePanel } from "@/components/pages/learning/content-side-panel";
 import { GuidePanel } from "@/components/pages/learning/guide-panel";
 import { LearningAccountFeedback, LearningTopBar } from "@/components/pages/learning/learning-top-bar";
@@ -10,11 +10,11 @@ import { useLearningArtifactSave } from "@/components/pages/learning/use-learnin
 import { useLearningGuide } from "@/components/pages/learning/use-learning-guide";
 import { useLearningDocumentArchive } from "@/components/pages/learning/use-learning-document-archive";
 import { useLearningContentNavigation } from "@/components/pages/learning/use-learning-content-navigation";
+import { useHydratedArtifactDraft } from "@/components/pages/learning/use-hydrated-artifact-draft";
 import { useLearningWorkspaceSession } from "@/components/pages/learning/use-learning-workspace-session";
 import {
   clientNowMs,
   isUserCancelledFilePicker,
-  readArtifactDraftJournal,
   type ArtifactDraftJournal,
 } from "@/components/pages/learning/client-helpers";
 import { LearningResearchWorkspaceBoundary, type LearningResearchBoundary } from "@/components/pages/learning/research-telemetry-boundary";
@@ -45,27 +45,14 @@ function LearningWorkbench({ actor, initialLocale, researchRequired }: {
   initialLocale: Locale;
   researchRequired: boolean;
 }) {
-  const hydrationReady = useSyncExternalStore(
-    subscribeToHydration,
-    getClientHydrationSnapshot,
-    getServerHydrationSnapshot,
-  );
-  const initialDraftJournal = useMemo(
-    () => hydrationReady && !researchRequired
-      ? readArtifactDraftJournal(actor.id)
-      : null,
-    [actor.id, hydrationReady, researchRequired],
-  );
-
-  return (
-    <LearningWorkbenchState
-      key={hydrationReady ? "hydrated" : "server"}
-      actor={actor}
-      initialDraftJournal={initialDraftJournal}
-      initialLocale={initialLocale}
-      researchRequired={researchRequired}
-    />
-  );
+  const { hydrationReady, initialDraftJournal } = useHydratedArtifactDraft(actor.id, researchRequired);
+  return <LearningWorkbenchState
+    key={hydrationReady ? "hydrated" : "server"}
+    actor={actor}
+    initialDraftJournal={initialDraftJournal}
+    initialLocale={initialLocale}
+    researchRequired={researchRequired}
+  />;
 }
 
 function LearningWorkbenchState({
@@ -508,16 +495,4 @@ function LearningWorkbenchState({
       </main>
     </div>
   );
-}
-
-function subscribeToHydration() {
-  return () => undefined;
-}
-
-function getClientHydrationSnapshot() {
-  return true;
-}
-
-function getServerHydrationSnapshot() {
-  return false;
 }
