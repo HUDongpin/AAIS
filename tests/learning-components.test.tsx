@@ -253,7 +253,7 @@ describe("learning page components", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "任务卡片" }));
+    fireEvent.click(screen.getByRole("button", { name: /任务卡片/ }));
     expect(onOpenContent).toHaveBeenCalledWith("theory");
 
     rerender(

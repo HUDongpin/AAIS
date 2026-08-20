@@ -35,6 +35,19 @@ export function getContentDisplayItems(locale: Locale): ContentDisplayItem[] {
 // The default remains available for callers that deliberately render Chinese.
 export const contentDisplayItems = getContentDisplayItems("zh-CN");
 
+function getContentDisplayAccessibleLabel(
+  item: ContentDisplayItem,
+  locale: Locale,
+) {
+  if (item.id !== "theory") {
+    return item.label;
+  }
+  // Keep the former information-architecture label discoverable for existing
+  // assistive-technology instructions while presenting the clearer task-card name.
+  const legacyLabel = locale === "zh-CN" ? "理论知识" : "Theory";
+  return `${item.label} (${legacyLabel})`;
+}
+
 export function ContentDisplay({
   activeContent,
   activeTaskId,
@@ -83,7 +96,10 @@ export function ContentDisplay({
           <div className="h-px flex-1 bg-[#e2e5eb]" aria-hidden="true" />
         </header>
         <div className="max-w-[920px]">
-          <h2 className="mb-5 text-[22px] font-semibold leading-tight tracking-normal text-[#14171f]">
+          <h2
+            aria-label={getContentDisplayAccessibleLabel(activeContent, locale)}
+            className="mb-5 text-[22px] font-semibold leading-tight tracking-normal text-[#14171f]"
+          >
             {activeContent.label}
           </h2>
           {activeContent.id === "history" ? (
@@ -130,6 +146,7 @@ export function ContentDisplay({
             <button
               key={item.id}
               type="button"
+              aria-label={getContentDisplayAccessibleLabel(item, locale)}
               disabled={navigationLocked}
               onClick={() => onOpen(item.id)}
               className="group flex min-h-[104px] w-full items-center gap-5 rounded-lg border border-[#d7dce5] bg-white/80 px-6 text-left text-[#111827] shadow-[0_8px_24px_rgba(17,24,39,0.04)] outline-none transition hover:-translate-y-px hover:border-[#bcc5d4] hover:bg-white focus-visible:ring-2 focus-visible:ring-[#536de8] focus-visible:ring-offset-2 focus-visible:ring-offset-[#fcfcfc] disabled:cursor-wait disabled:opacity-70 disabled:hover:translate-y-0"

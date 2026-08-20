@@ -40,6 +40,7 @@ test("learning cockpit exposes a named main region and keyboard-operable content
   const learningMain = page.getByRole("main", { name: "CAAIS 学习工作台" });
   await expect(learningMain).toBeVisible();
   await expect(learningMain).toHaveAttribute("aria-describedby", "aais-learning-description");
+  await expect(page.getByRole("button", { name: "理论知识" })).toBeVisible();
 
   await page.getByRole("button", { name: "任务卡片" }).focus();
   await page.keyboard.press("Enter");
@@ -53,6 +54,20 @@ test("learning cockpit exposes a named main region and keyboard-operable content
   await expect(page.getByRole("textbox", {
     name: "在这里写下任务理解、计划、执行过程或最终产出。",
   })).toBeVisible();
+});
+
+test("legacy theory accessible name still opens the renamed task-card surface", async ({ page }) => {
+  await authenticateAaisE2eActor(page, {
+    id: `legacy-a11y-student-${Date.now()}`,
+    role: "student",
+    displayName: "Legacy A11y Student",
+  });
+
+  await page.goto("/learning");
+
+  await page.getByRole("button", { name: "理论知识" }).focus();
+  await page.keyboard.press("Enter");
+  await expect(page.getByRole("heading", { name: "理论知识" })).toBeVisible();
 });
 
 test("teacher dashboard exposes a named main region and keyboard export path", async ({ page }) => {

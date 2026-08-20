@@ -167,7 +167,8 @@ describe("AAIS LearningPage", () => {
     expect(screen.getByText("内容展示")).toBeTruthy();
     expect(screen.getByText("文档编辑")).toBeTruthy();
     expect(screen.getByRole("button", { name: "平台介绍" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "任务卡片" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /任务卡片/ })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /理论知识/ })).toBeTruthy();
     expect(screen.getByRole("button", { name: "历史文档" })).toBeTruthy();
     expect(screen.queryByText("全部字幕")).toBeNull();
     expect(screen.queryByText("课程目录")).toBeNull();
@@ -189,7 +190,7 @@ describe("AAIS LearningPage", () => {
       ["任务卡片", "theory"],
       ["历史文档", "history"],
     ].forEach(([name, iconId]) => {
-      const menuButton = screen.getByRole("button", { name });
+      const menuButton = screen.getByRole("button", { name: new RegExp(name) });
       const label = Array.from(menuButton.querySelectorAll("span")).find(
         (span) => span.textContent === name,
       );
@@ -255,7 +256,8 @@ describe("AAIS LearningPage", () => {
     expect(screen.getByRole("button", { name: "Upload file" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Learning content" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Document editor" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Task cards" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /Task cards/ })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /Theory/ })).toBeTruthy();
     expect(await screen.findByText("Xiao Zhang")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "内容展示" })).toBeNull();
     expect(screen.getByTestId("learning-shell").closest("[data-locale]")?.getAttribute("data-locale")).toBe("en-US");
@@ -1577,12 +1579,13 @@ describe("AAIS LearningPage", () => {
     expect(platformIntro.parentElement?.className).toContain("max-w-[920px]");
     expect(platformIntro.className).toContain("text-[28px]");
     expect(platformIntro.textContent).not.toContain("。。。。");
-    expect(screen.queryByRole("button", { name: "任务卡片" })).toBeNull();
+    expect(screen.queryByRole("button", { name: /任务卡片/ })).toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: "返回内容展示" }));
-    fireEvent.click(screen.getByRole("button", { name: "任务卡片" }));
+    fireEvent.click(screen.getByRole("button", { name: /任务卡片/ }));
     expect(screen.getByRole("button", { name: "返回内容展示" })).toBeTruthy();
-    expect(screen.getByRole("heading", { name: "任务卡片", level: 2 })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: /任务卡片/, level: 2 })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: /理论知识/, level: 2 })).toBeTruthy();
     expect(screen.getByRole("button", {
       name: "完成任务：专家示范后的案例训练",
     })).toBeTruthy();
@@ -1631,7 +1634,7 @@ describe("AAIS LearningPage", () => {
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith("/api/learning/session");
     });
-    fireEvent.click(screen.getByRole("button", { name: "任务卡片" }));
+    fireEvent.click(screen.getByRole("button", { name: /任务卡片/ }));
 
     expect((screen.getByRole("button", {
       name: "L1 挑战：复述与计划，已锁定",
