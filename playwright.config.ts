@@ -46,6 +46,7 @@ export default defineConfig({
         env: {
           NODE_ENV: "development",
           AAIS_DATA_DIR: dataDir,
+          AAIS_NEXT_DIST_DIR: ".next-e2e",
           AAIS_TRIAL_SMOKE_ACCOUNTS_JSON: e2eSmokeAccountsJson,
         },
       },

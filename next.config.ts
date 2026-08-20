@@ -3,6 +3,9 @@ import { withSentryConfig } from "@sentry/nextjs";
 export { createAaisContentSecurityPolicy } from "./src/lib/server/aais-csp";
 
 const nextConfig: NextConfig = {
+  ...(process.env.AAIS_NEXT_DIST_DIR === ".next-e2e"
+    ? { distDir: ".next-e2e" }
+    : {}),
   turbopack: {
     root: process.cwd(),
   },
