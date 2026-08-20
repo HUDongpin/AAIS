@@ -52,6 +52,9 @@ test("strict CSP permits the login and authenticated editor workflows without in
   const contentPanel = page.getByRole("complementary", { name: "学习内容与文档" });
   const separator = page.getByRole("separator", { name: "调整内容展示区域宽度" });
   await expect(learningShell).toBeVisible();
+  await expect(splitLayout).toBeVisible();
+  await expect(contentPanel).toBeVisible();
+  await expect(separator).toBeVisible();
   await expect(learningShell.locator("[style]")).toHaveCount(0);
 
   const initialWidth = Number(await splitLayout.getAttribute("data-content-panel-width"));
