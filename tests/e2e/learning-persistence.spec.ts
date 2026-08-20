@@ -4,6 +4,12 @@ import { authenticateAaisE2eActor } from "./aais-e2e-helpers";
 test("student artifact edit persists after reload", async ({ page }) => {
   const artifactText = `E2E artifact ${Date.now()}`;
   const studentId = `Persist${Date.now()}`;
+  const hydrationErrors: string[] = [];
+  page.on("console", (message) => {
+    if (message.type() === "error" && /hydrat(?:e|ion)/i.test(message.text())) {
+      hydrationErrors.push(message.text());
+    }
+  });
 
   await authenticateAaisE2eActor(page, {
     id: studentId,
@@ -25,4 +31,5 @@ test("student artifact edit persists after reload", async ({ page }) => {
   await expect(page.getByTestId("learning-shell")).toBeVisible();
   await page.getByRole("button", { name: "文档编辑" }).click();
   await expect(editor).toContainText(artifactText);
+  expect(hydrationErrors).toEqual([]);
 });

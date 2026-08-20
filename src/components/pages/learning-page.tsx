@@ -1,5 +1,5 @@
 "use client";
-import { useState } from "react";
+import { useMemo, useState, useSyncExternalStore } from "react";
 import { ContentResizeSeparator, ContentSidePanel } from "@/components/pages/learning/content-side-panel";
 import { GuidePanel } from "@/components/pages/learning/guide-panel";
 import { LearningAccountFeedback, LearningTopBar } from "@/components/pages/learning/learning-top-bar";
@@ -15,6 +15,7 @@ import {
   clientNowMs,
   isUserCancelledFilePicker,
   readArtifactDraftJournal,
+  type ArtifactDraftJournal,
 } from "@/components/pages/learning/client-helpers";
 import { LearningResearchWorkspaceBoundary, type LearningResearchBoundary } from "@/components/pages/learning/research-telemetry-boundary";
 import { admitAaisResearchAction, captureAaisResearchActorGeneration, classifyAaisResearchClientError, createAaisResearchOperationId, recordAaisResearchEvent } from "@/lib/client/aais-research-telemetry";
@@ -44,12 +45,43 @@ function LearningWorkbench({ actor, initialLocale, researchRequired }: {
   initialLocale: Locale;
   researchRequired: boolean;
 }) {
+  const hydrationReady = useSyncExternalStore(
+    subscribeToHydration,
+    getClientHydrationSnapshot,
+    getServerHydrationSnapshot,
+  );
+  const initialDraftJournal = useMemo(
+    () => hydrationReady && !researchRequired
+      ? readArtifactDraftJournal(actor.id)
+      : null,
+    [actor.id, hydrationReady, researchRequired],
+  );
+
+  return (
+    <LearningWorkbenchState
+      key={hydrationReady ? "hydrated" : "server"}
+      actor={actor}
+      initialDraftJournal={initialDraftJournal}
+      initialLocale={initialLocale}
+      researchRequired={researchRequired}
+    />
+  );
+}
+
+function LearningWorkbenchState({
+  actor,
+  initialDraftJournal,
+  initialLocale,
+  researchRequired,
+}: {
+  actor: LearningPageActor;
+  initialDraftJournal: ArtifactDraftJournal | null;
+  initialLocale: Locale;
+  researchRequired: boolean;
+}) {
   const locale = useLearningLocale(initialLocale);
   const copy = getLearningCopy(locale);
   const studentId = actor.id;
-  const [initialDraftJournal] = useState(
-    () => researchRequired ? null : readArtifactDraftJournal(studentId),
-  );
   const [documentTaskId, setDocumentTaskId] = useState<string | null>(
     () => initialDraftJournal?.taskId ?? null,
   );
@@ -476,4 +508,16 @@ function LearningWorkbench({ actor, initialLocale, researchRequired }: {
       </main>
     </div>
   );
+}
+
+function subscribeToHydration() {
+  return () => undefined;
+}
+
+function getClientHydrationSnapshot() {
+  return true;
+}
+
+function getServerHydrationSnapshot() {
+  return false;
 }
