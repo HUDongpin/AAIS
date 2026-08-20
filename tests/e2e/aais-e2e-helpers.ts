@@ -99,10 +99,11 @@ export async function seedAaisSession(page: Page, actor: AaisE2eActor) {
 function createAaisE2eSessionToken(actor: AaisE2eActor) {
   const issuedAt = Math.floor(Date.now() / 1000);
   const payload = {
-    v: 1,
+    v: 3,
     actor,
     iat: issuedAt,
     exp: issuedAt + sessionTtlSeconds,
+    authSource: "development",
   };
   return signPayload(Buffer.from(JSON.stringify(payload), "utf8").toString("base64url"));
 }

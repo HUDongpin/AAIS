@@ -1,5 +1,6 @@
 import type { Locale } from "@/data/aais";
 import type {
+  AaisClientTaskStatus,
   ContentItemId,
   DocumentFontFamily,
 } from "@/components/pages/learning/learning-page-types";
@@ -54,6 +55,25 @@ export type LearningCopy = {
     back: string;
     documentFolder: (title: string) => string;
     items: Record<ContentItemId, { label: string; body: string }>;
+    taskCards: {
+      listLabel: string;
+      progress: (completed: number, total: number) => string;
+      ordinal: (index: number) => string;
+      phase: Record<"training" | "practice", string>;
+      status: Record<AaisClientTaskStatus, string>;
+      lockedHint: string;
+      enter: string;
+      continue: string;
+      review: string;
+      complete: string;
+      completing: string;
+      actionFailed: string;
+      lockedButton: (title: string) => string;
+      enterButton: (title: string) => string;
+      continueButton: (title: string) => string;
+      reviewButton: (title: string) => string;
+      completeButton: (title: string) => string;
+    };
   };
   editor: {
     titleLabel: string;
@@ -179,13 +199,40 @@ export const learningCopyByLocale: Record<Locale, LearningCopy> = {
           body: "CAAIS平台是一个基于认知学徒理论搭建的，AI赋能的学习平台……",
         },
         theory: {
-          label: "理论知识",
-          body: "认知学徒理论强调专家示范、实践指导、支架支持、清晰表达与反思比较。",
+          label: "任务卡片",
+          body: "按顺序完成认知学徒任务；完成当前任务后，下一个任务才会解锁。",
         },
         history: {
           label: "历史文档",
           body: "历史文档用于保存学习过程、重要资料和后续 pilot study 可回顾的记录。",
         },
+      },
+      taskCards: {
+        listLabel: "认知学徒任务卡片",
+        progress: (completed, total) => `已完成 ${completed}/${total} 个任务`,
+        ordinal: (index) => `任务 ${index}`,
+        phase: {
+          training: "训练任务",
+          practice: "练习任务",
+        },
+        status: {
+          locked: "已锁定",
+          available: "可开始",
+          active: "进行中",
+          completed: "已完成",
+        },
+        lockedHint: "完成上一任务后解锁",
+        enter: "进入任务",
+        continue: "继续任务",
+        review: "查看任务",
+        complete: "完成任务",
+        completing: "处理中...",
+        actionFailed: "任务状态更新失败，请稍后重试。",
+        lockedButton: (title) => `${title}，已锁定`,
+        enterButton: (title) => `进入任务：${title}`,
+        continueButton: (title) => `继续任务：${title}`,
+        reviewButton: (title) => `查看任务：${title}`,
+        completeButton: (title) => `完成任务：${title}`,
       },
     },
     editor: {
@@ -314,13 +361,40 @@ export const learningCopyByLocale: Record<Locale, LearningCopy> = {
           body: "CAAIS is an AI-enabled learning platform built on Cognitive Apprenticeship theory…",
         },
         theory: {
-          label: "Theory",
-          body: "Cognitive Apprenticeship emphasizes expert modelling, guided practice, scaffolding, articulation, and reflective comparison.",
+          label: "Task cards",
+          body: "Complete the Cognitive Apprenticeship tasks in order. Finishing the current task unlocks the next one.",
         },
         history: {
           label: "Saved documents",
           body: "Saved documents preserve the learning process, important materials, and records available for a later pilot-study review.",
         },
+      },
+      taskCards: {
+        listLabel: "Cognitive Apprenticeship task cards",
+        progress: (completed, total) => `${completed} of ${total} tasks completed`,
+        ordinal: (index) => `Task ${index}`,
+        phase: {
+          training: "Training task",
+          practice: "Practice task",
+        },
+        status: {
+          locked: "Locked",
+          available: "Ready",
+          active: "In progress",
+          completed: "Completed",
+        },
+        lockedHint: "Complete the previous task to unlock this one",
+        enter: "Open task",
+        continue: "Continue task",
+        review: "Review task",
+        complete: "Complete task",
+        completing: "Updating...",
+        actionFailed: "The task status could not be updated. Please try again.",
+        lockedButton: (title) => `${title}, locked`,
+        enterButton: (title) => `Open task: ${title}`,
+        continueButton: (title) => `Continue task: ${title}`,
+        reviewButton: (title) => `Review task: ${title}`,
+        completeButton: (title) => `Complete task: ${title}`,
       },
     },
     editor: {

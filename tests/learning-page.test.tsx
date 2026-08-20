@@ -155,17 +155,18 @@ describe("AAIS LearningPage", () => {
     expect(brandLogo?.className).not.toContain("size-5");
     expect(loginLogo.querySelector("svg")).toBeTruthy();
     expect(screen.getByText("小张")).toBeTruthy();
-    const a1Welcome = screen.getByText(/先选一个入口；需要专家示范就 @教授/);
+    const a1Welcome = screen.getByText(
+      "你好，Bobie，我是小张。欢迎来到CAAIS。请你先阅读下“平台介绍”。",
+    );
     expect(a1Welcome.textContent?.length).toBeLessThanOrEqual(120);
-    expect(screen.getByText(/@教授/)).toBeTruthy();
-    expect(screen.getByRole("button", { name: "明确学习目标" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "开始示范" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "我卡住了，给我支架" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "整理反思记录" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "明确学习目标" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "开始示范" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "我卡住了，给我支架" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "整理反思记录" })).toBeNull();
     expect(screen.getByText("内容展示")).toBeTruthy();
     expect(screen.getByText("文档编辑")).toBeTruthy();
     expect(screen.getByRole("button", { name: "平台介绍" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "理论知识" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "任务卡片" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "历史文档" })).toBeTruthy();
     expect(screen.queryByText("全部字幕")).toBeNull();
     expect(screen.queryByText("课程目录")).toBeNull();
@@ -184,7 +185,7 @@ describe("AAIS LearningPage", () => {
 
     [
       ["平台介绍", "platform"],
-      ["理论知识", "theory"],
+      ["任务卡片", "theory"],
       ["历史文档", "history"],
     ].forEach(([name, iconId]) => {
       const menuButton = screen.getByRole("button", { name });
@@ -249,10 +250,11 @@ describe("AAIS LearningPage", () => {
     expect(screen.getByText("Cognitive Apprenticeship AI System (CAAIS)")).toBeTruthy();
     expect(screen.getByText("Use AI guidance, learning content, and document editing to complete Cognitive Apprenticeship learning tasks.")).toBeTruthy();
     expect(screen.getByLabelText("Share your thinking with the AI guide")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Clarify my learning goal" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Clarify my learning goal" })).toBeNull();
     expect(screen.getByRole("button", { name: "Upload file" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Learning content" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Document editor" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Task cards" })).toBeTruthy();
     expect(await screen.findByText("Xiao Zhang")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "内容展示" })).toBeNull();
     expect(screen.getByTestId("learning-shell").closest("[data-locale]")?.getAttribute("data-locale")).toBe("en-US");
@@ -1378,12 +1380,6 @@ describe("AAIS LearningPage", () => {
           },
           turns: [
             {
-              agentId: "A1",
-              label: "导学智能体",
-              content: "A1 用路径图帮你拆下一步。",
-              actions: ["guide-flow", "scaffold"],
-            },
-            {
               agentId: "A2",
               label: "专家智能体",
               content: "A2 用专家示范帮你检查理解。",
@@ -1398,7 +1394,7 @@ describe("AAIS LearningPage", () => {
 
     render(<LearningPage />);
 
-    fireEvent.click(screen.getByRole("button", { name: "开始示范" }));
+    submitGuidePrompt("@教授 请示范一次元认知思考过程。");
 
     await waitFor(() => {
       const guideRequest = fetchMock.mock.calls.find(([input, init]) =>
@@ -1477,7 +1473,7 @@ describe("AAIS LearningPage", () => {
 
     render(<LearningPage />);
 
-    fireEvent.click(screen.getByRole("button", { name: "明确学习目标" }));
+    submitGuidePrompt("请帮我明确这个学习任务的目标，并拆成下一步。");
 
     expect(await screen.findByText("小张正在处理你的问题...")).toBeTruthy();
 
@@ -1498,7 +1494,7 @@ describe("AAIS LearningPage", () => {
     expect(screen.getByText("离线支架模式")).toBeTruthy();
   });
 
-  it("does not open the file picker or launch a quick start when admission is rejected", () => {
+  it("does not open the file picker when admission is rejected and exposes no quick starts", () => {
     vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>(() => undefined)));
     render(<LearningPage />);
     const fileInput = screen.getByLabelText("选择上传文件") as HTMLInputElement;
@@ -1507,13 +1503,11 @@ describe("AAIS LearningPage", () => {
     telemetryMocks.admit.mockReturnValue(false);
 
     fireEvent.click(screen.getByRole("button", { name: "上传文件" }));
-    fireEvent.click(screen.getByRole("button", { name: "明确学习目标" }));
 
     expect(fileInputClick).not.toHaveBeenCalled();
-    expect(screen.queryByText("请帮我明确这个学习任务的目标，并拆成下一步。")).toBeNull();
+    expect(screen.queryByRole("button", { name: "明确学习目标" })).toBeNull();
     expect(telemetryMocks.admit.mock.calls.map(([event]) => event.eventName)).toEqual([
       "guide_attachment_picker_opened",
-      "guide_quick_start_selected",
     ]);
   });
 
@@ -1582,17 +1576,80 @@ describe("AAIS LearningPage", () => {
     expect(platformIntro.parentElement?.className).toContain("max-w-[920px]");
     expect(platformIntro.className).toContain("text-[28px]");
     expect(platformIntro.textContent).not.toContain("。。。。");
-    expect(screen.queryByRole("button", { name: "理论知识" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "任务卡片" })).toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: "返回内容展示" }));
-    fireEvent.click(screen.getByRole("button", { name: "理论知识" }));
+    fireEvent.click(screen.getByRole("button", { name: "任务卡片" }));
     expect(screen.getByRole("button", { name: "返回内容展示" })).toBeTruthy();
-    expect(screen.getByText(/认知学徒理论强调专家示范/)).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "任务卡片", level: 2 })).toBeTruthy();
+    expect(screen.getByRole("button", {
+      name: "完成任务：专家示范后的案例训练",
+    })).toBeTruthy();
+    expect((screen.getByRole("button", {
+      name: "L1 挑战：复述与计划，已锁定",
+    }) as HTMLButtonElement).disabled).toBe(true);
 
     fireEvent.click(screen.getByRole("button", { name: "返回内容展示" }));
     fireEvent.click(screen.getByRole("button", { name: "历史文档" }));
     expect(screen.getByRole("button", { name: "返回内容展示" })).toBeTruthy();
     expect(screen.getByText(/历史文档用于保存学习过程/)).toBeTruthy();
+  });
+
+  it("keeps later task cards locked until completing the current task succeeds", async () => {
+    setCsrfCookie();
+    const initialSession = createTaskFlowSession([
+      "active",
+      "locked",
+      "locked",
+      "locked",
+    ]);
+    const completedSession = createTaskFlowSession([
+      "completed",
+      "available",
+      "locked",
+      "locked",
+    ]);
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "/api/learning/session" && (!init || init.method === "GET")) {
+        return Response.json({ session: initialSession });
+      }
+      if (url === "/api/learning/session" && init?.method === "PATCH") {
+        expect(JSON.parse(String(init.body))).toMatchObject({
+          action: "complete-task",
+          dataGeneration: 1,
+          taskId: "training_task_1",
+        });
+        return Response.json({ session: completedSession });
+      }
+      return Response.json({ ok: true });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<LearningPage />);
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith("/api/learning/session");
+    });
+    fireEvent.click(screen.getByRole("button", { name: "任务卡片" }));
+
+    expect((screen.getByRole("button", {
+      name: "L1 挑战：复述与计划，已锁定",
+    }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", {
+      name: "L2 挑战：执行与监控，已锁定",
+    }) as HTMLButtonElement).disabled).toBe(true);
+
+    fireEvent.click(screen.getByRole("button", {
+      name: "完成任务：专家示范后的案例训练",
+    }));
+
+    expect(await screen.findByRole("button", {
+      name: "进入任务：L1 挑战：复述与计划",
+    })).toBeTruthy();
+    expect((screen.getByRole("button", {
+      name: "L2 挑战：执行与监控，已锁定",
+    }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByText("已完成 1/4 个任务")).toBeTruthy();
   });
 
   it("keeps stale backend guide messages out of the simplified MVP shell", async () => {
@@ -1687,7 +1744,7 @@ describe("AAIS LearningPage", () => {
       if (url === "/api/learning/ai-guide" && init?.method === "POST") {
         return Response.json({
           message: {
-            text: "LangGraph 多智能体导学已完成：A1 A2 A3 A4",
+            text: "小张已回复。",
           },
           turns: [
             {
@@ -1696,30 +1753,12 @@ describe("AAIS LearningPage", () => {
               content: "先确认目标并拆成下一步。",
               actions: ["respond"],
             },
-            {
-              agentId: "A2",
-              label: "专家智能体",
-              content: "我会示范专家如何监控自己的理解。",
-              actions: ["model", "coach"],
-            },
-            {
-              agentId: "A3",
-              label: "监督智能体",
-              content: "后台已记录行为信号，不应显示给学生。",
-              actions: ["monitor", "signal-a1"],
-            },
-            {
-              agentId: "A4",
-              label: "反思智能体",
-              content: "后台已形成反思记录，不应显示给学生。",
-              actions: ["articulate", "reflect"],
-            },
           ],
           orchestration: {
             graph: {
               runtime: "langgraph",
               graphId: "learning-ai-guide",
-              topologicalOrder: ["A1", "A2"],
+              topologicalOrder: ["A1"],
             },
           },
         });
@@ -1730,7 +1769,7 @@ describe("AAIS LearningPage", () => {
 
     render(<LearningPage />);
 
-    fireEvent.click(screen.getByRole("button", { name: "我卡住了，给我支架" }));
+    submitGuidePrompt("我卡住了，想要一个支架提示。");
 
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith(
@@ -1748,11 +1787,12 @@ describe("AAIS LearningPage", () => {
     );
     expect(JSON.parse(String(guideCall?.[1]?.body))).toMatchObject({
       learnerInput: "我卡住了，想要一个支架提示。",
+      targetAgentIds: ["A1"],
     });
     expect(await screen.findByText("先确认目标并拆成下一步。")).toBeTruthy();
-    expect(screen.getByText("我会示范专家如何监控自己的理解。")).toBeTruthy();
+    expect(screen.queryByText("我会示范专家如何监控自己的理解。")).toBeNull();
     expect(screen.getAllByText("小张").length).toBeGreaterThanOrEqual(1);
-    expect(screen.getByText("教授")).toBeTruthy();
+    expect(screen.queryByText("教授")).toBeNull();
     expect(screen.queryByText("后台已记录行为信号，不应显示给学生。")).toBeNull();
     expect(screen.queryByText("后台已形成反思记录，不应显示给学生。")).toBeNull();
     expect(screen.queryByText("LangGraph trace")).toBeNull();
@@ -1907,7 +1947,7 @@ describe("AAIS LearningPage", () => {
 
     render(<LearningPage />);
 
-    fireEvent.click(screen.getByRole("button", { name: "我卡住了，给我支架" }));
+    submitGuidePrompt("我卡住了，想要一个支架提示。");
 
     expect(screen.getByText("CAAIS 已收到，多智能体链路正在处理。")).toBeTruthy();
     expect(screen.queryByText("AAIS 已收到，多智能体链路正在处理。")).toBeNull();
@@ -1945,7 +1985,7 @@ describe("AAIS LearningPage", () => {
 
     render(<LearningPage />);
 
-    fireEvent.click(screen.getByRole("button", { name: "我卡住了，给我支架" }));
+    submitGuidePrompt("我卡住了，想要一个支架提示。");
     expect(screen.getByText("CAAIS 已收到，多智能体链路正在处理。")).toBeTruthy();
 
     await act(async () => {
@@ -1956,9 +1996,7 @@ describe("AAIS LearningPage", () => {
 
     expect(screen.queryByText("CAAIS 已收到，多智能体链路正在处理。")).toBeNull();
     expect(screen.getByText("智能服务暂时不可用，已保留你的问题。请稍后重试。")).toBeTruthy();
-    expect((screen.getByRole("button", { name: "我卡住了，给我支架" }) as HTMLButtonElement).disabled).toBe(
-      false,
-    );
+    expect((screen.getByRole("button", { name: "发送" }) as HTMLButtonElement).disabled).toBe(false);
   });
 
   it("aborts the upstream fetch when an acknowledged guide stream stalls", async () => {
@@ -2001,7 +2039,7 @@ describe("AAIS LearningPage", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     render(<LearningPage />);
-    fireEvent.click(screen.getByRole("button", { name: "我卡住了，给我支架" }));
+    submitGuidePrompt("我卡住了，想要一个支架提示。");
     await act(async () => {
       await Promise.resolve();
       await Promise.resolve();
@@ -2015,9 +2053,7 @@ describe("AAIS LearningPage", () => {
     expect(guideSignal?.aborted).toBe(true);
     expect(cancelStream).toHaveBeenCalledTimes(1);
     expect(screen.getByText("智能服务暂时不可用，已保留你的问题。请稍后重试。")).toBeTruthy();
-    expect((screen.getByRole("button", { name: "我卡住了，给我支架" }) as HTMLButtonElement).disabled).toBe(
-      false,
-    );
+    expect((screen.getByRole("button", { name: "发送" }) as HTMLButtonElement).disabled).toBe(false);
   });
 
   it("keeps an acknowledged guide stream alive past 31 seconds when heartbeat comments arrive", async () => {
@@ -2062,7 +2098,7 @@ describe("AAIS LearningPage", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     render(<LearningPage />);
-    fireEvent.click(screen.getByRole("button", { name: "我卡住了，给我支架" }));
+    submitGuidePrompt("我卡住了，想要一个支架提示。");
     await act(async () => {
       await Promise.resolve();
       await Promise.resolve();
@@ -2129,7 +2165,7 @@ describe("AAIS LearningPage", () => {
     expect(sendButton.className).toContain("bg-[#202329]");
   });
 
-  it("keeps the guide composer anchored while A1 and A2 replies scroll", () => {
+  it("keeps the guide composer anchored while selected-agent replies scroll", () => {
     render(<LearningPage />);
 
     const shell = screen.getByTestId("learning-shell");
@@ -2368,7 +2404,7 @@ describe("AAIS LearningPage", () => {
     expect(screen.queryByText("文件 unsupported.pages 暂不支持。")).toBeNull();
   });
 
-  it("uses larger readable typography for learner, A1, and A2 chat messages", async () => {
+  it("uses larger readable typography for learner and each selected agent", async () => {
     setCsrfCookie();
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
@@ -2386,23 +2422,28 @@ describe("AAIS LearningPage", () => {
         });
       }
       if (url === "/api/learning/ai-guide" && init?.method === "POST") {
+        const requestBody = JSON.parse(String(init.body)) as {
+          targetAgentIds: string[];
+        };
+        const professorRequested = requestBody.targetAgentIds[0] === "A2";
         return Response.json({
           message: {
             text: "AAIS 智能体已回复。",
           },
           turns: [
-            {
-              agentId: "A1",
-              label: "导学智能体",
-              content: "A1 放大后的回复。",
-              actions: ["respond"],
-            },
-            {
-              agentId: "A2",
-              label: "专家智能体",
-              content: "A2 放大后的回复。",
-              actions: ["coach"],
-            },
+            professorRequested
+              ? {
+                  agentId: "A2",
+                  label: "专家智能体",
+                  content: "A2 放大后的回复。",
+                  actions: ["coach"],
+                }
+              : {
+                  agentId: "A1",
+                  label: "导学智能体",
+                  content: "A1 放大后的回复。",
+                  actions: ["respond"],
+                },
           ],
         });
       }
@@ -2412,7 +2453,7 @@ describe("AAIS LearningPage", () => {
 
     render(<LearningPage />);
 
-    fireEvent.click(screen.getByRole("button", { name: "我卡住了，给我支架" }));
+    submitGuidePrompt("我卡住了，想要一个支架提示。");
 
     const pendingAssistantLabel = screen.getByText("AI 助教");
     expect(pendingAssistantLabel.className).toContain("text-sm");
@@ -2423,7 +2464,9 @@ describe("AAIS LearningPage", () => {
     expect(learnerBubble?.className).toContain("leading-8");
 
     const a1Bubble = (await screen.findByText("小张放大后的回复。")).closest("article");
-    const a2Bubble = screen.getByText("教授放大后的回复。").closest("article");
+    expect(screen.queryByText("教授放大后的回复。")).toBeNull();
+    submitGuidePrompt("@教授 请示范下一步。");
+    const a2Bubble = (await screen.findByText("教授放大后的回复。")).closest("article");
     const a1Label = a1Bubble?.querySelector("p");
     const a2Label = a2Bubble?.querySelector("p");
     expect(a1Label?.className).toContain("text-sm");
@@ -4396,6 +4439,13 @@ function setRichEditorContent(editor: HTMLElement, value: string) {
   fireEvent.input(editor);
 }
 
+function submitGuidePrompt(value: string) {
+  fireEvent.change(screen.getByLabelText("向智能导学输入你的想法"), {
+    target: { value },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "发送" }));
+}
+
 function createDeferred<T>() {
   let resolve!: (value: T) => void;
   let reject!: (reason?: unknown) => void;
@@ -4440,6 +4490,37 @@ function createClientSessionFixture(
       },
     ],
     historyDocuments,
+    guideMessages: [],
+    events: [],
+  };
+}
+
+function createTaskFlowSession(
+  statuses: Array<"locked" | "available" | "active" | "completed">,
+) {
+  const taskIds = [
+    "training_task_1",
+    "practice_task_1",
+    "practice_task_2",
+    "practice_task_3",
+  ];
+  return {
+    dataGeneration: 1,
+    studentId: "S001",
+    activeStage: "training",
+    activeTaskId: "training_task_1",
+    tasks: taskIds.map((taskId, index) => ({
+      taskId,
+      phase: index === 0 ? "training" : "practice",
+      status: statuses[index],
+      artifactText: "",
+      artifactRevision: 0,
+      selfReport: "",
+      selfReportRevision: 0,
+      scaffoldRequests: 0,
+      scaffoldHistory: [],
+    })),
+    historyDocuments: [],
     guideMessages: [],
     events: [],
   };

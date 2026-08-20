@@ -1,6 +1,7 @@
 import type { FocusEvent, KeyboardEvent, PointerEvent as ReactPointerEvent } from "react";
 import {
   contentPanelResizeStep,
+  defaultTaskId,
   maxContentPanelWidth,
   minContentPanelWidth,
 } from "@/components/pages/learning/learning-page-constants";
@@ -15,6 +16,7 @@ import {
 import { DocumentEditor } from "@/components/pages/learning/document-editor";
 import { getLearningCopy } from "@/components/pages/learning/learning-copy";
 import type {
+  AaisClientTaskRecord,
   ContentItemId,
   ContentTab,
   SavedLearningDocument,
@@ -114,6 +116,7 @@ export function ContentResizeSeparator({
 
 export function ContentSidePanel({
   activeContentId,
+  activeTaskId = defaultTaskId,
   activeTab,
   artifactSaveBusy,
   artifactSaveError,
@@ -131,14 +134,20 @@ export function ContentSidePanel({
   onDocumentTitleChange,
   onDownloadDocument,
   onBackContent,
+  onCompleteTask = () => undefined,
   onOpenContent,
   onOpenDocument,
   onRecordArtifact,
   onSaveAndCloseDocument,
   onSaveAndClosePointerDown = () => undefined,
+  onSelectTask = () => undefined,
   selectContentTab,
+  taskActionBusy = false,
+  taskActionError = "",
+  tasks = [],
 }: {
   activeContentId: ContentItemId | null;
+  activeTaskId?: string;
   activeTab: ContentTab;
   artifactSaveBusy: boolean;
   artifactSaveError: string;
@@ -156,12 +165,17 @@ export function ContentSidePanel({
   onDocumentTitleChange: (value: string) => void;
   onDownloadDocument: () => void;
   onBackContent: () => void;
+  onCompleteTask?: (taskId: string) => void;
   onOpenContent: (id: ContentItemId) => void;
   onOpenDocument: (document: SavedLearningDocument) => void;
   onRecordArtifact: (value: string) => void;
   onSaveAndCloseDocument: () => void;
   onSaveAndClosePointerDown?: () => void;
+  onSelectTask?: (taskId: string) => void;
   selectContentTab: (nextTab: ContentTab) => void;
+  taskActionBusy?: boolean;
+  taskActionError?: string;
+  tasks?: AaisClientTaskRecord[];
 }) {
   const copy = getLearningCopy(locale);
   const activeContent =
@@ -174,7 +188,7 @@ export function ContentSidePanel({
     <aside
       className="flex min-h-[620px] flex-col bg-[#fcfcfc] lg:min-h-0 lg:overflow-hidden"
       aria-label={copy.content.panel}
-      aria-busy={documentBusy}
+      aria-busy={documentBusy || taskActionBusy}
     >
       <div className="grid h-auto shrink-0 grid-cols-2 items-stretch border-b border-[#d7d7d7] bg-[#fcfcfc] lg:flex lg:h-14">
         <TabButton
@@ -233,16 +247,29 @@ export function ContentSidePanel({
         </p>
       ) : null}
 
-      <div className="min-h-[580px] lg:min-h-0 lg:flex-1 lg:overflow-y-auto">
+      <div
+        className={[
+          "min-h-[580px] lg:min-h-0 lg:flex-1",
+          activeTab === "editor"
+            ? "lg:flex lg:overflow-hidden"
+            : "lg:overflow-y-auto",
+        ].join(" ")}
+      >
         {activeTab === "display" ? (
           <ContentDisplay
             activeContent={activeContent}
+            activeTaskId={activeTaskId}
             historyDocuments={historyDocuments}
             locale={locale}
             navigationLocked={documentNavigationLocked}
             onBack={onBackContent}
+            onCompleteTask={onCompleteTask}
             onOpen={onOpenContent}
             onOpenDocument={onOpenDocument}
+            onSelectTask={onSelectTask}
+            taskActionBusy={taskActionBusy}
+            taskActionError={taskActionError}
+            tasks={tasks}
           />
         ) : (
           <DocumentEditor

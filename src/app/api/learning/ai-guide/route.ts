@@ -20,8 +20,7 @@ import {
 import { isAaisCsrfError, requireAaisCsrf } from "@/lib/server/aais-csrf";
 import { isAaisAuthError, requireAaisSessionActor } from "@/lib/server/aais-request-auth";
 import {
-  normalizeAaisGuideTargetAgentIds,
-  resolveAaisGuideTargetAgentIds,
+  selectAaisGuideReplyAgentIds,
 } from "@/lib/ai/aais-guide-targets";
 import {
   normalizeAaisGuideAttachments,
@@ -82,13 +81,13 @@ const maxGuideLearnerInputCharacters = 20_000;
 const maxGuideWorkspaceArtifactCharacters = 2 * 1024 * 1024;
 const maxGuideWorkspaceStepCharacters = 128;
 const maxGuideHelpRequests = 4;
-const maxGuideTargetAgents = 2;
+const maxGuideTargetAgents = 1;
 const maxGuideRequestBodyBytes = 16 * 1024 * 1024;
 const maxGuideConversationHistoryMessages = 12;
 const maxGuideConversationHistoryCharacters = 16_000;
-// Visible agents run in parallel, while a single agent may traverse the
-// primary and fallback providers serially. The route therefore needs one
-// complete two-provider retry chain, not one timeout per visible agent.
+// Exactly one learner-visible agent runs per request and may traverse the
+// primary and fallback providers serially, so the route needs one complete
+// two-provider retry chain.
 const maxGuideLiveProviderCandidates = 2;
 const guideRouteFinalizeGuardMs = 10_000;
 export const guideProviderMaximumRetryBudgetMs = studentRuntimeMaxTimeoutMs
@@ -109,10 +108,7 @@ export async function POST(request: Request) {
     const body = requireGuideRequestBody(await readAaisBoundedJson(request, {
       maxBytes: maxGuideRequestBodyBytes,
     }));
-    const targetAgentIds = normalizeAaisGuideTargetAgentIds(
-      body.targetAgentIds,
-      body.learnerInput,
-    );
+    const targetAgentIds = selectAaisGuideReplyAgentIds(body.learnerInput);
     const attachments = normalizeGuideAttachments(body.workspaceState?.attachments);
     const attachmentMetadata = attachments.map(toAaisGuideAttachmentMetadata);
     const researchIsolationRequired = requiresAaisResearchDataPlaneIsolation();
@@ -175,7 +171,7 @@ export async function POST(request: Request) {
             && message.phase === task.phase
           ),
         ),
-        ...(targetAgentIds ? { targetAgentIds } : {}),
+        targetAgentIds,
         workspaceState: {
           currentStep: body.workspaceState?.currentStep ?? "smart-guide",
           artifactText: body.workspaceState?.artifactText,
@@ -771,7 +767,7 @@ function createGuideStreamResponse(input: {
     }, guideStreamHeartbeatIntervalMs);
     try {
         runDeadline.signal.throwIfAborted();
-        const targetAgentIds = resolveAaisGuideTargetAgentIds(input.input.targetAgentIds);
+        const targetAgentIds = selectAaisGuideReplyAgentIds(input.input.learnerInput);
         await dispatchGuideBudgetReservation({
           store: input.store,
           studentId: input.input.studentId,

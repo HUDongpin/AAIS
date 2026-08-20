@@ -9,6 +9,7 @@ import { useContentPanelResize } from "@/components/pages/learning/use-content-p
 import { useLearningArtifactSave } from "@/components/pages/learning/use-learning-artifact-save";
 import { useLearningGuide } from "@/components/pages/learning/use-learning-guide";
 import { useLearningDocumentArchive } from "@/components/pages/learning/use-learning-document-archive";
+import { useLearningContentNavigation } from "@/components/pages/learning/use-learning-content-navigation";
 import { useLearningWorkspaceSession } from "@/components/pages/learning/use-learning-workspace-session";
 import {
   clientNowMs,
@@ -18,7 +19,7 @@ import {
 import { LearningResearchWorkspaceBoundary, type LearningResearchBoundary } from "@/components/pages/learning/research-telemetry-boundary";
 import { admitAaisResearchAction, captureAaisResearchActorGeneration, classifyAaisResearchClientError, createAaisResearchOperationId, recordAaisResearchEvent } from "@/lib/client/aais-research-telemetry";
 import { createLearningDocumentFileName, createLearningDocumentMarkdown, saveMarkdownDocumentToLocal } from "@/components/pages/learning/document-markdown";
-import type { ContentItemId, ContentTab, SavedLearningDocument } from "@/components/pages/learning/learning-page-types";
+import type { ContentTab, SavedLearningDocument } from "@/components/pages/learning/learning-page-types";
 import type { Locale } from "@/data/aais";
 import { useLearningLocale } from "@/components/pages/learning/use-learning-locale";
 export type LearningPageActor = { id: string; displayName: string };
@@ -53,7 +54,6 @@ function LearningWorkbench({ actor, initialLocale, researchRequired }: {
     () => initialDraftJournal?.taskId ?? null,
   );
   const [activeTab, setActiveTab] = useState<ContentTab>("display");
-  const [activeContentId, setActiveContentId] = useState<ContentItemId | null>(null);
   const [documentArchiveBusy, setDocumentArchiveBusy] = useState(false);
   const [documentCloseError, setDocumentCloseError] = useState("");
   const [documentDownloadBusy, setDocumentDownloadBusy] = useState(false);
@@ -78,6 +78,7 @@ function LearningWorkbench({ actor, initialLocale, researchRequired }: {
     setDocumentTitle,
     setHistoryDocuments,
     waitForLearnerDataGeneration,
+    tasks,
   } = useLearningWorkspaceSession(
     locale,
     {
@@ -142,7 +143,6 @@ function LearningWorkbench({ actor, initialLocale, researchRequired }: {
     sendGuideMessage,
     setGuideDraft,
     setGuideError,
-    submitGuideQuestion,
   } = useLearningGuide({
     activeTaskId: editingTaskId,
     artifactText,
@@ -152,11 +152,33 @@ function LearningWorkbench({ actor, initialLocale, researchRequired }: {
     persistedGuideMessages,
     studentId,
   });
+  const {
+    activeContentId,
+    completeLearningTask,
+    openContentItem,
+    resetContentNavigation,
+    returnToContentMenu,
+    selectLearningTask,
+    setActiveContentId,
+    taskActionBusy,
+    taskActionError,
+  } = useLearningContentNavigation({
+    activeTaskId,
+    flushPendingArtifactSave,
+    hasUncommittedArtifactSave,
+    onOpenTaskEditor: () => {
+      setDocumentTaskId(null);
+      selectContentTab("editor");
+    },
+    patchSession,
+    taskActionErrorMessage: copy.content.taskCards.actionFailed,
+  });
   const operationBusy = guideBusy
     || guideAttachmentBusy
     || hasUncommittedArtifactSave()
     || documentArchiveBusy
-    || documentDownloadBusy;
+    || documentDownloadBusy
+    || taskActionBusy;
   const {
     accountError,
     accountMenuOpen,
@@ -182,10 +204,10 @@ function LearningWorkbench({ actor, initialLocale, researchRequired }: {
     setDocumentCloseError("");
     setDocumentDownloadStatus("");
     setDocumentDownloadError("");
+    resetContentNavigation();
     resetGuideState();
     resetWorkspaceSession(nextDataGeneration);
     setActiveTab("display");
-    setActiveContentId(null);
     setDocumentTitle("");
     setHistoryDocuments([]);
     setActiveHistoryDocumentId(null);
@@ -347,42 +369,6 @@ function LearningWorkbench({ actor, initialLocale, researchRequired }: {
     setActiveContentId(null);
     setActiveTab("editor");
   }
-  function openContentItem(contentId: ContentItemId) {
-    if (hasUncommittedArtifactSave()) {
-      flushPendingArtifactSave("content-navigation");
-      return;
-    }
-    if (!admitAaisResearchAction({
-      eventName: "content_item_opened",
-      outcome: "success",
-      detail: {
-        operation_id: createAaisResearchOperationId("content-item"),
-        content_id: contentId,
-      },
-    })) {
-      return;
-    }
-    setActiveContentId(contentId);
-  }
-
-  function returnToContentMenu() {
-    if (hasUncommittedArtifactSave()) {
-      flushPendingArtifactSave("content-navigation");
-      return;
-    }
-    if (!admitAaisResearchAction({
-      eventName: "content_item_back",
-      outcome: "success",
-      detail: {
-        operation_id: createAaisResearchOperationId("content-back"),
-        ...(activeContentId ? { content_id: activeContentId } : {}),
-      },
-    })) {
-      return;
-    }
-    setActiveContentId(null);
-  }
-
   return (
     <div
       className="aais-learning-serif min-h-[100dvh] bg-[#fcfcfc] text-[#0e0e0e]"
@@ -438,7 +424,6 @@ function LearningWorkbench({ actor, initialLocale, researchRequired }: {
             hasGuideSubmission={hasGuideSubmission}
             locale={locale}
             onRemoveAttachment={removeGuideAttachment}
-            onSubmitGuideQuestion={(question, options) => { void submitGuideQuestion(question, options); }}
             sendGuideMessage={sendGuideMessage}
             setGuideDraft={setGuideDraft}
             setGuideError={setGuideError}
@@ -455,6 +440,7 @@ function LearningWorkbench({ actor, initialLocale, researchRequired }: {
 
           <ContentSidePanel
             activeContentId={activeContentId}
+            activeTaskId={activeTaskId}
             activeTab={activeTab}
             artifactSaveBusy={artifactSaveBusy}
             artifactSaveError={documentCloseError || artifactSaveError}
@@ -471,15 +457,20 @@ function LearningWorkbench({ actor, initialLocale, researchRequired }: {
             locale={locale}
             onDocumentTitleChange={recordDocumentTitle}
             onDownloadDocument={() => { void downloadDocumentToLocal(); }}
+            onCompleteTask={(taskId) => { void completeLearningTask(taskId); }}
             onOpenDocument={openHistoryDocument}
             onRecordArtifact={recordArtifact}
             onSaveAndCloseDocument={saveAndCloseDocument}
             onSaveAndClosePointerDown={() => {
               archiveIntentRef.current = true;
             }}
+            onSelectTask={(taskId) => { void selectLearningTask(taskId); }}
             selectContentTab={selectContentTab}
             onBackContent={returnToContentMenu}
             onOpenContent={openContentItem}
+            taskActionBusy={taskActionBusy}
+            taskActionError={taskActionError}
+            tasks={tasks}
           />
         </div>
       </main>

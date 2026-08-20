@@ -16,7 +16,7 @@ import {
 import {
   aaisGuideTargetAgentIds,
   localizeAaisGuideAgentReferences,
-  resolveAaisGuideTargetAgentIds,
+  selectAaisGuideReplyAgentIds,
   type AaisGuideTargetAgentId,
 } from "@/lib/ai/aais-guide-targets";
 import {
@@ -128,12 +128,13 @@ export async function runAaisLearningGuideGraph(
   const boundedInput: AaisGuideInput = {
     ...input,
     locale: responseLocale,
+    targetAgentIds: selectAaisGuideReplyAgentIds(input.learnerInput),
     ...(conversationHistory.length ? { conversationHistory } : { conversationHistory: undefined }),
     workspaceState: normalizeAaisGuideWorkspaceState(input.workspaceState),
   };
   const modelProvider = options.modelProvider ?? createConfiguredAaisModelProvider();
   const backgroundProvider = createDeterministicAaisProvider();
-  const targetAgentIds = resolveAaisGuideTargetAgentIds(boundedInput.targetAgentIds);
+  const targetAgentIds = boundedInput.targetAgentIds ?? ["A1"];
   const visibleAgentIds = topologicalOrder.filter((agentId): agentId is AaisGuideTargetAgentId =>
     targetAgentIds.includes(agentId as AaisGuideTargetAgentId),
   );

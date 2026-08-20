@@ -4,7 +4,7 @@ import {
   normalizeAaisGuideAttachments,
   type AaisGuideAttachment,
 } from "@/lib/ai/aais-guide-attachments";
-import { normalizeAaisGuideTargetAgentIds } from "@/lib/ai/aais-guide-targets";
+import { selectAaisGuideReplyAgentIds } from "@/lib/ai/aais-guide-targets";
 import { readAaisGuideFileAttachment } from "@/lib/client/aais-guide-file-reader";
 import {
   admitAaisResearchAction,
@@ -156,7 +156,7 @@ export function useLearningGuide({
       return;
     }
 
-    const targetAgentIds = normalizeAaisGuideTargetAgentIds(undefined, question);
+    const targetAgentIds = selectAaisGuideReplyAgentIds(question);
     const userId = createGuideMessageId("user");
     const assistantId = createGuideMessageId("assistant");
     setGuideMessages((current) => [
@@ -196,7 +196,7 @@ export function useLearningGuide({
           phase: "training",
           taskId: activeTaskId,
           learnerInput: question,
-          ...(targetAgentIds ? { targetAgentIds } : {}),
+          targetAgentIds,
           workspaceState: {
             studentId,
             currentStep: "home",
@@ -237,7 +237,7 @@ export function useLearningGuide({
         latencyMs: clientNowMs() - startedAt,
         detail: {
           ...baseEventDetail,
-          target_agent_count: targetAgentIds?.length ?? 2,
+          target_agent_count: targetAgentIds.length,
           agent_count: getVisibleGuideTurns(body.turns).length,
           fallback: body.orchestration?.runtime?.timings?.fallback === true,
           ...(attemptNumber > 1
@@ -271,7 +271,7 @@ export function useLearningGuide({
         detail: {
           ...baseEventDetail,
           error_kind: classifyAaisResearchClientError(error),
-          target_agent_count: targetAgentIds?.length ?? 2,
+          target_agent_count: targetAgentIds.length,
           ...(attemptNumber > 1
             ? {
                 attempt_number: attemptNumber,

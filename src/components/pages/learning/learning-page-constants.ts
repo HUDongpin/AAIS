@@ -106,13 +106,13 @@ export function createInitialGuideMessages(
       id: "assistant-welcome",
       kind: "assistant",
       text:
-        `你好，${displayName}，我是小张。先选一个入口；需要专家示范就 @教授。`,
+        `你好，${displayName}，我是小张。欢迎来到CAAIS。请你先阅读下“平台介绍”。`,
       turns: [
         {
           agentId: "A1",
           label: "小张",
           content:
-            `你好，${displayName}，我是小张。先选一个入口；需要专家示范就 @教授。`,
+            `你好，${displayName}，我是小张。欢迎来到CAAIS。请你先阅读下“平台介绍”。`,
           actions: ["guide-flow", "scaffold"],
         },
       ],

@@ -7,6 +7,7 @@ import {
   type LearningSessionPatchBody,
 } from "@/components/pages/learning/learning-session-client";
 import type {
+  AaisClientTaskRecord,
   AaisClientSession,
   GuideMessage,
 } from "@/components/pages/learning/learning-page-types";
@@ -44,6 +45,7 @@ export function useLearningWorkspaceSession(
   );
   const [historyDocuments, setHistoryDocuments] = useState<SavedLearningDocument[]>([]);
   const [persistedGuideMessages, setPersistedGuideMessages] = useState<GuideMessage[]>([]);
+  const [tasks, setTasks] = useState<AaisClientTaskRecord[]>([]);
   const [learnerDataGeneration, setLearnerDataGeneration] = useState<number | null>(null);
   const [backendError, setBackendError] = useState("");
   const artifactRevisionRef = useRef(0);
@@ -91,6 +93,7 @@ export function useLearningWorkspaceSession(
       throw new Error("AAIS learner data generation is unavailable.");
     }
     taskTextRevisionsRef.current = nextTaskTextRevisions;
+    setTasks(session.tasks ?? []);
     learnerDataGenerationRef.current = session.dataGeneration;
     setLearnerDataGeneration(session.dataGeneration);
     for (const resolve of learnerDataGenerationWaitersRef.current.splice(0)) {
@@ -208,6 +211,7 @@ export function useLearningWorkspaceSession(
     setActiveHistoryDocumentId(null);
     setHistoryDocuments([]);
     setPersistedGuideMessages([]);
+    setTasks([]);
     learnerDataGenerationRef.current = nextDataGeneration;
     setLearnerDataGeneration(nextDataGeneration);
     if (nextDataGeneration !== null) {
@@ -296,6 +300,7 @@ export function useLearningWorkspaceSession(
     learnerDataGeneration,
     patchSession,
     persistedGuideMessages,
+    tasks,
     resetWorkspaceSession,
     setArtifactText,
     setActiveHistoryDocumentId,

@@ -38,9 +38,12 @@ test("learning cockpit exposes a named main region and keyboard-operable content
   await expect(learningMain).toBeVisible();
   await expect(learningMain).toHaveAttribute("aria-describedby", "aais-learning-description");
 
-  await page.getByRole("button", { name: "理论知识" }).focus();
+  await page.getByRole("button", { name: "任务卡片" }).focus();
   await page.keyboard.press("Enter");
-  await expect(page.getByRole("heading", { name: "理论知识" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "任务卡片" })).toBeVisible();
+  await expect(page.getByRole("button", {
+    name: "L1 挑战：复述与计划，已锁定",
+  })).toBeDisabled();
 
   await page.getByRole("button", { name: "文档编辑" }).focus();
   await page.keyboard.press("Enter");

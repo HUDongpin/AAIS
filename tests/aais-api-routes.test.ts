@@ -502,7 +502,7 @@ describe("AAIS learning API routes", () => {
     ],
     [
       "too many targets",
-      { learnerInput: "valid", targetAgentIds: ["A1", "A2", "A1"] },
+      { learnerInput: "valid", targetAgentIds: ["A1", "A2"] },
       "AAIS_GUIDE_FIELD_INVALID",
     ],
   ])("rejects %s as a structured guide validation error before storage", async (_label, requestBody, code) => {
@@ -1267,14 +1267,12 @@ describe("AAIS learning API routes", () => {
     );
     const guideBody = await guideResponse.json();
     expect(guideResponse.status).toBe(200);
-    expect(guideBody.orchestration.graph.topologicalOrder).toEqual(["A1", "A2"]);
+    expect(guideBody.orchestration.graph.topologicalOrder).toEqual(["A1"]);
     expect(guideBody.turns.map((turn: { agentId: string }) => turn.agentId)).toEqual([
       "A1",
-      "A2",
     ]);
     expect(guideBody.turns.map((turn: { actions: string[] }) => turn.actions)).toEqual([
       ["guide-flow", "scaffold"],
-      ["model", "coach", "mention-expert"],
     ]);
     expect(guideBody.backgroundTurns).toBeUndefined();
     expect(guideBody.orchestration.runtime).toEqual({
@@ -1315,11 +1313,9 @@ describe("AAIS learning API routes", () => {
     ]);
     expect(sessionBody.session.guideMessages[1].turns.map((turn: { agentId: string }) => turn.agentId)).toEqual([
       "A1",
-      "A2",
     ]);
     expect(sessionBody.session.guideMessages[1].orchestration.topologicalOrder).toEqual([
       "A1",
-      "A2",
     ]);
     expect(JSON.stringify(guideBody)).not.toMatch(/"A3"|"A4"|监督智能体|反思智能体/);
     expect(JSON.stringify(sessionBody.session.guideMessages)).not.toMatch(/"A3"|"A4"/);
@@ -1328,6 +1324,63 @@ describe("AAIS learning API routes", () => {
     expect(sessionBody.session.events.map((event: { event: string }) => event.event)).toEqual(
       expect.arrayContaining(["ai_prompt_submitted", "ai_response_completed"]),
     );
+  });
+
+  it("canonicalizes a forged A2 target without a Professor mention back to A1", async () => {
+    vi.stubEnv("AAIS_AI_PROVIDER", "");
+    vi.stubEnv("AAIS_AI_ENDPOINT", "");
+    vi.stubEnv("AAIS_AI_API_KEY", "");
+    vi.stubEnv("AAIS_AI_MODEL", "");
+    vi.stubEnv("AAIS_AI_FALLBACK_ENDPOINT", "");
+    vi.stubEnv("AAIS_AI_FALLBACK_API_KEY", "");
+    vi.stubEnv("AAIS_AI_FALLBACK_MODEL", "");
+    vi.resetModules();
+    const guideRoute = await import("@/app/api/learning/ai-guide/route");
+    const sessionRoute = await import("@/app/api/learning/session/route");
+    const studentId = "forged-a2-target-learner";
+    const cookie = createAuthedCookie(studentId);
+    const csrf = createAaisCsrfToken(studentId);
+    await initializeLearnerSession(studentId, cookie, csrf);
+
+    const guideResponse = await guideRoute.POST(
+      new Request("http://localhost/api/learning/ai-guide", {
+        method: "POST",
+        headers: {
+          cookie,
+          "x-aais-csrf": csrf,
+        },
+        body: JSON.stringify({
+          dataGeneration: 1,
+          phase: "training",
+          taskId: "training_task_1",
+          learnerInput: "教授，请帮我看看下一步。",
+          targetAgentIds: ["A2"],
+          workspaceState: {
+            currentStep: "guide",
+          },
+        }),
+      }),
+    );
+    const guideBody = await guideResponse.json();
+
+    expect(guideResponse.status).toBe(200);
+    expect(guideBody.turns.map((turn: { agentId: string }) => turn.agentId)).toEqual(["A1"]);
+    expect(guideBody.orchestration.graph.topologicalOrder).toEqual(["A1"]);
+    expect(guideBody.message.text).toContain("小张");
+    expect(guideBody.message.text).not.toContain("教授");
+    expect(guideBody.backgroundTurns).toBeUndefined();
+    expect(JSON.stringify(guideBody)).not.toMatch(/"A2"|"A3"|"A4"|监督智能体|反思智能体/);
+
+    const sessionResponse = await sessionRoute.GET(
+      new Request("http://localhost/api/learning/session", {
+        headers: { cookie },
+      }),
+    );
+    const sessionBody = await sessionResponse.json();
+    expect(sessionBody.session.guideMessages[1].turns.map(
+      (turn: { agentId: string }) => turn.agentId,
+    )).toEqual(["A1"]);
+    expect(sessionBody.session.guideMessages[1].orchestration.topologicalOrder).toEqual(["A1"]);
   });
 
   it("rejects fabricated, user, missing, and cross-task AI acceptance message ids", async () => {
@@ -1877,7 +1930,7 @@ describe("AAIS learning API routes", () => {
     expect(JSON.stringify(body)).not.toContain("image/png");
   });
 
-  it("parses @A2 guide mentions and persists only the targeted visible answer", async () => {
+  it("parses @教授 guide mentions and persists only the targeted visible answer", async () => {
     vi.stubEnv("AAIS_AI_PROVIDER", "");
     vi.stubEnv("AAIS_AI_ENDPOINT", "");
     vi.stubEnv("AAIS_AI_API_KEY", "");
@@ -1906,7 +1959,7 @@ describe("AAIS learning API routes", () => {
           dataGeneration: 1,
           phase: "training",
           taskId: "training_task_1",
-          learnerInput: "@A2 请示范专家会怎样监控理解。",
+          learnerInput: "@教授 请示范专家会怎样监控理解。",
           workspaceState: {
             currentStep: "guide",
           },
@@ -1963,7 +2016,7 @@ describe("AAIS learning API routes", () => {
           dataGeneration: 1,
           phase: "training",
           taskId: "training_task_1",
-          learnerInput: "@A1 请帮我明确目标。",
+          learnerInput: "请帮我明确目标。",
           workspaceState: {
             currentStep: "guide",
           },
@@ -2015,7 +2068,7 @@ describe("AAIS learning API routes", () => {
           dataGeneration: 1,
           phase: "training",
           taskId: "training_task_1",
-          learnerInput: "@A1 请帮我明确目标。",
+          learnerInput: "请帮我明确目标。",
           workspaceState: {
             currentStep: "guide",
             attachments: [{
@@ -2036,6 +2089,10 @@ describe("AAIS learning API routes", () => {
     expect(streamText).toContain("event: agent_start");
     expect(streamText).toContain("event: agent_delta");
     expect(streamText).toContain("event: agent_done");
+    expect(streamText).toContain('event: agent_start\ndata: {"agentId":"A1"}');
+    expect(streamText).not.toContain('event: agent_start\ndata: {"agentId":"A2"}');
+    expect(streamText).not.toContain('event: agent_delta\ndata: {"agentId":"A2"');
+    expect(streamText).not.toContain('event: agent_done\ndata: {"agentId":"A2"');
     expect(streamText).toContain("event: fallback");
     expect(streamText).toContain("event: done");
     expect(streamText).not.toContain("event: background_done");
