@@ -37,6 +37,7 @@ import {
   type AaisGuideAttachmentMetadata,
 } from "@/lib/ai/aais-guide-attachments";
 import { createAaisProductPseudonym } from "@/lib/server/aais-product-pseudonym";
+import { requiresAaisDurableStorage } from "@/lib/server/aais-runtime";
 
 export type AaisDatabaseClient = {
   query(sql: string, params?: unknown[]): Promise<{ rows: Array<Record<string, unknown>> }>;
@@ -6235,7 +6236,7 @@ let cachedDatabase:
   | undefined;
 
 export function getAaisLearningStore() {
-  if (isProductionRuntime() && !getAaisDatabaseConfiguration()) {
+  if (requiresAaisDurableStorage() && !getAaisDatabaseConfiguration()) {
     throw new AaisLearningStorageConfigurationError();
   }
   const rootDir = getDefaultDataDir();
@@ -6620,10 +6621,6 @@ function getDefaultDataDir() {
     return path.join("/tmp", ".aais-data");
   }
   return path.join(/*turbopackIgnore: true*/ process.cwd(), ".aais-data");
-}
-
-function isProductionRuntime() {
-  return process.env.NODE_ENV === "production" || process.env.VERCEL_ENV === "production";
 }
 
 function getConfiguredDatabaseClient() {

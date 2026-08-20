@@ -75,6 +75,29 @@ describe("AAIS session revocations", () => {
     secondWorker.clearAaisSessionRevocationsForTest();
   });
 
+  it("allows an explicitly non-production Vercel Preview to use stateless revocations", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("VERCEL_ENV", "preview");
+    vi.stubEnv("AAIS_SESSION_SECRET", "preview-test-session-secret-with-32-bytes");
+    const { verified, now } = createVerifiedToken();
+
+    await expect(isAaisSessionTokenRevoked({
+      tokenHash: verified.tokenHash,
+      now,
+      database: null,
+    })).resolves.toBe(false);
+    await expect(revokeAaisSessionToken({
+      tokenHash: verified.tokenHash,
+      actorId: verified.actor.id,
+      expiresAt: verified.expiresAt,
+      now,
+      database: null,
+    })).resolves.toMatchObject({
+      status: "revoked",
+      storageMode: "memory",
+    });
+  });
+
   it("refuses process-local revocation reads and writes in production", async () => {
     const { verified, now } = createVerifiedToken();
     vi.stubEnv("NODE_ENV", "production");

@@ -54,6 +54,24 @@ describe("AAIS login rate limiting", () => {
     }
   });
 
+  it("uses bounded process-local protection for the stateless Vercel Preview smoke", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("VERCEL", "1");
+    vi.stubEnv("VERCEL_ENV", "preview");
+    const request = createRequest("198.51.100.201");
+
+    await expect(admitAaisLoginAttempt({
+      accountId: "preview-smoke-user",
+      request,
+      database: null,
+    })).resolves.toEqual({ status: "allowed" });
+    await expect(clearAaisLoginFailures({
+      accountId: "preview-smoke-user",
+      request,
+      database: null,
+    })).resolves.toBeUndefined();
+  });
+
   it("sweeps expired development entries and enforces a bounded LRU memory fallback", async () => {
     vi.stubEnv("AAIS_AUTH_RATE_LIMIT_MEMORY_MAX_ENTRIES", "4");
     vi.stubEnv("AAIS_LOGIN_RATE_LIMIT_MAX_FAILURES", "1");

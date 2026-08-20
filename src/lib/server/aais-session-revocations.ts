@@ -4,6 +4,7 @@ import {
   type AaisDatabaseClient,
 } from "@/lib/server/aais-learning-store";
 import { createAaisPostgresPool } from "@/lib/server/aais-postgres-pool";
+import { requiresAaisDurableStorage } from "@/lib/server/aais-runtime";
 
 type MemoryRevocation = {
   actorId: string;
@@ -132,14 +133,14 @@ function resolveSessionRevocationDatabase(database: AaisDatabaseClient | null | 
     if (database) {
       return database;
     }
-    if (isProductionRuntime()) {
+    if (requiresAaisDurableStorage()) {
       throw new AaisSessionRevocationConfigurationError();
     }
     return undefined;
   }
   const config = getAaisDatabaseConfiguration();
   if (!config) {
-    if (isProductionRuntime()) {
+    if (requiresAaisDurableStorage()) {
       throw new AaisSessionRevocationConfigurationError();
     }
     return undefined;
@@ -154,10 +155,6 @@ function resolveSessionRevocationDatabase(database: AaisDatabaseClient | null | 
     };
   }
   return cachedDatabase.client;
-}
-
-function isProductionRuntime() {
-  return process.env.NODE_ENV === "production" || process.env.VERCEL_ENV === "production";
 }
 
 function createActorKey(actorId: string) {

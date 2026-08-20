@@ -5,6 +5,7 @@ import {
   type AaisDatabaseClient,
 } from "@/lib/server/aais-learning-store";
 import { createAaisPostgresPool } from "@/lib/server/aais-postgres-pool";
+import { requiresAaisDurableStorage } from "@/lib/server/aais-runtime";
 
 type AaisLoginRateLimitRecord = {
   failures: number;
@@ -660,11 +661,7 @@ function resolveRateLimitDatabase(database: AaisDatabaseClient | null | undefine
 }
 
 function assertMemoryRateLimitFallbackAllowed() {
-  if (
-    process.env.NODE_ENV === "production"
-    || process.env.VERCEL === "1"
-    || Boolean(process.env.VERCEL_ENV?.trim())
-  ) {
+  if (requiresAaisDurableStorage()) {
     throw new AaisAuthRateLimitStorageUnavailableError();
   }
 }

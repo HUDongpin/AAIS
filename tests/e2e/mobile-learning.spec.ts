@@ -29,18 +29,20 @@ test("student learning cockpit remains usable on a phone-width viewport", async 
   await expect(page.getByRole("button", { name: "文档编辑" })).toBeVisible();
 
   await page.getByRole("button", { name: "文档编辑" }).click();
+  const accountDisplayName = page.locator('[data-account-display-name="true"]');
+  if (!process.env.AAIS_E2E_BASE_URL) {
+    await expect(accountDisplayName).toHaveText(maxLengthMobileDisplayName);
+  }
   const documentActions = ["内容展示", "文档编辑", "保存并关闭", "下载到本地"];
   for (const width of [390, 320]) {
     await page.setViewportSize({ width, height: 844 });
-    const accountTrigger = page.getByRole("button", {
-      name: `${maxLengthMobileDisplayName} 账户菜单`,
-    });
+    const accountTrigger = page.getByRole("button", { name: /账户菜单$/ });
     const accountBounds = await accountTrigger.boundingBox();
     expect(accountBounds).not.toBeNull();
     expect(accountBounds?.x ?? -1).toBeGreaterThanOrEqual(0);
     expect((accountBounds?.x ?? width) + (accountBounds?.width ?? 1))
       .toBeLessThanOrEqual(width + 1);
-    await expect(page.locator('[data-account-display-name="true"]'))
+    await expect(accountDisplayName)
       .toHaveCSS("text-overflow", "ellipsis");
 
     for (const name of documentActions) {
