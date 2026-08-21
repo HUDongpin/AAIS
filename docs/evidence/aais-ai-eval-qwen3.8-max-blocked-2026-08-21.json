@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
-  "evidenceId": "aais-qwen3.8-max-revision-block-20260821-v2",
-  "observedAt": "2026-08-21T14:31:13.000Z",
+  "evidenceId": "aais-qwen3.8-max-revision-block-20260821-v3",
+  "observedAt": "2026-08-21T14:45:55.044Z",
   "status": "blocked",
   "provider": {
     "provider": "qwen",
@@ -13,6 +13,7 @@
     "observedRevisionSha256": null
   },
   "formalEvaluationAttempt": {
+    "observedAt": "2026-08-21T14:31:13.000Z",
     "evalVersion": "aais-qwen3.8-max-20260821-observation-v2",
     "evaluator": "scripts/run-aais-ai-formal-eval.ts",
     "evaluatorSha256": "2db623919d08733bae50df8d1ab98b028d01ca7491a47afcbd1fb9a252b77244",
@@ -52,6 +53,17 @@
     "releaseLockVerifierSha256": "cbd6cfabb60dcc2db4102ab6a42669c3983cbfe5c0a8814bc0db8cbbe7143f12"
   },
   "officialProviderSources": {
+    "modelListApi": {
+      "url": "https://help.aliyun.com/zh/model-studio/list-models",
+      "runtimeEndpointHost": "dashscope.aliyuncs.com",
+      "httpStatus": 200,
+      "success": true,
+      "observedModel": "qwen3.8-max",
+      "publishedTime": "2026-08-02 12:14:32",
+      "equivalentSnapshot": null,
+      "sanitizedObservationSha256": "e93ceb45acda7660ce508730369c0429336d16e502b7bf1588177cf6802013da",
+      "observation": "the authenticated model-list endpoint returned no equivalent snapshot for qwen3.8-max; published_time is catalog metadata and not an observed inference revision"
+    },
     "modelCatalog": {
       "url": "https://help.aliyun.com/zh/model-studio/text-generation-model",
       "observation": "qwen3.8-max is documented as a current model alias; no immutable snapshot or revision identifier is documented"
