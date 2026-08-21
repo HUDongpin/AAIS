@@ -1,0 +1,82 @@
+{
+  "schemaVersion": 1,
+  "evidenceId": "aais-qwen3.8-max-revision-block-20260821-v2",
+  "observedAt": "2026-08-21T14:31:13.000Z",
+  "status": "blocked",
+  "provider": {
+    "provider": "qwen",
+    "runtimeRole": "required-primary",
+    "endpointFingerprint": "acef5ad22e85eeb4054b30648f7d50012e47b22ef6381614477548d7d42238d7",
+    "requestedModel": "qwen3.8-max",
+    "observedModel": "qwen3.8-max",
+    "observedModelMatch": true,
+    "observedRevisionSha256": null
+  },
+  "formalEvaluationAttempt": {
+    "evalVersion": "aais-qwen3.8-max-20260821-observation-v2",
+    "evaluator": "scripts/run-aais-ai-formal-eval.ts",
+    "evaluatorSha256": "2db623919d08733bae50df8d1ab98b028d01ca7491a47afcbd1fb9a252b77244",
+    "requiredCoverage": {
+      "agents": [
+        "A1",
+        "A2",
+        "A3",
+        "A4"
+      ],
+      "locales": [
+        "zh-CN",
+        "en-US"
+      ],
+      "plannedSampleCount": 8
+    },
+    "result": "blocked",
+    "errorCode": "AAIS_AI_FORMAL_EVAL_REVISION_MISSING",
+    "providerResponseContractReached": true,
+    "rawSystemFingerprint": "omitted",
+    "reportedSystemFingerprintState": "absent-or-null",
+    "unsignedManifestCreated": false,
+    "formalManifestCreated": false,
+    "formalManifestSha256": null,
+    "formalManifestSignatureCreated": false
+  },
+  "sourceContract": {
+    "agentPromptContractSha256": {
+      "A1": "ddb4290317cdf5ec064bd28f7dd71741172826a4bcf597b6f25ea9290f98c814",
+      "A2": "ad9a043604ca5d2646ca65c895b57d96ae60c1cd32fa8aadc35ce0b5e46f743f",
+      "A3": "068241da2f4a8752b2da9a896dd88b3171cf8e7f524f373cb015467a149cd6f8",
+      "A4": "0faa13d149f3b5031afad99c0e4b0186133712e6d23af7426dd7209320200ce1"
+    },
+    "caBackgroundSha256": "455e227cff03afe3f8d5c5657ef5465e3ca3c4913309c050a5680ed5bb2c090b",
+    "guardrailSha256": "4edee29ff2c1f8f0758b9f1fd4e2a30c5aec23a3ef9f047a6a0cd74c6e852080",
+    "providerBoundarySha256": "ec45ebed891a2d9355358fb332841a70280300f368969aef3ba2ded33fbc5904",
+    "releaseLockVerifierSha256": "cbd6cfabb60dcc2db4102ab6a42669c3983cbfe5c0a8814bc0db8cbbe7143f12"
+  },
+  "officialProviderSources": {
+    "modelCatalog": {
+      "url": "https://help.aliyun.com/zh/model-studio/text-generation-model",
+      "observation": "qwen3.8-max is documented as a current model alias; no immutable snapshot or revision identifier is documented"
+    },
+    "compatibleCompletions": {
+      "url": "https://help.aliyun.com/zh/model-studio/completions",
+      "observation": "the documented system_fingerprint response field is fixed to null"
+    },
+    "releaseCatalog": {
+      "url": "https://help.aliyun.com/zh/model-studio/newly-released-models",
+      "observation": "release chronology does not constitute an exact observed runtime revision"
+    }
+  },
+  "releaseDecision": {
+    "primaryEvidenceStatus": "pending",
+    "productionApprovalAllowed": false,
+    "reason": "The required exact observed revision is unavailable. A model alias, request identifier, launch date, response timestamp, or locally invented hash is not an acceptable substitute.",
+    "requiredResolution": "Alibaba Cloud must expose a stable immutable revision value for qwen3.8-max, or AAIS must select a provider model with an exact observable revision and repeat the formal evaluation and signing flow."
+  },
+  "redaction": {
+    "apiKeys": "omitted",
+    "accountIdentifiers": "omitted",
+    "prompts": "omitted",
+    "outputs": "omitted",
+    "rawProviderResponses": "omitted",
+    "secrets": "omitted"
+  }
+}

@@ -1,0 +1,156 @@
+{
+  "schemaVersion": 1,
+  "evidenceId": "aais-observability-readiness-20260821-v1",
+  "observedAt": "2026-08-21T14:34:55.000Z",
+  "status": "blocked",
+  "scope": {
+    "vercelTeam": "redacted-team",
+    "vercelProject": "aais",
+    "environment": "production",
+    "productionDataMutated": false,
+    "credentialsReadOrWritten": false
+  },
+  "vercelSecurity": {
+    "securityChecklist": {
+      "completed": 7,
+      "total": 9,
+      "highFindings": 1,
+      "mediumFindings": 1
+    },
+    "twoFactorAuthenticationEnforcement": {
+      "status": "enabled",
+      "allCurrentTeamMembersReportedWith2fa": true
+    },
+    "ownerCount": {
+      "status": "balanced",
+      "exactAccountIdentifiersStored": false
+    },
+    "sensitiveEnvironmentVariablePolicy": {
+      "status": "disabled",
+      "requiredStatus": "enabled",
+      "passes": false
+    },
+    "ipAddressVisibility": {
+      "vercelDashboard": "shown",
+      "logDrains": "shown",
+      "requiredState": "hidden",
+      "passes": false
+    },
+    "teamLevelFindings": {
+      "longLivedCredentialsWhereOidcAvailable": {
+        "severity": "high",
+        "count": 3,
+        "aaisProjectNamedInFinding": false,
+        "unrelatedProjectsMutated": false
+      },
+      "environmentVariablesNotMarkedSensitive": {
+        "severity": "medium",
+        "count": 65,
+        "aaisProjectNamedInFinding": true
+      }
+    }
+  },
+  "vercelStructuredLogs": {
+    "planObserved": "pro",
+    "maximumSelectableLookbackDays": 14,
+    "requiredLookbackDays": 30,
+    "retentionRequirementPasses": false,
+    "structuredAuditSample": {
+      "route": "/api/learning/lrs/outbox/flush",
+      "httpStatus": 200,
+      "event": "lrs_outbox_flush",
+      "outcome": "success",
+      "secretsField": "redacted"
+    },
+    "authDeliverySample": {
+      "route": "/api/auth/email-outbox/flush",
+      "httpStatus": 503,
+      "status": "global-readiness-blocker"
+    },
+    "privacyCanary": {
+      "status": "not-run",
+      "passes": false
+    }
+  },
+  "vercelAlerts": {
+    "defaultRuleObserved": true,
+    "scope": "all-projects-and-all-types",
+    "destinations": [
+      "web",
+      "email",
+      "push"
+    ],
+    "dedicatedAaisPrivacyAlertObserved": false,
+    "dedicatedAaisAuthDeliveryAlertObserved": false,
+    "passes": false
+  },
+  "sentry": {
+    "vercelProjectIntegrationObserved": false,
+    "aaisOrganizationObserved": false,
+    "aaisProjectObserved": false,
+    "productionDsnConfigured": false,
+    "productionIngestionVerified": false,
+    "accountRetentionVerified": false,
+    "accountRegionVerified": false,
+    "dpaExecutedOrElectronicallyAccepted": false,
+    "accessControlVerified": false,
+    "alertRulesVerified": false,
+    "privacyCanary": {
+      "status": "not-run",
+      "passes": false
+    },
+    "officialCapabilityReview": {
+      "dataRetention": {
+        "status": "vendor-capability-only",
+        "developerPlanLookbackDays": 30,
+        "teamPlanMaximumLookbackDays": 90,
+        "url": "https://sentry.io/pricing/"
+      },
+      "dataRegions": {
+        "status": "vendor-capability-only",
+        "available": [
+          "US",
+          "DE"
+        ],
+        "url": "https://docs.sentry.io/api/"
+      },
+      "dpa": {
+        "status": "available-not-accepted-for-aais",
+        "version": "5.1.0",
+        "url": "https://sentry.io/legal/dpa/"
+      },
+      "subprocessors": {
+        "status": "published-not-approved-for-aais",
+        "version": "2.3.0",
+        "url": "https://sentry.io/legal/subprocessors/"
+      },
+      "roleAndAlertControls": {
+        "status": "vendor-capability-only",
+        "organizationRolesAvailable": true,
+        "teamRolesAvailable": true,
+        "alertWriteScopeAvailable": true,
+        "url": "https://docs.sentry.io/api/organizations/update-an-organization/"
+      }
+    }
+  },
+  "releaseDecision": {
+    "observabilityGatePasses": false,
+    "blockingReasons": [
+      "Vercel log lookback is 14 days, below the required 30 days.",
+      "Sentry is not installed or configured for AAIS Production.",
+      "No AAIS Sentry region, accepted DPA, access-control configuration, alert rule, ingestion proof, or privacy canary was observed.",
+      "Vercel sensitive environment variable enforcement is disabled.",
+      "IP addresses remain visible in both the Vercel Dashboard and Log Drains.",
+      "The Production auth email outbox flush is returning HTTP 503.",
+      "No dedicated privacy or auth-delivery alert is configured."
+    ]
+  },
+  "redaction": {
+    "accountIdentifiers": "omitted",
+    "environmentVariableValues": "omitted",
+    "eventPayloads": "summarized",
+    "ipAddresses": "omitted",
+    "credentials": "omitted",
+    "secrets": "omitted"
+  }
+}
