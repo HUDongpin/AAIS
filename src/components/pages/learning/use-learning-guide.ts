@@ -1,45 +1,54 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import {
-  aaisGuideAttachmentLimits,
   normalizeAaisGuideAttachments,
   type AaisGuideAttachment,
 } from "@/lib/ai/aais-guide-attachments";
 import { selectAaisGuideReplyAgentIds } from "@/lib/ai/aais-guide-targets";
-import { readAaisGuideFileAttachment } from "@/lib/client/aais-guide-file-reader";
 import {
   admitAaisResearchAction,
   captureAaisResearchActorGeneration,
   classifyAaisResearchClientError,
-  createAaisResearchOperationId,
-  isAaisResearchDisconnectError,
   recordAaisResearchEvent,
 } from "@/lib/client/aais-research-telemetry";
-import { createInitialGuideMessages, getGuideAttachmentOnlyPrompt } from "@/components/pages/learning/learning-page-constants";
+import {
+  createInitialGuideMessages,
+  getGuideAttachmentOnlyPrompt,
+} from "@/components/pages/learning/learning-page-constants";
 import { getLearningCopy } from "@/components/pages/learning/learning-copy";
 import {
   addReadAttachmentMetadataToGuideMessage,
-  getControlledGuideAttachmentMimeType,
   useHydratePersistedGuideMessages,
 } from "@/components/pages/learning/guide-message-persistence";
-import { getVisibleGuideTurns, toGuideAttachmentPayload } from "@/components/pages/learning/guide-chat";
-import { fetchGuideRequest, getAaisCsrfHeader, clientNowMs } from "@/components/pages/learning/client-helpers";
+import {
+  getGuideFailurePresentation,
+  getVisibleGuideTurns,
+  toGuideAttachmentPayload,
+} from "@/components/pages/learning/guide-chat";
+import { getAaisCsrfHeader, clientNowMs } from "@/components/pages/learning/client-helpers";
 import type {
-  GuideClientAttachment,
   GuideMessage,
-  GuideQuickStart,
 } from "@/components/pages/learning/learning-page-types";
 import {
-  isGuideEventStreamResponse,
-  isUsableGuideBody,
-  readGuideJsonBody,
-  readGuideStreamResponse,
-  validateGuideResponse,
-  type GuideResponseBody,
+  isGuideLiveDelivery,
+  readGuideDeliveryReceipt,
 } from "@/components/pages/learning/guide-stream";
 import {
   applyGuideResponseToMessages,
   applyGuideStreamProgressToMessages,
 } from "@/components/pages/learning/guide-message-updates";
+import {
+  createGuideFailure,
+  createGuideOperationId,
+  isGuideBrowserOffline,
+  isGuideConnectionError,
+} from "@/components/pages/learning/guide-operation-client";
+import { requestGuideResponse } from "@/components/pages/learning/guide-request-client";
+import { useLearningGuideAttachments } from "@/components/pages/learning/use-learning-guide-attachments";
+import type {
+  GuideSubmissionEventDetail,
+  GuideSubmissionOptions,
+  GuideSubmissionSnapshot,
+} from "@/components/pages/learning/guide-submission-types";
 import type { Locale } from "@/data/aais";
 type UseLearningGuideInput = {
   activeTaskId: string;
@@ -49,10 +58,6 @@ type UseLearningGuideInput = {
   locale: Locale;
   persistedGuideMessages?: GuideMessage[];
   studentId: string;
-};
-type GuideSubmissionOptions = {
-  source?: "typed" | "quick_start";
-  quickStartId?: GuideQuickStart["id"];
 };
 export function useLearningGuide({
   activeTaskId,
@@ -70,13 +75,24 @@ export function useLearningGuide({
   );
   const [guideBusy, setGuideBusy] = useState(false);
   const [guideError, setGuideError] = useState("");
-  const [guideAttachmentBusy, setGuideAttachmentBusy] = useState(false);
-  const [guideAttachmentError, setGuideAttachmentError] = useState("");
-  const [guideAttachments, setGuideAttachments] = useState<GuideClientAttachment[]>([]);
   const guideMessageIdRef = useRef(0);
-  const guideAttachmentIdRef = useRef(0);
-  const guideFileInputRef = useRef<HTMLInputElement | null>(null);
   const guideRequestAbortControllerRef = useRef<AbortController | null>(null);
+  const retryableGuideSubmissionsRef = useRef(new Map<string, GuideSubmissionSnapshot>());
+  const {
+    addGuideFiles,
+    guideAttachmentBusy,
+    guideAttachmentError,
+    guideAttachments,
+    guideFileInputRef,
+    removeGuideAttachment,
+    resetGuideAttachments,
+    setGuideAttachmentError,
+    setGuideAttachments,
+  } = useLearningGuideAttachments({
+    activeTaskId,
+    locale,
+    onAttachmentsAdded: () => setGuideError(""),
+  });
   useHydratePersistedGuideMessages(persistedGuideMessages, setGuideMessages);
   useEffect(() => () => {
     guideRequestAbortControllerRef.current?.abort();
@@ -94,15 +110,19 @@ export function useLearningGuide({
       return;
     }
     const telemetryActorGeneration = captureAaisResearchActorGeneration();
-    const operationId = createAaisResearchOperationId("ai-guide");
+    const operationId = createGuideOperationId();
+    if (!operationId) {
+      setGuideError(copy.guide.requestIdentityUnavailable);
+      return;
+    }
     const startedAt = clientNowMs();
     const rawPromptLength = rawQuestion.trim().length;
-    const inputMode = options.source === "quick_start"
+    const inputMode: GuideSubmissionEventDetail["input_mode"] = options.source === "quick_start"
       ? "quick_start"
       : rawPromptLength
         ? "typed"
         : "attachment_only";
-    const baseEventDetail = {
+    const baseEventDetail: GuideSubmissionEventDetail = {
       operation_id: operationId,
       task_id: activeTaskId,
       input_mode: inputMode,
@@ -175,11 +195,39 @@ export function useLearningGuide({
     setGuideDraft("");
     setGuideError("");
     setGuideAttachmentError("");
+    const submission: GuideSubmissionSnapshot = {
+      operationId,
+      userId,
+      assistantId,
+      taskId: activeTaskId,
+      artifactText,
+      studentId,
+      locale,
+      question,
+      editableQuestion: rawQuestion.trim(),
+      boundedAttachments,
+      targetAgentIds,
+      telemetryActorGeneration,
+      baseEventDetail,
+    };
+    retryableGuideSubmissionsRef.current.set(assistantId, submission);
+    await runGuideSubmission(submission, startedAt);
+  }
+
+  async function runGuideSubmission(
+    submission: GuideSubmissionSnapshot,
+    startedAt = clientNowMs(),
+  ) {
     setGuideBusy(true);
     let attemptNumber = 1;
     let retryReason: string | undefined;
 
     try {
+      if (isGuideBrowserOffline()) {
+        const offlineError = new Error("AAIS guide request is offline");
+        offlineError.name = "AaisGuideBrowserOfflineError";
+        throw offlineError;
+      }
       const generationResult = waitForLearnerDataGeneration();
       const dataGeneration = typeof generationResult === "number"
         ? generationResult
@@ -191,55 +239,75 @@ export function useLearningGuide({
           ...getAaisCsrfHeader(),
         },
         body: JSON.stringify({
+          operationId: submission.operationId,
           dataGeneration,
-          locale,
+          locale: submission.locale,
           phase: "training",
-          taskId: activeTaskId,
-          learnerInput: question,
-          targetAgentIds,
+          taskId: submission.taskId,
+          learnerInput: submission.question,
+          targetAgentIds: submission.targetAgentIds,
           workspaceState: {
-            studentId,
+            studentId: submission.studentId,
             currentStep: "home",
-            artifactText,
+            artifactText: submission.artifactText,
             helpRequestsUsed: 0,
-            ...(boundedAttachments.length ? { attachments: boundedAttachments } : {}),
+            ...(submission.boundedAttachments.length
+              ? { attachments: submission.boundedAttachments }
+              : {}),
           },
         }),
       };
-      const body = await requestGuideResponse(requestInit, assistantId, () => {
-        attemptNumber = 2;
-        retryReason = "stream_protocol_fallback";
-        return admitAaisResearchAction({
-          eventName: "ai_guide_submit",
-          outcome: "retry",
-          actorGeneration: telemetryActorGeneration,
-          latencyMs: clientNowMs() - startedAt,
-          detail: {
-            ...baseEventDetail,
-            attempt_number: attemptNumber,
-            retry_reason: retryReason,
-          },
-        });
+      const body = await requestGuideResponse({
+        controllerRef: guideRequestAbortControllerRef,
+        locale,
+        onStreamProgress: (progress) => setGuideMessages((current) =>
+          applyGuideStreamProgressToMessages(current, submission.assistantId, progress, locale),
+        ),
+        onTransportRetry: () => {
+          attemptNumber = 2;
+          retryReason = "stream_protocol_fallback";
+          return admitAaisResearchAction({
+            eventName: "ai_guide_submit",
+            outcome: "retry",
+            actorGeneration: submission.telemetryActorGeneration,
+            latencyMs: clientNowMs() - startedAt,
+            detail: {
+              ...submission.baseEventDetail,
+              attempt_number: attemptNumber,
+              retry_reason: retryReason,
+            },
+          });
+        },
+        requestInit,
       });
       setGuideMessages((current) =>
-        applyGuideResponseToMessages(current, assistantId, body, locale),
+        applyGuideResponseToMessages(current, submission.assistantId, body, submission.locale),
       );
-      if (boundedAttachments.length) {
+      if (submission.boundedAttachments.length) {
         setGuideMessages((current) =>
-          addReadAttachmentMetadataToGuideMessage(current, userId, boundedAttachments),
+          addReadAttachmentMetadataToGuideMessage(
+            current,
+            submission.userId,
+            submission.boundedAttachments,
+          ),
         );
       }
       setGuideAttachments([]);
+      retryableGuideSubmissionsRef.current.delete(submission.assistantId);
+      const responseRuntime = body.orchestration?.runtime;
+      const delivery = readGuideDeliveryReceipt(responseRuntime?.delivery);
       recordAaisResearchEvent({
         eventName: "ai_guide_submit",
         outcome: "success",
-        actorGeneration: telemetryActorGeneration,
+        actorGeneration: submission.telemetryActorGeneration,
         latencyMs: clientNowMs() - startedAt,
         detail: {
-          ...baseEventDetail,
-          target_agent_count: targetAgentIds.length,
+          ...submission.baseEventDetail,
+          target_agent_count: submission.targetAgentIds.length,
           agent_count: getVisibleGuideTurns(body.turns).length,
-          fallback: body.orchestration?.runtime?.timings?.fallback === true,
+          fallback: isGuideLiveDelivery(delivery)
+            ? false
+            : responseRuntime?.timings?.fallback === true,
           ...(attemptNumber > 1
             ? {
                 attempt_number: attemptNumber,
@@ -249,29 +317,36 @@ export function useLearningGuide({
         },
       });
     } catch (error) {
+      const failure = createGuideFailure(error, submission.operationId);
+      const presentation = getGuideFailurePresentation(submission.locale, failure.kind);
       setGuideMessages((current) =>
         current.map((message) =>
-          message.id === assistantId
+          message.id === submission.assistantId
             ? {
                 ...message,
-                text: copy.guide.requestUnavailable,
+                text: presentation.message,
                 turns: undefined,
-                runtime: undefined,
+                runtime: {
+                  fallback: false,
+                  operationId: submission.operationId,
+                  diagnosticId: failure.diagnosticId,
+                  failure,
+                },
                 trace: undefined,
               }
             : message,
         ),
       );
-      setGuideError(copy.guide.requestErrorAlert);
+      setGuideError("");
       recordAaisResearchEvent({
         eventName: "ai_guide_submit",
-        outcome: isAaisResearchDisconnectError(error) ? "disconnected" : "failure",
-        actorGeneration: telemetryActorGeneration,
+        outcome: isGuideConnectionError(error) ? "disconnected" : "failure",
+        actorGeneration: submission.telemetryActorGeneration,
         latencyMs: clientNowMs() - startedAt,
         detail: {
-          ...baseEventDetail,
+          ...submission.baseEventDetail,
           error_kind: classifyAaisResearchClientError(error),
-          target_agent_count: targetAgentIds.length,
+          target_agent_count: submission.targetAgentIds.length,
           ...(attemptNumber > 1
             ? {
                 attempt_number: attemptNumber,
@@ -285,48 +360,65 @@ export function useLearningGuide({
     }
   }
 
-  async function requestGuideResponse(
-    requestInit: RequestInit,
-    assistantId: string,
-    onTransportRetry: () => boolean,
-  ): Promise<GuideResponseBody> {
-    const streamAbortController = new AbortController();
-    guideRequestAbortControllerRef.current = streamAbortController;
-    try {
-      const streamResponse = await fetchGuideRequest(requestInit, {
-        stream: true,
-        signal: streamAbortController.signal,
-      });
-      if (isGuideEventStreamResponse(streamResponse)) {
-        return await readGuideStreamResponse(
-          streamResponse,
-          (progress) => setGuideMessages((current) =>
-            applyGuideStreamProgressToMessages(current, assistantId, progress, locale),
-          ),
-          undefined,
-          locale,
-          () => streamAbortController.abort(),
-        );
-      }
-
-      const streamedJsonBody = await readGuideJsonBody(streamResponse);
-      if (!streamResponse.ok || isUsableGuideBody(streamedJsonBody)) {
-        validateGuideResponse(streamResponse, streamedJsonBody);
-        return streamedJsonBody;
-      }
-
-      if (!onTransportRetry()) {
-        throw new Error("AAIS research telemetry blocked the guide retry.");
-      }
-    } finally {
-      if (guideRequestAbortControllerRef.current === streamAbortController) {
-        guideRequestAbortControllerRef.current = null;
-      }
+  async function retryGuideMessage(assistantId: string) {
+    if (guideBusy || guideAttachmentBusy) {
+      return;
     }
-    const response = await fetchGuideRequest(requestInit);
-    const body = await readGuideJsonBody(response);
-    validateGuideResponse(response, body);
-    return body;
+    const submission = retryableGuideSubmissionsRef.current.get(assistantId);
+    if (!submission) {
+      return;
+    }
+    const operationId = createGuideOperationId();
+    if (!operationId) {
+      setGuideError(getLearningCopy(submission.locale).guide.requestIdentityUnavailable);
+      return;
+    }
+    const retrySubmission: GuideSubmissionSnapshot = {
+      ...submission,
+      operationId,
+      baseEventDetail: {
+        ...submission.baseEventDetail,
+        operation_id: operationId,
+      },
+    };
+    if (!admitAaisResearchAction({
+      eventName: "ai_guide_submit",
+      outcome: "retry",
+      actorGeneration: retrySubmission.telemetryActorGeneration,
+      detail: {
+        ...retrySubmission.baseEventDetail,
+        attempt_number: 1,
+        retry_reason: "learner_retry",
+      },
+    })) {
+      return;
+    }
+    retryableGuideSubmissionsRef.current.set(assistantId, retrySubmission);
+    setGuideMessages((current) => current.map((message) =>
+      message.id === assistantId
+        ? {
+            ...message,
+            text: getLearningCopy(submission.locale).guide.requestAccepted,
+            turns: undefined,
+            runtime: undefined,
+            trace: undefined,
+          }
+        : message
+    ));
+    setGuideError("");
+    await runGuideSubmission(retrySubmission);
+  }
+
+  function rewriteGuideMessage(assistantId: string) {
+    if (guideBusy || guideAttachmentBusy) {
+      return;
+    }
+    const submission = retryableGuideSubmissionsRef.current.get(assistantId);
+    if (!submission) {
+      return;
+    }
+    setGuideDraft(submission.editableQuestion);
+    setGuideError("");
   }
 
   function createGuideMessageId(prefix: string) {
@@ -334,129 +426,9 @@ export function useLearningGuide({
     return `${prefix}-${guideMessageIdRef.current}`;
   }
 
-  function createGuideAttachmentId() {
-    guideAttachmentIdRef.current += 1;
-    return `attachment-${guideAttachmentIdRef.current}`;
-  }
-
   function sendGuideMessage(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     void submitGuideQuestion(guideDraft);
-  }
-
-  async function addGuideFiles(files: FileList | File[] | null) {
-    if (guideAttachmentBusy) {
-      return;
-    }
-    const selectedFiles = Array.from(files ?? []);
-    if (!selectedFiles.length) {
-      return;
-    }
-    const telemetryActorGeneration = captureAaisResearchActorGeneration();
-    const operationId = createAaisResearchOperationId("attachment-add");
-    const startedAt = clientNowMs();
-    const controlledMimeType = selectedFiles.length === 1
-      ? getControlledGuideAttachmentMimeType(selectedFiles[0]?.type)
-      : undefined;
-    const eventDetail = {
-      operation_id: operationId,
-      task_id: activeTaskId,
-      file_count: selectedFiles.length,
-      total_size_bytes: selectedFiles.reduce((total, file) => total + file.size, 0),
-      ...(controlledMimeType ? { mime_type: controlledMimeType } : {}),
-    };
-
-    if (guideAttachments.length + selectedFiles.length > aaisGuideAttachmentLimits.maxFiles) {
-      if (!admitAaisResearchAction({
-        actorGeneration: telemetryActorGeneration,
-        eventName: "guide_attachment_add",
-        outcome: "failure",
-        latencyMs: clientNowMs() - startedAt,
-        detail: {
-          ...eventDetail,
-          error_kind: "file_count_limit",
-        },
-      })) {
-        return;
-      }
-      setGuideAttachmentError(copy.guide.attachmentLimit(aaisGuideAttachmentLimits.maxFiles));
-      return;
-    }
-    if (!admitAaisResearchAction({
-      actorGeneration: telemetryActorGeneration,
-      eventName: "guide_attachment_add",
-      outcome: "attempted",
-      detail: eventDetail,
-    })) {
-      return;
-    }
-
-    setGuideAttachmentError("");
-    setGuideAttachmentBusy(true);
-    try {
-      const nextAttachments = await Promise.all(
-        selectedFiles.map(async (file) => ({
-          id: createGuideAttachmentId(),
-          ...(await readAaisGuideFileAttachment(file, locale)),
-        })),
-      );
-      const boundedAttachments = normalizeAaisGuideAttachments([
-        ...guideAttachments.map(toGuideAttachmentPayload),
-        ...nextAttachments.map(toGuideAttachmentPayload),
-      ]);
-      setGuideAttachments(
-        boundedAttachments.map((attachment) => ({
-          ...attachment,
-          id: createGuideAttachmentId(),
-        })),
-      );
-      setGuideError("");
-      recordAaisResearchEvent({
-        actorGeneration: telemetryActorGeneration,
-        eventName: "guide_attachment_add",
-        outcome: "success",
-        latencyMs: clientNowMs() - startedAt,
-        detail: eventDetail,
-      });
-    } catch (error) {
-      setGuideAttachmentError(error instanceof Error ? error.message : copy.guide.fileReadFailed);
-      recordAaisResearchEvent({
-        actorGeneration: telemetryActorGeneration,
-        eventName: "guide_attachment_add",
-        outcome: "failure",
-        latencyMs: clientNowMs() - startedAt,
-        detail: {
-          ...eventDetail,
-          error_kind: "file_read_failed",
-        },
-      });
-    } finally {
-      setGuideAttachmentBusy(false);
-    }
-  }
-
-  function removeGuideAttachment(attachmentId: string) {
-    const attachment = guideAttachments.find((candidate) => candidate.id === attachmentId);
-    if (!admitAaisResearchAction({
-      eventName: "guide_attachment_removed",
-      outcome: "success",
-      detail: {
-        operation_id: createAaisResearchOperationId("attachment-remove"),
-        task_id: activeTaskId,
-        ...(attachment
-          ? {
-              mime_type: attachment.mediaType,
-              size_bytes: attachment.sizeBytes,
-            }
-          : {}),
-      },
-    })) {
-      return;
-    }
-    setGuideAttachments((current) =>
-      current.filter((attachment) => attachment.id !== attachmentId),
-    );
-    setGuideAttachmentError("");
   }
 
   function resetGuideState() {
@@ -466,12 +438,8 @@ export function useLearningGuide({
     setGuideMessages(createInitialGuideMessages(displayName, locale));
     setGuideBusy(false);
     setGuideError("");
-    setGuideAttachmentBusy(false);
-    setGuideAttachmentError("");
-    setGuideAttachments([]);
-    if (guideFileInputRef.current) {
-      guideFileInputRef.current.value = "";
-    }
+    resetGuideAttachments();
+    retryableGuideSubmissionsRef.current.clear();
   }
 
   return {
@@ -487,6 +455,8 @@ export function useLearningGuide({
     hasGuideSubmission,
     removeGuideAttachment,
     resetGuideState,
+    retryGuideMessage,
+    rewriteGuideMessage,
     sendGuideMessage,
     setGuideDraft,
     setGuideError,

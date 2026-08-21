@@ -2210,6 +2210,33 @@ describe("AAIS backend learning store", () => {
     ]);
   });
 
+  it("binds the absolute guide deadline to the final Postgres transaction guard", async () => {
+    const database = createFakeDatabaseClient();
+    const store = createAaisLearningStore({ database });
+    const reservationId = "32323232-3232-4232-8232-323232323232";
+    const deadlineAt = Date.now() + 30_000;
+    await store.getOrCreateSession("S001");
+    await store.reserveDailyGuideRequest({ reservationId, studentId: "S001", limit: 1 });
+
+    await store.appendGuideExchange({
+      studentId: "S001",
+      phase: "training",
+      taskId: "training_task_1",
+      question: "原子截止问题",
+      answer: "原子截止回答",
+      budgetReservationId: reservationId,
+      deadlineAt,
+      orchestration: { graphId: "g", topologicalOrder: ["A1"], threadId: "deadline" },
+    });
+
+    const mutation = database.queries.find((query) =>
+      /^with generation_guard as materialized/i.test(query.sql.trim())
+      && String(query.params[4] ?? "").includes('"ai_prompt_submitted"')
+    );
+    expect(mutation?.sql).toContain("clock_timestamp() < $13::timestamptz");
+    expect(mutation?.params[12]).toBe(new Date(deadlineAt).toISOString());
+  });
+
   it("retries a guide exchange CAS conflict without losing a concurrent artifact or duplicating evidence", async () => {
     const baseDatabase = createFakeDatabaseClient();
     const setupStore = createAaisLearningStore({ database: baseDatabase });
@@ -2443,15 +2470,16 @@ describe("AAIS backend learning store", () => {
       expect.arrayContaining([
         expect.objectContaining({
           event: "aais.session.write_conflict",
-          learnerId: expect.stringMatching(/^learner:[a-f0-9]{16}$/),
-          learnerIdRedaction: "sha256-16",
           resolution: "retrying",
           storage: "postgres",
           secrets: "redacted",
         }),
       ]),
     );
+    expect(conflictLogs.every((event) => !Object.hasOwn(event, "learnerId"))).toBe(true);
+    expect(conflictLogs.every((event) => !Object.hasOwn(event, "learnerIdRedaction"))).toBe(true);
     expect(JSON.stringify(conflictLogs)).not.toContain("S001");
+    expect(JSON.stringify(conflictLogs)).not.toContain("learner:");
   });
 
   it("uses file-session compare-and-swap to preserve independent concurrent text saves", async () => {
@@ -5802,6 +5830,7 @@ function createProbeDatabaseClient(input: {
   aiGuideReservationLeaseColumn?: boolean;
   aiGuideDispatchConstraints?: boolean;
   aiGuideReservationFunction?: boolean;
+  aiGuideOperationIdempotency?: boolean;
   learnerDataDeleteFunction?: boolean;
   usersTable: boolean;
   usersAuthVersionColumn?: boolean;
@@ -5859,11 +5888,16 @@ function createProbeDatabaseClient(input: {
             ai_guide_daily_usage_table: input.aiGuideDailyUsageTable === false ? null : "aais_ai_guide_daily_usage",
             ai_guide_reservations_table: input.aiGuideReservationsTable === false ? null : "aais_ai_guide_reservations",
             ai_guide_reservation_lease_column: input.aiGuideReservationLeaseColumn !== false,
+            ai_guide_operation_columns: input.aiGuideOperationIdempotency !== false,
+            ai_guide_operation_index: input.aiGuideOperationIdempotency === false
+              ? null
+              : "aais_ai_guide_reservations_operation_idx",
             ai_guide_reservation_dispatch_state_constraint:
               input.aiGuideDispatchConstraints !== false,
             ai_guide_reservation_dispatch_finalized_constraint:
               input.aiGuideDispatchConstraints !== false,
             ai_guide_reservation_function: input.aiGuideReservationFunction !== false,
+            ai_guide_operation_function: input.aiGuideOperationIdempotency !== false,
             learner_data_delete_function: input.learnerDataDeleteFunction !== false,
             users_table: input.usersTable ? "aais_users" : null,
             users_auth_version_column: input.usersAuthVersionColumn !== false,

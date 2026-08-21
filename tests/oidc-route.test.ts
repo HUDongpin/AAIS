@@ -917,7 +917,7 @@ describe("AAIS OIDC auth routes", () => {
         event: "aais.api.error",
         code: "AAIS_OIDC_PROVIDER_UNAVAILABLE",
         status: 502,
-        causeName: "AaisOidcProviderUnavailableError",
+        causeKind: "error",
       }));
       expect(JSON.stringify({ body, auditEvents, apiErrors })).not.toContain("malformed-provider-body");
       info.mockRestore();

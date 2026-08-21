@@ -54,6 +54,6 @@ test("student guide turn shows fallback state when the AI route reports template
   await page.getByLabel("向智能导学输入你的想法").fill("@教授 请示范一次元认知拆解");
   await page.getByRole("button", { name: "发送" }).click();
 
-  await expect(page.getByText("离线支架模式")).toBeVisible();
+  await expect(page.getByText("本地安全支架")).toBeVisible();
   await expect(page.getByText("教授已用本地支架示范一次元认知拆解。")).toBeVisible();
 });

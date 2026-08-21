@@ -1,0 +1,96 @@
+{
+  "schemaVersion": 1,
+  "approvalId": "aais-deepseek-processor-approval-20260821-v1",
+  "approvedAt": "2026-08-21T02:49:20.000Z",
+  "reviewBy": "2026-09-20T02:49:20.000Z",
+  "status": "owner-approved-with-explicit-risk-acceptance",
+  "approvedByRole": "AAIS Owner",
+  "authorizationEvidence": "Explicit owner instruction in the AAIS Codex task on 2026-08-21",
+  "provider": {
+    "legalEntity": "Hangzhou DeepSeek Artificial Intelligence Co., Ltd.",
+    "service": "DeepSeek Open Platform API",
+    "runtimeRole": "required-secondary",
+    "model": "deepseek-v4-flash"
+  },
+  "sourceTerms": {
+    "privacyPolicy": {
+      "url": "https://cdn.deepseek.com/policies/en-US/deepseek-privacy-policy.html",
+      "lastUpdate": "2026-02-10",
+      "observedResolvedLocale": "ja-JP",
+      "fetchedArtifactSha256": "2cad15d5bdcfe67e5d2badfdb15134ddeb06d5bf6e5c8513b5b3f170142f0d30"
+    },
+    "openPlatformTerms": {
+      "url": "https://cdn.deepseek.com/policies/en-US/deepseek-open-platform-terms-of-service.html",
+      "releaseDate": "2026-04-22",
+      "effectiveDate": "2026-04-29",
+      "fetchedArtifactSha256": "2b433c53cbac75491959025eba5a27908f9f1886352dce0a05f3d5a936d87790"
+    },
+    "termsOfUse": {
+      "url": "https://cdn.deepseek.com/policies/en-US/deepseek-terms-of-use.html",
+      "lastUpdate": "2026-03-27"
+    }
+  },
+  "decisions": {
+    "processorAppointment": "approved",
+    "dpaAndDataProcessingTerms": {
+      "status": "approved-with-risk-acceptance",
+      "instrument": "DeepSeek Open Platform Terms, Terms of Use, and Privacy Policy",
+      "separateExecutedBilateralDpaObserved": false,
+      "acceptedGap": "No separately executed bilateral DPA or customer-specific data-processing addendum was located"
+    },
+    "processingAndStorageRegion": {
+      "status": "approved",
+      "region": "People's Republic of China",
+      "crossBorderTransferRiskAccepted": true
+    },
+    "privacy": {
+      "status": "approved-with-risk-acceptance",
+      "variableProviderRetentionAccepted": true,
+      "foundationModelTrainingAndOptimizationUseAccepted": true,
+      "contractSpecificTrainingExclusionObserved": false,
+      "contractSpecificSubprocessorScheduleObserved": false,
+      "downstreamControllerObligationsAccepted": true
+    },
+    "providerUseLicense": {
+      "status": "approved",
+      "scope": "Integrate the API into AAIS for internal and external end-user A1/A2 guidance, subject to the current terms",
+      "inputRightsRepresentationAccepted": true,
+      "outputAssignmentTermsAccepted": true,
+      "brandAndNoEndorsementRestrictionsAccepted": true,
+      "prcGoverningLawAndJurisdictionAccepted": true
+    }
+  },
+  "approvedOperationalScope": {
+    "agents": [
+      "A1",
+      "A2"
+    ],
+    "locales": [
+      "zh-CN",
+      "en-US"
+    ],
+    "attachmentSourceBytesSent": false,
+    "boundedExtractedAttachmentTextAllowed": true,
+    "providerPromptAndOutputLoggingByAais": false,
+    "deterministicLearnerFallbackAllowed": false
+  },
+  "conditions": [
+    "AAIS must disclose the downstream personal-data processing rules and maintain a lawful basis or valid consent before real learner use.",
+    "No real minor cohort may use DeepSeek until the cohort-specific guardian, institution, age, region, and legal-basis gate is separately approved.",
+    "AAIS privacy export and deletion apply to AAIS-controlled storage and must not be represented as proof of provider-side deletion.",
+    "Prompt and attachment minimization, output guardrails, access control, monitoring, incident response, and budget controls remain mandatory.",
+    "A DeepSeek terms, privacy, model-training, ownership, region, or subprocessor change invalidates this approval until re-review.",
+    "This approval expires at reviewBy unless renewed against the then-current official terms."
+  ],
+  "signature": {
+    "cryptographicOwnerSignatureCollected": false,
+    "status": "documented-owner-instruction"
+  },
+  "redaction": {
+    "apiKeys": "omitted",
+    "accountIdentifiers": "omitted",
+    "prompts": "omitted",
+    "outputs": "omitted",
+    "secrets": "omitted"
+  }
+}

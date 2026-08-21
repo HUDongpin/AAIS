@@ -47,6 +47,12 @@ Production Vercel builds run `scripts/guard-vercel-production-deploy.mjs`, which
 
 Production trial accounts are learner-only smoke accounts. Teacher/admin access must use database users or OIDC identities.
 
+## Production Live AI
+
+Production learner-visible A1/A2 guidance is strictly live-only: verified Qwen `qwen3.8-max` primary, then verified DeepSeek `deepseek-v4-flash` secondary, or an explicit typed error. Production never renders deterministic A1/A2 content; deterministic generation is limited to local/development use and hidden A3/A4 background processing.
+
+The checked-in Production AI release lock is intentionally pending, so the truthful state is `RELEASE_BLOCKED`. Promotion requires signed current per-provider evidence, exact runtime/source contracts, processor/privacy approval, eight protected provider probes, eight formal learner JSON/SSE canaries and replays, persistence/privacy deletion proof, and a signed external audit. `npm run release:verify-ai-live` checks the exact immutable deployment and fails closed on any missing input; its redacted artifact is retained no more than 30 days and is not fed back into the same deployment. See [docs/ai-live-release-runbook.md](./docs/ai-live-release-runbook.md) for the exact contract, required `AAIS_RELEASE_*` inputs, canary, retention, and rollback gates.
+
 ## Data And Privacy
 
 Database commands:
@@ -79,6 +85,7 @@ Formal visit creation and event ingestion are runtime-gated by the approved acce
 - [OPERATIONS.md](./OPERATIONS.md): deploy, smoke, migration, rollback, restore, monitoring, and staging load sanity.
 - [CONTRIBUTING.md](./CONTRIBUTING.md): branch, review, verification, database, and secret rules.
 - [docs/release-checklist.md](./docs/release-checklist.md): one-page release checklist.
+- [docs/ai-live-release-runbook.md](./docs/ai-live-release-runbook.md): Production live-AI release lock, protected synthetic canary, 30-day operational-log retention, and rollback gates.
 - [docs/research-data-governance.md](./docs/research-data-governance.md): enforceable research event, identity, access, retention, backup, export, and withdrawal contract.
 - [docs/mainland-caa-is-test-profile.md](./docs/mainland-caa-is-test-profile.md): lightweight adult, low-risk, mainland-only CAAIS rehearsal profile and its evidence limits.
 - [docs/teacher-recommendation-rules.md](./docs/teacher-recommendation-rules.md): teacher-facing recommendation policy.

@@ -1,5 +1,5 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { createHash, generateKeyPairSync } from "node:crypto";
+import { mkdtemp, rm } from "node:fs/promises";
+import { createHash, generateKeyPairSync, sign } from "node:crypto";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -8,6 +8,10 @@ import {
   getAaisSessionCookieName,
 } from "@/lib/server/aais-session";
 import { createPasswordRecord } from "@/lib/server/aais-trial-accounts";
+import {
+  createAaisAiEvalManifestSha256,
+  createAaisAiEvalManifestSigningPayload,
+} from "@/lib/server/aais-ai-eval-manifest";
 
 let databaseProbeMode:
   | "ok"
@@ -55,6 +59,12 @@ const publishedProductPseudonymSecret = Buffer.from(
 const developmentDefaultProductPseudonymSecret = createHash("sha256")
   .update("aais-development-product-pseudonym-secret-do-not-use-in-production")
   .digest("base64url");
+const { publicKey: aiEvalPublicKey, privateKey: aiEvalPrivateKey } =
+  generateKeyPairSync("ed25519");
+const aiEvalVerifyingKeySpki = aiEvalPublicKey
+  .export({ format: "der", type: "spki" })
+  .toString("base64");
+const aiEvalSigningKeyId = "synthetic-readiness-eval-key-v1";
 
 const readyResearchSchemaRow = {
   identity_schema: true,
@@ -264,6 +274,10 @@ vi.mock("pg", () => ({
             ai_guide_reservations_table: databaseProbeMode === "missing_schema" ? null : "aais_ai_guide_reservations",
             ai_guide_reservation_lease_column:
               databaseProbeMode !== "missing_schema" && databaseProbeMode !== "missing_lease",
+            ai_guide_operation_columns: databaseProbeMode !== "missing_schema",
+            ai_guide_operation_index: databaseProbeMode === "missing_schema"
+              ? null
+              : "aais_ai_guide_reservations_operation_idx",
             ai_guide_reservation_dispatch_state_constraint:
               databaseProbeMode !== "missing_schema"
               && databaseProbeMode !== "missing_dispatch_constraint",
@@ -272,6 +286,7 @@ vi.mock("pg", () => ({
               && databaseProbeMode !== "missing_dispatch_constraint",
             ai_guide_reservation_function:
               databaseProbeMode !== "missing_schema" && databaseProbeMode !== "missing_lease",
+            ai_guide_operation_function: databaseProbeMode !== "missing_schema",
             learner_data_delete_function:
               databaseProbeMode !== "missing_schema"
               && databaseProbeMode !== "missing_delete_function",
@@ -373,27 +388,46 @@ const enterpriseEnv = [
   "AAIS_OIDC_ADMIN_GROUPS",
   "AAIS_OIDC_ADMIN_EMAILS",
   "AAIS_AI_PROVIDER",
+  "AAIS_AI_RUNTIME_MODE",
   "AAIS_AI_ENDPOINT",
   "AAIS_AI_API_KEY",
   "AAIS_AI_MODEL",
   "AAIS_AI_TIMEOUT_MS",
   "AAIS_AI_MAX_RETRIES",
   "AAIS_AI_THINKING_MODE",
+  "AAIS_AI_OBSERVED_REVISION_SHA256",
+  "AAIS_AI_FALLBACK_ENABLED",
   "AAIS_AI_FALLBACK_ENDPOINT",
+  "AAIS_AI_FALLBACK_PROVIDER",
   "AAIS_AI_FALLBACK_API_KEY",
   "AAIS_AI_FALLBACK_MODEL",
   "AAIS_AI_FALLBACK_TIMEOUT_MS",
   "AAIS_AI_FALLBACK_MAX_RETRIES",
   "AAIS_AI_FALLBACK_THINKING_MODE",
+  "AAIS_AI_FALLBACK_THINKING",
+  "AAIS_AI_FALLBACK_OBSERVED_REVISION_SHA256",
   "AAIS_AI_EVAL_APPROVED",
   "AAIS_AI_EVAL_VERSION",
   "AAIS_AI_EVAL_MANIFEST_PATH",
+  "AAIS_AI_EVAL_MANIFEST_JSON",
+  "AAIS_AI_EVAL_MANIFEST_SHA256",
+  "AAIS_AI_EVAL_SIGNING_KEY_ID",
+  "AAIS_AI_EVAL_VERIFYING_KEY_SPKI",
+  "AAIS_AI_FALLBACK_EVAL_APPROVED",
+  "AAIS_AI_FALLBACK_EVAL_VERSION",
+  "AAIS_AI_FALLBACK_EVAL_MANIFEST_PATH",
+  "AAIS_AI_FALLBACK_EVAL_MANIFEST_JSON",
+  "AAIS_AI_FALLBACK_EVAL_MANIFEST_SHA256",
+  "AAIS_AI_FALLBACK_EVAL_SIGNING_KEY_ID",
+  "AAIS_AI_FALLBACK_EVAL_VERIFYING_KEY_SPKI",
+  "AAIS_AI_LIVE_PROBE_BEARER_TOKEN",
   "DASHSCOPE_API_KEY",
   "DASHSCOPE_MODEL",
   "QWEN_API_KEY",
   "QWEN_MODEL",
   "AAIS_RELEASE_ID",
   "AAIS_DEPLOYMENT_GIT_COMMIT_SHA",
+  "AAIS_CONFIG_GENERATION",
   "AAIS_READINESS_MODE",
   "AAIS_READINESS_BEARER_TOKEN",
   "AAIS_RESEARCH_MODE",
@@ -453,6 +487,7 @@ const enterpriseEnv = [
   "AAIS_COMMIT_SHA",
   "VERCEL",
   "VERCEL_GIT_COMMIT_SHA",
+  "VERCEL_DEPLOYMENT_ID",
 ];
 
 let tempDir: string;
@@ -475,13 +510,14 @@ const trialAccountConfig = JSON.stringify([
 ]);
 
 function passingAiEvalManifest(overrides: Record<string, unknown> = {}) {
-  return {
+  const manifest = {
     schemaVersion: 1,
-    evalVersion: "eval-2026-06-30",
-    provider: "openai-compatible",
-    model: "enterprise-model",
+    evalVersion: "synthetic-qwen38-readiness-eval-v1",
+    provider: "qwen",
+    model: "qwen3.8-max",
     status: "passed",
-    passedAt: "2026-06-30T00:00:00.000Z",
+    passedAt: "2026-08-20T00:00:00.000Z",
+    expiresAt: "2026-09-19T00:00:00.000Z",
     sampleCount: 4,
     blockedCount: 0,
     agentEvidence: {
@@ -496,12 +532,108 @@ function passingAiEvalManifest(overrides: Record<string, unknown> = {}) {
       rawOutputsStored: false,
       complete: true,
     },
+    releaseEvidence: {
+      contractVersion: "aais-ai-eval-release-v1",
+      runtimeContract: {
+        endpointFingerprint: "1".repeat(64),
+        thinkingMode: "disabled",
+        temperature: 0.2,
+        maxTokens: 600,
+        observedRevisionSha256: "2".repeat(64),
+      },
+      evalSuiteSha256: "3".repeat(64),
+      evalDataSha256: "4".repeat(64),
+      agentPromptContractSha256: {
+        A1: "5".repeat(64),
+        A2: "6".repeat(64),
+        A3: "7".repeat(64),
+        A4: "8".repeat(64),
+      },
+      caBackgroundSha256: "9".repeat(64),
+      guardrailSha256: "a".repeat(64),
+      localeCoverage: {
+        requiredLocales: ["zh-CN", "en-US"],
+        coveredLocales: ["zh-CN", "en-US"],
+        agentLocales: {
+          A1: ["zh-CN", "en-US"],
+          A2: ["zh-CN", "en-US"],
+          A3: ["zh-CN", "en-US"],
+          A4: ["zh-CN", "en-US"],
+        },
+        complete: true,
+      },
+    },
+    attestation: {
+      algorithm: "ed25519",
+      keyId: aiEvalSigningKeyId,
+      signature: "",
+    },
     redaction: {
       prompts: "summarized",
       secrets: "omitted",
     },
     ...overrides,
   };
+  manifest.attestation.signature = sign(
+    null,
+    Buffer.from(createAaisAiEvalManifestSigningPayload(manifest), "utf8"),
+    aiEvalPrivateKey,
+  ).toString("base64");
+  return manifest;
+}
+
+function stubAiEvalManifest(
+  role: "primary" | "fallback",
+  manifest: ReturnType<typeof passingAiEvalManifest>,
+) {
+  const prefix = role === "fallback" ? "AAIS_AI_FALLBACK_EVAL" : "AAIS_AI_EVAL";
+  vi.stubEnv(`${prefix}_APPROVED`, "true");
+  vi.stubEnv(`${prefix}_VERSION`, String(manifest.evalVersion));
+  vi.stubEnv(`${prefix}_MANIFEST_JSON`, JSON.stringify(manifest));
+  vi.stubEnv(`${prefix}_MANIFEST_SHA256`, createAaisAiEvalManifestSha256(manifest));
+  vi.stubEnv(`${prefix}_SIGNING_KEY_ID`, aiEvalSigningKeyId);
+  vi.stubEnv(`${prefix}_VERIFYING_KEY_SPKI`, aiEvalVerifyingKeySpki);
+}
+
+function stubStrictProductionAiRuntime(input: {
+  primaryManifest?: ReturnType<typeof passingAiEvalManifest>;
+  fallbackManifest?: ReturnType<typeof passingAiEvalManifest>;
+} = {}) {
+  vi.stubEnv("AAIS_AI_RUNTIME_MODE", "live-required");
+  vi.stubEnv("AAIS_AI_PROVIDER", "qwen");
+  vi.stubEnv(
+    "AAIS_AI_ENDPOINT",
+    "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
+  );
+  vi.stubEnv("AAIS_AI_API_KEY", "synthetic-qwen-readiness-key");
+  vi.stubEnv("AAIS_AI_MODEL", "qwen3.8-max");
+  vi.stubEnv("AAIS_AI_THINKING_MODE", "disabled");
+  vi.stubEnv("AAIS_AI_TIMEOUT_MS", "12000");
+  vi.stubEnv("AAIS_AI_MAX_RETRIES", "0");
+  vi.stubEnv("AAIS_AI_OBSERVED_REVISION_SHA256", "2".repeat(64));
+  vi.stubEnv("AAIS_AI_FALLBACK_ENABLED", "true");
+  vi.stubEnv("AAIS_AI_FALLBACK_PROVIDER", "deepseek");
+  vi.stubEnv("AAIS_AI_FALLBACK_ENDPOINT", "https://api.deepseek.com/chat/completions");
+  vi.stubEnv("AAIS_AI_FALLBACK_API_KEY", "synthetic-deepseek-readiness-key");
+  vi.stubEnv("AAIS_AI_FALLBACK_MODEL", "deepseek-v4-flash");
+  vi.stubEnv("AAIS_AI_FALLBACK_THINKING", "false");
+  vi.stubEnv("AAIS_AI_FALLBACK_TIMEOUT_MS", "12000");
+  vi.stubEnv("AAIS_AI_FALLBACK_MAX_RETRIES", "0");
+  vi.stubEnv("AAIS_AI_FALLBACK_OBSERVED_REVISION_SHA256", "b".repeat(64));
+  stubAiEvalManifest("primary", input.primaryManifest ?? passingAiEvalManifest());
+  stubAiEvalManifest("fallback", input.fallbackManifest ?? passingAiEvalManifest({
+    evalVersion: "synthetic-deepseek-readiness-eval-v1",
+    provider: "deepseek",
+    model: "deepseek-v4-flash",
+    releaseEvidence: {
+      ...passingAiEvalManifest().releaseEvidence,
+      runtimeContract: {
+        ...passingAiEvalManifest().releaseEvidence.runtimeContract,
+        endpointFingerprint: "c".repeat(64),
+        observedRevisionSha256: "b".repeat(64),
+      },
+    },
+  }));
 }
 
 function passingAiEvalAgentCoverage(overrides: Record<string, unknown> = {}) {
@@ -548,6 +680,10 @@ beforeEach(async () => {
     vi.stubEnv(key, "");
   }
   vi.stubEnv("AAIS_DATABASE_DRIVER", "pg");
+  vi.stubEnv("VERCEL", "1");
+  vi.stubEnv("VERCEL_GIT_COMMIT_SHA", "0123456789abcdef0123456789abcdef01234567");
+  vi.stubEnv("VERCEL_DEPLOYMENT_ID", "dpl_readiness_default_v1");
+  vi.stubEnv("AAIS_CONFIG_GENERATION", "readiness-config-default-v1");
   vi.stubEnv("AAIS_PRODUCT_PSEUDONYM_SECRET", productPseudonymSecret);
   vi.stubEnv("AAIS_APP_BASE_URL", "https://aais.example.test");
   vi.stubEnv("RESEND_API_KEY", "re_1234567890abcdefghijklmnopqrstuvwxyzABCD");
@@ -555,6 +691,10 @@ beforeEach(async () => {
   vi.stubEnv(
     "AAIS_AUTH_EMAIL_OUTBOX_FLUSH_TOKEN",
     "auth-email-outbox-token-with-at-least-32-characters",
+  );
+  vi.stubEnv(
+    "AAIS_AI_LIVE_PROBE_BEARER_TOKEN",
+    "readiness-ai-live-probe-token-with-at-least-32-characters",
   );
 });
 
@@ -665,7 +805,7 @@ function stubResearchEnv(input: {
 }
 
 describe("AAIS readiness route", () => {
-  it("reports a redacted ready status when enterprise production configuration is complete", async () => {
+  it("keeps enterprise Production blocked until the source AI release lock is approved", async () => {
     vi.stubEnv("AAIS_READINESS_MODE", "enterprise");
     vi.stubEnv("AAIS_SESSION_SECRET", "session-secret-that-must-not-leak");
     vi.stubEnv("AAIS_TRIAL_ACCOUNTS_JSON", trialAccountConfig);
@@ -682,31 +822,20 @@ describe("AAIS readiness route", () => {
     vi.stubEnv("AAIS_OIDC_TOKEN_ENDPOINT", "https://idp.example.test/oauth2/token");
     vi.stubEnv("AAIS_OIDC_JWKS_URI", "https://idp.example.test/.well-known/jwks.json");
     vi.stubEnv("AAIS_OIDC_TEACHER_GROUPS", "aais-teachers");
-    vi.stubEnv("AAIS_AI_PROVIDER", "openai-compatible");
-    vi.stubEnv("AAIS_AI_ENDPOINT", "https://ai.example.test/v1/chat/completions");
-    vi.stubEnv("AAIS_AI_API_KEY", "ai-secret-that-must-not-leak");
-    vi.stubEnv("AAIS_AI_MODEL", "enterprise-model");
-    vi.stubEnv("AAIS_AI_EVAL_APPROVED", "true");
-    vi.stubEnv("AAIS_AI_EVAL_VERSION", "eval-2026-06-30");
+    stubStrictProductionAiRuntime();
     vi.stubEnv("AAIS_RELEASE_ID", "aais-2026-06-30-rc1");
     vi.stubEnv("VERCEL", "1");
     vi.stubEnv("VERCEL_GIT_COMMIT_SHA", "0123456789abcdef0123456789abcdef01234567");
-    const manifestPath = path.join(tempDir, "aais-ai-eval.json");
-    await writeFile(
-      manifestPath,
-      JSON.stringify(passingAiEvalManifest()),
-      "utf8",
-    );
-    vi.stubEnv("AAIS_AI_EVAL_MANIFEST_PATH", manifestPath);
+    vi.stubEnv("VERCEL_DEPLOYMENT_ID", "dpl_readiness_metadata_v1");
+    vi.stubEnv("AAIS_CONFIG_GENERATION", "config-generation-v1");
     const { GET } = await import("@/app/api/system/readiness/route");
 
     const response = await GET(createAuthorizedReadinessRequest());
     const body = await response.json();
 
-
-    expect(response.status).toBe(200);
+    expect(response.status).toBe(503);
     expect(body).toMatchObject({
-      status: "ready",
+      status: "not_ready",
       runtime: "production",
       readinessMode: "enterprise",
       release: {
@@ -717,8 +846,11 @@ describe("AAIS readiness route", () => {
           gitCommit: {
             present: true,
             shortSha: "0123456789ab",
+            fullSha: "0123456789abcdef0123456789abcdef01234567",
             source: "VERCEL_GIT_COMMIT_SHA",
           },
+          deploymentId: "dpl_readiness_metadata_v1",
+          configGeneration: "config-generation-v1",
         },
       },
       checks: {
@@ -921,11 +1053,18 @@ describe("AAIS readiness route", () => {
           },
         },
         ai: {
-          status: "ok",
-          provider: "openai-compatible",
-          evalVersion: "eval-2026-06-30",
+          status: "blocked",
+          provider: "qwen",
+          evalVersion: "synthetic-qwen38-readiness-eval-v1",
           evalManifest: "verified",
-          modelFingerprint: modelFingerprint("enterprise-model"),
+          modelFingerprint: modelFingerprint("qwen3.8-max"),
+          releaseGate: {
+            releaseState: "RELEASE_BLOCKED",
+            lock: {
+              id: "aais-ai-qwen38-deepseek-pending-v1",
+              releaseStatus: "blocked",
+            },
+          },
         },
       },
       secrets: "redacted",
@@ -939,8 +1078,14 @@ describe("AAIS readiness route", () => {
     expect(serialized).not.toContain("aais-teachers");
     expect(serialized).not.toContain("ai-secret-that-must-not-leak");
     expect(serialized).not.toContain("enterprise-model");
-    expect(serialized).not.toContain("0123456789abcdef0123456789abcdef01234567");
-    expect(body.issues).toEqual([]);
+    expect(body.release.deployment.gitCommit.fullSha).toBe(
+      "0123456789abcdef0123456789abcdef01234567",
+    );
+    expect(body.issues).toEqual(expect.arrayContaining([
+      "AAIS_AI_RELEASE_NOT_APPROVED",
+      "AAIS_AI_PRIMARY_EVAL_MANIFEST",
+      "AAIS_AI_SECONDARY_EVAL_MANIFEST",
+    ]));
     expect(body.warnings).toEqual([]);
     expect(body.checks.research).toMatchObject({
       status: "disabled",
@@ -1181,7 +1326,7 @@ describe("AAIS readiness route", () => {
     });
   });
 
-  it("does not require the disabled generic LRS inside a ready research-isolated deployment", async () => {
+  it("does not require generic LRS in research isolation while the AI lock still blocks release", async () => {
     vi.stubEnv("NODE_ENV", "production");
     vi.stubEnv("AAIS_READINESS_MODE", "enterprise");
     vi.stubEnv("AAIS_SESSION_SECRET", "session-secret-that-must-not-leak");
@@ -1198,9 +1343,9 @@ describe("AAIS readiness route", () => {
     const response = await GET(createAuthorizedReadinessRequest());
     const body = await response.json();
 
-    expect(response.status).toBe(200);
+    expect(response.status).toBe(503);
     expect(body).toMatchObject({
-      status: "ready",
+      status: "not_ready",
       checks: {
         lrs: { status: "disabled" },
         research: {
@@ -1211,8 +1356,10 @@ describe("AAIS readiness route", () => {
           lrs: { status: "ok" },
         },
       },
-      issues: [],
     });
+    expect(body.issues).toEqual(expect.arrayContaining([
+      "AAIS_AI_RELEASE_NOT_APPROVED",
+    ]));
     expect(body.warnings).not.toContain("LRS_ENDPOINT/LRS_USERNAME/LRS_PASSWORD");
   });
 
@@ -1842,14 +1989,56 @@ describe("AAIS readiness route", () => {
         gitCommit: {
           present: true,
           shortSha: "fedcba987654",
+          fullSha: "fedcba9876543210fedcba9876543210fedcba98",
           source: "AAIS_DEPLOYMENT_GIT_COMMIT_SHA",
         },
       },
     });
-    expect(JSON.stringify(body)).not.toContain("fedcba9876543210fedcba9876543210fedcba98");
+    expect(body.release.deployment.gitCommit.fullSha).toBe(
+      "fedcba9876543210fedcba9876543210fedcba98",
+    );
   });
 
-  it("reports ready for SSO-only production when trial login is disabled", async () => {
+  it("fails Production readiness closed when deployment identity metadata is missing", async () => {
+    vi.stubEnv("VERCEL_GIT_COMMIT_SHA", "");
+    vi.stubEnv("AAIS_DEPLOYMENT_GIT_COMMIT_SHA", "");
+    vi.stubEnv("VERCEL_DEPLOYMENT_ID", "");
+    vi.stubEnv("AAIS_CONFIG_GENERATION", "");
+    const { GET } = await import("@/app/api/system/readiness/route");
+
+    const response = await GET(createAuthorizedReadinessRequest());
+    const body = await response.json();
+
+    expect(response.status).toBe(503);
+    expect(body.release.deployment).toMatchObject({
+      gitCommit: { present: false, fullSha: null, source: "missing" },
+      deploymentId: null,
+      configGeneration: null,
+    });
+    expect(body.issues).toEqual(expect.arrayContaining([
+      "AAIS_DEPLOYMENT_GIT_COMMIT_SHA",
+      "VERCEL_DEPLOYMENT_ID",
+      "AAIS_CONFIG_GENERATION",
+    ]));
+  });
+
+  it("fails Production readiness closed when Vercel and explicit full SHAs differ", async () => {
+    vi.stubEnv("VERCEL_GIT_COMMIT_SHA", "0123456789abcdef0123456789abcdef01234567");
+    vi.stubEnv("AAIS_DEPLOYMENT_GIT_COMMIT_SHA", "fedcba9876543210fedcba9876543210fedcba98");
+    const { GET } = await import("@/app/api/system/readiness/route");
+
+    const response = await GET(createAuthorizedReadinessRequest());
+    const body = await response.json();
+
+    expect(response.status).toBe(503);
+    expect(body.release.deployment.gitCommit).toMatchObject({
+      fullSha: "0123456789abcdef0123456789abcdef01234567",
+      source: "VERCEL_GIT_COMMIT_SHA",
+    });
+    expect(body.issues).toContain("AAIS_DEPLOYMENT_GIT_COMMIT_SHA_MISMATCH");
+  });
+
+  it("reports SSO-only auth ready while the pending AI lock blocks global readiness", async () => {
     vi.stubEnv("AAIS_SESSION_SECRET", "session-secret-that-must-not-leak");
     vi.stubEnv("AAIS_TRIAL_LOGIN_ENABLED", "false");
     vi.stubEnv("AAIS_DATABASE_URL", "postgres://aais:database-secret@example.test/aais");
@@ -1870,9 +2059,9 @@ describe("AAIS readiness route", () => {
     const response = await GET(createAuthorizedReadinessRequest());
     const body = await response.json();
 
-    expect(response.status).toBe(200);
+    expect(response.status).toBe(503);
     expect(body).toMatchObject({
-      status: "ready",
+      status: "not_ready",
       runtime: "production",
       checks: {
         trialAccounts: {
@@ -1896,7 +2085,7 @@ describe("AAIS readiness route", () => {
     expect(JSON.stringify(body)).not.toContain("admin@example.test");
   });
 
-  it("accepts a standard Vercel Neon DATABASE_URL when AAIS_DATABASE_URL is not set", async () => {
+  it("accepts a Vercel Neon DATABASE_URL while the pending AI lock blocks release", async () => {
     vi.stubEnv("AAIS_SESSION_SECRET", "session-secret-that-must-not-leak");
     vi.stubEnv("AAIS_TRIAL_LOGIN_ENABLED", "false");
     vi.stubEnv("DATABASE_URL", "postgres://aais:database-secret@ep-prod.us-east-1.aws.neon.tech/aais");
@@ -1917,9 +2106,9 @@ describe("AAIS readiness route", () => {
     const response = await GET(createAuthorizedReadinessRequest());
     const body = await response.json();
 
-    expect(response.status).toBe(200);
+    expect(response.status).toBe(503);
     expect(body).toMatchObject({
-      status: "ready",
+      status: "not_ready",
       checks: {
         storage: {
           status: "ok",
@@ -1935,7 +2124,7 @@ describe("AAIS readiness route", () => {
     expect(JSON.stringify(body)).not.toContain("aais-teachers");
   });
 
-  it("reports ready for current-stage trial auth production without OIDC provider variables", async () => {
+  it("reports trial auth healthy without OIDC while the pending AI lock blocks release", async () => {
     vi.stubEnv("AAIS_SESSION_SECRET", "session-secret-that-must-not-leak");
     vi.stubEnv("AAIS_TRIAL_ACCOUNTS_JSON", trialAccountConfig);
     vi.stubEnv("DATABASE_URL", "postgres://aais:database-secret@ep-prod.us-east-1.aws.neon.tech/aais");
@@ -1948,9 +2137,9 @@ describe("AAIS readiness route", () => {
     const response = await GET(createAuthorizedReadinessRequest());
     const body = await response.json();
 
-    expect(response.status).toBe(200);
+    expect(response.status).toBe(503);
     expect(body).toMatchObject({
-      status: "ready",
+      status: "not_ready",
       checks: {
         trialAccounts: {
           status: "ok",
@@ -2038,12 +2227,13 @@ describe("AAIS readiness route", () => {
     expect(JSON.stringify(body)).not.toContain("database-secret");
   });
 
-  it("uses bundled Qwen evaluation evidence when the configured manifest belongs to an older model", async () => {
+  it("does not let bundled Qwen 3.7 evidence satisfy the Qwen 3.8 release lock", async () => {
     vi.stubEnv("AAIS_SESSION_SECRET", "session-secret-that-must-not-leak");
     vi.stubEnv("AAIS_TRIAL_ACCOUNTS_JSON", trialAccountConfig);
     vi.stubEnv("DATABASE_URL", "postgres://aais:database-secret@ep-prod.us-east-1.aws.neon.tech/aais");
     vi.stubEnv("CRON_SECRET", "cron-secret-that-must-not-leak-2026");
     vi.stubEnv("AAIS_READINESS_MODE", "traffic");
+    stubStrictProductionAiRuntime();
     vi.stubEnv("AAIS_AI_PROVIDER", "qwen");
     vi.stubEnv("DASHSCOPE_API_KEY", "dashscope-secret-that-must-not-leak");
     vi.stubEnv("AAIS_AI_MODEL", "qwen3.7-max");
@@ -2055,22 +2245,25 @@ describe("AAIS readiness route", () => {
     const response = await GET(createAuthorizedReadinessRequest());
     const body = await response.json();
 
-    expect(response.status).toBe(200);
+    expect(response.status).toBe(503);
     expect(body).toMatchObject({
-      status: "ready",
+      status: "not_ready",
       readinessMode: "traffic",
       checks: {
         ai: {
-          status: "ok",
-          provider: "openai-compatible",
-          evalVersion: "eval-2026-07-19-qwen3.7-max-v1",
-          evalManifest: "verified",
-          evalSource: "bundled",
-          modelFingerprint: modelFingerprint("qwen3.7-max"),
+          status: "invalid",
+          provider: "deterministic",
+          evalVersion: null,
+          evalSource: null,
+          modelFingerprint: null,
         },
       },
-      issues: [],
     });
+    expect(body.issues).toEqual(expect.arrayContaining([
+      "AAIS_AI_RELEASE_NOT_APPROVED",
+      "AAIS_AI_PRIMARY_CONFIGURATION",
+      "AAIS_AI_PRIMARY_MODEL_MISMATCH",
+    ]));
     expect(body.warnings).toEqual(expect.arrayContaining([
       "LRS_ENDPOINT/LRS_USERNAME/LRS_PASSWORD",
       "SENTRY_DSN/NEXT_PUBLIC_SENTRY_DSN",
@@ -2086,11 +2279,15 @@ describe("AAIS readiness route", () => {
     vi.stubEnv("DATABASE_URL", "postgres://aais:database-secret@ep-prod.us-east-1.aws.neon.tech/aais");
     vi.stubEnv("CRON_SECRET", "cron-secret-that-must-not-leak");
     vi.stubEnv("AAIS_READINESS_MODE", "traffic");
+    stubStrictProductionAiRuntime();
     vi.stubEnv("AAIS_AI_PROVIDER", "qwen");
     vi.stubEnv("DASHSCOPE_API_KEY", "dashscope-secret-that-must-not-leak");
     vi.stubEnv("AAIS_AI_MODEL", "qwen3.8-max");
     vi.stubEnv("AAIS_AI_EVAL_APPROVED", "true");
     vi.stubEnv("AAIS_AI_EVAL_VERSION", "eval-2026-07-19-qwen3.7-max-v1");
+    vi.stubEnv("AAIS_AI_EVAL_MANIFEST_JSON", "");
+    vi.stubEnv("AAIS_AI_EVAL_MANIFEST_PATH", "");
+    vi.stubEnv("AAIS_AI_EVAL_MANIFEST_SHA256", "");
     const { GET } = await import("@/app/api/system/readiness/route");
 
     const response = await GET(createAuthorizedReadinessRequest());
@@ -2103,7 +2300,7 @@ describe("AAIS readiness route", () => {
       checks: {
         ai: {
           status: "blocked",
-          provider: "openai-compatible",
+          provider: "qwen",
           evalVersion: "eval-2026-07-19-qwen3.7-max-v1",
           evalManifest: "missing",
           evalSource: null,
@@ -2124,17 +2321,12 @@ describe("AAIS readiness route", () => {
     vi.stubEnv("DATABASE_URL", "postgres://aais:database-secret@ep-prod.us-east-1.aws.neon.tech/aais");
     vi.stubEnv("CRON_SECRET", "cron-secret-that-must-not-leak");
     vi.stubEnv("AAIS_READINESS_MODE", "traffic");
-    vi.stubEnv("AAIS_AI_PROVIDER", "qwen");
-    vi.stubEnv("DASHSCOPE_API_KEY", "dashscope-secret-that-must-not-leak");
-    vi.stubEnv("AAIS_AI_MODEL", "qwen3.7-max");
-    vi.stubEnv("AAIS_AI_EVAL_APPROVED", "true");
-    vi.stubEnv("AAIS_AI_EVAL_VERSION", "eval-2026-07-19-qwen3.7-max-v1");
-    vi.stubEnv("AAIS_AI_EVAL_MANIFEST_JSON", JSON.stringify(passingAiEvalManifest({
-      evalVersion: "eval-2026-07-19-qwen3.7-max-v1",
-      model: "qwen3.7-max",
+    stubStrictProductionAiRuntime();
+    stubAiEvalManifest("primary", passingAiEvalManifest({
+      evalVersion: "synthetic-qwen-failed-eval-v1",
       status: "failed",
       blockedCount: 1,
-    })));
+    }));
     const { GET } = await import("@/app/api/system/readiness/route");
 
     const response = await GET(createAuthorizedReadinessRequest());
@@ -2143,11 +2335,11 @@ describe("AAIS readiness route", () => {
     expect(response.status).toBe(503);
     expect(body.checks.ai).toMatchObject({
       status: "blocked",
-      provider: "openai-compatible",
-      evalVersion: "eval-2026-07-19-qwen3.7-max-v1",
+      provider: "qwen",
+      evalVersion: "synthetic-qwen-failed-eval-v1",
       evalManifest: "mismatch",
       evalSource: null,
-      modelFingerprint: modelFingerprint("qwen3.7-max"),
+      modelFingerprint: modelFingerprint("qwen3.8-max"),
     });
     expect(body.issues).toEqual(expect.arrayContaining([
       "AAIS_AI_EVAL_APPROVED/AAIS_AI_EVAL_VERSION",
@@ -2162,14 +2354,10 @@ describe("AAIS readiness route", () => {
     vi.stubEnv("DATABASE_URL", "postgres://aais:database-secret@ep-prod.us-east-1.aws.neon.tech/aais");
     vi.stubEnv("CRON_SECRET", "cron-secret-that-must-not-leak");
     vi.stubEnv("AAIS_READINESS_MODE", "traffic");
-    vi.stubEnv("AAIS_AI_PROVIDER", "qwen");
-    vi.stubEnv("DASHSCOPE_API_KEY", "dashscope-secret-that-must-not-leak");
-    vi.stubEnv("AAIS_AI_MODEL", "qwen3.7-max");
-    vi.stubEnv("AAIS_AI_EVAL_APPROVED", "true");
-    vi.stubEnv("AAIS_AI_EVAL_VERSION", "eval-2026-07-19-qwen3.7-max-v1");
-    vi.stubEnv("AAIS_AI_FALLBACK_ENDPOINT", "https://fallback.example.test/v1/chat/completions");
-    vi.stubEnv("AAIS_AI_FALLBACK_API_KEY", "fallback-secret-that-must-not-leak");
-    vi.stubEnv("AAIS_AI_FALLBACK_MODEL", "unevaluated-model");
+    stubStrictProductionAiRuntime();
+    vi.stubEnv("AAIS_AI_FALLBACK_EVAL_MANIFEST_JSON", "");
+    vi.stubEnv("AAIS_AI_FALLBACK_EVAL_MANIFEST_PATH", "");
+    vi.stubEnv("AAIS_AI_FALLBACK_EVAL_MANIFEST_SHA256", "");
     const { GET } = await import("@/app/api/system/readiness/route");
 
     const response = await GET(createAuthorizedReadinessRequest());
@@ -2178,11 +2366,11 @@ describe("AAIS readiness route", () => {
     expect(response.status).toBe(503);
     expect(body.checks.ai).toMatchObject({
       status: "blocked",
-      provider: "openai-compatible",
-      evalVersion: "eval-2026-07-19-qwen3.7-max-v1",
+      provider: "qwen",
+      evalVersion: "synthetic-qwen38-readiness-eval-v1",
       evalManifest: "verified",
-      evalSource: "bundled",
-      modelFingerprint: modelFingerprint("qwen3.7-max"),
+      evalSource: "configured",
+      modelFingerprint: modelFingerprint("qwen3.8-max"),
     });
     expect(body.issues).toEqual(expect.arrayContaining([
       "AAIS_AI_FALLBACK_EVAL_MANIFEST",
@@ -2190,7 +2378,7 @@ describe("AAIS readiness route", () => {
     expect(JSON.stringify(body)).not.toContain("fallback-secret-that-must-not-leak");
   });
 
-  it("accepts OIDC issuer discovery when explicit provider endpoints are not set", async () => {
+  it("accepts OIDC issuer discovery while the pending AI lock blocks release", async () => {
     vi.stubEnv("AAIS_SESSION_SECRET", "session-secret-that-must-not-leak");
     vi.stubEnv("AAIS_TRIAL_LOGIN_ENABLED", "false");
     vi.stubEnv("AAIS_DATABASE_URL", "postgres://aais:database-secret@example.test/aais");
@@ -2208,7 +2396,7 @@ describe("AAIS readiness route", () => {
     const response = await GET(createAuthorizedReadinessRequest());
     const body = await response.json();
 
-    expect(response.status).toBe(200);
+    expect(response.status).toBe(503);
     expect(body.checks.oidc).toMatchObject({
       status: "ok",
       mode: "discovery",
@@ -2436,7 +2624,7 @@ describe("AAIS readiness route", () => {
     expect(response.status).toBe(200);
     expect(body.checks.ai).toMatchObject({
       status: "ok",
-      provider: "openai-compatible",
+      provider: "qwen",
       evalVersion: null,
       evalManifest: "not-required",
       modelFingerprint: modelFingerprint("qwen3.8-max"),
@@ -2497,12 +2685,9 @@ describe("AAIS readiness route", () => {
     vi.stubEnv("AAIS_OIDC_AUTHORIZATION_ENDPOINT", "https://idp.example.test/oauth2/authorize");
     vi.stubEnv("AAIS_OIDC_TOKEN_ENDPOINT", "https://idp.example.test/oauth2/token");
     vi.stubEnv("AAIS_OIDC_JWKS_URI", "https://idp.example.test/.well-known/jwks.json");
-    vi.stubEnv("AAIS_AI_PROVIDER", "openai-compatible");
-    vi.stubEnv("AAIS_AI_ENDPOINT", "https://ai.example.test/v1/chat/completions");
-    vi.stubEnv("AAIS_AI_API_KEY", "ai-secret-that-must-not-leak");
-    vi.stubEnv("AAIS_AI_MODEL", "enterprise-model");
-    vi.stubEnv("AAIS_AI_EVAL_APPROVED", "true");
-    vi.stubEnv("AAIS_AI_EVAL_VERSION", "eval-2026-06-30");
+    stubStrictProductionAiRuntime();
+    vi.stubEnv("AAIS_AI_EVAL_MANIFEST_JSON", "");
+    vi.stubEnv("AAIS_AI_EVAL_MANIFEST_SHA256", "");
     vi.stubEnv("AAIS_AI_EVAL_MANIFEST_PATH", path.join(tempDir, "missing.json"));
     const { GET } = await import("@/app/api/system/readiness/route");
 
@@ -2513,8 +2698,8 @@ describe("AAIS readiness route", () => {
     expect(body.status).toBe("not_ready");
     expect(body.checks.ai).toMatchObject({
       status: "blocked",
-      provider: "openai-compatible",
-      evalVersion: "eval-2026-06-30",
+      provider: "qwen",
+      evalVersion: "synthetic-qwen38-readiness-eval-v1",
       evalManifest: "invalid",
     });
     expect(body.issues).toEqual(
@@ -2525,7 +2710,7 @@ describe("AAIS readiness route", () => {
     expect(JSON.stringify(body)).not.toContain("private@example.ingest.sentry.io");
   });
 
-  it("accepts a redacted inline AI evaluation manifest JSON for Vercel production", async () => {
+  it("verifies inline AI evidence but keeps a non-matching source lock release-blocked", async () => {
     vi.stubEnv("AAIS_SESSION_SECRET", "session-secret-that-must-not-leak");
     vi.stubEnv("AAIS_TRIAL_ACCOUNTS_JSON", trialAccountConfig);
     vi.stubEnv("AAIS_DATABASE_URL", "postgres://aais:database-secret@example.test/aais");
@@ -2538,28 +2723,22 @@ describe("AAIS readiness route", () => {
     vi.stubEnv("AAIS_OIDC_CLIENT_SECRET", "oidc-secret-that-must-not-leak");
     vi.stubEnv("AAIS_OIDC_REDIRECT_URI", "https://aais.example.test/api/auth/oidc/callback");
     vi.stubEnv("AAIS_OIDC_TEACHER_GROUPS", "aais-teachers");
-    vi.stubEnv("AAIS_AI_PROVIDER", "openai-compatible");
-    vi.stubEnv("AAIS_AI_ENDPOINT", "https://ai.example.test/v1/chat/completions");
-    vi.stubEnv("AAIS_AI_API_KEY", "ai-secret-that-must-not-leak");
-    vi.stubEnv("AAIS_AI_MODEL", "enterprise-model");
-    vi.stubEnv("AAIS_AI_EVAL_APPROVED", "true");
-    vi.stubEnv("AAIS_AI_EVAL_VERSION", "eval-2026-06-30");
-    vi.stubEnv("AAIS_AI_EVAL_MANIFEST_JSON", JSON.stringify(passingAiEvalManifest()));
+    stubStrictProductionAiRuntime();
     const { GET } = await import("@/app/api/system/readiness/route");
 
     const response = await GET(createAuthorizedReadinessRequest());
     const body = await response.json();
 
-    expect(response.status).toBe(200);
+    expect(response.status).toBe(503);
     expect(body.checks.ai).toMatchObject({
-      status: "ok",
-      provider: "openai-compatible",
-      evalVersion: "eval-2026-06-30",
+      status: "blocked",
+      provider: "qwen",
+      evalVersion: "synthetic-qwen38-readiness-eval-v1",
       evalManifest: "verified",
-      modelFingerprint: modelFingerprint("enterprise-model"),
+      modelFingerprint: modelFingerprint("qwen3.8-max"),
     });
     const serialized = JSON.stringify(body);
-    expect(serialized).not.toContain("enterprise-model");
+    expect(serialized).not.toContain("qwen3.8-max");
     expect(serialized).not.toContain("ai-secret-that-must-not-leak");
   });
 
@@ -2575,27 +2754,23 @@ describe("AAIS readiness route", () => {
     vi.stubEnv("AAIS_OIDC_CLIENT_SECRET", "oidc-secret-that-must-not-leak");
     vi.stubEnv("AAIS_OIDC_REDIRECT_URI", "https://aais.example.test/api/auth/oidc/callback");
     vi.stubEnv("AAIS_OIDC_TEACHER_GROUPS", "aais-teachers");
-    vi.stubEnv("AAIS_AI_PROVIDER", "openai-compatible");
-    vi.stubEnv("AAIS_AI_ENDPOINT", "https://ai.example.test/v1/chat/completions");
-    vi.stubEnv("AAIS_AI_API_KEY", "ai-secret-that-must-not-leak");
-    vi.stubEnv("AAIS_AI_MODEL", "enterprise-model");
-    vi.stubEnv("AAIS_AI_EVAL_APPROVED", "true");
-    vi.stubEnv("AAIS_AI_EVAL_VERSION", "eval-2026-06-30");
     const agentEvidence = passingAiEvalManifest().agentEvidence;
-    vi.stubEnv("AAIS_AI_EVAL_MANIFEST_JSON", JSON.stringify(passingAiEvalManifest({
-      agentEvidence: {
-        ...agentEvidence,
-        coverage: passingAiEvalAgentCoverage({
-          A2: {
-            label: "专家智能体",
-            responsibility: "backend-supervision-a1-signal",
-            sampleIds: ["a2-expert-modelling-coaching"],
-            caModules: ["Modelling", "Coaching"],
-            complete: true,
-          },
-        }),
-      },
-    })));
+    stubStrictProductionAiRuntime({
+      primaryManifest: passingAiEvalManifest({
+        agentEvidence: {
+          ...agentEvidence,
+          coverage: passingAiEvalAgentCoverage({
+            A2: {
+              label: "专家智能体",
+              responsibility: "backend-supervision-a1-signal",
+              sampleIds: ["a2-expert-modelling-coaching"],
+              caModules: ["Modelling", "Coaching"],
+              complete: true,
+            },
+          }),
+        },
+      }),
+    });
     const { GET } = await import("@/app/api/system/readiness/route");
 
     const response = await GET(createAuthorizedReadinessRequest());
@@ -2604,8 +2779,8 @@ describe("AAIS readiness route", () => {
     expect(response.status).toBe(503);
     expect(body.checks.ai).toMatchObject({
       status: "blocked",
-      provider: "openai-compatible",
-      evalVersion: "eval-2026-06-30",
+      provider: "qwen",
+      evalVersion: "synthetic-qwen38-readiness-eval-v1",
       evalManifest: "mismatch",
     });
     expect(body.issues).toEqual(expect.arrayContaining(["AAIS_AI_EVAL_MANIFEST"]));
@@ -2626,19 +2801,9 @@ describe("AAIS readiness route", () => {
     vi.stubEnv("AAIS_OIDC_AUTHORIZATION_ENDPOINT", "https://idp.example.test/oauth2/authorize");
     vi.stubEnv("AAIS_OIDC_TOKEN_ENDPOINT", "https://idp.example.test/oauth2/token");
     vi.stubEnv("AAIS_OIDC_JWKS_URI", "https://idp.example.test/.well-known/jwks.json");
-    vi.stubEnv("AAIS_AI_PROVIDER", "openai-compatible");
-    vi.stubEnv("AAIS_AI_ENDPOINT", "https://ai.example.test/v1/chat/completions");
-    vi.stubEnv("AAIS_AI_API_KEY", "ai-secret-that-must-not-leak");
-    vi.stubEnv("AAIS_AI_MODEL", "enterprise-model");
-    vi.stubEnv("AAIS_AI_EVAL_APPROVED", "true");
-    vi.stubEnv("AAIS_AI_EVAL_VERSION", "eval-2026-06-30");
-    const manifestPath = path.join(tempDir, "aais-ai-eval-blocked.json");
-    await writeFile(
-      manifestPath,
-      JSON.stringify(passingAiEvalManifest({ blockedCount: 1 })),
-      "utf8",
-    );
-    vi.stubEnv("AAIS_AI_EVAL_MANIFEST_PATH", manifestPath);
+    stubStrictProductionAiRuntime({
+      primaryManifest: passingAiEvalManifest({ blockedCount: 1 }),
+    });
     const { GET } = await import("@/app/api/system/readiness/route");
 
     const response = await GET(createAuthorizedReadinessRequest());

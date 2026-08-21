@@ -1,5 +1,6 @@
 import type { AaisGuideAttachment } from "@/lib/ai/aais-guide-attachments";
-import { CheckCircle, FileText } from "@phosphor-icons/react";
+import { useState } from "react";
+import { ArrowClockwise, CheckCircle, CopySimple, FileText, PencilSimple } from "@phosphor-icons/react";
 import {
   localizeAaisGuideAgentReferences,
   localizeAaisGuideTargetMentions,
@@ -15,6 +16,7 @@ import {
 import { SafeMarkdownText } from "@/components/pages/learning/guide-safe-markdown";
 import type {
   GuideClientAttachment,
+  GuideFailureKind,
   GuideMessage,
   GuideTurn,
 } from "@/components/pages/learning/learning-page-types";
@@ -66,11 +68,17 @@ export function formatGuideAttachmentSize(sizeBytes: number) {
 }
 
 export function GuideBubble({
+  actionBusy = false,
   locale = "zh-CN",
   message,
+  onRetry,
+  onRewrite,
 }: {
+  actionBusy?: boolean;
   locale?: Locale;
   message: GuideMessage;
+  onRetry?: (messageId: string) => void;
+  onRewrite?: (messageId: string) => void;
 }) {
   const copy = getLearningCopy(locale);
   const assistant = message.kind === "assistant";
@@ -78,17 +86,25 @@ export function GuideBubble({
     ? localizeAaisGuideAgentReferences(message.text, locale)
     : localizeAaisGuideTargetMentions(message.text, locale);
   const visibleTurns = getVisibleGuideTurns(message.turns);
+  const showLocalScaffold = shouldShowLocalScaffold(message);
   if (assistant && visibleTurns.length) {
     return (
-      <div className="space-y-3">
-        {message.runtime?.fallback ? (
+      <div className="space-y-3" role={message.runtime?.failure ? "alert" : undefined}>
+        {showLocalScaffold ? (
           <p className="inline-flex rounded-full border border-[#f2d6a2] bg-[#fff8ed] px-3 py-1 text-xs font-bold text-[#8a5a12]">
-            {copy.guide.offlineScaffold}
+            {copy.guide.localScaffold}
           </p>
         ) : null}
         {visibleTurns.map((turn) => (
           <AgentTurnBubble key={`${message.id}-${turn.agentId}`} locale={locale} turn={turn} />
         ))}
+        <GuideFailureActions
+          actionBusy={actionBusy}
+          locale={locale}
+          message={message}
+          onRetry={onRetry}
+          onRewrite={onRewrite}
+        />
       </div>
     );
   }
@@ -99,6 +115,7 @@ export function GuideBubble({
         <AgentAvatar agentId="A1" label={getGuideAgentLabel(locale, "A1")} locale={locale} />
       ) : null}
       <div
+        role={assistant && message.runtime?.failure ? "alert" : undefined}
         className={[
           "rounded-[18px] px-5 py-4 text-[17px] leading-8 shadow-[0_6px_18px_rgba(17,24,39,0.05)]",
           assistant
@@ -109,18 +126,178 @@ export function GuideBubble({
         {assistant ? (
           <p className="mb-2 text-sm font-medium text-[#9aa0ad]">{copy.guide.assistant}</p>
         ) : null}
-        {assistant && message.runtime?.fallback ? (
+        {assistant && showLocalScaffold ? (
           <p className="mb-2 inline-flex rounded-full border border-[#f2d6a2] bg-[#fff8ed] px-3 py-1 text-xs font-bold text-[#8a5a12]">
-            {copy.guide.offlineScaffold}
+            {copy.guide.localScaffold}
+          </p>
+        ) : null}
+        {assistant && message.runtime?.failure ? (
+          <p className="mb-2 w-fit rounded-full border border-[#efc9d4] bg-[#fff5f7] px-3 py-1 text-xs font-bold text-[#8f2947]">
+            {getGuideFailurePresentation(locale, message.runtime.failure.kind).title}
           </p>
         ) : null}
         <SafeMarkdownText text={visibleMessageText} />
+        {assistant ? (
+          <GuideFailureActions
+            actionBusy={actionBusy}
+            locale={locale}
+            message={message}
+            onRetry={onRetry}
+            onRewrite={onRewrite}
+          />
+        ) : null}
         {!assistant && message.attachments?.length ? (
           <GuideMessageAttachmentCards attachments={message.attachments} locale={locale} />
         ) : null}
       </div>
     </div>
   );
+}
+
+function shouldShowLocalScaffold(message: GuideMessage) {
+  if (message.kind !== "assistant" || message.runtime?.failure) {
+    return false;
+  }
+  const delivery = message.runtime?.delivery;
+  const responseMode = delivery?.responseMode ?? delivery?.mode;
+  if (responseMode === "live") {
+    return false;
+  }
+  return responseMode === "deterministic"
+    || responseMode === "local_scaffold"
+    || message.runtime?.fallback === true;
+}
+
+function GuideFailureActions({
+  actionBusy,
+  locale,
+  message,
+  onRetry,
+  onRewrite,
+}: {
+  actionBusy: boolean;
+  locale: Locale;
+  message: GuideMessage;
+  onRetry?: (messageId: string) => void;
+  onRewrite?: (messageId: string) => void;
+}) {
+  const failure = message.runtime?.failure;
+  const [copyResult, setCopyResult] = useState<{
+    diagnosticId: string;
+    status: "copied" | "failed";
+  } | null>(null);
+  if (!failure) {
+    return null;
+  }
+  const copy = getLearningCopy(locale);
+  const copyStatus = copyResult?.diagnosticId === failure.diagnosticId
+    ? copyResult.status
+    : null;
+  const showRewrite = failure.learnerAction === "rewrite" || failure.learnerAction === "rephrase";
+  const showRetry = !showRewrite
+    && failure.retryable
+    && failure.learnerAction !== "contact-support"
+    && failure.learnerAction !== "none";
+  return (
+    <div className="mt-3 border-t border-[#ece3e6] pt-3" role="group" aria-label={getGuideFailurePresentation(locale, failure.kind).title}>
+      <p className="break-all font-mono text-xs font-semibold text-[#6e5960]">
+        {copy.guide.supportCode(failure.diagnosticId)}
+      </p>
+      <div className="mt-3 flex flex-wrap gap-2">
+        <button
+          type="button"
+          disabled={actionBusy}
+          aria-label={copy.guide.copySupportCode}
+          onClick={() => {
+            void copyGuideSupportCode(failure.diagnosticId).then((copied) => {
+              setCopyResult({
+                diagnosticId: failure.diagnosticId,
+                status: copied ? "copied" : "failed",
+              });
+            });
+          }}
+          className="inline-flex items-center gap-1.5 rounded-full border border-[#d9dde7] bg-white px-3 py-1.5 text-sm font-bold text-[#596171] outline-none transition hover:bg-[#f5f6f8] focus-visible:ring-2 focus-visible:ring-[#536de8] disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          {copyStatus === "copied" ? (
+            <CheckCircle aria-hidden="true" size={16} weight="fill" />
+          ) : (
+            <CopySimple aria-hidden="true" size={16} weight="bold" />
+          )}
+          {copy.guide.copySupportCode}
+        </button>
+        {showRetry && onRetry ? (
+          <button
+            type="button"
+            disabled={actionBusy}
+            aria-label={copy.guide.retryQuestion}
+            onClick={() => onRetry(message.id)}
+            className="inline-flex items-center gap-1.5 rounded-full border border-[#cbd3f5] bg-[#f6f8ff] px-3 py-1.5 text-sm font-bold text-[#3e56bd] outline-none transition hover:bg-[#edf1ff] focus-visible:ring-2 focus-visible:ring-[#536de8] disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            <ArrowClockwise aria-hidden="true" size={16} weight="bold" />
+            {copy.guide.retryAction}
+          </button>
+        ) : null}
+        {showRewrite && onRewrite ? (
+          <button
+            type="button"
+            disabled={actionBusy}
+            aria-label={copy.guide.rewriteQuestion}
+            onClick={() => onRewrite(message.id)}
+            className="inline-flex items-center gap-1.5 rounded-full border border-[#d9ccec] bg-[#faf7ff] px-3 py-1.5 text-sm font-bold text-[#62418c] outline-none transition hover:bg-[#f4edff] focus-visible:ring-2 focus-visible:ring-[#7651a8] disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            <PencilSimple aria-hidden="true" size={16} weight="bold" />
+            {copy.guide.rewriteAction}
+          </button>
+        ) : null}
+      </div>
+      {copyStatus ? (
+        <p
+          className={[
+            "mt-2 text-xs font-semibold",
+            copyStatus === "copied" ? "text-[#476238]" : "text-[#9b2445]",
+          ].join(" ")}
+          role="status"
+          aria-live={copyStatus === "copied" ? "polite" : "assertive"}
+        >
+          {copyStatus === "copied"
+            ? copy.guide.supportCodeCopied
+            : copy.guide.supportCodeCopyFailed}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+async function copyGuideSupportCode(diagnosticId: string) {
+  try {
+    if (typeof navigator === "undefined" || !navigator.clipboard?.writeText) {
+      return false;
+    }
+    await navigator.clipboard.writeText(diagnosticId);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function getGuideFailurePresentation(
+  locale: Locale,
+  kind: GuideFailureKind,
+) {
+  const guide = getLearningCopy(locale).guide;
+  if (kind === "guardrail") {
+    return { title: guide.guardrailFailureTitle, message: guide.guardrailFailureMessage };
+  }
+  if (kind === "configuration") {
+    return { title: guide.configurationFailureTitle, message: guide.configurationFailureMessage };
+  }
+  if (kind === "connection") {
+    return { title: guide.connectionFailureTitle, message: guide.connectionFailureMessage };
+  }
+  if (kind === "provider_chain") {
+    return { title: guide.providerFailureTitle, message: guide.providerFailureMessage };
+  }
+  return { title: guide.unknownFailureTitle, message: guide.unknownFailureMessage };
 }
 
 function GuideMessageAttachmentCards({

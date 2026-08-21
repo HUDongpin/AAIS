@@ -77,6 +77,22 @@ export class AaisLearningStorageConfigurationError extends Error {
   }
 }
 
+class AaisGuideMutationDeadlineError extends Error {
+  constructor() {
+    super("AAIS guide persistence deadline elapsed before commit.");
+    this.name = "AaisGuideMutationDeadlineError";
+  }
+}
+
+function assertGuideMutationDeadline(deadlineAt: number | undefined) {
+  if (deadlineAt === undefined) {
+    return;
+  }
+  if (!Number.isFinite(deadlineAt) || Date.now() >= deadlineAt) {
+    throw new AaisGuideMutationDeadlineError();
+  }
+}
+
 export function isAaisLearningStorageConfigurationError(
   error: unknown,
 ): error is AaisLearningStorageConfigurationError {
@@ -373,7 +389,15 @@ export type AaisGuideMessageRecord = {
     graphId: string;
     topologicalOrder: string[];
     threadId: string;
+    delivery?: AaisPersistedGuideDelivery;
   };
+};
+
+export type AaisPersistedGuideDelivery = {
+  schemaVersion: 1;
+  responseMode: "live";
+  channel: "primary" | "secondary";
+  degraded: boolean;
 };
 
 export type AaisGuideTurnRecord = {
@@ -582,6 +606,17 @@ type AaisFileGuideBudgetState = {
     usageDay: string;
     state: "reserved" | "dispatched" | "completed" | "released";
     expiresAt: string;
+    dataGeneration?: number;
+    operationId?: string;
+    payloadDigest?: string;
+    operationState?:
+      | "in_progress"
+      | "dispatched"
+      | "completed"
+      | "failed"
+      | "dispatched_uncertain";
+    operationLeaseExpiresAt?: string;
+    resultMessageId?: string;
   }>;
   dailyUsage: Map<string, number>;
   queue: Promise<void>;
@@ -966,7 +1001,6 @@ export function createAaisLearningStore(input: StoreInput = {}) {
     } catch (error) {
       if (isAaisSessionWriteConflictError(error)) {
         recordAaisSessionWriteConflict({
-          studentId: safeStudentId,
           operation: "session_created",
           attempt: 0,
           resolution: "retrying",
@@ -1280,7 +1314,6 @@ export function createAaisLearningStore(input: StoreInput = {}) {
       } catch (error) {
         if (isAaisSessionWriteConflictError(error) && attempt === 0) {
           recordAaisSessionWriteConflict({
-            studentId: session.studentId,
             operation: "archive_artifact",
             attempt,
             resolution: "retrying",
@@ -1516,7 +1549,6 @@ export function createAaisLearningStore(input: StoreInput = {}) {
           throw error;
         }
         recordAaisSessionWriteConflict({
-          studentId,
           operation: "reserve_guide_exchange_capacity",
           attempt,
           resolution: "retrying",
@@ -1564,7 +1596,6 @@ export function createAaisLearningStore(input: StoreInput = {}) {
           throw error;
         }
         recordAaisSessionWriteConflict({
-          studentId,
           operation: "release_guide_exchange_capacity",
           attempt,
           resolution: "retrying",
@@ -1583,21 +1614,29 @@ export function createAaisLearningStore(input: StoreInput = {}) {
     answer: string;
     budgetReservationId?: string;
     capacityReservationId?: string;
+    operationId?: string;
     dataGeneration?: number;
+    deadlineAt?: number;
     attachments?: AaisGuideAttachmentMetadata[];
     turns?: AaisGuideTurnRecord[];
     orchestration: {
       graphId: string;
       topologicalOrder: string[];
       threadId: string;
+      delivery?: AaisPersistedGuideDelivery;
     };
   }) {
+    assertGuideMutationDeadline(input.deadlineAt);
     const dataGeneration = await resolveMutationDataGeneration(input.studentId, input.dataGeneration);
     const now = new Date().toISOString();
     const attachments = normalizeAaisGuideAttachmentMetadata(input.attachments);
-    const userMessageId = `user-${randomUUID()}`;
-    const assistantMessageId = `assistant-${randomUUID()}`;
+    const operationId = input.operationId
+      ? requireGuideOperationId(input.operationId)
+      : null;
+    const userMessageId = `user-${operationId ?? randomUUID()}`;
+    const assistantMessageId = `assistant-${operationId ?? randomUUID()}`;
     for (let attempt = 0; attempt < 3; attempt += 1) {
+      assertGuideMutationDeadline(input.deadlineAt);
       const session = await getOrCreateSession(input.studentId, dataGeneration);
       const task = requireUnlockedTask(session, input.taskId);
       const existingUserMessage = session.guideMessages.some((message) =>
@@ -1668,6 +1707,13 @@ export function createAaisLearningStore(input: StoreInput = {}) {
             node_count: input.orchestration.topologicalOrder.length,
             response_length: input.answer.length,
             exchange_id_hash: hashAaisGuideExchangeId(userMessageId, assistantMessageId),
+            ...(input.orchestration.delivery
+              ? {
+                  response_mode: input.orchestration.delivery.responseMode,
+                  selected_role: input.orchestration.delivery.channel,
+                  degraded: input.orchestration.delivery.degraded,
+                }
+              : {}),
           },
           now: () => new Date(now),
         }),
@@ -1687,6 +1733,8 @@ export function createAaisLearningStore(input: StoreInput = {}) {
           updated,
           newEvents,
           input.budgetReservationId,
+          undefined,
+          input.deadlineAt,
         );
         return updated;
       } catch (error) {
@@ -1694,7 +1742,6 @@ export function createAaisLearningStore(input: StoreInput = {}) {
           throw error;
         }
         recordAaisSessionWriteConflict({
-          studentId: session.studentId,
           operation: "append_guide_exchange",
           attempt,
           resolution: "retrying",
@@ -1921,15 +1968,72 @@ export function createAaisLearningStore(input: StoreInput = {}) {
     };
   }
 
+  async function hasDailyGuideOperation(input: {
+    studentId: string;
+    dataGeneration: number;
+    operationId: string;
+  }) {
+    const studentId = requireSafeId(input.studentId, "student id");
+    const operationId = requireGuideOperationId(input.operationId);
+    const dataGeneration = await resolveMutationDataGeneration(
+      studentId,
+      input.dataGeneration,
+    );
+    if (database) {
+      try {
+        const result = await database.query(
+          `select exists (
+             select 1
+             from public.aais_ai_guide_reservations reservation
+             where reservation.student_id = $1
+               and reservation.data_generation = $2::bigint
+               and reservation.operation_id = $3::uuid
+           ) as operation_exists`,
+          [studentId, dataGeneration, operationId],
+        );
+        return result.rows[0]?.operation_exists === true;
+      } catch (error) {
+        if (isMissingAaisRelationError(error)) {
+          throw new AaisLearningStorageConfigurationError();
+        }
+        throw error;
+      }
+    }
+    return withFileGuideBudgetLock(async () => {
+      await assertLearnerDataGeneration(studentId, dataGeneration);
+      const reservation = fileGuideReservations.get(operationId);
+      return Boolean(
+        reservation
+        && reservation.studentId === studentId
+        && reservation.dataGeneration === dataGeneration
+        && reservation.operationId === operationId,
+      );
+    });
+  }
+
   async function reserveDailyGuideRequest(input: {
     reservationId?: string;
     studentId: string;
     limit: number;
     now?: Date;
     dataGeneration?: number;
+    operationId?: string;
+    payloadDigest?: string;
   }): Promise<AaisDailyGuideReservation> {
     const safeStudentId = requireSafeId(input.studentId, "student id");
     const reservationId = requireSafeId(input.reservationId ?? randomUUID(), "guide reservation id");
+    const operationId = input.operationId
+      ? requireGuideOperationId(input.operationId)
+      : null;
+    const payloadDigest = input.payloadDigest
+      ? requireGuidePayloadDigest(input.payloadDigest)
+      : null;
+    if (Boolean(operationId) !== Boolean(payloadDigest)) {
+      throw new Error("AAIS guide operation id and payload digest must be provided together.");
+    }
+    if (operationId && reservationId !== operationId) {
+      throw new Error("AAIS guide operation and reservation ids must match.");
+    }
     const now = input.now ?? new Date();
     const dayRange = getAaisUtcDayRange(now);
     const limit = Math.max(1, Math.floor(input.limit));
@@ -1940,16 +2044,29 @@ export function createAaisLearningStore(input: StoreInput = {}) {
     if (database) {
       try {
         const reserved = await database.query(
-          `select used, granted, reservation_id
-           from public.aais_reserve_ai_guide_request(
-             $1,
-             $2::date,
-             $3::timestamptz,
-             $4::integer,
-             $5::uuid,
-             $6::bigint,
-             $7::integer
-           )`,
+          operationId
+            ? `select used, granted, reservation_id, operation_status, result_message_id
+               from public.aais_reserve_ai_guide_request(
+                 $1,
+                 $2::date,
+                 $3::timestamptz,
+                 $4::integer,
+                 $5::uuid,
+                 $6::bigint,
+                 $7::integer,
+                 $8::uuid,
+                 $9::text
+               )`
+            : `select used, granted, reservation_id
+               from public.aais_reserve_ai_guide_request(
+                 $1,
+                 $2::date,
+                 $3::timestamptz,
+                 $4::integer,
+                 $5::uuid,
+                 $6::bigint,
+                 $7::integer
+               )`,
           [
             safeStudentId,
             dayRange.start,
@@ -1958,8 +2075,26 @@ export function createAaisLearningStore(input: StoreInput = {}) {
             reservationId,
             dataGeneration,
             aaisGuideReservationLeaseDurationSeconds,
+            ...(operationId && payloadDigest ? [operationId, payloadDigest] : []),
           ],
         );
+        if (!reserved.rows.length) {
+          await assertLearnerDataGeneration(safeStudentId, dataGeneration);
+          throw new AaisLearningStorageConfigurationError();
+        }
+        const operationStatus = readGuideOperationReservationStatus(
+          reserved.rows[0]?.operation_status,
+        );
+        if (operationStatus && operationStatus !== "reserved") {
+          return buildDailyGuideReservation(
+            operationStatus,
+            limit,
+            Number(reserved.rows[0]?.used ?? 0),
+            dayRange.end,
+            String(reserved.rows[0]?.reservation_id ?? reservationId),
+            readOptionalSafeId(reserved.rows[0]?.result_message_id),
+          );
+        }
         if (reserved.rows[0]?.granted === true) {
           return buildDailyGuideReservation(
             "reserved",
@@ -1968,10 +2103,6 @@ export function createAaisLearningStore(input: StoreInput = {}) {
             dayRange.end,
             String(reserved.rows[0]?.reservation_id ?? reservationId),
           );
-        }
-        if (!reserved.rows.length) {
-          await assertLearnerDataGeneration(safeStudentId, dataGeneration);
-          throw new AaisLearningStorageConfigurationError();
         }
         return buildDailyGuideReservation(
           "exhausted",
@@ -2006,6 +2137,9 @@ export function createAaisLearningStore(input: StoreInput = {}) {
           && reservation.expiresAt <= now.toISOString()
         ) {
           reservation.state = "released";
+          if (reservation.operationId) {
+            reservation.operationState = "failed";
+          }
           const expiredUsageKey = `${reservation.studentId}\0${reservation.usageDay}`;
           fileDailyGuideUsage.set(
             expiredUsageKey,
@@ -2019,6 +2153,60 @@ export function createAaisLearningStore(input: StoreInput = {}) {
           throw new Error("AAIS guide reservation belongs to a different learner.");
         }
         const used = fileDailyGuideUsage.get(usageKey) ?? 0;
+        if (operationId && payloadDigest) {
+          if (
+            existingReservation.operationId !== operationId
+            || existingReservation.dataGeneration !== dataGeneration
+            || existingReservation.payloadDigest !== payloadDigest
+          ) {
+            return buildDailyGuideReservation(
+              "conflict",
+              limit,
+              used,
+              dayRange.end,
+              reservationId,
+            );
+          }
+          if (
+            (existingReservation.operationState === "in_progress"
+              || existingReservation.operationState === "dispatched")
+            && existingReservation.operationLeaseExpiresAt
+            && existingReservation.operationLeaseExpiresAt <= now.toISOString()
+          ) {
+            if (existingReservation.state === "dispatched") {
+              existingReservation.operationState = "dispatched_uncertain";
+            } else {
+              existingReservation.operationState = "failed";
+              if (existingReservation.state === "reserved") {
+                existingReservation.state = "released";
+                const expiredUsageKey = `${existingReservation.studentId}\0${existingReservation.usageDay}`;
+                fileDailyGuideUsage.set(
+                  expiredUsageKey,
+                  Math.max(0, (fileDailyGuideUsage.get(expiredUsageKey) ?? 0) - 1),
+                );
+              }
+            }
+          }
+          const usedAfterRecovery = fileDailyGuideUsage.get(usageKey) ?? 0;
+          const operationStatus: AaisDailyGuideReservation["status"] =
+            existingReservation.operationState === "completed"
+              || existingReservation.state === "completed"
+              ? "completed"
+              : existingReservation.operationState === "dispatched_uncertain"
+                ? "dispatched_uncertain"
+                : existingReservation.operationState === "failed"
+                    || existingReservation.state === "released"
+                  ? "failed"
+                  : "in_progress";
+          return buildDailyGuideReservation(
+            operationStatus,
+            limit,
+            usedAfterRecovery,
+            dayRange.end,
+            reservationId,
+            existingReservation.resultMessageId ?? null,
+          );
+        }
         return buildDailyGuideReservation(
           existingReservation.state === "released" ? "exhausted" : "reserved",
           limit,
@@ -2045,6 +2233,15 @@ export function createAaisLearningStore(input: StoreInput = {}) {
         expiresAt: new Date(
           now.getTime() + aaisGuideReservationLeaseDurationSeconds * 1000,
         ).toISOString(),
+        ...(operationId && payloadDigest
+          ? {
+              dataGeneration,
+              operationId,
+              payloadDigest,
+              operationState: "in_progress" as const,
+              operationLeaseExpiresAt: new Date(now.getTime() + 60_000).toISOString(),
+            }
+          : {}),
       });
       return buildDailyGuideReservation(
         "reserved",
@@ -2059,13 +2256,22 @@ export function createAaisLearningStore(input: StoreInput = {}) {
   async function finalizeDailyGuideRequest(input: {
     reservationId: string;
     studentId: string;
-    outcome: "completed" | "dispatched" | "released";
+    outcome:
+      | "completed"
+      | "dispatched"
+      | "released"
+      | "released-before-provider-attempt";
     dataGeneration?: number;
     now?: Date;
+    operationDeadlineAt?: Date;
   }) {
     const reservationId = requireSafeId(input.reservationId, "guide reservation id");
     const studentId = requireSafeId(input.studentId, "student id");
     const now = input.now ?? new Date();
+    const operationDeadlineAt = input.operationDeadlineAt
+      && Number.isFinite(input.operationDeadlineAt.getTime())
+      ? input.operationDeadlineAt
+      : new Date(Date.now() + 60_000);
     const dataGeneration = await resolveMutationDataGeneration(
       studentId,
       input.dataGeneration,
@@ -2082,12 +2288,22 @@ export function createAaisLearningStore(input: StoreInput = {}) {
                for update
              ), dispatched as (
                update aais_ai_guide_reservations
-               set state = 'dispatched', finalized_at = $4::timestamptz
+               set state = 'dispatched',
+                   finalized_at = $4::timestamptz,
+                   operation_state = case
+                     when operation_id is null then operation_state
+                     else 'dispatched'
+                   end,
+                   operation_lease_expires_at = case
+                     when operation_id is null then operation_lease_expires_at
+                     else $5::timestamptz
+                   end
                from generation_guard
                where id = $1::uuid
                  and student_id = $2
                  and state = 'reserved'
                  and expires_at > $4::timestamptz
+                 and clock_timestamp() < $5::timestamptz
                returning state
              )
              select state from dispatched
@@ -2099,7 +2315,13 @@ export function createAaisLearningStore(input: StoreInput = {}) {
                and reservation.state in ('dispatched', 'completed')
                and not exists (select 1 from dispatched)
              limit 1`,
-            [reservationId, studentId, dataGeneration, now.toISOString()],
+            [
+              reservationId,
+              studentId,
+              dataGeneration,
+              now.toISOString(),
+              operationDeadlineAt.toISOString(),
+            ],
           );
           if (result.rows.length) {
             return { status: "dispatched" as const };
@@ -2122,6 +2344,40 @@ export function createAaisLearningStore(input: StoreInput = {}) {
           await assertLearnerDataGeneration(studentId, dataGeneration);
           return { status: "unchanged" as const };
         }
+        if (input.outcome === "released-before-provider-attempt") {
+          const result = await database.query(
+            `with generation_guard as materialized (
+               select data_generation
+               from aais_learner_data_generations
+               where student_id = $2
+                 and data_generation = $3::bigint
+               for update
+             ), released as (
+               update aais_ai_guide_reservations reservation
+               set state = 'released',
+                   finalized_at = $4::timestamptz,
+                   operation_state = 'failed'
+               from generation_guard
+               where reservation.id = $1::uuid
+                 and reservation.student_id = $2
+                 and reservation.state = 'dispatched'
+                 and reservation.operation_id is not null
+                 and reservation.operation_state = 'dispatched'
+               returning reservation.student_id, reservation.usage_day
+             )
+             update aais_ai_guide_daily_usage usage
+             set used = greatest(0, usage.used - 1), updated_at = $4::timestamptz
+             from released
+             where usage.student_id = released.student_id
+               and usage.usage_day = released.usage_day
+             returning usage.used`,
+            [reservationId, studentId, dataGeneration, now.toISOString()],
+          );
+          if (!result.rows.length) {
+            await assertLearnerDataGeneration(studentId, dataGeneration);
+          }
+          return { status: result.rows.length ? "released" as const : "unchanged" as const };
+        }
         if (input.outcome === "released") {
           const result = await database.query(
             `with generation_guard as materialized (
@@ -2132,7 +2388,12 @@ export function createAaisLearningStore(input: StoreInput = {}) {
                for update
              ), released as (
                update aais_ai_guide_reservations
-               set state = 'released', finalized_at = $4::timestamptz
+               set state = 'released',
+                   finalized_at = $4::timestamptz,
+                   operation_state = case
+                     when operation_id is null then operation_state
+                     else 'failed'
+                   end
                from generation_guard
                where id = $1::uuid
                  and student_id = $2
@@ -2162,7 +2423,16 @@ export function createAaisLearningStore(input: StoreInput = {}) {
              for update
            )
            update aais_ai_guide_reservations
-           set state = 'completed', finalized_at = $4::timestamptz
+           set state = 'completed',
+               finalized_at = $4::timestamptz,
+               operation_state = case
+                 when operation_id is null then operation_state
+                 else 'completed'
+               end,
+               result_message_id = case
+                 when operation_id is null then result_message_id
+                 else 'assistant-' || operation_id::text
+               end
            from generation_guard
            where id = $1::uuid
              and student_id = $2
@@ -2194,6 +2464,9 @@ export function createAaisLearningStore(input: StoreInput = {}) {
         if (reservation.state === "dispatched" || reservation.state === "completed") {
           return { status: "dispatched" as const };
         }
+        if (Date.now() >= operationDeadlineAt.getTime()) {
+          return { status: "unchanged" as const };
+        }
         if (
           reservation.state !== "reserved"
           || reservation.expiresAt <= now.toISOString()
@@ -2201,7 +2474,28 @@ export function createAaisLearningStore(input: StoreInput = {}) {
           return { status: "unchanged" as const };
         }
         reservation.state = "dispatched";
+        if (reservation.operationId) {
+          reservation.operationState = "dispatched";
+          reservation.operationLeaseExpiresAt = operationDeadlineAt.toISOString();
+        }
         return { status: "dispatched" as const };
+      }
+      if (input.outcome === "released-before-provider-attempt") {
+        if (
+          reservation.state !== "dispatched"
+          || !reservation.operationId
+          || reservation.operationState !== "dispatched"
+        ) {
+          return { status: "unchanged" as const };
+        }
+        reservation.state = "released";
+        reservation.operationState = "failed";
+        const usageKey = `${studentId}\0${reservation.usageDay}`;
+        fileDailyGuideUsage.set(
+          usageKey,
+          Math.max(0, (fileDailyGuideUsage.get(usageKey) ?? 0) - 1),
+        );
+        return { status: "released" as const };
       }
       if (input.outcome === "released") {
         if (
@@ -2211,6 +2505,9 @@ export function createAaisLearningStore(input: StoreInput = {}) {
           return { status: "unchanged" as const };
         }
         reservation.state = "released";
+        if (reservation.operationId) {
+          reservation.operationState = "failed";
+        }
         const usageKey = `${studentId}\0${reservation.usageDay}`;
         fileDailyGuideUsage.set(
           usageKey,
@@ -2228,6 +2525,10 @@ export function createAaisLearningStore(input: StoreInput = {}) {
         return { status: "unchanged" as const };
       }
       reservation.state = "completed";
+      if (reservation.operationId) {
+        reservation.operationState = "completed";
+        reservation.resultMessageId = `assistant-${reservation.operationId}`;
+      }
       return { status: "completed" as const };
     });
   }
@@ -2513,7 +2814,6 @@ export function createAaisLearningStore(input: StoreInput = {}) {
       baseFieldValue ??= task[input.field];
       if (attempt > 0 && task[input.field] !== baseFieldValue && task[input.field] !== value) {
         recordAaisSessionWriteConflict({
-          studentId: session.studentId,
           operation: input.event,
           attempt,
           resolution: "merge_failed",
@@ -2537,7 +2837,6 @@ export function createAaisLearningStore(input: StoreInput = {}) {
       } catch (error) {
         if (isAaisSessionWriteConflictError(error) && attempt === 0) {
           recordAaisSessionWriteConflict({
-            studentId: session.studentId,
             operation: input.event,
             attempt,
             resolution: "retrying",
@@ -2690,7 +2989,11 @@ export function createAaisLearningStore(input: StoreInput = {}) {
     }
   }
 
-  async function writeSession(session: AaisLearnerSession) {
+  async function writeSession(
+    session: AaisLearnerSession,
+    options: { deadlineAt?: number } = {},
+  ) {
+    assertGuideMutationDeadline(options.deadlineAt);
     const serializedSession = serializeAaisLearnerSession(session);
     if (database) {
       const expectedVersion = getSessionStorageVersion(session);
@@ -2764,7 +3067,13 @@ export function createAaisLearningStore(input: StoreInput = {}) {
       const tempPath = `${target}.${process.pid}.${randomUUID()}.tmp`;
       const serialized = `${serializedSession}\n`;
       await writeFile(tempPath, serialized, "utf8");
-      await rename(tempPath, target);
+      try {
+        assertGuideMutationDeadline(options.deadlineAt);
+        await rename(tempPath, target);
+      } catch (error) {
+        await rm(tempPath, { force: true }).catch(() => undefined);
+        throw error;
+      }
       setFileSessionFingerprint(session, createFileSessionFingerprint(serialized));
     });
   }
@@ -2774,6 +3083,7 @@ export function createAaisLearningStore(input: StoreInput = {}) {
     events: AaisEvent[],
     budgetReservationId?: string,
     educatorAccess?: AaisEducatorCohortAccess,
+    mutationDeadlineAt?: number,
   ) {
     serializeAaisLearnerSession(session);
     if (educatorAccess && !database) {
@@ -2797,11 +3107,15 @@ export function createAaisLearningStore(input: StoreInput = {}) {
           ) {
             throw new Error("AAIS guide reservation could not be completed.");
           }
-          await writeSession(session);
+          await writeSession(session, { deadlineAt: mutationDeadlineAt });
           reservation.state = "completed";
+          if (reservation.operationId) {
+            reservation.operationState = "completed";
+            reservation.resultMessageId = `assistant-${reservation.operationId}`;
+          }
         });
       } else {
-        await writeSession(session);
+        await writeSession(session, { deadlineAt: mutationDeadlineAt });
       }
       if (events.length && !requiresAaisResearchDataPlaneIsolation()) {
         enqueueAaisLrsEvents(events);
@@ -2815,6 +3129,7 @@ export function createAaisLearningStore(input: StoreInput = {}) {
       events: persistLegacyEvents ? events : [],
       budgetReservationId,
       educatorAccess,
+      mutationDeadlineAt,
     });
     let result: { rows: Array<Record<string, unknown>> };
     try {
@@ -2872,6 +3187,7 @@ export function createAaisLearningStore(input: StoreInput = {}) {
     exportEvents,
     exportLearnerData,
     getDailyGuideUsage,
+    hasDailyGuideOperation,
     getEducatorCohortAnalytics,
     getAnalytics,
     getOrCreateSession,
@@ -5480,6 +5796,7 @@ function createAtomicLearnerMutationStatement(input: {
   events: AaisEvent[];
   budgetReservationId?: string;
   educatorAccess?: AaisEducatorCohortAccess;
+  mutationDeadlineAt?: number;
 }): AaisDatabaseStatement {
   const { session, events } = input;
   const taskRows = session.tasks.map((task) => ({
@@ -5605,7 +5922,16 @@ function createAtomicLearnerMutationStatement(input: {
     ),
     completed_guide_reservation as (
       update aais_ai_guide_reservations reservation
-      set state = 'completed', finalized_at = now()
+      set state = 'completed',
+          finalized_at = now(),
+          operation_state = case
+            when reservation.operation_id is null then reservation.operation_state
+            else 'completed'
+          end,
+          result_message_id = case
+            when reservation.operation_id is null then reservation.result_message_id
+            else 'assistant-' || reservation.operation_id::text
+          end
       from committed_version
       where $9::uuid is not null
         and reservation.id = $9::uuid
@@ -5857,7 +6183,13 @@ function createAtomicLearnerMutationStatement(input: {
           or (select count(*) from completed_guide_reservation) = 1
         then 1
         else 0
-      end as reservation_guard
+      end as reservation_guard,
+      1 / case
+        when $13::timestamptz is null
+          or clock_timestamp() < $13::timestamptz
+        then 1
+        else 0
+      end as mutation_deadline_guard
     from committed_version`,
     params: [
       session.studentId,
@@ -5872,6 +6204,9 @@ function createAtomicLearnerMutationStatement(input: {
       session.dataGeneration,
       input.educatorAccess?.actorId ?? null,
       input.educatorAccess?.actorRole ?? null,
+      input.mutationDeadlineAt === undefined
+        ? null
+        : new Date(input.mutationDeadlineAt).toISOString(),
     ],
   };
 }
@@ -6449,6 +6784,22 @@ export async function probeAaisLearningStorage(input: {
               and data_type = 'timestamp with time zone'
               and is_nullable = 'NO'
          ) as ai_guide_reservation_lease_column,
+         (
+           select count(*) = 6
+             from information_schema.columns
+            where table_schema = 'public'
+              and table_name = 'aais_ai_guide_reservations'
+              and column_name in (
+                'data_generation',
+                'operation_id',
+                'payload_digest',
+                'operation_state',
+                'result_message_id',
+                'operation_lease_expires_at'
+              )
+         ) as ai_guide_operation_columns,
+         to_regclass('public.aais_ai_guide_reservations_operation_idx')
+           as ai_guide_operation_index,
          exists (
            select 1
              from pg_constraint reservation_constraint
@@ -6487,6 +6838,17 @@ export async function probeAaisLearningStorage(input: {
               and proc.provolatile = 'v'
               and proc.prosecdef = false
          ) as ai_guide_reservation_function,
+         exists (
+           select 1
+             from pg_proc proc
+             join pg_namespace namespace on namespace.oid = proc.pronamespace
+            where proc.oid = to_regprocedure(
+              'public.aais_reserve_ai_guide_request(text,date,timestamp with time zone,integer,uuid,bigint,integer,uuid,text)'
+            )
+              and namespace.nspname = 'public'
+              and proc.provolatile = 'v'
+              and proc.prosecdef = false
+         ) as ai_guide_operation_function,
          exists (
            select 1
              from pg_proc proc
@@ -6580,9 +6942,12 @@ export async function probeAaisLearningStorage(input: {
       || row?.ai_guide_daily_usage_table !== "aais_ai_guide_daily_usage"
       || row?.ai_guide_reservations_table !== "aais_ai_guide_reservations"
       || row?.ai_guide_reservation_lease_column !== true
+      || row?.ai_guide_operation_columns !== true
+      || row?.ai_guide_operation_index !== "aais_ai_guide_reservations_operation_idx"
       || row?.ai_guide_reservation_dispatch_state_constraint !== true
       || row?.ai_guide_reservation_dispatch_finalized_constraint !== true
       || row?.ai_guide_reservation_function !== true
+      || row?.ai_guide_operation_function !== true
       || row?.learner_data_delete_function !== true
       || row?.users_table !== "aais_users"
       || row?.users_auth_version_column !== true
@@ -6824,6 +7189,18 @@ function normalizeGuideMessageRecord(
 ): AaisGuideMessageRecord {
   const messageWithoutAttachments = { ...message };
   delete messageWithoutAttachments.attachments;
+  if (messageWithoutAttachments.orchestration) {
+    const delivery = normalizePersistedGuideDelivery(
+      messageWithoutAttachments.orchestration.delivery,
+    );
+    const orchestrationWithoutDelivery = {
+      ...messageWithoutAttachments.orchestration,
+    };
+    delete orchestrationWithoutDelivery.delivery;
+    messageWithoutAttachments.orchestration = delivery
+      ? { ...orchestrationWithoutDelivery, delivery }
+      : orchestrationWithoutDelivery;
+  }
   if (message.kind !== "user") {
     return messageWithoutAttachments;
   }
@@ -6837,6 +7214,28 @@ function normalizeGuideMessageRecord(
     // an arbitrary attachment-shaped payload to the learner client.
     return messageWithoutAttachments;
   }
+}
+
+function normalizePersistedGuideDelivery(value: unknown): AaisPersistedGuideDelivery | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+  const delivery = value as Record<string, unknown>;
+  if (
+    delivery.schemaVersion !== 1
+    || delivery.responseMode !== "live"
+    || (delivery.channel !== "primary" && delivery.channel !== "secondary")
+    || typeof delivery.degraded !== "boolean"
+    || delivery.degraded !== (delivery.channel === "secondary")
+  ) {
+    return undefined;
+  }
+  return {
+    schemaVersion: 1,
+    responseMode: "live",
+    channel: delivery.channel,
+    degraded: delivery.degraded,
+  };
 }
 
 function redactRestrictedResearchRawText(
@@ -6966,7 +7365,6 @@ function createFileSessionFingerprint(serialized: string) {
 }
 
 function recordAaisSessionWriteConflict(input: {
-  studentId: string;
   operation: string;
   attempt: number;
   resolution: "retrying" | "merge_failed";
@@ -6974,11 +7372,6 @@ function recordAaisSessionWriteConflict(input: {
 }) {
   console.info(JSON.stringify({
     event: "aais.session.write_conflict",
-    learnerId: `learner:${createHash("sha256")
-      .update(`aais-session-conflict:${input.studentId}`)
-      .digest("hex")
-      .slice(0, 16)}`,
-    learnerIdRedaction: "sha256-16",
     operation: input.operation,
     attempt: input.attempt,
     resolution: input.resolution,
@@ -7244,6 +7637,20 @@ function requireSafeId(value: string, label: string) {
   return value;
 }
 
+function requireGuideOperationId(value: string) {
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)) {
+    throw new Error("Invalid AAIS guide operation id.");
+  }
+  return value.toLowerCase();
+}
+
+function requireGuidePayloadDigest(value: string) {
+  if (!/^[a-f0-9]{64}$/.test(value)) {
+    throw new Error("Invalid AAIS guide payload digest.");
+  }
+  return value;
+}
+
 function requireAiAcceptanceMessageId(value: unknown) {
   if (typeof value !== "string") {
     throw new AaisAiAcceptanceTargetError();
@@ -7391,8 +7798,16 @@ function createAntiAbuseGuideUsageRetention(deletedAt: string) {
 }
 
 export type AaisDailyGuideReservation = {
-  status: "reserved" | "exhausted";
+  status:
+    | "reserved"
+    | "exhausted"
+    | "in_progress"
+    | "completed"
+    | "conflict"
+    | "failed"
+    | "dispatched_uncertain";
   reservationId: string | null;
+  resultMessageId: string | null;
   limit: number;
   used: number;
   remaining: number;
@@ -7405,15 +7820,42 @@ function buildDailyGuideReservation(
   used: number,
   resetsAt: string,
   reservationId: string | null,
+  resultMessageId: string | null = null,
 ): AaisDailyGuideReservation {
   return {
     status,
     reservationId,
+    resultMessageId,
     limit,
     used,
     remaining: Math.max(0, limit - used),
     resetsAt,
   };
+}
+
+function readGuideOperationReservationStatus(
+  value: unknown,
+): AaisDailyGuideReservation["status"] | null {
+  return value === "reserved"
+    || value === "exhausted"
+    || value === "in_progress"
+    || value === "completed"
+    || value === "conflict"
+    || value === "failed"
+    || value === "dispatched_uncertain"
+    ? value
+    : null;
+}
+
+function readOptionalSafeId(value: unknown) {
+  if (typeof value !== "string") {
+    return null;
+  }
+  try {
+    return requireSafeId(value, "guide result message id");
+  } catch {
+    return null;
+  }
 }
 
 function isMissingAaisRelationError(error: unknown) {

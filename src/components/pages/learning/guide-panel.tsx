@@ -1,4 +1,4 @@
-import type { Dispatch, FormEvent, RefObject, SetStateAction } from "react";
+import { useRef, type Dispatch, type FormEvent, type RefObject, type SetStateAction } from "react";
 import { ArrowUp, FileText, Plus, X } from "@phosphor-icons/react";
 import { aaisGuideFileAccept } from "@/lib/client/aais-guide-file-reader";
 import {
@@ -30,6 +30,8 @@ export function GuidePanel({
   hasGuideSubmission,
   locale = "zh-CN",
   onRemoveAttachment,
+  onRetryGuideMessage,
+  onRewriteGuideMessage,
   sendGuideMessage,
   setGuideDraft,
   setGuideError,
@@ -47,11 +49,14 @@ export function GuidePanel({
   hasGuideSubmission: boolean;
   locale?: Locale;
   onRemoveAttachment: (attachmentId: string) => void;
+  onRetryGuideMessage?: (messageId: string) => void;
+  onRewriteGuideMessage?: (messageId: string) => void;
   sendGuideMessage: (event: FormEvent<HTMLFormElement>) => void;
   setGuideDraft: Dispatch<SetStateAction<string>>;
   setGuideError: Dispatch<SetStateAction<string>>;
 }) {
   const copy = getLearningCopy(locale);
+  const guideTextInputRef = useRef<HTMLInputElement | null>(null);
   const guidePanelBusy = guideBusy || guideAttachmentBusy;
   const guideStatusText = guideBusy
     ? copy.guide.busy
@@ -67,7 +72,19 @@ export function GuidePanel({
       <div className="min-h-0 flex-1 overflow-y-auto px-5 py-6 sm:px-8">
         <div className="space-y-4" aria-live="polite">
           {guideMessages.map((message) => (
-            <GuideBubble key={message.id} locale={locale} message={message} />
+            <GuideBubble
+              key={message.id}
+              actionBusy={guidePanelBusy}
+              locale={locale}
+              message={message}
+              onRetry={onRetryGuideMessage}
+              onRewrite={onRewriteGuideMessage
+                ? (messageId) => {
+                    onRewriteGuideMessage(messageId);
+                    guideTextInputRef.current?.focus();
+                  }
+                : undefined}
+            />
           ))}
         </div>
       </div>
@@ -115,6 +132,7 @@ export function GuidePanel({
             <Plus size={22} weight="bold" />
           </button>
           <input
+            ref={guideTextInputRef}
             aria-label={copy.guide.inputLabel}
             value={guideDraft}
             onChange={(event) => {

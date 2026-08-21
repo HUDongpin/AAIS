@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "contractVersion": "aais-ai-eval-manifest-signing-receipt-v1",
+  "evalVersion": "aais-deepseek-v4-flash-20260821-formal-v1",
+  "provider": "deepseek",
+  "model": "deepseek-v4-flash",
+  "observedRevisionSha256": "da47ddb8311a680e525bf29d5c7edec3dfa755208983808bf556746776aa9571",
+  "passedAt": "2026-08-21T13:45:41.225Z",
+  "expiresAt": "2026-09-19T13:45:41.225Z",
+  "manifestSha256": "ba57d0c63175f0bf1a9819e33d4855423ff9d6cb1759ef38658de8b71c443b95",
+  "attestation": {
+    "algorithm": "ed25519",
+    "keyId": "aais-deepseek-eval-20260821-v1",
+    "signatureSha256": "ab2b7ef04133db50aa790cdf5c8b73bb1fb20efb5f0ea4cbc4b0989716a525fd",
+    "verifyingKeySpki": "MCowBQYDK2VwAyEAvchuBcjMQubNec/5LVCttXyGhGCxc/JeJnZV+sp1NT0=",
+    "verifyingKeySpkiSha256": "f73e9f29c008ce80e83c5699ade60fe107e90cfb1705f69ced1a49519d45c141",
+    "signatureVerified": true
+  },
+  "redaction": {
+    "privateKey": "omitted",
+    "prompts": "omitted",
+    "outputs": "omitted",
+    "secrets": "omitted"
+  }
+}

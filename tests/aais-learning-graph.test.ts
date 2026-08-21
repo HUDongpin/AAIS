@@ -5,6 +5,10 @@ import {
   type AaisModelProvider,
   type AaisModelRequest,
 } from "@/lib/ai/aais-ai-provider";
+import {
+  AaisGuideDeliveryError,
+  aaisGuideDeliveryRedaction,
+} from "@/lib/ai/aais-guide-delivery";
 
 describe("AAIS LangGraph learning guide", () => {
   it("keeps ordinary learner support A1-led while background agents remain active", async () => {
@@ -39,6 +43,10 @@ describe("AAIS LangGraph learning guide", () => {
       },
       timings: {
         fallback: true,
+      },
+      delivery: {
+        mode: "deterministic",
+        channel: "deterministic",
       },
     });
     expect(result.runtimeEvents.map((event) => event.nodeId)).toEqual(["A1", "A3", "A4"]);
@@ -535,5 +543,109 @@ describe("AAIS LangGraph learning guide", () => {
     await expect(result).rejects.toMatchObject({ name: "AbortError" });
     expect(generate).toHaveBeenCalledTimes(1);
     expect(generate.mock.calls[0]?.[0].signal?.aborted).toBe(true);
+  });
+
+  it("summarizes only the learner-visible provider delivery receipt", async () => {
+    const generate = vi.fn(async () => ({
+      text: "Secondary live response",
+      runtime: {
+        provider: "openai-compatible",
+        model: "internal-model-id",
+        attempts: 2,
+        status: "ok" as const,
+        guardrail: {
+          policy: "aais-age-appropriate-output-v1" as const,
+          status: "passed" as const,
+          reasons: [],
+        },
+        redaction: {
+          secrets: "omitted" as const,
+          prompt: "summarized" as const,
+        },
+        delivery: {
+          schemaVersion: 1 as const,
+          mode: "live" as const,
+          channel: "secondary" as const,
+          degraded: true,
+          diagnosticId: "operation-visible-delivery-001",
+          observedModel: "matched" as const,
+          attempts: [{
+            role: "fallback" as const,
+            outcome: "succeeded" as const,
+            attempts: 1,
+            modelFingerprint: "0123456789abcdef",
+            observedModel: "matched" as const,
+          }],
+          redaction: aaisGuideDeliveryRedaction,
+        },
+      },
+    }));
+
+    const result = await runAaisLearningGuideGraph({
+      locale: "zh-CN",
+      studentId: "S-visible-delivery",
+      phase: "training",
+      taskId: "training_task_1",
+      learnerInput: "请继续。",
+      targetAgentIds: ["A1"],
+      workspaceState: { currentStep: "guide" },
+    }, {
+      modelProvider: { generate },
+    });
+
+    expect(result.runtime.delivery).toMatchObject({
+      mode: "live",
+      channel: "secondary",
+      degraded: true,
+      diagnosticId: "operation-visible-delivery-001",
+    });
+    expect(result.runtime.delivery?.channel).not.toBe("deterministic");
+  });
+
+  it("propagates governed visible delivery errors without converting them to local content", async () => {
+    const error = new AaisGuideDeliveryError({
+      code: "AAIS_AI_PROVIDER_CHAIN_EXHAUSTED",
+      status: 504,
+      retryable: true,
+      learnerAction: "retry",
+      diagnosticId: "operation-visible-failure-001",
+    });
+    const generate = vi.fn(async () => {
+      throw error;
+    });
+
+    await expect(runAaisLearningGuideGraph({
+      locale: "zh-CN",
+      studentId: "S-visible-failure",
+      phase: "training",
+      taskId: "training_task_1",
+      learnerInput: "请继续。",
+      targetAgentIds: ["A1"],
+      workspaceState: { currentStep: "guide" },
+    }, {
+      modelProvider: { generate },
+    })).rejects.toBe(error);
+    expect(generate).toHaveBeenCalledTimes(1);
+  });
+
+  it("fails closed on unexpected visible provider errors when live delivery is required", async () => {
+    const error = new Error("UNEXPECTED_PROVIDER_CANARY_MUST_NOT_BECOME_VISIBLE");
+    const generate = vi.fn(async () => {
+      throw error;
+    });
+
+    await expect(runAaisLearningGuideGraph({
+      locale: "zh-CN",
+      studentId: "S-visible-unexpected-failure",
+      phase: "training",
+      taskId: "training_task_1",
+      learnerInput: "请继续。",
+      targetAgentIds: ["A1"],
+      workspaceState: { currentStep: "guide" },
+    }, {
+      modelProvider: { generate },
+      deliveryPolicy: "require-live",
+    })).rejects.toBe(error);
+    expect(generate).toHaveBeenCalledTimes(1);
   });
 });

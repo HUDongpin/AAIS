@@ -11,15 +11,57 @@ export type DocumentFontSize = "17" | "20" | "24" | "28";
 export type DocumentHeadingTag = "h1" | "h2" | "h3";
 export type DocumentListTag = "ul" | "ol";
 
+export type GuideDeliveryReceipt = {
+  schemaVersion?: number;
+  mode?: string;
+  responseMode?: string;
+  channel?: string;
+  degraded?: boolean;
+  diagnosticId?: string;
+  persisted?: boolean;
+  budgetDisposition?: string;
+};
+
+export type GuidePersistedDeliveryReceipt = {
+  schemaVersion: 1;
+  responseMode: "live";
+  channel: "primary" | "secondary";
+  degraded: boolean;
+};
+
+export type GuideLearnerAction = "retry" | "rewrite" | "none" | string;
+
+export type GuideFailureKind =
+  | "provider_chain"
+  | "guardrail"
+  | "configuration"
+  | "connection"
+  | "unknown";
+
+export type GuideFailure = {
+  kind: GuideFailureKind;
+  code?: string;
+  diagnosticId: string;
+  retryable: boolean;
+  learnerAction: GuideLearnerAction;
+};
+
+export type GuideMessageRuntime = {
+  fallback?: boolean;
+  operationId?: string;
+  requestAttemptId?: string;
+  diagnosticId?: string;
+  delivery?: GuideDeliveryReceipt;
+  failure?: GuideFailure;
+};
+
 export type GuideMessage = {
   id: string;
   kind: "user" | "assistant";
   text: string;
   attachments?: AaisGuideAttachmentMetadata[];
   turns?: GuideTurn[];
-  runtime?: {
-    fallback?: boolean;
-  };
+  runtime?: GuideMessageRuntime;
   trace?: {
     graphId?: string;
     topologicalOrder?: string[];
@@ -78,6 +120,7 @@ export type AaisClientSession = {
       orchestration?: {
         graphId?: string;
         topologicalOrder?: string[];
+        delivery?: GuidePersistedDeliveryReceipt;
       };
     }
   >;

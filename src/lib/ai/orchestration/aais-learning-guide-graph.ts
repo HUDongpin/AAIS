@@ -2,9 +2,14 @@ import { Annotation, END, START, StateGraph } from "@langchain/langgraph";
 import {
   createConfiguredAaisModelProvider,
   createDeterministicAaisProvider,
+  type AaisProviderDispatchFence,
   type AaisModelProvider,
   type AaisModelRuntime,
 } from "@/lib/ai/aais-ai-provider";
+import {
+  isAaisGuideDeliveryError,
+  type AaisGuideDeliveryPolicy,
+} from "@/lib/ai/aais-guide-delivery";
 import type { AaisAiRuntimeProfile } from "@/lib/ai/aais-ai-runtime-config";
 import {
   aaisAgents,
@@ -69,6 +74,10 @@ export type AaisGuideInput = {
   targetAgentIds?: AaisGuideTargetAgentId[];
   workspaceState: AaisWorkspaceState;
   threadId?: string;
+  /** Absolute epoch-millisecond cutoff reserved for live provider work. */
+  providerDeadlineAt?: number;
+  /** Request-local durable quota fence for the first learner-visible live fetch. */
+  providerDispatchFence?: AaisProviderDispatchFence;
 };
 
 type AaisGuideState = AaisGuideInput & {
@@ -85,6 +94,7 @@ type AaisGuideAgentRun = {
 
 type AaisGuideOptions = {
   modelProvider?: AaisModelProvider;
+  deliveryPolicy?: AaisGuideDeliveryPolicy;
   signal?: AbortSignal;
 };
 
@@ -106,6 +116,7 @@ const AaisGuideGraphState = Annotation.Root({
   activeAgentIds: Annotation<AaisAgentId[]>,
   modelProvider: Annotation<AaisModelProvider>,
   backgroundProvider: Annotation<AaisModelProvider>,
+  deliveryPolicy: Annotation<AaisGuideDeliveryPolicy>,
   runs: Annotation<AaisGuideAgentRun[]>({
     reducer: (left, right) => left.concat(right),
     default: () => [],
@@ -154,6 +165,7 @@ export async function runAaisLearningGuideGraph(
     ],
     modelProvider,
     backgroundProvider,
+    deliveryPolicy: options.deliveryPolicy ?? "allow-deterministic",
   }, options.signal ? { signal: options.signal } : undefined);
   options.signal?.throwIfAborted();
   const totalMs = Math.round(nowMs() - startedAt);
@@ -195,6 +207,7 @@ export async function runAaisLearningGuideGraph(
       modelProvider: summarizeProviderRuns(providerRuns),
       timings: summarizeTimings(totalMs, agentTimings),
       ai: summarizeAiRuntimeProfile(providerRuns),
+      delivery: summarizeVisibleDelivery(providerRuns, visibleAgentIds),
     },
     trace: {
       handoffs: [
@@ -255,6 +268,7 @@ async function runAaisGuideAgentNode(
         state.input,
         modelProvider,
         !backgroundAgentIds.includes(agentId),
+        state.deliveryPolicy,
         signal,
       ),
     ],
@@ -266,6 +280,7 @@ async function createAgentTurn(
   state: AaisGuideState,
   modelProvider: AaisModelProvider,
   visible: boolean,
+  deliveryPolicy: AaisGuideDeliveryPolicy,
   signal?: AbortSignal,
 ) {
   signal?.throwIfAborted();
@@ -298,10 +313,18 @@ async function createAgentTurn(
       conversationHistory: state.conversationHistory,
       workspaceState: state.workspaceState,
       fallbackText,
+      providerDeadlineAt: state.providerDeadlineAt,
+      providerDispatchFence: state.providerDispatchFence,
       signal,
     });
-  } catch {
+  } catch (error) {
     signal?.throwIfAborted();
+    if (visible && (
+      isAaisGuideDeliveryError(error)
+      || deliveryPolicy === "require-live"
+    )) {
+      throw error;
+    }
     response = {
       text: fallbackText,
       runtime: {
@@ -392,6 +415,15 @@ function summarizeAiRuntimeProfile(providerRuns: AaisGuideProviderRun[]): AaisAi
   return providerRuns.find((run) => run.runtimeProfile?.mode === "live")?.runtimeProfile
     ?? providerRuns.find((run) => run.runtimeProfile)?.runtimeProfile
     ?? null;
+}
+
+function summarizeVisibleDelivery(
+  providerRuns: AaisGuideProviderRun[],
+  visibleAgentIds: AaisGuideTargetAgentId[],
+) {
+  const visibleAgentIdSet = new Set<AaisAgentId>(visibleAgentIds);
+  return providerRuns.find((run) =>
+    visibleAgentIdSet.has(run.agentId) && run.delivery)?.delivery ?? null;
 }
 
 function findTimeoutReason(reasons: string[]) {

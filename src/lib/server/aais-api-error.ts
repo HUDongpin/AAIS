@@ -75,13 +75,14 @@ function recordAaisApiError(input: {
   route?: string;
 }) {
   const cause = input.cause;
+  const causeKind = projectAaisApiCauseKind(cause);
   console.error(JSON.stringify({
     type: "aais.api.error",
     event: "aais.api.error",
     code: input.code,
     status: input.status,
     route: input.route,
-    causeName: cause instanceof Error ? cause.name : typeof cause,
+    causeKind,
     secrets: "redacted",
   }));
   recordAaisMonitoringIssue({
@@ -91,11 +92,18 @@ function recordAaisApiError(input: {
     route: input.route,
     tags: {
       "aais.error_code": input.code,
-      "aais.cause_name": cause instanceof Error ? cause.name : typeof cause,
+      "aais.cause_kind": causeKind,
     },
     extra: {
       code: input.code,
-      causeName: cause instanceof Error ? cause.name : typeof cause,
+      causeKind,
     },
   });
+}
+
+function projectAaisApiCauseKind(cause: unknown) {
+  if (!(cause instanceof Error)) return "non_error" as const;
+  if (cause.name === "AbortError") return "abort_error" as const;
+  if (cause instanceof TypeError) return "type_error" as const;
+  return "error" as const;
 }

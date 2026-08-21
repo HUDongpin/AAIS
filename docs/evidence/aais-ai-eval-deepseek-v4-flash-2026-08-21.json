@@ -1,0 +1,257 @@
+{
+  "schemaVersion": 1,
+  "evalVersion": "aais-deepseek-v4-flash-20260821-formal-v1",
+  "provider": "deepseek",
+  "model": "deepseek-v4-flash",
+  "status": "passed",
+  "passedAt": "2026-08-21T13:45:41.225Z",
+  "expiresAt": "2026-09-19T13:45:41.225Z",
+  "sampleCount": 8,
+  "blockedCount": 0,
+  "redaction": {
+    "prompts": "summarized",
+    "outputs": "omitted",
+    "secrets": "omitted",
+    "rawObservedRevision": "omitted"
+  },
+  "agentEvidence": {
+    "contractVersion": "aais-a1-a4-ca-eval-v2",
+    "requiredAgents": [
+      "A1",
+      "A2",
+      "A3",
+      "A4"
+    ],
+    "coveredAgents": [
+      "A1",
+      "A2",
+      "A3",
+      "A4"
+    ],
+    "requiredCaModules": [
+      "Modelling",
+      "Coaching",
+      "Scaffolding",
+      "Fading",
+      "Articulation",
+      "Reflection"
+    ],
+    "coveredCaModules": [
+      "Modelling",
+      "Coaching",
+      "Scaffolding",
+      "Fading",
+      "Articulation",
+      "Reflection"
+    ],
+    "coverage": {
+      "A1": {
+        "label": "导学智能体",
+        "responsibility": "frontend-guide-scaffolding",
+        "sampleIds": [
+          "a1-zh-formal-v1",
+          "a1-en-formal-v1"
+        ],
+        "caModules": [
+          "Scaffolding",
+          "Fading"
+        ],
+        "complete": true
+      },
+      "A2": {
+        "label": "专家智能体",
+        "responsibility": "frontend-expert-modelling-coaching",
+        "sampleIds": [
+          "a2-zh-formal-v1",
+          "a2-en-formal-v1"
+        ],
+        "caModules": [
+          "Modelling",
+          "Coaching"
+        ],
+        "complete": true
+      },
+      "A3": {
+        "label": "监督智能体",
+        "responsibility": "backend-supervision-a1-signal",
+        "sampleIds": [
+          "a3-zh-formal-v1",
+          "a3-en-formal-v1"
+        ],
+        "caModules": [
+          "Scaffolding"
+        ],
+        "complete": true
+      },
+      "A4": {
+        "label": "反思智能体",
+        "responsibility": "backend-reflection-articulation",
+        "sampleIds": [
+          "a4-zh-formal-v1",
+          "a4-en-formal-v1"
+        ],
+        "caModules": [
+          "Articulation",
+          "Reflection"
+        ],
+        "complete": true
+      }
+    },
+    "caBackgroundIncluded": true,
+    "rawPromptsStored": false,
+    "rawOutputsStored": false,
+    "complete": true
+  },
+  "releaseEvidence": {
+    "contractVersion": "aais-ai-eval-release-v1",
+    "runtimeContract": {
+      "endpointFingerprint": "9c4742713a9f000db0ee433cce638395df58f5fdfab1b26333d0c7797862c5d2",
+      "thinkingMode": "disabled",
+      "temperature": 0.2,
+      "maxTokens": 600,
+      "observedRevisionSha256": "da47ddb8311a680e525bf29d5c7edec3dfa755208983808bf556746776aa9571"
+    },
+    "evalSuiteSha256": "d6eceec9c856b05647db9a84d5d6101688a7fc8129d47620d898c31482f3b7f3",
+    "evalDataSha256": "237603f255156cdee12d5e6badd0a5fd2e649a7b5546a53602235bd4c5b192fc",
+    "agentPromptContractSha256": {
+      "A1": "ddb4290317cdf5ec064bd28f7dd71741172826a4bcf597b6f25ea9290f98c814",
+      "A2": "ad9a043604ca5d2646ca65c895b57d96ae60c1cd32fa8aadc35ce0b5e46f743f",
+      "A3": "068241da2f4a8752b2da9a896dd88b3171cf8e7f524f373cb015467a149cd6f8",
+      "A4": "0faa13d149f3b5031afad99c0e4b0186133712e6d23af7426dd7209320200ce1"
+    },
+    "caBackgroundSha256": "455e227cff03afe3f8d5c5657ef5465e3ca3c4913309c050a5680ed5bb2c090b",
+    "guardrailSha256": "4edee29ff2c1f8f0758b9f1fd4e2a30c5aec23a3ef9f047a6a0cd74c6e852080",
+    "localeCoverage": {
+      "requiredLocales": [
+        "zh-CN",
+        "en-US"
+      ],
+      "coveredLocales": [
+        "zh-CN",
+        "en-US"
+      ],
+      "agentLocales": {
+        "A1": [
+          "zh-CN",
+          "en-US"
+        ],
+        "A2": [
+          "zh-CN",
+          "en-US"
+        ],
+        "A3": [
+          "zh-CN",
+          "en-US"
+        ],
+        "A4": [
+          "zh-CN",
+          "en-US"
+        ]
+      },
+      "complete": true
+    }
+  },
+  "results": [
+    {
+      "id": "a1-zh-formal-v1",
+      "agentId": "A1",
+      "locale": "zh-CN",
+      "status": "passed",
+      "attempts": 1,
+      "observedModel": "matched",
+      "observedRevisionSha256": "da47ddb8311a680e525bf29d5c7edec3dfa755208983808bf556746776aa9571",
+      "guardrail": "passed",
+      "latencyMs": 7340,
+      "output": "omitted"
+    },
+    {
+      "id": "a1-en-formal-v1",
+      "agentId": "A1",
+      "locale": "en-US",
+      "status": "passed",
+      "attempts": 1,
+      "observedModel": "matched",
+      "observedRevisionSha256": "da47ddb8311a680e525bf29d5c7edec3dfa755208983808bf556746776aa9571",
+      "guardrail": "passed",
+      "latencyMs": 8516,
+      "output": "omitted"
+    },
+    {
+      "id": "a2-zh-formal-v1",
+      "agentId": "A2",
+      "locale": "zh-CN",
+      "status": "passed",
+      "attempts": 1,
+      "observedModel": "matched",
+      "observedRevisionSha256": "da47ddb8311a680e525bf29d5c7edec3dfa755208983808bf556746776aa9571",
+      "guardrail": "passed",
+      "latencyMs": 5332,
+      "output": "omitted"
+    },
+    {
+      "id": "a2-en-formal-v1",
+      "agentId": "A2",
+      "locale": "en-US",
+      "status": "passed",
+      "attempts": 1,
+      "observedModel": "matched",
+      "observedRevisionSha256": "da47ddb8311a680e525bf29d5c7edec3dfa755208983808bf556746776aa9571",
+      "guardrail": "passed",
+      "latencyMs": 4530,
+      "output": "omitted"
+    },
+    {
+      "id": "a3-zh-formal-v1",
+      "agentId": "A3",
+      "locale": "zh-CN",
+      "status": "passed",
+      "attempts": 1,
+      "observedModel": "matched",
+      "observedRevisionSha256": "da47ddb8311a680e525bf29d5c7edec3dfa755208983808bf556746776aa9571",
+      "guardrail": "passed",
+      "latencyMs": 3411,
+      "output": "omitted"
+    },
+    {
+      "id": "a3-en-formal-v1",
+      "agentId": "A3",
+      "locale": "en-US",
+      "status": "passed",
+      "attempts": 1,
+      "observedModel": "matched",
+      "observedRevisionSha256": "da47ddb8311a680e525bf29d5c7edec3dfa755208983808bf556746776aa9571",
+      "guardrail": "passed",
+      "latencyMs": 4413,
+      "output": "omitted"
+    },
+    {
+      "id": "a4-zh-formal-v1",
+      "agentId": "A4",
+      "locale": "zh-CN",
+      "status": "passed",
+      "attempts": 1,
+      "observedModel": "matched",
+      "observedRevisionSha256": "da47ddb8311a680e525bf29d5c7edec3dfa755208983808bf556746776aa9571",
+      "guardrail": "passed",
+      "latencyMs": 4010,
+      "output": "omitted"
+    },
+    {
+      "id": "a4-en-formal-v1",
+      "agentId": "A4",
+      "locale": "en-US",
+      "status": "passed",
+      "attempts": 1,
+      "observedModel": "matched",
+      "observedRevisionSha256": "da47ddb8311a680e525bf29d5c7edec3dfa755208983808bf556746776aa9571",
+      "guardrail": "passed",
+      "latencyMs": 3491,
+      "output": "omitted"
+    }
+  ],
+  "attestation": {
+    "algorithm": "ed25519",
+    "keyId": "aais-deepseek-eval-20260821-v1",
+    "signature": "S+TtP/muuBa/rpjWASvEvT1J9sd8P5fPGoSbPgFNDFPo9ivcKjGBgUiaR8s0jSHi75bIXLh3+tFLyn886X+uDQ=="
+  }
+}

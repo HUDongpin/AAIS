@@ -28,9 +28,21 @@ Run the migration test path when database schema changes:
 
 ```bash
 npm run db:migrate -- --output ./aais-postgres-migrations.json
+AAIS_AI_GUIDE_MIGRATION_TARGET=staging \
+AAIS_AI_GUIDE_MIGRATION_VERIFY_APPROVED=true \
+AAIS_DATABASE_DRIVER=neon-serverless \
+npm run db:verify-ai-idempotency -- --output ./aais-ai-guide-idempotency-verification.json
 npm run db:backfill -- --dry-run --output ./aais-postgres-backfill-dry-run.json
 npm run verify:postgres-restore -- --env-file ./.env.postgres-restore.local --output ./aais-postgres-restore-report.json
 ```
+
+Inject `AAIS_DATABASE_URL` only through the approved secret channel before the
+formal idempotency verification. The verifier refuses any target other than an
+explicitly approved `staging` target, requires a Neon credential, verifies the
+0028 ledger checksum and catalog contract, exercises reserve/replay/conflict/
+lease-expiry behavior, proves a single charge, removes its fixed synthetic rows
+inside the transaction, and writes a new mode-0600 redacted report. Never point
+this command at Production.
 
 ## Deploy
 
@@ -410,11 +422,74 @@ These systems need owner/provider access and cannot be completed from code alone
 
 ## AI Guide Runtime
 
-AAIS keeps the guide usable without a live provider: deterministic fallback replies are rendered with an offline scaffolding label, and provider failures preserve that label instead of hiding the degradation. The learning cockpit requests `text/event-stream` progress for guide turns, so learners see accepted/agent-start updates before the final answer when the route can stream.
+Production learner-visible A1/A2 guidance is live-only. It returns a verified
+Qwen or DeepSeek result, or an explicit typed error when the two-provider chain
+is exhausted. Deterministic generation is restricted to local/development use
+and hidden A3/A4 background processing; it must never be rendered as a
+Production A1/A2 result. The source-controlled release lock, independent
+primary/secondary evaluation checks, protected fixed-input probes, eight formal
+learner JSON/SSE canaries with replay, session persistence and privacy cleanup,
+staged rollout, monitoring policy,
+and rollback procedure are defined in `docs/ai-live-release-runbook.md`.
+
+The checked-in Qwen 3.8/DeepSeek release lock remains intentionally
+`RELEASE_BLOCKED`. The DeepSeek role now contains the current verified formal
+eval and Ed25519 signature projection; Qwen still contains null pending fields
+because its observed DashScope response did not supply the required revision
+fingerprint. Promotion remains blocked until both exact-model manifests,
+formal learner canary/replay plus privacy deletion evidence, and the separate
+Qwen/DeepSeek processor approvals are real, current, reviewed, and matched.
+Synthetic fixtures and approval booleans cannot change that state.
 
 Runtime controls:
 
-- `AAIS_AI_DAILY_GUIDE_LIMIT` caps guide requests per student per day; default is 40 and the route returns 429 when the cap is reached.
-- `AAIS_AI_MAX_RETRIES` defaults to 1, so live provider calls get at most one retry before fallback.
-- Live provider responses are capped at 600 output tokens in the provider request.
-- Production live AI still requires `AAIS_AI_EVAL_APPROVED=true` and `AAIS_AI_EVAL_VERSION` to avoid unapproved provider behavior.
+- `AAIS_AI_DAILY_GUIDE_LIMIT` caps guide requests per student per day; default
+  is 40 and the route returns 429 when the cap is reached.
+- `AAIS_AI_RUNTIME_MODE=live-required` is the only valid Production policy.
+- Primary is exactly Qwen at
+  `https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions` with
+  `qwen3.8-max`; secondary is enabled and exactly DeepSeek at
+  `https://api.deepseek.com/chat/completions` with `deepseek-v4-flash`.
+- Both roles require thinking disabled, timeout from 3000 through 12000 ms,
+  `maxRetries=0`, maximum 600 output tokens, temperature `0.2`, and a digest of
+  the exact observed response revision. A missing observed model/revision is a
+  failure.
+- Primary and secondary use separate model-matched manifest path/JSON, canonical
+  SHA-256, Ed25519 signing-key id, and pinned SPKI variables. Manifests bind the
+  endpoint/runtime, observed model/revision, eval suite/data, A1-A4 prompts, CA
+  background, guardrail, `zh-CN`/`en-US` coverage, and a current evidence window
+  no longer than 30 days. `AAIS_AI_EVAL_APPROVED=true` is not a bypass.
+- `npm run release:verify-ai-live` is the external promotion gate. Its required
+  `AAIS_RELEASE_*` inputs bind the exact immutable URL, Vercel deployment id,
+  full Git SHA, config generation, expected lock and both manifest digests,
+  a distinct Vercel Deployment Protection bypass secret, protected
+  readiness/probe credentials, a dedicated synthetic learner session/CSRF
+  pair plus exact actor fingerprint allowlist, Vercel API scope, unique audit
+  nonce, and audit-signing output. Actor identity is verified before any guide
+  request or privacy deletion and is never emitted to the receipt. The
+  bypass header is attached to every immutable-origin request but never the
+  Vercel API request or receipt. It directly calls the formal session, guide,
+  and privacy routes; no
+  custom hook or self-reported learner receipt can make it green. Missing or
+  mismatched inputs fail; the workflow has no skip-green path.
+- The workflow signs an external audit artifact and retains it for no more than
+  30 days. That after-deployment artifact is release evidence only: it is not
+  injected into, or accepted as, same-deployment runtime readiness.
+- `POST /api/system/ai-live-probe` accepts only a dedicated strong bearer and
+  one of eight fixed A1/A2 × `zh`/`en` × primary/secondary ids. It bypasses
+  learner session/quota/persistence and returns no model output. All eight must
+  pass on the immutable candidate, but they cannot replace the ordinary
+  authenticated JSON and SSE learner-flow canaries or privacy cleanup.
+- The external gate requires the synthetic learner to start with no data,
+  creates a fresh formal session, runs A1/A2 × `zh-CN`/`en-US` × JSON/SSE (eight
+  canaries), replays every derived operation id, verifies exactly 16 persisted
+  guide messages through `GET /api/learning/session`, then performs owner export,
+  Postgres deletion, and post-delete absence verification. Operation ids bind
+  the full SHA, deployment id, config generation, canary id, and audit nonce.
+- Redacted Sentry AI diagnostics and hosting/function logs have a
+  30-calendar-day maximum retention. Verify the policy in both provider
+  consoles and preserve a redacted receipt; environment declarations alone are
+  not evidence.
+- A pending source lock, missing/expired manifest, invalid signature, missing
+  processor owner/DPA/data-region decision, absent privacy/canary receipt, or
+  deployment mismatch is always `RELEASE_BLOCKED`.

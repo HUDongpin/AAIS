@@ -1,0 +1,94 @@
+name: AAIS AI Production Release Gate
+
+on:
+  workflow_dispatch:
+    inputs:
+      immutable_url:
+        description: Exact immutable Vercel deployment origin
+        required: true
+        type: string
+      deployment_id:
+        description: Exact Vercel deployment ID
+        required: true
+        type: string
+      git_commit_sha:
+        description: Full 40-character main commit SHA
+        required: true
+        type: string
+      config_generation:
+        description: Exact production configuration generation
+        required: true
+        type: string
+      expected_lock_id:
+        description: Approved source release-lock ID
+        required: true
+        type: string
+      primary_manifest_sha256:
+        description: Canonical signed Qwen manifest SHA-256
+        required: true
+        type: string
+      secondary_manifest_sha256:
+        description: Canonical signed DeepSeek manifest SHA-256
+        required: true
+        type: string
+permissions:
+  contents: read
+  deployments: read
+
+jobs:
+  verify-production-live-ai:
+    runs-on: ubuntu-latest
+    environment: production-ai-release
+    steps:
+      - name: Checkout trusted workflow revision
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.git_commit_sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify trusted main checkout and exact candidate SHA
+        env:
+          EXPECTED_SHA: ${{ inputs.git_commit_sha }}
+        run: |
+          test "$GITHUB_REPOSITORY" = "HUDongpin/AAIS"
+          test "$GITHUB_REF" = "refs/heads/main"
+          test "$GITHUB_SHA" = "$EXPECTED_SHA"
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+
+      - name: Set up Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
+      - name: Run fail-closed external Production gate
+        env:
+          AAIS_RELEASE_IMMUTABLE_URL: ${{ inputs.immutable_url }}
+          AAIS_RELEASE_DEPLOYMENT_ID: ${{ inputs.deployment_id }}
+          AAIS_RELEASE_GIT_COMMIT_SHA: ${{ inputs.git_commit_sha }}
+          AAIS_RELEASE_CONFIG_GENERATION: ${{ inputs.config_generation }}
+          AAIS_RELEASE_EXPECTED_LOCK_ID: ${{ inputs.expected_lock_id }}
+          AAIS_RELEASE_PRIMARY_MANIFEST_SHA256: ${{ inputs.primary_manifest_sha256 }}
+          AAIS_RELEASE_SECONDARY_MANIFEST_SHA256: ${{ inputs.secondary_manifest_sha256 }}
+          AAIS_RELEASE_READINESS_BEARER_TOKEN: ${{ secrets.AAIS_RELEASE_READINESS_BEARER_TOKEN }}
+          AAIS_RELEASE_LIVE_PROBE_BEARER_TOKEN: ${{ secrets.AAIS_RELEASE_LIVE_PROBE_BEARER_TOKEN }}
+          AAIS_RELEASE_VERCEL_PROTECTION_BYPASS_SECRET: ${{ secrets.AAIS_RELEASE_VERCEL_PROTECTION_BYPASS_SECRET }}
+          AAIS_RELEASE_LEARNER_SESSION_COOKIE: ${{ secrets.AAIS_RELEASE_LEARNER_SESSION_COOKIE }}
+          AAIS_RELEASE_LEARNER_CSRF_TOKEN: ${{ secrets.AAIS_RELEASE_LEARNER_CSRF_TOKEN }}
+          AAIS_RELEASE_SYNTHETIC_ACTOR_FINGERPRINT_SHA256: ${{ secrets.AAIS_RELEASE_SYNTHETIC_ACTOR_FINGERPRINT_SHA256 }}
+          AAIS_RELEASE_VERCEL_API_TOKEN: ${{ secrets.AAIS_RELEASE_VERCEL_API_TOKEN }}
+          AAIS_RELEASE_VERCEL_TEAM_ID: ${{ secrets.AAIS_RELEASE_VERCEL_TEAM_ID }}
+          AAIS_RELEASE_VERCEL_PROJECT_ID: ${{ secrets.AAIS_RELEASE_VERCEL_PROJECT_ID }}
+          AAIS_RELEASE_AUDIT_SIGNING_KEY_ID: ${{ secrets.AAIS_RELEASE_AUDIT_SIGNING_KEY_ID }}
+          AAIS_RELEASE_AUDIT_SIGNING_KEY_PKCS8: ${{ secrets.AAIS_RELEASE_AUDIT_SIGNING_KEY_PKCS8 }}
+          AAIS_RELEASE_AUDIT_NONCE: github-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          AAIS_RELEASE_AUDIT_RECEIPT_PATH: ${{ runner.temp }}/aais-ai-production-release-audit.json
+        run: npm run release:verify-ai-live
+
+      - name: Upload signed redacted audit receipt
+        uses: actions/upload-artifact@v7
+        with:
+          name: aais-ai-production-release-audit-${{ github.run_id }}
+          path: ${{ runner.temp }}/aais-ai-production-release-audit.json
+          if-no-files-found: error
+          retention-days: 30

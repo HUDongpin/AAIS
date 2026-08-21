@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "contractVersion": "aais-ai-external-production-audit-key-v1",
+  "keyId": "aais-production-audit-20260821-v1",
+  "algorithm": "ed25519",
+  "verifyingKeySpki": "MCowBQYDK2VwAyEANNEVAR8ZBIb0moeD4tcdngQJqMSDvJDg5onRpGEl1aQ=",
+  "verifyingKeySpkiSha256": "dd85266e4965bc110e015f42785c200b736532fa799cc3b7a12faca169c76324",
+  "createdAt": "2026-08-21T13:59:43.000Z",
+  "custody": {
+    "privateKey": "github-environment-secret",
+    "environment": "production-ai-release",
+    "privateKeyPersistedInRepository": false,
+    "publicVerificationMaterialIncludedInReceipt": true
+  },
+  "redaction": {
+    "privateKey": "omitted",
+    "secrets": "omitted"
+  }
+}

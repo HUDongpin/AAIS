@@ -17,6 +17,15 @@ describe("AAIS Sentry Next config", () => {
     }
   });
 
+  it("keeps browser Session Replay explicitly disabled", () => {
+    const source = readFileSync(
+      resolve(process.cwd(), "instrumentation-client.ts"),
+      "utf8",
+    );
+    expect(source).toMatch(/replaysSessionSampleRate:\s*0/);
+    expect(source).toMatch(/replaysOnErrorSampleRate:\s*0/);
+  });
+
   it("enables Vercel cron monitor instrumentation for configured crons", async () => {
     const withSentryConfig = vi.fn((config, sentryOptions) => ({
       ...config,

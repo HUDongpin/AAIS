@@ -40,11 +40,15 @@ beforeEach(async () => {
 
 afterEach(async () => {
   vi.useRealTimers();
+  vi.restoreAllMocks();
   delete process.env.AAIS_DATA_DIR;
   delete process.env.AAIS_SESSION_SECRET;
   vi.unstubAllEnvs();
   vi.unstubAllGlobals();
+  vi.doUnmock("@/lib/ai/aais-ai-provider");
   vi.doUnmock("@/lib/ai/orchestration/aais-learning-guide-graph");
+  vi.doUnmock("@/lib/server/aais-request-auth");
+  vi.doUnmock("@/lib/server/aais-learning-store");
   await rm(tempDir, { force: true, recursive: true });
 });
 
@@ -1285,9 +1289,7 @@ describe("AAIS learning API routes", () => {
       status: "completed",
       timings: {
         visibleMs: expect.any(Number),
-        attempts: expect.any(Number),
         fallback: true,
-        timeoutReason: null,
       },
     });
 
@@ -1713,17 +1715,12 @@ describe("AAIS learning API routes", () => {
     });
     const auditEvents = info.mock.calls.map((call) => JSON.parse(String(call[0])));
     expect(auditEvents.map((event) => event.event)).toEqual([
-      "ai.guide.budget.dispatched",
       "ai.guide.budget.used",
       "ai.guide.budget.exceeded",
     ]);
-    expect(auditEvents.every((event) => event.actorIdRedaction === "sha256-16")).toBe(true);
+    expect(auditEvents.every((event) => !Object.hasOwn(event, "actorId"))).toBe(true);
+    expect(auditEvents.every((event) => !Object.hasOwn(event, "actorIdRedaction"))).toBe(true);
     expect(auditEvents.map((event) => event.metadata)).toEqual([
-      expect.objectContaining({
-        limit: 1,
-        used: 1,
-        remaining: 0,
-      }),
       expect.objectContaining({
         limit: 1,
         used: 1,
@@ -1736,6 +1733,7 @@ describe("AAIS learning API routes", () => {
       }),
     ]);
     expect(JSON.stringify(auditEvents)).not.toContain("S001");
+    expect(JSON.stringify(auditEvents)).not.toContain("actor:");
     expect(JSON.stringify(auditEvents)).not.toContain("我今天第一次请求导学");
     expect(JSON.stringify(auditEvents)).not.toContain("我今天第二次请求导学");
     expect(JSON.stringify(secondBody)).not.toContain("我今天第二次请求导学");
@@ -2038,9 +2036,9 @@ describe("AAIS learning API routes", () => {
     expect(body.message.text).toContain("小张");
     expect(body.orchestration.runtime.timings).toMatchObject({
       fallback: true,
-      timeoutReason: "abort-timeout",
-      attempts: 1,
     });
+    expect(body.orchestration.runtime.timings).not.toHaveProperty("attempts");
+    expect(body.orchestration.runtime.timings).not.toHaveProperty("timeoutReason");
     expect(body.orchestration.runtime.timings.agents).toBeUndefined();
     expect(body.orchestration.runtime.ai).toBeUndefined();
     expect(JSON.stringify(body)).not.toMatch(/"A3"|"A4"|监督智能体|反思智能体/);
@@ -2116,6 +2114,242 @@ describe("AAIS learning API routes", () => {
       status: "read",
     }]);
     expect(JSON.stringify(sessionBody.session)).not.toContain("stream-only private source");
+  });
+
+  it("returns a persisted live receipt and replays one operation without another model call", async () => {
+    vi.stubEnv("AAIS_AI_PROVIDER", "qwen");
+    vi.stubEnv(
+      "AAIS_AI_ENDPOINT",
+      "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
+    );
+    vi.stubEnv("AAIS_AI_API_KEY", "primary-test-key");
+    vi.stubEnv("AAIS_AI_MODEL", "qwen3.8-max");
+    vi.stubEnv("AAIS_AI_MAX_RETRIES", "0");
+    const fetchMock = vi.fn<typeof fetch>(async () => Response.json({
+      model: "qwen3.8-max",
+      choices: [{ finish_reason: "stop", message: { content: "先说你卡在哪一步，我帮你推进下一步。" } }],
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    vi.resetModules();
+
+    const studentId = "S-guide-live-replay";
+    const csrf = createAaisCsrfToken(studentId);
+    const cookie = createAuthedCookie(studentId, "student", csrf);
+    await initializeLearnerSession(studentId, cookie, csrf);
+    const guideRoute = await import("@/app/api/learning/ai-guide/route");
+    const sessionRoute = await import("@/app/api/learning/session/route");
+    const operationId = "10000000-0000-4000-8000-000000000001";
+    const requestBody = JSON.stringify({
+      operationId,
+      dataGeneration: 1,
+      taskId: "training_task_1",
+      learnerInput: "我不知道如何开始。",
+      workspaceState: { currentStep: "guide" },
+    });
+    const createRequest = (body = requestBody) => new Request(
+      "http://localhost/api/learning/ai-guide",
+      {
+        method: "POST",
+        headers: { cookie, "x-aais-csrf": csrf },
+        body,
+      },
+    );
+
+    const firstResponse = await guideRoute.POST(createRequest());
+    const firstBody = await firstResponse.json();
+    expect(firstResponse.status).toBe(200);
+    expect(firstBody.orchestration.runtime).toMatchObject({
+      timings: { fallback: false },
+      delivery: {
+        schemaVersion: 1,
+        responseMode: "live",
+        channel: "primary",
+        degraded: false,
+        persisted: true,
+        budgetDisposition: "charged-once",
+      },
+    });
+    expect(firstBody.orchestration.runtime.timings).not.toHaveProperty("attempts");
+    expect(firstBody.orchestration.runtime.delivery.diagnosticId).not.toBe(operationId);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    const replayResponse = await guideRoute.POST(createRequest());
+    const replayBody = await replayResponse.json();
+    expect(replayResponse.status).toBe(200);
+    expect(replayBody.message.text).toBe(firstBody.message.text);
+    expect(replayBody.orchestration.runtime.delivery).toEqual(
+      firstBody.orchestration.runtime.delivery,
+    );
+    expect(replayBody.orchestration.runtime.timings).not.toHaveProperty("attempts");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    vi.stubEnv("AAIS_AI_RUNTIME_MODE", "live-required");
+    vi.stubEnv("AAIS_AI_PROVIDER", "");
+    vi.stubEnv("AAIS_AI_ENDPOINT", "");
+    vi.stubEnv("AAIS_AI_API_KEY", "");
+    vi.stubEnv("AAIS_AI_MODEL", "");
+    vi.stubEnv("AAIS_AI_FALLBACK_ENABLED", "false");
+    const replayWhileUnreadyResponse = await guideRoute.POST(createRequest());
+    const replayWhileUnreadyBody = await replayWhileUnreadyResponse.json();
+    expect(replayWhileUnreadyResponse.status).toBe(200);
+    expect(replayWhileUnreadyBody.message.text).toBe(firstBody.message.text);
+    expect(replayWhileUnreadyBody.orchestration.runtime.delivery).toEqual(
+      firstBody.orchestration.runtime.delivery,
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    const conflictResponse = await guideRoute.POST(createRequest(JSON.stringify({
+      operationId,
+      dataGeneration: 1,
+      taskId: "training_task_1",
+      learnerInput: "同一 ID 下的不同问题。",
+      workspaceState: { currentStep: "guide" },
+    })));
+    expect(conflictResponse.status).toBe(409);
+    await expect(conflictResponse.json()).resolves.toMatchObject({
+      error: { code: "AI_OPERATION_CONFLICT" },
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    const sessionResponse = await sessionRoute.GET(new Request(
+      "http://localhost/api/learning/session",
+      { headers: { cookie } },
+    ));
+    const sessionBody = await sessionResponse.json();
+    expect(sessionBody.session.guideMessages).toHaveLength(2);
+    expect(sessionBody.session.guideMessages[1].orchestration.delivery).toEqual({
+      schemaVersion: 1,
+      responseMode: "live",
+      channel: "primary",
+      degraded: false,
+    });
+    expect(JSON.stringify(sessionBody.session)).not.toContain(
+      firstBody.orchestration.runtime.delivery.diagnosticId,
+    );
+  });
+
+  it("rejects an unready live-only configuration before reserving learner quota", async () => {
+    vi.stubEnv("AAIS_AI_RUNTIME_MODE", "live-required");
+    vi.stubEnv("AAIS_AI_PROVIDER", "");
+    vi.stubEnv("AAIS_AI_ENDPOINT", "");
+    vi.stubEnv("AAIS_AI_API_KEY", "");
+    vi.stubEnv("AAIS_AI_MODEL", "");
+    vi.stubEnv("AAIS_AI_FALLBACK_ENABLED", "false");
+    vi.stubEnv("AAIS_AI_DAILY_GUIDE_LIMIT", "1");
+    vi.resetModules();
+
+    const studentId = "S-guide-live-not-ready";
+    const csrf = createAaisCsrfToken(studentId);
+    const cookie = createAuthedCookie(studentId, "student", csrf);
+    await initializeLearnerSession(studentId, cookie, csrf);
+    const guideRoute = await import("@/app/api/learning/ai-guide/route");
+    const requestBody = JSON.stringify({
+      operationId: "30000000-0000-4000-8000-000000000003",
+      dataGeneration: 1,
+      taskId: "training_task_1",
+      learnerInput: "请帮我开始。",
+      workspaceState: { currentStep: "guide" },
+    });
+    const response = await guideRoute.POST(new Request(
+      "http://localhost/api/learning/ai-guide",
+      {
+        method: "POST",
+        headers: { cookie, "x-aais-csrf": csrf },
+        body: requestBody,
+      },
+    ));
+    const body = await response.json();
+    expect(response.status).toBe(503);
+    expect(body.error).toMatchObject({
+      schemaVersion: 1,
+      code: "AI_LIVE_NOT_READY",
+      retryable: false,
+      learnerAction: "contact-support",
+    });
+
+    vi.stubEnv("AAIS_AI_RUNTIME_MODE", "allow-deterministic");
+    vi.resetModules();
+    const deterministicGuideRoute = await import("@/app/api/learning/ai-guide/route");
+    const followUp = await deterministicGuideRoute.POST(new Request(
+      "http://localhost/api/learning/ai-guide",
+      {
+        method: "POST",
+        headers: { cookie, "x-aais-csrf": csrf },
+        body: JSON.stringify({
+          operationId: "40000000-0000-4000-8000-000000000004",
+          dataGeneration: 1,
+          taskId: "training_task_1",
+          learnerInput: "本地开发支架仍可使用。",
+          workspaceState: { currentStep: "guide" },
+        }),
+      },
+    ));
+    expect(followUp.status).toBe(200);
+  });
+
+  it("streams secondary live delivery without a legacy fallback event", async () => {
+    vi.stubEnv("AAIS_AI_PROVIDER", "qwen");
+    vi.stubEnv(
+      "AAIS_AI_ENDPOINT",
+      "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
+    );
+    vi.stubEnv("AAIS_AI_API_KEY", "primary-test-key");
+    vi.stubEnv("AAIS_AI_MODEL", "qwen3.8-max");
+    vi.stubEnv("AAIS_AI_MAX_RETRIES", "0");
+    vi.stubEnv("AAIS_AI_FALLBACK_ENABLED", "true");
+    vi.stubEnv("AAIS_AI_FALLBACK_PROVIDER", "deepseek");
+    vi.stubEnv("AAIS_AI_FALLBACK_ENDPOINT", "https://api.deepseek.com/chat/completions");
+    vi.stubEnv("AAIS_AI_FALLBACK_API_KEY", "secondary-test-key");
+    vi.stubEnv("AAIS_AI_FALLBACK_MODEL", "deepseek-v4-flash");
+    vi.stubEnv("AAIS_AI_FALLBACK_THINKING", "false");
+    vi.stubEnv("AAIS_AI_FALLBACK_MAX_RETRIES", "0");
+    const fetchMock = vi.fn<typeof fetch>(async (url) =>
+      String(url).includes("dashscope")
+        ? new Response(null, { status: 503 })
+        : Response.json({
+            model: "deepseek-v4-flash",
+            choices: [{ finish_reason: "stop", message: { content: "先确定目标，再检查下一步。" } }],
+          }));
+    vi.stubGlobal("fetch", fetchMock);
+    vi.resetModules();
+
+    const studentId = "S-guide-live-secondary";
+    const csrf = createAaisCsrfToken(studentId);
+    const cookie = createAuthedCookie(studentId, "student", csrf);
+    await initializeLearnerSession(studentId, cookie, csrf);
+    const guideRoute = await import("@/app/api/learning/ai-guide/route");
+    const response = await guideRoute.POST(new Request(
+      "http://localhost/api/learning/ai-guide?stream=1",
+      {
+        method: "POST",
+        headers: {
+          accept: "text/event-stream",
+          cookie,
+          "x-aais-csrf": csrf,
+        },
+        body: JSON.stringify({
+          operationId: "20000000-0000-4000-8000-000000000002",
+          dataGeneration: 1,
+          taskId: "training_task_1",
+          learnerInput: "请帮我确定下一步。",
+          workspaceState: { currentStep: "guide" },
+        }),
+      },
+    ));
+    const streamText = await response.text();
+
+    expect(response.status).toBe(200);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(streamText).toContain("event: delivery");
+    expect(streamText).toContain('"responseMode":"live"');
+    expect(streamText).toContain('"channel":"secondary"');
+    expect(streamText).toContain('"degraded":true');
+    expect(streamText).toContain("event: done");
+    expect(streamText).not.toContain("event: fallback");
+    expect(streamText).not.toContain("本地安全支架");
+    expect(streamText).not.toContain('"attempts":');
+    expect(streamText).not.toContain('"reason":');
+    expect(streamText).not.toContain('"timeoutReason":');
   });
 
   it("emits stream acknowledgement before the guide graph finishes", async () => {
@@ -2204,13 +2438,29 @@ describe("AAIS learning API routes", () => {
 
   it("bounds the maximum provider retry chain without persisting or refunding a dispatched stream", async () => {
     vi.resetModules();
+    const info = vi.spyOn(console, "info").mockImplementation(() => undefined);
     let graphSignal: AbortSignal | undefined;
-    const graphMock = vi.fn((
-      _input: unknown,
+    let resolveGraphAttemptStarted!: () => void;
+    const graphAttemptStarted = new Promise<void>((resolve) => {
+      resolveGraphAttemptStarted = resolve;
+    });
+    const graphMock = vi.fn(async (
+      graphInput: unknown,
       options?: { signal?: AbortSignal },
     ) => {
       graphSignal = options?.signal;
-      return new Promise<never>((_resolve, reject) => {
+      const dispatchFence = (graphInput as {
+        providerDispatchFence?: {
+          acquire(): Promise<"ready" | "deadline">;
+          markAttemptStarted(): void;
+        };
+      }).providerDispatchFence;
+      const fenceStatus = await dispatchFence?.acquire();
+      if (fenceStatus === "ready") {
+        dispatchFence?.markAttemptStarted();
+        resolveGraphAttemptStarted();
+      }
+      return await new Promise<never>((_resolve, reject) => {
         const rejectFromAbort = () => reject(graphSignal?.reason);
         if (graphSignal?.aborted) {
           rejectFromAbort();
@@ -2255,11 +2505,11 @@ describe("AAIS learning API routes", () => {
     }
     const acknowledgement = await reader.read();
     expect(new TextDecoder().decode(acknowledgement.value)).toContain("event: ack");
-    await Promise.resolve();
+    await graphAttemptStarted;
 
-    expect(guideRoute.guideProviderMaximumRetryBudgetMs).toBe(240_000);
+    expect(guideRoute.guideProviderMaximumRetryBudgetMs).toBe(24_000);
     expect(guideRoute.guideRouteTotalDeadlineMs).toBe(
-      guideRoute.guideProviderMaximumRetryBudgetMs + 10_000,
+      guideRoute.guideProviderMaximumRetryBudgetMs + 6_000,
     );
     expect(guideRoute.guideRouteTotalDeadlineMs).toBeLessThanOrEqual(
       guideRoute.guideRouteMaximumDeadlineMs,
@@ -2290,6 +2540,26 @@ describe("AAIS learning API routes", () => {
     }
     expect(streamClosed).toBe(true);
     expect(streamText).not.toContain("event: done");
+    expect(streamText).toContain("event: error");
+    expect(streamText).toContain('"code":"AI_LIVE_TIMEOUT"');
+    expect(streamText).not.toContain('"message":');
+    const diagnosticEvents = info.mock.calls.flatMap((call) => {
+      try {
+        return [JSON.parse(String(call[0])) as Record<string, unknown>];
+      } catch {
+        return [];
+      }
+    });
+    expect(diagnosticEvents).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        event: "aais.ai.guide.failed",
+        reason: "route_deadline",
+        budgetDisposition: "dispatched-uncertain",
+      }),
+    ]));
+    expect(diagnosticEvents.filter((event) => event.type === "aais.audit").map(
+      (event) => event.event,
+    )).not.toContain("ai.guide.budget.released");
 
     const sessionResponse = await sessionRoute.GET(new Request(
       "http://localhost/api/learning/session",
@@ -2309,6 +2579,569 @@ describe("AAIS learning API routes", () => {
     expect(retryResponse.status).toBe(429);
     expect(graphMock).toHaveBeenCalledTimes(1);
     vi.doUnmock("@/lib/ai/orchestration/aais-learning-guide-graph");
+  });
+
+  it("returns a structured timeout when authentication does not settle before the route deadline", async () => {
+    vi.resetModules();
+    vi.doMock("@/lib/server/aais-request-auth", async () => {
+      const actual = await vi.importActual<
+        typeof import("@/lib/server/aais-request-auth")
+      >("@/lib/server/aais-request-auth");
+      return {
+        ...actual,
+        requireAaisSessionActor: vi.fn(() => new Promise<never>(() => undefined)),
+      };
+    });
+    const guideRoute = await import("@/app/api/learning/ai-guide/route");
+    const cookie = createAuthedCookie("S-guide-auth-deadline");
+    vi.useFakeTimers();
+
+    const pendingResponse = guideRoute.POST(new Request(
+      "http://localhost/api/learning/ai-guide",
+      {
+        method: "POST",
+        headers: {
+          cookie,
+          "x-aais-csrf": createAaisCsrfToken("S-guide-auth-deadline"),
+        },
+        body: JSON.stringify({
+          dataGeneration: 1,
+          taskId: "training_task_1",
+          learnerInput: "认证等待不能越过总截止时间。",
+          workspaceState: { currentStep: "guide" },
+        }),
+      },
+    ));
+    await vi.advanceTimersByTimeAsync(guideRoute.guideRouteTotalDeadlineMs + 1);
+
+    const response = await pendingResponse;
+    expect(response.status).toBe(504);
+    await expect(response.json()).resolves.toMatchObject({
+      error: {
+        schemaVersion: 1,
+        code: "AI_LIVE_TIMEOUT",
+        retryable: true,
+        learnerAction: "retry",
+      },
+    });
+  });
+
+  it("returns a structured timeout when the learner-session read does not settle", async () => {
+    stubDeterministicGuideRuntime();
+    vi.resetModules();
+    const studentId = "S-guide-session-read-deadline";
+    const csrf = createAaisCsrfToken(studentId);
+    const cookie = createAuthedCookie(studentId, "student", csrf);
+    await initializeLearnerSession(studentId, cookie, csrf);
+    const storeModule = await import("@/lib/server/aais-learning-store");
+    const store = storeModule.getAaisLearningStore();
+    vi.spyOn(store, "readSession").mockImplementation(
+      () => new Promise<never>(() => undefined),
+    );
+    const guideRoute = await import("@/app/api/learning/ai-guide/route");
+    vi.useFakeTimers();
+
+    const pendingResponse = guideRoute.POST(new Request(
+      "http://localhost/api/learning/ai-guide",
+      {
+        method: "POST",
+        headers: { cookie, "x-aais-csrf": csrf },
+        body: JSON.stringify({
+          dataGeneration: 1,
+          taskId: "training_task_1",
+          learnerInput: "数据库读取等待不能越过总截止时间。",
+          workspaceState: { currentStep: "guide" },
+        }),
+      },
+    ));
+    await vi.advanceTimersByTimeAsync(guideRoute.guideRouteTotalDeadlineMs + 1);
+
+    const response = await pendingResponse;
+    expect(response.status).toBe(504);
+    await expect(response.json()).resolves.toMatchObject({
+      error: { code: "AI_LIVE_TIMEOUT" },
+    });
+  });
+
+  it("returns a structured timeout when provider preflight does not settle", async () => {
+    stubDeterministicGuideRuntime();
+    vi.resetModules();
+    const studentId = "S-guide-preflight-deadline";
+    const csrf = createAaisCsrfToken(studentId);
+    const cookie = createAuthedCookie(studentId, "student", csrf);
+    await initializeLearnerSession(studentId, cookie, csrf);
+    vi.doMock("@/lib/ai/aais-ai-provider", async () => {
+      const actual = await vi.importActual<
+        typeof import("@/lib/ai/aais-ai-provider")
+      >("@/lib/ai/aais-ai-provider");
+      return {
+        ...actual,
+        preflightConfiguredAaisModelProvider: vi.fn(
+          () => new Promise<never>(() => undefined),
+        ),
+      };
+    });
+    const guideRoute = await import("@/app/api/learning/ai-guide/route");
+    vi.useFakeTimers();
+
+    const pendingResponse = guideRoute.POST(new Request(
+      "http://localhost/api/learning/ai-guide",
+      {
+        method: "POST",
+        headers: { cookie, "x-aais-csrf": csrf },
+        body: JSON.stringify({
+          dataGeneration: 1,
+          taskId: "training_task_1",
+          learnerInput: "预检等待不能越过总截止时间。",
+          workspaceState: { currentStep: "guide" },
+        }),
+      },
+    ));
+    await vi.advanceTimersByTimeAsync(guideRoute.guideRouteTotalDeadlineMs + 1);
+
+    const response = await pendingResponse;
+    expect(response.status).toBe(504);
+    await expect(response.json()).resolves.toMatchObject({
+      error: { code: "AI_LIVE_TIMEOUT" },
+    });
+  });
+
+  it.each([
+    { label: "JSON", stream: false },
+    { label: "SSE", stream: true },
+  ])("refunds quota before any provider fetch when $label dispatch settles after the provider window", async ({
+    stream,
+  }) => {
+    const info = vi.spyOn(console, "info").mockImplementation(() => undefined);
+    vi.stubEnv("AAIS_AI_DAILY_GUIDE_LIMIT", "1");
+    vi.resetModules();
+    const studentId = stream
+      ? "S-guide-sse-dispatch-fence"
+      : "S-guide-json-dispatch-fence";
+    const csrf = createAaisCsrfToken(studentId);
+    const cookie = createAuthedCookie(studentId, "student", csrf);
+    await initializeLearnerSession(studentId, cookie, csrf);
+    const storeModule = await import("@/lib/server/aais-learning-store");
+    const store = storeModule.getAaisLearningStore();
+    const originalFinalize = store.finalizeDailyGuideRequest.bind(store);
+    const observedClaimStatuses: string[] = [];
+    const originalReserve = store.reserveDailyGuideRequest.bind(store);
+    vi.spyOn(store, "reserveDailyGuideRequest").mockImplementation(async (input) => {
+      const claim = await originalReserve(input);
+      observedClaimStatuses.push(claim.status);
+      return claim;
+    });
+
+    const providerModule = await import("@/lib/ai/aais-ai-provider");
+    const fetchMock = vi.fn<typeof fetch>();
+    const liveProvider = providerModule.createOpenAiCompatibleAaisProvider({
+      endpoint: "https://ai.example.test/v1/chat/completions",
+      apiKey: "synthetic-route-test-key",
+      model: "enterprise-model",
+      fetchImpl: fetchMock,
+      timeoutMs: 12_000,
+      maxRetries: 0,
+      deliveryPolicy: "require-live",
+      requireObservedModel: false,
+    });
+    vi.doMock("@/lib/ai/aais-ai-provider", async () => ({
+      ...providerModule,
+      preflightConfiguredAaisModelProvider: vi.fn(() => ({
+        provider: liveProvider,
+        deliveryPolicy: "require-live" as const,
+        runtimeProfile: null,
+        configurationStatus: null,
+        evaluation: { primary: null, fallback: null },
+        eligibility: {
+          primary: { eligible: true },
+          fallback: { eligible: false },
+        },
+      })),
+    }));
+    const guideRoute = await import("@/app/api/learning/ai-guide/route");
+    let firstDispatch = true;
+    let resolveDispatchCommitted!: () => void;
+    const dispatchCommitted = new Promise<void>((resolve) => {
+      resolveDispatchCommitted = resolve;
+    });
+    vi.spyOn(store, "finalizeDailyGuideRequest").mockImplementation((input) => {
+      if (input.outcome !== "dispatched" || !firstDispatch) {
+        return originalFinalize(input);
+      }
+      firstDispatch = false;
+      return originalFinalize(input).then((result) => {
+        resolveDispatchCommitted();
+        return new Promise<typeof result>((resolve) => {
+          setTimeout(
+            () => resolve(result),
+            guideRoute.guideProviderMaximumRetryBudgetMs + 200,
+          );
+        });
+      });
+    });
+
+    vi.useFakeTimers();
+    const operationId = stream
+      ? "a0000000-0000-4000-8000-00000000000a"
+      : "90000000-0000-4000-8000-000000000009";
+    const requestBody = JSON.stringify({
+      operationId,
+      dataGeneration: 1,
+      taskId: "training_task_1",
+      learnerInput: "dispatch 回包越过 provider 截止时间时不得调用模型。",
+      workspaceState: { currentStep: "guide" },
+    });
+    const createRequest = (body = requestBody, asStream = stream) => new Request(
+      `http://localhost/api/learning/ai-guide${asStream ? "?stream=1" : ""}`,
+      {
+        method: "POST",
+        headers: {
+          ...(asStream ? { accept: "text/event-stream" } : {}),
+          cookie,
+          "x-aais-csrf": csrf,
+        },
+        body,
+      },
+    );
+
+    const responsePromise = guideRoute.POST(createRequest());
+    const streamResponse = stream ? await responsePromise : null;
+    const streamTextPromise = streamResponse?.text();
+    await dispatchCommitted;
+    await vi.advanceTimersByTimeAsync(guideRoute.guideProviderMaximumRetryBudgetMs + 200);
+    const response = streamResponse ?? await responsePromise;
+    const responseText = streamTextPromise ? await streamTextPromise : "";
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    if (stream) {
+      expect(response.status).toBe(200);
+      expect(responseText).toContain("event: error");
+      expect(responseText).toContain('"code":"AI_LIVE_TIMEOUT"');
+      expect(responseText).not.toContain("event: delivery");
+      expect(responseText).not.toContain("event: done");
+    } else {
+      expect(response.status).toBe(504);
+      await expect(response.json()).resolves.toMatchObject({
+        error: { code: "AI_LIVE_TIMEOUT" },
+      });
+    }
+    await vi.waitFor(async () => {
+      expect((await store.readSession(studentId))?.guideCapacityReservations).toEqual([]);
+    });
+    const diagnosticEvents = info.mock.calls.flatMap((call) => {
+      try {
+        return [JSON.parse(String(call[0])) as Record<string, unknown>];
+      } catch {
+        return [];
+      }
+    });
+    expect(diagnosticEvents).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        event: "aais.ai.guide.failed",
+        reason: "route_deadline",
+        attempts: 0,
+        budgetDisposition: "released",
+      }),
+    ]));
+    expect(diagnosticEvents.filter((event) => event.type === "aais.audit").map(
+      (event) => event.event,
+    )).toEqual([
+      "ai.guide.budget.dispatched",
+      "ai.guide.budget.released",
+    ]);
+
+    const replayResponse = await guideRoute.POST(createRequest(requestBody, false));
+    expect(replayResponse.status).toBe(503);
+    expect(observedClaimStatuses.at(-1)).toBe("failed");
+    const nextOperationId = stream
+      ? "c0000000-0000-4000-8000-00000000000c"
+      : "b0000000-0000-4000-8000-00000000000b";
+    await expect(store.reserveDailyGuideRequest({
+      reservationId: nextOperationId,
+      operationId: nextOperationId,
+      payloadDigest: "d".repeat(64),
+      studentId,
+      dataGeneration: 1,
+      limit: 1,
+    })).resolves.toMatchObject({
+      status: "reserved",
+      used: 1,
+      remaining: 0,
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("reclaims quota and capacity when a pre-dispatch operation lease is replayed after a crash", async () => {
+    stubDeterministicGuideRuntime();
+    vi.stubEnv("AAIS_AI_DAILY_GUIDE_LIMIT", "1");
+    vi.resetModules();
+    const studentId = "S-guide-pre-dispatch-crash";
+    const csrf = createAaisCsrfToken(studentId);
+    const cookie = createAuthedCookie(studentId, "student", csrf);
+    await initializeLearnerSession(studentId, cookie, csrf);
+    vi.doMock("@/lib/ai/orchestration/aais-learning-guide-graph", () => ({
+      runAaisLearningGuideGraph: vi.fn(async (graphInput: {
+        providerDispatchFence?: {
+          acquire(): Promise<"ready" | "deadline">;
+          markAttemptStarted(): void;
+        };
+      }) => {
+        const fenceStatus = await graphInput.providerDispatchFence?.acquire();
+        if (fenceStatus === "ready") {
+          graphInput.providerDispatchFence?.markAttemptStarted();
+        }
+        return createMockGuideGraphResult();
+      }),
+    }));
+    const storeModule = await import("@/lib/server/aais-learning-store");
+    const store = storeModule.getAaisLearningStore();
+    const finalizeDailyGuideRequest = store.finalizeDailyGuideRequest.bind(store);
+    const releaseGuideExchangeCapacity = store.releaseGuideExchangeCapacity.bind(store);
+    let crashWindow = true;
+    vi.spyOn(store, "finalizeDailyGuideRequest").mockImplementation((input) =>
+      crashWindow && (input.outcome === "dispatched" || input.outcome === "released")
+        ? new Promise<never>(() => undefined)
+        : finalizeDailyGuideRequest(input));
+    vi.spyOn(store, "releaseGuideExchangeCapacity").mockImplementation((input) =>
+      crashWindow
+        ? new Promise<never>(() => undefined)
+        : releaseGuideExchangeCapacity(input));
+    const guideRoute = await import("@/app/api/learning/ai-guide/route");
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-21T04:00:00.000Z"));
+    const operationId = "70000000-0000-4000-8000-000000000007";
+    const requestBody = JSON.stringify({
+      operationId,
+      dataGeneration: 1,
+      taskId: "training_task_1",
+      learnerInput: "模拟 reserve 和 capacity 后、dispatch 前进程退出。",
+      workspaceState: { currentStep: "guide" },
+    });
+    const createRequest = (body = requestBody) => new Request(
+      "http://localhost/api/learning/ai-guide",
+      {
+        method: "POST",
+        headers: { cookie, "x-aais-csrf": csrf },
+        body,
+      },
+    );
+
+    const crashedRequest = guideRoute.POST(createRequest());
+    await vi.waitFor(() => expect(store.finalizeDailyGuideRequest).toHaveBeenCalledWith(
+      expect.objectContaining({ outcome: "dispatched" }),
+    ));
+    await vi.advanceTimersByTimeAsync(guideRoute.guideRouteTotalDeadlineMs + 1);
+    expect((await crashedRequest).status).toBe(504);
+    expect((await store.readSession(studentId))?.guideCapacityReservations).toHaveLength(1);
+
+    crashWindow = false;
+    await vi.advanceTimersByTimeAsync(31_000);
+    const replayResponse = await guideRoute.POST(createRequest());
+    expect(replayResponse.status).toBe(503);
+    await expect(replayResponse.json()).resolves.toMatchObject({
+      error: { code: "AI_LIVE_UNAVAILABLE" },
+    });
+    await vi.waitFor(async () => {
+      expect((await store.readSession(studentId))?.guideCapacityReservations).toEqual([]);
+    });
+
+    const nextResponse = await guideRoute.POST(createRequest(JSON.stringify({
+      operationId: "80000000-0000-4000-8000-000000000008",
+      dataGeneration: 1,
+      taskId: "training_task_1",
+      learnerInput: "恢复后新操作只扣一次额度。",
+      workspaceState: { currentStep: "guide" },
+    })));
+    expect(nextResponse.status).toBe(200);
+    await expect(nextResponse.json()).resolves.toMatchObject({
+      budget: { used: 1, remaining: 0 },
+    });
+  });
+
+  it("never returns JSON success when guide persistence hangs past the route deadline", async () => {
+    stubDeterministicGuideRuntime();
+    vi.resetModules();
+    const studentId = "S-guide-json-persistence-deadline";
+    const csrf = createAaisCsrfToken(studentId);
+    const cookie = createAuthedCookie(studentId, "student", csrf);
+    await initializeLearnerSession(studentId, cookie, csrf);
+    const graphMock = vi.fn(async () => createMockGuideGraphResult());
+    vi.doMock("@/lib/ai/orchestration/aais-learning-guide-graph", () => ({
+      runAaisLearningGuideGraph: graphMock,
+    }));
+    const storeModule = await import("@/lib/server/aais-learning-store");
+    const store = storeModule.getAaisLearningStore();
+    const appendMock = vi.spyOn(store, "appendGuideExchange").mockImplementation(
+      () => new Promise<never>(() => undefined),
+    );
+    const guideRoute = await import("@/app/api/learning/ai-guide/route");
+    vi.useFakeTimers();
+
+    const pendingResponse = guideRoute.POST(new Request(
+      "http://localhost/api/learning/ai-guide",
+      {
+        method: "POST",
+        headers: { cookie, "x-aais-csrf": csrf },
+        body: JSON.stringify({
+          operationId: "50000000-0000-4000-8000-000000000005",
+          dataGeneration: 1,
+          taskId: "training_task_1",
+          learnerInput: "持久化卡住时不能迟到返回成功。",
+          workspaceState: { currentStep: "guide" },
+        }),
+      },
+    ));
+    await vi.waitFor(() => expect(appendMock).toHaveBeenCalledTimes(1));
+    await vi.advanceTimersByTimeAsync(guideRoute.guideRouteTotalDeadlineMs + 1);
+
+    const response = await pendingResponse;
+    const body = await response.json();
+    expect(response.status).toBe(504);
+    expect(body).toMatchObject({ error: { code: "AI_LIVE_TIMEOUT" } });
+    expect(body).not.toHaveProperty("message");
+    expect(body).not.toHaveProperty("turns");
+    expect(body).not.toHaveProperty("orchestration");
+    expect((await store.readSession(studentId))?.guideMessages).toEqual([]);
+  });
+
+  it("closes SSE with a structured error when guide persistence hangs past the route deadline", async () => {
+    stubDeterministicGuideRuntime();
+    vi.resetModules();
+    const studentId = "S-guide-sse-persistence-deadline";
+    const csrf = createAaisCsrfToken(studentId);
+    const cookie = createAuthedCookie(studentId, "student", csrf);
+    await initializeLearnerSession(studentId, cookie, csrf);
+    const graphMock = vi.fn(async () => createMockGuideGraphResult());
+    vi.doMock("@/lib/ai/orchestration/aais-learning-guide-graph", () => ({
+      runAaisLearningGuideGraph: graphMock,
+    }));
+    const storeModule = await import("@/lib/server/aais-learning-store");
+    const store = storeModule.getAaisLearningStore();
+    const appendMock = vi.spyOn(store, "appendGuideExchange").mockImplementation(
+      () => new Promise<never>(() => undefined),
+    );
+    const guideRoute = await import("@/app/api/learning/ai-guide/route");
+    vi.useFakeTimers();
+
+    const response = await guideRoute.POST(new Request(
+      "http://localhost/api/learning/ai-guide?stream=1",
+      {
+        method: "POST",
+        headers: {
+          accept: "text/event-stream",
+          cookie,
+          "x-aais-csrf": csrf,
+        },
+        body: JSON.stringify({
+          operationId: "60000000-0000-4000-8000-000000000006",
+          dataGeneration: 1,
+          taskId: "training_task_1",
+          learnerInput: "流式持久化卡住时必须按时关闭。",
+          workspaceState: { currentStep: "guide" },
+        }),
+      },
+    ));
+    await vi.waitFor(() => expect(appendMock).toHaveBeenCalledTimes(1));
+    await vi.advanceTimersByTimeAsync(guideRoute.guideRouteTotalDeadlineMs + 1);
+    const streamText = await response.text();
+
+    expect(response.status).toBe(200);
+    expect(streamText).toContain("event: ack");
+    expect(streamText).toContain("event: error");
+    expect(streamText).toContain('"code":"AI_LIVE_TIMEOUT"');
+    expect(streamText).not.toContain("event: done");
+    expect(streamText).not.toContain("event: delivery");
+    expect(streamText).not.toContain("Mocked final answer");
+    expect(streamText).not.toContain('"attempts":');
+    expect(streamText).not.toContain('"timeoutReason":');
+    expect((await store.readSession(studentId))?.guideMessages).toEqual([]);
+  });
+
+  it("maps a JSON session-write conflict after live generation to AI_PERSISTENCE_FAILED", async () => {
+    stubDeterministicGuideRuntime();
+    vi.resetModules();
+    const studentId = "S-guide-json-persistence-conflict";
+    const csrf = createAaisCsrfToken(studentId);
+    const cookie = createAuthedCookie(studentId, "student", csrf);
+    await initializeLearnerSession(studentId, cookie, csrf);
+    vi.doMock("@/lib/ai/orchestration/aais-learning-guide-graph", () => ({
+      runAaisLearningGuideGraph: vi.fn(async () => createMockGuideGraphResult()),
+    }));
+    const storeModule = await import("@/lib/server/aais-learning-store");
+    const store = storeModule.getAaisLearningStore();
+    vi.spyOn(store, "appendGuideExchange").mockRejectedValue(
+      new storeModule.AaisSessionWriteConflictError(),
+    );
+    const guideRoute = await import("@/app/api/learning/ai-guide/route");
+
+    const response = await guideRoute.POST(new Request(
+      "http://localhost/api/learning/ai-guide",
+      {
+        method: "POST",
+        headers: { cookie, "x-aais-csrf": csrf },
+        body: JSON.stringify({
+          dataGeneration: 1,
+          taskId: "training_task_1",
+          learnerInput: "写冲突必须映射成统一持久化失败。",
+          workspaceState: { currentStep: "guide" },
+        }),
+      },
+    ));
+
+    expect(response.status).toBe(503);
+    const body = await response.json();
+    expect(body).toMatchObject({
+      error: {
+        code: "AI_PERSISTENCE_FAILED",
+        retryable: true,
+        learnerAction: "retry",
+      },
+    });
+    expect(body.error).not.toHaveProperty("message");
+    expect(body).not.toHaveProperty("turns");
+  });
+
+  it("maps an SSE session-capacity failure after live generation to AI_PERSISTENCE_FAILED", async () => {
+    stubDeterministicGuideRuntime();
+    vi.resetModules();
+    const studentId = "S-guide-sse-persistence-limit";
+    const csrf = createAaisCsrfToken(studentId);
+    const cookie = createAuthedCookie(studentId, "student", csrf);
+    await initializeLearnerSession(studentId, cookie, csrf);
+    vi.doMock("@/lib/ai/orchestration/aais-learning-guide-graph", () => ({
+      runAaisLearningGuideGraph: vi.fn(async () => createMockGuideGraphResult()),
+    }));
+    const storeModule = await import("@/lib/server/aais-learning-store");
+    const store = storeModule.getAaisLearningStore();
+    vi.spyOn(store, "appendGuideExchange").mockRejectedValue(
+      new storeModule.AaisLearnerSessionLimitError("payload_too_large"),
+    );
+    const guideRoute = await import("@/app/api/learning/ai-guide/route");
+
+    const response = await guideRoute.POST(new Request(
+      "http://localhost/api/learning/ai-guide?stream=1",
+      {
+        method: "POST",
+        headers: {
+          accept: "text/event-stream",
+          cookie,
+          "x-aais-csrf": csrf,
+        },
+        body: JSON.stringify({
+          dataGeneration: 1,
+          taskId: "training_task_1",
+          learnerInput: "容量失败必须与 JSON 使用同一公开错误。",
+          workspaceState: { currentStep: "guide" },
+        }),
+      },
+    ));
+    const streamText = await response.text();
+
+    expect(streamText).toContain("event: error");
+    expect(streamText).toContain('"code":"AI_PERSISTENCE_FAILED"');
+    expect(streamText).not.toContain("event: done");
+    expect(streamText).not.toContain("Mocked final answer");
+    expect(streamText).not.toContain('"message":');
   });
 
   it("rejects a JSON guide append when privacy deletion wins after graph start", async () => {
@@ -2631,7 +3464,16 @@ describe("AAIS learning API routes", () => {
 
   it("keeps dispatched cost after graph failure without persisting a guide exchange", async () => {
     vi.stubEnv("AAIS_AI_DAILY_GUIDE_LIMIT", "1");
-    const graphMock = vi.fn(async () => {
+    const graphMock = vi.fn(async (graphInput: {
+      providerDispatchFence?: {
+        acquire(): Promise<"ready" | "deadline">;
+        markAttemptStarted(): void;
+      };
+    }) => {
+      const fenceStatus = await graphInput.providerDispatchFence?.acquire();
+      if (fenceStatus === "ready") {
+        graphInput.providerDispatchFence?.markAttemptStarted();
+      }
       throw new Error("injected graph failure");
     });
     vi.doMock("@/lib/ai/orchestration/aais-learning-guide-graph", () => ({
@@ -2658,7 +3500,21 @@ describe("AAIS learning API routes", () => {
         body: requestBody,
       },
     ));
-    expect(firstResponse.status).toBe(500);
+    expect(firstResponse.status).toBe(503);
+    const firstBody = await firstResponse.json();
+    expect(firstBody).toMatchObject({
+      error: {
+        schemaVersion: 1,
+        code: "AI_LIVE_UNAVAILABLE",
+        retryable: true,
+        learnerAction: "retry",
+      },
+    });
+    expect(firstBody.error).not.toHaveProperty("message");
+    expect(firstBody.error.diagnosticId).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+    );
+    expect(JSON.stringify(firstBody)).not.toContain("injected graph failure");
     const sessionResponse = await sessionRoute.GET(new Request(
       "http://localhost/api/learning/session",
       { headers: { cookie } },
@@ -3375,6 +4231,19 @@ function createDeferredGuideResult() {
     promise,
     resolve,
   };
+}
+
+function stubDeterministicGuideRuntime() {
+  vi.stubEnv("AAIS_AI_RUNTIME_MODE", "allow-deterministic");
+  vi.stubEnv("AAIS_AI_PROVIDER", "");
+  vi.stubEnv("AAIS_AI_ENDPOINT", "");
+  vi.stubEnv("AAIS_AI_API_KEY", "");
+  vi.stubEnv("AAIS_AI_MODEL", "");
+  vi.stubEnv("AAIS_AI_FALLBACK_ENABLED", "false");
+  vi.stubEnv("AAIS_AI_FALLBACK_PROVIDER", "");
+  vi.stubEnv("AAIS_AI_FALLBACK_ENDPOINT", "");
+  vi.stubEnv("AAIS_AI_FALLBACK_API_KEY", "");
+  vi.stubEnv("AAIS_AI_FALLBACK_MODEL", "");
 }
 
 function createMockGuideGraphResult() {

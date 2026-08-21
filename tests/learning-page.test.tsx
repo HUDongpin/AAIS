@@ -1497,7 +1497,7 @@ describe("AAIS LearningPage", () => {
     });
 
     expect(await screen.findByText("小张已给出分步支架。")).toBeTruthy();
-    expect(screen.getByText("离线支架模式")).toBeTruthy();
+    expect(screen.getByText("本地安全支架")).toBeTruthy();
   });
 
   it("does not open the file picker when admission is rejected and exposes no quick starts", () => {
@@ -2002,7 +2002,7 @@ describe("AAIS LearningPage", () => {
     });
 
     expect(screen.queryByText("CAAIS 已收到，多智能体链路正在处理。")).toBeNull();
-    expect(screen.getByText("智能服务暂时不可用，已保留你的问题。请稍后重试。")).toBeTruthy();
+    expect(screen.getByText("实时 AI 链路暂时不可用。你的问题仍保留在本页，可直接重试。")).toBeTruthy();
     expect((screen.getByRole("button", { name: "发送" }) as HTMLButtonElement).disabled).toBe(false);
   });
 
@@ -2059,7 +2059,7 @@ describe("AAIS LearningPage", () => {
 
     expect(guideSignal?.aborted).toBe(true);
     expect(cancelStream).toHaveBeenCalledTimes(1);
-    expect(screen.getByText("智能服务暂时不可用，已保留你的问题。请稍后重试。")).toBeTruthy();
+    expect(screen.getByText("实时 AI 链路暂时不可用。你的问题仍保留在本页，可直接重试。")).toBeTruthy();
     expect((screen.getByRole("button", { name: "发送" }) as HTMLButtonElement).disabled).toBe(false);
   });
 
@@ -2338,6 +2338,159 @@ describe("AAIS LearningPage", () => {
     expect(screen.getByText("上传成功 · 已读取")).toBeTruthy();
   });
 
+  it("polls an in-progress operation to completion with the same operation id", async () => {
+    setCsrfCookie();
+    const guideBodies: Array<{ operationId?: string }> = [];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.startsWith("/api/learning/session") && (!init || init.method === "GET")) {
+        return Response.json({ session: createClientSessionFixture("") });
+      }
+      if (url === "/api/learning/ai-guide" && init?.method === "POST") {
+        guideBodies.push(JSON.parse(String(init.body)) as { operationId?: string });
+        if (guideBodies.length === 1) {
+          return Response.json({
+            error: {
+              schemaVersion: 1,
+              code: "AI_OPERATION_IN_PROGRESS",
+              diagnosticId: "DG-POLL-COMPLETE",
+              retryable: true,
+              learnerAction: "retry",
+              message: "This operation is still in progress.",
+            },
+          }, { status: 202, headers: { "retry-after": "0" } });
+        }
+        return Response.json({
+          message: { text: "AAIS 智能体已回复。" },
+          turns: [{
+            agentId: "A1",
+            label: "小张",
+            content: "后台操作完成后已安全恢复。",
+            actions: ["respond"],
+          }],
+          orchestration: {
+            runtime: {
+              timings: { fallback: false },
+              delivery: {
+                responseMode: "live",
+                channel: "primary",
+                degraded: false,
+                diagnosticId: "DG-POLL-COMPLETE",
+                persisted: true,
+                budgetDisposition: "charged-once",
+              },
+            },
+          },
+        });
+      }
+      return Response.json({ ok: true });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<LearningPage />);
+    const question = "请等待原操作完成。";
+
+    submitGuidePrompt(question);
+
+    expect(await screen.findByText("后台操作完成后已安全恢复。")).toBeTruthy();
+    expect(guideBodies).toHaveLength(2);
+    expect(guideBodies[0]?.operationId).toEqual(expect.any(String));
+    expect(guideBodies[1]?.operationId).toBe(guideBodies[0]?.operationId);
+    expect(screen.getAllByText(question)).toHaveLength(1);
+    expect(telemetryMocks.record.mock.calls.some(([event]) =>
+      event.eventName === "ai_guide_submit"
+      && event.outcome === "retry"
+      && event.detail?.retry_reason === "learner_retry"
+    )).toBe(false);
+  });
+
+  it("bounds persistent in-progress polling and exposes a learner retry", async () => {
+    vi.useFakeTimers();
+    setCsrfCookie();
+    const guideBodies: Array<{ operationId?: string }> = [];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.startsWith("/api/learning/session") && (!init || init.method === "GET")) {
+        return Response.json({ session: createClientSessionFixture("") });
+      }
+      if (url === "/api/learning/ai-guide" && init?.method === "POST") {
+        guideBodies.push(JSON.parse(String(init.body)) as { operationId?: string });
+        return Response.json({
+          error: {
+            schemaVersion: 1,
+            code: "AI_OPERATION_IN_PROGRESS",
+            diagnosticId: "DG-POLL-TIMEOUT",
+            retryable: true,
+            learnerAction: "retry",
+            message: "This operation is still in progress.",
+          },
+        }, { status: 202, headers: { "retry-after": "1" } });
+      }
+      return Response.json({ ok: true });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<LearningPage />);
+
+    submitGuidePrompt("原操作持续处理中。");
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+      await vi.advanceTimersByTimeAsync(30_001);
+    });
+
+    expect(screen.getByText("AI 暂时降级")).toBeTruthy();
+    expect(screen.getByText("支持码：DG-POLL-TIMEOUT")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "重试这个问题" })).toBeTruthy();
+    expect(guideBodies.length).toBeGreaterThan(1);
+    expect(new Set(guideBodies.map((body) => body.operationId)).size).toBe(1);
+    expect(telemetryMocks.record.mock.calls.some(([event]) =>
+      event.eventName === "ai_guide_submit"
+      && event.outcome === "retry"
+      && event.detail?.retry_reason === "learner_retry"
+    )).toBe(false);
+  });
+
+  it("aborts an in-progress poll without issuing another request", async () => {
+    vi.useFakeTimers();
+    setCsrfCookie();
+    const guideBodies: Array<{ operationId?: string }> = [];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.startsWith("/api/learning/session") && (!init || init.method === "GET")) {
+        return Response.json({ session: createClientSessionFixture("") });
+      }
+      if (url === "/api/learning/ai-guide" && init?.method === "POST") {
+        guideBodies.push(JSON.parse(String(init.body)) as { operationId?: string });
+        return Response.json({
+          error: {
+            schemaVersion: 1,
+            code: "AI_OPERATION_IN_PROGRESS",
+            diagnosticId: "DG-POLL-ABORT",
+            retryable: true,
+            learnerAction: "retry",
+            message: "This operation is still in progress.",
+          },
+        }, { status: 202, headers: { "retry-after": "1" } });
+      }
+      return Response.json({ ok: true });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const { unmount } = render(<LearningPage />);
+    submitGuidePrompt("卸载时停止查询。");
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(guideBodies).toHaveLength(1);
+    unmount();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5_000);
+    });
+
+    expect(guideBodies).toHaveLength(1);
+    expect(guideBodies[0]?.operationId).toEqual(expect.any(String));
+  });
+
   it("keeps an attachment available for retry and never claims success when the guide fails", async () => {
     setCsrfCookie();
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -2363,11 +2516,276 @@ describe("AAIS LearningPage", () => {
     fireEvent.click(screen.getByRole("button", { name: "发送" }));
 
     expect(await screen.findByText(
-      "智能服务暂时不可用，已保留你的问题。请稍后重试。",
+      "实时 AI 链路暂时不可用。你的问题仍保留在本页，可直接重试。",
     )).toBeTruthy();
     expect(screen.getByRole("button", { name: "移除 retry-notes.txt" })).toBeTruthy();
     expect(screen.queryByRole("list", { name: "此消息已发送的文件" })).toBeNull();
     expect(screen.queryByText("上传成功 · 已读取")).toBeNull();
+  });
+
+  it("builds an RFC 4122 v4 guide operation id with getRandomValues when randomUUID is unavailable", async () => {
+    setCsrfCookie();
+    vi.stubGlobal("crypto", {
+      getRandomValues(array: Uint8Array) {
+        array.forEach((_value, index) => {
+          array[index] = index + 1;
+        });
+        return array;
+      },
+    });
+    let guideBody: { operationId?: string } | undefined;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.startsWith("/api/learning/session") && (!init || init.method === "GET")) {
+        return Response.json({ session: createClientSessionFixture("") });
+      }
+      if (url === "/api/learning/ai-guide" && init?.method === "POST") {
+        guideBody = JSON.parse(String(init.body)) as { operationId?: string };
+        return Response.json({
+          message: { text: "安全请求标识已使用。" },
+          orchestration: { runtime: { timings: { fallback: false } } },
+        });
+      }
+      return Response.json({ ok: true });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<LearningPage />);
+
+    submitGuidePrompt("请测试安全请求标识。");
+
+    expect(await screen.findByText("安全请求标识已使用。")).toBeTruthy();
+    expect(guideBody?.operationId).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+    );
+    expect(guideBody?.operationId).toBe("01020304-0506-4708-890a-0b0c0d0e0f10");
+  });
+
+  it("fails locally and keeps the draft when Web Crypto cannot create a UUID", async () => {
+    vi.stubGlobal("crypto", {});
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).startsWith("/api/learning/session") && (!init || init.method === "GET")) {
+        return Response.json({ session: createClientSessionFixture("") });
+      }
+      return Response.json({ ok: true });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<LearningPage />);
+    const question = "这个问题不能带着非 UUID 发出。";
+
+    submitGuidePrompt(question);
+
+    expect(await screen.findByText("当前浏览器无法安全创建请求标识。请升级浏览器后再试。")).toBeTruthy();
+    expect((screen.getByLabelText("向智能导学输入你的想法") as HTMLInputElement).value).toBe(question);
+    expect(screen.queryByText(question)).toBeNull();
+    expect(fetchMock.mock.calls.filter(([input, init]) =>
+      String(input) === "/api/learning/ai-guide" && init?.method === "POST"
+    )).toHaveLength(0);
+  });
+
+  it("retries a structured chain failure with a new operation id and removes no question", async () => {
+    setCsrfCookie();
+    const guideBodies: Array<Record<string, unknown>> = [];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.startsWith("/api/learning/session") && (!init || init.method === "GET")) {
+        return Response.json({ session: createClientSessionFixture("") });
+      }
+      if (url === "/api/learning/ai-guide" && init?.method === "POST") {
+        guideBodies.push(JSON.parse(String(init.body)) as Record<string, unknown>);
+        if (guideBodies.length === 1) {
+          return Response.json({
+            error: {
+              schemaVersion: 1,
+              code: "AI_LIVE_UNAVAILABLE",
+              diagnosticId: "DG-CHAIN-RETRY",
+              retryable: true,
+              learnerAction: "retry",
+              message: "实时 AI 链路暂时不可用。",
+            },
+          }, { status: 503 });
+        }
+        return Response.json({
+          message: { text: "AAIS 智能体已回复。" },
+          turns: [{
+            agentId: "A1",
+            label: "小张",
+            content: "备选实时通道已回复。",
+            actions: ["respond"],
+          }],
+          orchestration: {
+            runtime: {
+              timings: { fallback: true },
+              delivery: {
+                schemaVersion: 1,
+                responseMode: "live",
+                channel: "secondary",
+                degraded: true,
+                diagnosticId: "DG-LIVE-RETRY",
+                persisted: true,
+                budgetDisposition: "charged-once",
+              },
+            },
+          },
+        });
+      }
+      return Response.json({ ok: true });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<LearningPage />);
+    const question = "请保留这个问题并允许我重试。";
+
+    submitGuidePrompt(question);
+
+    expect(await screen.findByText("AI 暂时降级")).toBeTruthy();
+    expect(screen.getByText("支持码：DG-CHAIN-RETRY")).toBeTruthy();
+    expect(screen.getAllByText(question)).toHaveLength(1);
+    fireEvent.click(screen.getByRole("button", { name: "重试这个问题" }));
+
+    expect(await screen.findByText("备选实时通道已回复。")).toBeTruthy();
+    expect(guideBodies).toHaveLength(2);
+    expect(guideBodies[0]?.operationId).toEqual(expect.any(String));
+    expect(guideBodies[1]?.operationId).toEqual(expect.any(String));
+    expect(guideBodies[1]?.operationId).not.toBe(guideBodies[0]?.operationId);
+    const learnerRetryEvent = telemetryMocks.record.mock.calls
+      .map(([event]) => event)
+      .find((event) =>
+        event.eventName === "ai_guide_submit"
+        && event.outcome === "retry"
+        && event.detail?.retry_reason === "learner_retry"
+      );
+    expect(learnerRetryEvent?.detail?.operation_id).toBe(guideBodies[1]?.operationId);
+    expect(screen.getAllByText(question)).toHaveLength(1);
+    expect(screen.queryByText("本地安全支架")).toBeNull();
+    expect(screen.queryByText("支持码：DG-CHAIN-RETRY")).toBeNull();
+  });
+
+  it("keeps a blocked question on the page and restores it to the composer for rewriting", async () => {
+    setCsrfCookie();
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.startsWith("/api/learning/session") && (!init || init.method === "GET")) {
+        return Response.json({ session: createClientSessionFixture("") });
+      }
+      if (url === "/api/learning/ai-guide" && init?.method === "POST") {
+        return Response.json({
+          error: {
+            schemaVersion: 1,
+            code: "AI_REPHRASE_REQUIRED",
+            diagnosticId: "DG-REPHRASE-01",
+            retryable: false,
+            learnerAction: "rephrase",
+            message: "请改写问题后重试。",
+          },
+        }, { status: 422 });
+      }
+      return Response.json({ ok: true });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<LearningPage />);
+    const question = "请帮我改写这个问题。";
+
+    submitGuidePrompt(question);
+
+    expect(await screen.findByText("这次问题无法提交给 AI")).toBeTruthy();
+    expect(screen.getByText("请换一种表述后再试。")).toBeTruthy();
+    expect(screen.getByText("支持码：DG-REPHRASE-01")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "重试这个问题" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "改写这个问题" }));
+
+    const composer = screen.getByLabelText("向智能导学输入你的想法") as HTMLInputElement;
+    expect(composer.value).toBe(question);
+    expect(document.activeElement).toBe(composer);
+    expect(screen.getAllByText(question)).toHaveLength(1);
+    expect(fetchMock.mock.calls.filter(([input, init]) =>
+      String(input) === "/api/learning/ai-guide" && init?.method === "POST"
+    )).toHaveLength(1);
+  });
+
+  it("maps a live-provider configuration error to support guidance without promising a retry", async () => {
+    setCsrfCookie();
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.startsWith("/api/learning/session") && (!init || init.method === "GET")) {
+        return Response.json({ session: createClientSessionFixture("") });
+      }
+      if (url === "/api/learning/ai-guide" && init?.method === "POST") {
+        return Response.json({
+          error: {
+            schemaVersion: 1,
+            code: "AI_LIVE_NOT_READY",
+            diagnosticId: "DG-CONFIG-PUBLIC",
+            retryable: false,
+            learnerAction: "contact-support",
+            message: "The live AI production configuration requires attention.",
+          },
+        }, { status: 503 });
+      }
+      return Response.json({ ok: true });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<LearningPage />);
+
+    submitGuidePrompt("请保留这个配置失败时的问题。");
+
+    expect(await screen.findByText("AI 服务配置未就绪")).toBeTruthy();
+    expect(screen.getByText("支持码：DG-CONFIG-PUBLIC")).toBeTruthy();
+    expect(screen.getByText("请保留这个配置失败时的问题。")).toBeTruthy();
+    expect(screen.queryByText("The live AI production configuration requires attention.")).toBeNull();
+    expect(screen.queryByRole("button", { name: "重试这个问题" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "改写这个问题" })).toBeNull();
+  });
+
+  it("marks a browser-offline request as unconfirmed and retries it after connectivity returns", async () => {
+    setCsrfCookie();
+    const online = vi.spyOn(window.navigator, "onLine", "get").mockReturnValue(false);
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.startsWith("/api/learning/session") && (!init || init.method === "GET")) {
+        return Response.json({ session: createClientSessionFixture("") });
+      }
+      if (url === "/api/learning/ai-guide" && init?.method === "POST") {
+        return Response.json({
+          message: { text: "AAIS 智能体已回复。" },
+          turns: [{
+            agentId: "A1",
+            label: "小张",
+            content: "连接恢复后已回复。",
+            actions: ["respond"],
+          }],
+          orchestration: {
+            runtime: {
+              delivery: {
+                responseMode: "live",
+                channel: "primary",
+                degraded: false,
+                diagnosticId: "DG-ONLINE-01",
+                persisted: true,
+                budgetDisposition: "charged-once",
+              },
+            },
+          },
+        });
+      }
+      return Response.json({ ok: true });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<LearningPage />);
+
+    submitGuidePrompt("网络恢复后请重试这个问题。");
+
+    expect(await screen.findByText("连接中断，尚未确认保存")).toBeTruthy();
+    expect(screen.getByText(/^支持码：LOCAL-/)).toBeTruthy();
+    expect(fetchMock.mock.calls.filter(([input, init]) =>
+      String(input) === "/api/learning/ai-guide" && init?.method === "POST"
+    )).toHaveLength(0);
+
+    online.mockReturnValue(true);
+    fireEvent.click(screen.getByRole("button", { name: "重试这个问题" }));
+
+    expect(await screen.findByText("连接恢复后已回复。")).toBeTruthy();
+    expect(fetchMock.mock.calls.filter(([input, init]) =>
+      String(input) === "/api/learning/ai-guide" && init?.method === "POST"
+    )).toHaveLength(1);
   });
 
   it("rejects oversized guide attachments inline before sending them", async () => {
@@ -3879,8 +4297,75 @@ describe("AAIS LearningPage", () => {
     expect(attemptedEvent.detail.operation_id).toBe(aiEvents[0].detail.operation_id);
     expect(aiEvents[0].detail.operation_id).toBe(aiEvents[1].detail.operation_id);
     expect(aiEvents[1].detail.operation_id).toBe(aiEvents[2].detail.operation_id);
+    const guideBodies = fetchMock.mock.calls
+      .filter(([input, init]) => String(input) === "/api/learning/ai-guide" && init?.method === "POST")
+      .map(([, init]) => JSON.parse(String(init?.body)) as { operationId?: string });
+    expect(guideBodies).toHaveLength(2);
+    expect(guideBodies[0]?.operationId).toBe(attemptedEvent.detail.operation_id);
+    expect(guideBodies[1]?.operationId).toBe(guideBodies[0]?.operationId);
     expect(JSON.stringify([attemptedEvent, ...aiEvents])).not.toContain(rawQuestion);
     expect(attemptedEvent.detail.prompt_length).toBe(rawQuestion.length);
+  });
+
+  it("replays an interrupted SSE transport through JSON with the same operation id", async () => {
+    setCsrfCookie();
+    const guideBodies: Array<{ operationId?: string }> = [];
+    let guideAttempts = 0;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.startsWith("/api/learning/session") && (!init || init.method === "GET")) {
+        return Response.json({ session: createClientSessionFixture("") });
+      }
+      if (url === "/api/learning/ai-guide" && init?.method === "POST") {
+        guideAttempts += 1;
+        guideBodies.push(JSON.parse(String(init.body)) as { operationId?: string });
+        if (guideAttempts === 1) {
+          return new Response(
+            'event: ack\ndata: {"status":"accepted"}\n\n',
+            { headers: { "content-type": "text/event-stream;charset=utf-8" } },
+          );
+        }
+        return Response.json({
+          message: { text: "已通过同一操作恢复。" },
+          turns: [{
+            agentId: "A1",
+            label: "导学智能体",
+            content: "已通过同一操作恢复。",
+            actions: ["respond"],
+          }],
+          orchestration: {
+            runtime: {
+              timings: { fallback: false },
+              delivery: {
+                schemaVersion: 1,
+                responseMode: "live",
+                channel: "primary",
+                degraded: false,
+                diagnosticId: "10000000-0000-4000-8000-000000000010",
+                persisted: true,
+                budgetDisposition: "charged-once",
+              },
+            },
+          },
+        });
+      }
+      return Response.json({ ok: true });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<LearningPage />);
+    await screen.findByRole("button", { name: "发送" });
+    fireEvent.change(screen.getByLabelText("向智能导学输入你的想法"), {
+      target: { value: "恢复这次传输" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "发送" }));
+
+    expect(await screen.findByText("已通过同一操作恢复。")).toBeTruthy();
+    expect(guideBodies).toHaveLength(2);
+    expect(guideBodies[0]?.operationId).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+    );
+    expect(guideBodies[1]?.operationId).toBe(guideBodies[0]?.operationId);
   });
 
   it("does not mutate the guide transcript or call AI when admission is rejected", async () => {

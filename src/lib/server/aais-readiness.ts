@@ -18,6 +18,10 @@ import {
   type AaisAiEvalManifestStatus,
 } from "@/lib/server/aais-ai-eval-manifest";
 import {
+  getAaisAiProductionReleaseGate,
+  type AaisAiReleaseGate,
+} from "@/lib/server/aais-ai-release-lock";
+import {
   readAaisAiRuntimeConfig,
   type AaisAiRuntimeProfile,
 } from "@/lib/ai/aais-ai-runtime-config";
@@ -80,8 +84,11 @@ export type AaisReadinessReport = {
       gitCommit: {
         present: boolean;
         shortSha: string | null;
+        fullSha: string | null;
         source: "VERCEL_GIT_COMMIT_SHA" | "AAIS_DEPLOYMENT_GIT_COMMIT_SHA" | "missing";
       };
+      deploymentId: string | null;
+      configGeneration: string | null;
     };
   };
   checks: {
@@ -180,12 +187,21 @@ export type AaisReadinessReport = {
       roleMapping: AaisReadinessCheck & AaisOidcRoleMappingStatus;
     };
     ai: AaisReadinessCheck & {
-      provider: "deterministic" | "openai-compatible";
+      provider: "deterministic" | "qwen";
+      deliveryPolicy: AaisAiRuntimeProfile["deliveryPolicy"];
       evalVersion: string | null;
       evalManifest: AaisAiEvalManifestStatus;
       evalSource: "configured" | "bundled" | null;
       modelFingerprint: string | null;
       runtimeProfile: AaisAiRuntimeProfile;
+      releaseGate: AaisAiReleaseGate;
+      primary: AaisAiReleaseGate["providers"]["primary"];
+      secondary: AaisAiReleaseGate["providers"]["secondary"];
+      liveProbe: AaisReadinessCheck & {
+        bearerConfigured: boolean;
+        bearerFormatValid: boolean;
+        bearerDistinct: boolean;
+      };
     };
     research: AaisReadinessCheck & {
       enabled: boolean;
@@ -295,24 +311,30 @@ export async function getAaisReadinessReport(now = new Date()): Promise<AaisRead
     && aiRuntimeConfig.configurationStatus.fallback !== "invalid";
   const aiModel = aiRuntimeConfig.primary?.model ?? null;
   const aiFallbackModel = aiRuntimeConfig.fallback?.model ?? null;
-  const aiProvider = aiRuntimeConfig.profile.mode === "live" ? "openai-compatible" : "deterministic";
+  const aiProvider = aiRuntimeConfig.primary?.profile.provider === "qwen"
+    ? "qwen"
+    : "deterministic";
+  const aiFallbackProvider = aiRuntimeConfig.fallback?.profile.provider === "deepseek"
+    ? "deepseek"
+    : "deterministic";
   const aiModelFingerprint = aiRuntimeConfig.profile.primary?.modelFingerprint ?? null;
   const aiEvalApproval = getAaisAiEvalApproval({
-    required: production && aiProvider === "openai-compatible",
+    required: production && aiRuntimeConfig.deliveryPolicy === "require-live",
     provider: aiProvider,
     model: aiModel,
+    providerRole: "primary",
   });
-  const aiFallbackEvalApproval = aiFallbackModel
-    ? getAaisAiEvalApproval({
-        required: production && aiProvider === "openai-compatible",
-        provider: aiProvider,
-        model: aiFallbackModel,
-      })
-    : null;
+  const aiFallbackEvalApproval = getAaisAiEvalApproval({
+    required: production && aiRuntimeConfig.deliveryPolicy === "require-live",
+    provider: aiFallbackProvider,
+    model: aiFallbackModel,
+    providerRole: "fallback",
+  });
   const aiEvalVersion = aiEvalApproval.evalVersion;
   const aiEvalManifest = aiEvalApproval.manifest;
   const aiApproved = aiEvalApproval.approved
-    && (aiFallbackEvalApproval?.approved ?? true);
+    && aiFallbackEvalApproval.approved;
+  const aiReleaseGate = getAaisAiProductionReleaseGate(process.env, now);
   const release = getAaisReleaseMetadata();
   const [storageProbe, persistentOutbox, authDeliveryProbe, research] = await Promise.all([
     storageProbePromise,
@@ -328,6 +350,24 @@ export async function getAaisReadinessReport(now = new Date()): Promise<AaisRead
     && persistentOutbox.deadLetter === 0;
   const researchIsolationRequired = requiresAaisResearchDataPlaneIsolation();
 
+  if (production && !release.deployment.gitCommit.fullSha) {
+    issues.push("AAIS_DEPLOYMENT_GIT_COMMIT_SHA");
+  }
+  if (production && !release.deployment.deploymentId) {
+    issues.push("VERCEL_DEPLOYMENT_ID");
+  }
+  if (production && !release.deployment.configGeneration) {
+    issues.push("AAIS_CONFIG_GENERATION");
+  }
+  const vercelGitCommitValue = process.env.VERCEL_GIT_COMMIT_SHA?.trim().toLowerCase();
+  const explicitGitCommitValue = process.env.AAIS_DEPLOYMENT_GIT_COMMIT_SHA
+    ?.trim().toLowerCase();
+  if (production
+    && vercelGitCommitValue
+    && explicitGitCommitValue
+    && vercelGitCommitValue !== explicitGitCommitValue) {
+    issues.push("AAIS_DEPLOYMENT_GIT_COMMIT_SHA_MISMATCH");
+  }
   if (production && !sessionSecret.valid) {
     issues.push("AAIS_SESSION_SECRET");
   }
@@ -429,18 +469,23 @@ export async function getAaisReadinessReport(now = new Date()): Promise<AaisRead
   if (production && !aiEndpointConfigurationValid) {
     issues.push("AAIS_AI_ENDPOINT_CONFIGURATION");
   }
-  if (production && aiProvider === "openai-compatible" && !aiEvalApproval.approved) {
+  if (production && aiRuntimeConfig.deliveryPolicy === "require-live") {
+    issues.push(...aiReleaseGate.issues);
+    if (!operatorSecrets.aiLiveProbeTokenValid) {
+      issues.push("AAIS_AI_LIVE_PROBE_BEARER_TOKEN");
+    }
+  }
+  if (production && aiProvider === "qwen" && !aiEvalApproval.approved) {
     issues.push("AAIS_AI_EVAL_APPROVED/AAIS_AI_EVAL_VERSION");
   }
   if (
     production
-    && aiProvider === "openai-compatible"
-    && aiFallbackEvalApproval
+    && aiProvider === "qwen"
     && !aiFallbackEvalApproval.approved
   ) {
     issues.push("AAIS_AI_FALLBACK_EVAL_MANIFEST");
   }
-  if (production && aiProvider === "openai-compatible" && aiEvalManifest.issue) {
+  if (production && aiProvider === "qwen" && aiEvalManifest.issue) {
     issues.push(aiEvalManifest.issue);
   }
   if (researchIsolationRequired && !isAaisResearchModeEnabled()) {
@@ -628,13 +673,27 @@ export async function getAaisReadinessReport(now = new Date()): Promise<AaisRead
           production,
           aiEvalManifestStatus: aiEvalManifest.status,
           endpointConfigurationValid: aiEndpointConfigurationValid,
+          deliveryPolicy: aiRuntimeConfig.deliveryPolicy,
+          releaseGateStatus: aiReleaseGate.status,
         }),
         provider: aiProvider,
-        evalVersion: aiProvider === "openai-compatible" ? aiEvalVersion : null,
+        deliveryPolicy: aiRuntimeConfig.deliveryPolicy,
+        evalVersion: aiProvider === "qwen" ? aiEvalVersion : null,
         evalManifest: aiEvalManifest.status,
         evalSource: aiEvalManifest.source ?? null,
         modelFingerprint: aiModelFingerprint,
         runtimeProfile: aiRuntimeConfig.profile,
+        releaseGate: aiReleaseGate,
+        primary: aiReleaseGate.providers.primary,
+        secondary: aiReleaseGate.providers.secondary,
+        liveProbe: {
+          status: operatorSecrets.aiLiveProbeTokenValid && operatorSecrets.distinct
+            ? "ok"
+            : operatorSecrets.aiLiveProbeTokenConfigured ? "invalid" : "missing",
+          bearerConfigured: operatorSecrets.aiLiveProbeTokenConfigured,
+          bearerFormatValid: operatorSecrets.aiLiveProbeTokenValid,
+          bearerDistinct: operatorSecrets.distinct,
+        },
       },
       research,
     },
@@ -1591,12 +1650,14 @@ function getAaisProductOperatorSecretStatus() {
   const outboxToken = process.env.AAIS_LRS_OUTBOX_FLUSH_TOKEN?.trim() ?? "";
   const authEmailOutboxToken = process.env.AAIS_AUTH_EMAIL_OUTBOX_FLUSH_TOKEN?.trim() ?? "";
   const readinessToken = process.env.AAIS_READINESS_BEARER_TOKEN?.trim() ?? "";
+  const aiLiveProbeToken = process.env.AAIS_AI_LIVE_PROBE_BEARER_TOKEN?.trim() ?? "";
   const sessionSecret = process.env.AAIS_SESSION_SECRET?.trim() ?? "";
   const distinct = areAaisOpaqueSecretsDistinct([
     cronSecret,
     outboxToken,
     authEmailOutboxToken,
     readinessToken,
+    aiLiveProbeToken,
     sessionSecret,
   ]);
   return {
@@ -1608,6 +1669,8 @@ function getAaisProductOperatorSecretStatus() {
     // for manual/private workers, but cannot make the deployed schedule ready.
     authEmailWorkerAuthorized: isAaisStrongOpaqueSecret(cronSecret) && distinct,
     readinessTokenValid: !readinessToken || isAaisStrongOpaqueSecret(readinessToken),
+    aiLiveProbeTokenConfigured: Boolean(aiLiveProbeToken),
+    aiLiveProbeTokenValid: isAaisStrongOpaqueSecret(aiLiveProbeToken),
     distinct,
   };
 }
@@ -1698,11 +1761,16 @@ function getAiStatus(input: {
   production: boolean;
   aiEvalManifestStatus: AaisAiEvalManifestStatus;
   endpointConfigurationValid: boolean;
+  deliveryPolicy: AaisAiRuntimeProfile["deliveryPolicy"];
+  releaseGateStatus: AaisAiReleaseGate["status"];
 }): AaisReadinessCheckStatus {
   if (input.production && !input.endpointConfigurationValid) {
     return "invalid";
   }
-  if (input.aiProvider !== "openai-compatible" || !input.production) {
+  if (input.production && input.deliveryPolicy === "require-live") {
+    return input.releaseGateStatus === "verified" ? "ok" : "blocked";
+  }
+  if (input.aiProvider !== "qwen" || !input.production) {
     return "ok";
   }
   return input.aiApproved && input.aiEvalManifestStatus === "verified" ? "ok" : "blocked";
@@ -1724,23 +1792,28 @@ function getOidcStatus(input: {
 
 function getAaisReleaseMetadata(): AaisReadinessReport["release"] {
   const releaseId = readSafeReleaseId(process.env.AAIS_RELEASE_ID);
-  const vercelGitCommitShortSha = readSafeGitCommitShortSha(process.env.VERCEL_GIT_COMMIT_SHA);
-  const explicitGitCommitShortSha = readSafeGitCommitShortSha(process.env.AAIS_DEPLOYMENT_GIT_COMMIT_SHA);
-  const gitCommitShortSha = vercelGitCommitShortSha ?? explicitGitCommitShortSha;
+  const vercelGitCommitFullSha = readSafeGitCommitFullSha(process.env.VERCEL_GIT_COMMIT_SHA);
+  const explicitGitCommitFullSha = readSafeGitCommitFullSha(
+    process.env.AAIS_DEPLOYMENT_GIT_COMMIT_SHA,
+  );
+  const gitCommitFullSha = vercelGitCommitFullSha ?? explicitGitCommitFullSha;
   return {
     id: releaseId,
     source: releaseId ? "AAIS_RELEASE_ID" : "missing",
     deployment: {
       provider: process.env.VERCEL ? "vercel" : "unknown",
       gitCommit: {
-        present: Boolean(gitCommitShortSha),
-        shortSha: gitCommitShortSha,
-        source: vercelGitCommitShortSha
+        present: Boolean(gitCommitFullSha),
+        shortSha: gitCommitFullSha?.slice(0, 12) ?? null,
+        fullSha: gitCommitFullSha,
+        source: vercelGitCommitFullSha
           ? "VERCEL_GIT_COMMIT_SHA"
-          : explicitGitCommitShortSha
+          : explicitGitCommitFullSha
             ? "AAIS_DEPLOYMENT_GIT_COMMIT_SHA"
             : "missing",
       },
+      deploymentId: readSafeReleaseId(process.env.VERCEL_DEPLOYMENT_ID),
+      configGeneration: readSafeReleaseId(process.env.AAIS_CONFIG_GENERATION),
     },
   };
 }
@@ -1750,9 +1823,9 @@ function readSafeReleaseId(value: string | undefined) {
   return /^[A-Za-z0-9][A-Za-z0-9._:-]{2,127}$/.test(trimmed) ? trimmed : null;
 }
 
-function readSafeGitCommitShortSha(value: string | undefined) {
+function readSafeGitCommitFullSha(value: string | undefined) {
   const trimmed = String(value ?? "").trim().toLowerCase();
-  return /^[a-f0-9]{7,40}$/.test(trimmed) ? trimmed.slice(0, 12) : null;
+  return /^[a-f0-9]{40}$/.test(trimmed) ? trimmed : null;
 }
 
 async function readPersistentOutboxStatus() {

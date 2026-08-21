@@ -2,6 +2,8 @@ import { getVisibleGuideTurns } from "@/components/pages/learning/guide-chat";
 import {
   getGuideStreamDoneText,
   getGuideStreamProgressText,
+  isGuideLiveDelivery,
+  readGuideDeliveryReceipt,
   type GuideResponseBody,
   type GuideStreamProgress,
 } from "@/components/pages/learning/guide-stream";
@@ -15,6 +17,11 @@ export function applyGuideResponseToMessages(
   locale: Locale,
 ): GuideMessage[] {
   const structuredTurns = getVisibleGuideTurns(body.turns);
+  const responseRuntime = body.orchestration?.runtime;
+  const delivery = readGuideDeliveryReceipt(responseRuntime?.delivery);
+  const fallback = isGuideLiveDelivery(delivery)
+    ? false
+    : responseRuntime?.timings?.fallback === true;
   return messages.map((message) =>
     message.id === assistantId
       ? {
@@ -22,7 +29,11 @@ export function applyGuideResponseToMessages(
           text: structuredTurns.length ? getGuideStreamDoneText(locale) : body.message?.text ?? "",
           ...(structuredTurns.length ? { turns: structuredTurns } : { turns: undefined }),
           runtime: {
-            fallback: body.orchestration?.runtime?.timings?.fallback === true,
+            fallback,
+            delivery,
+            operationId: responseRuntime?.operationId,
+            requestAttemptId: responseRuntime?.requestAttemptId,
+            diagnosticId: delivery?.diagnosticId ?? responseRuntime?.diagnosticId,
           },
           trace: {
             graphId: body.orchestration?.graph?.graphId,
@@ -40,6 +51,7 @@ export function applyGuideStreamProgressToMessages(
   locale: Locale,
 ): GuideMessage[] {
   const visibleTurns = getVisibleGuideTurns(input.turns);
+  const fallback = isGuideLiveDelivery(input.delivery) ? false : input.fallback;
   return messages.map((message) =>
     message.id === assistantId
       ? {
@@ -47,7 +59,11 @@ export function applyGuideStreamProgressToMessages(
           text: visibleTurns.length ? input.text : getGuideStreamProgressText(locale),
           ...(visibleTurns.length ? { turns: [...visibleTurns] } : { turns: undefined }),
           runtime: {
-            fallback: input.fallback,
+            fallback,
+            delivery: input.delivery,
+            operationId: input.operationId,
+            requestAttemptId: input.requestAttemptId,
+            diagnosticId: input.delivery?.diagnosticId ?? input.diagnosticId,
           },
           trace: {
             graphId: input.graphId,

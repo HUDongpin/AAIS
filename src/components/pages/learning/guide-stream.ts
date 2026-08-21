@@ -1,10 +1,38 @@
-import { getAaisApiErrorMessage } from "@/lib/client/aais-api-error";
 import { guideRequestTimeoutMs } from "@/components/pages/learning/learning-page-constants";
 import {
   getGuideAgentLabel,
 } from "@/components/pages/learning/learning-copy";
-import type { GuideTurn } from "@/components/pages/learning/learning-page-types";
+import type {
+  GuideDeliveryReceipt,
+  GuideLearnerAction,
+  GuideTurn,
+} from "@/components/pages/learning/learning-page-types";
 import type { Locale } from "@/data/aais";
+
+export type GuideErrorReceipt = {
+  schemaVersion?: number;
+  code?: string;
+  diagnosticId?: string;
+  retryable?: boolean;
+  learnerAction?: GuideLearnerAction;
+  message?: string;
+};
+
+export class GuideRequestError extends Error {
+  readonly code?: string;
+  readonly diagnosticId?: string;
+  readonly retryable?: boolean;
+  readonly learnerAction?: GuideLearnerAction;
+
+  constructor(message: string, receipt?: GuideErrorReceipt) {
+    super(message);
+    this.name = "GuideRequestError";
+    this.code = receipt?.code;
+    this.diagnosticId = receipt?.diagnosticId;
+    this.retryable = receipt?.retryable;
+    this.learnerAction = receipt?.learnerAction;
+  }
+}
 
 export type GuideResponseBody = {
   message?: {
@@ -20,12 +48,13 @@ export type GuideResponseBody = {
       timings?: {
         fallback?: boolean;
       };
+      delivery?: GuideDeliveryReceipt;
+      operationId?: string;
+      requestAttemptId?: string;
+      diagnosticId?: string;
     };
   };
-  error?: string | {
-    code?: string;
-    message?: string;
-  };
+  error?: string | GuideErrorReceipt;
 };
 
 export type GuideStreamProgress = {
@@ -33,6 +62,10 @@ export type GuideStreamProgress = {
   turns: GuideTurn[];
   fallback: boolean;
   graphId?: string;
+  operationId?: string;
+  requestAttemptId?: string;
+  diagnosticId?: string;
+  delivery?: GuideDeliveryReceipt;
 };
 
 type GuideStreamEvent = {
@@ -68,7 +101,12 @@ export async function readGuideStreamResponse(
   const reader = response.body.getReader();
   const turns: GuideTurn[] = [];
   let fallback = false;
+  let pendingLegacyFallback = false;
   let graphId: string | undefined;
+  let operationId: string | undefined;
+  let requestAttemptId: string | undefined;
+  let diagnosticId: string | undefined;
+  let delivery: GuideDeliveryReceipt | undefined;
   let buffer = "";
   let streamCompleted = false;
 
@@ -78,6 +116,10 @@ export async function readGuideStreamResponse(
       turns: [...turns],
       fallback,
       graphId,
+      operationId,
+      requestAttemptId,
+      diagnosticId,
+      delivery,
     });
   };
   const handleStreamEvent = (streamEvent: GuideStreamEvent) => {
@@ -88,15 +130,29 @@ export async function readGuideStreamResponse(
     }
 
     if (streamEvent.event === "error") {
-      throw new Error(getAaisApiErrorMessage(
-        { error: streamEvent.data as GuideResponseBody["error"] },
-        "AAIS guide failed",
-      ));
+      throw createGuideResponseError(streamEvent.data, "AAIS guide failed");
     }
 
     if (streamEvent.event === "ack") {
       graphId = typeof streamEvent.data.graphId === "string" ? streamEvent.data.graphId : graphId;
+      operationId = readOptionalString(streamEvent.data.operationId) ?? operationId;
+      requestAttemptId = readOptionalString(streamEvent.data.requestAttemptId) ?? requestAttemptId;
+      diagnosticId = readOptionalString(streamEvent.data.diagnosticId) ?? diagnosticId;
       emitProgress(getGuideStreamProgressText(locale));
+      return;
+    }
+
+    if (streamEvent.event === "delivery") {
+      delivery = readGuideDeliveryReceipt(streamEvent.data.delivery)
+        ?? readGuideDeliveryReceipt(streamEvent.data)
+        ?? delivery;
+      diagnosticId = delivery?.diagnosticId ?? diagnosticId;
+      if (isGuideLiveDelivery(delivery)) {
+        fallback = false;
+      } else if ((delivery?.responseMode ?? delivery?.mode) === "deterministic") {
+        fallback = true;
+      }
+      emitProgress(turns.length ? getGuideStreamDoneText(locale) : getGuideStreamProgressText(locale));
       return;
     }
 
@@ -132,12 +188,28 @@ export async function readGuideStreamResponse(
     }
 
     if (streamEvent.event === "fallback") {
-      fallback = true;
+      // Legacy streams used this event for both a provider failover and a
+      // deterministic scaffold. Wait for the final delivery receipt before
+      // showing a local-mode label so a successful secondary live channel is
+      // never momentarily described as offline.
+      pendingLegacyFallback = true;
       emitProgress(turns.length ? getGuideStreamDoneText(locale) : getGuideStreamProgressText(locale));
       return;
     }
 
     if (streamEvent.event === "done" || streamEvent.event === "background_done") {
+      const doneDelivery = readGuideDeliveryReceipt(streamEvent.data.delivery);
+      if (doneDelivery) {
+        delivery = doneDelivery;
+        diagnosticId = doneDelivery.diagnosticId ?? diagnosticId;
+        if (isGuideLiveDelivery(doneDelivery)) {
+          fallback = false;
+        } else if ((doneDelivery.responseMode ?? doneDelivery.mode) === "deterministic") {
+          fallback = true;
+        }
+      } else if (pendingLegacyFallback) {
+        fallback = true;
+      }
       streamCompleted = true;
     }
   };
@@ -195,6 +267,10 @@ export async function readGuideStreamResponse(
         timings: {
           fallback,
         },
+        delivery,
+        operationId,
+        requestAttemptId,
+        diagnosticId,
       },
     },
   };
@@ -231,7 +307,7 @@ export async function readGuideJsonBody(response: Response): Promise<GuideRespon
 
 export function validateGuideResponse(response: Response, body: GuideResponseBody) {
   if (!response.ok || !isUsableGuideBody(body)) {
-    throw new Error(getAaisApiErrorMessage(body, "AAIS guide failed"));
+    throw createGuideResponseError(body, "AAIS guide failed");
   }
 }
 
@@ -241,6 +317,41 @@ export function isUsableGuideBody(body: GuideResponseBody) {
 
 export function isGuideEventStreamResponse(response: Response) {
   return response.headers.get("content-type")?.includes("text/event-stream") === true;
+}
+
+export function isGuideLiveDelivery(delivery: GuideDeliveryReceipt | undefined) {
+  return (delivery?.responseMode ?? delivery?.mode) === "live"
+    && (delivery?.channel === "primary" || delivery?.channel === "secondary");
+}
+
+export function readGuideDeliveryReceipt(value: unknown): GuideDeliveryReceipt | undefined {
+  const record = readRecord(value);
+  if (!record) {
+    return undefined;
+  }
+  const receipt: GuideDeliveryReceipt = {
+    schemaVersion: readOptionalNumber(record.schemaVersion),
+    mode: readOptionalString(record.mode),
+    responseMode: readOptionalString(record.responseMode),
+    channel: readOptionalString(record.channel),
+    degraded: readOptionalBoolean(record.degraded),
+    diagnosticId: readOptionalString(record.diagnosticId),
+    persisted: readOptionalBoolean(record.persisted),
+    budgetDisposition: readOptionalString(record.budgetDisposition),
+  };
+  return Object.values(receipt).some((entry) => entry !== undefined) ? receipt : undefined;
+}
+
+export function getGuideRequestErrorReceipt(error: unknown): GuideErrorReceipt | undefined {
+  if (error instanceof GuideRequestError) {
+    return {
+      code: error.code,
+      diagnosticId: error.diagnosticId,
+      retryable: error.retryable,
+      learnerAction: error.learnerAction,
+    };
+  }
+  return undefined;
 }
 
 function upsertGuideStreamTurn(
@@ -297,4 +408,45 @@ function readStreamAgentId(data: Record<string, unknown>) {
 
 function readGuideStreamAgentLabel(agentId: string, locale: Locale) {
   return getGuideAgentLabel(locale, agentId);
+}
+
+function createGuideResponseError(value: unknown, fallbackMessage: string) {
+  const record = readRecord(value);
+  const nestedError = record && "error" in record ? record.error : value;
+  const receipt = readGuideErrorReceipt(nestedError);
+  return new GuideRequestError(fallbackMessage, receipt);
+}
+
+function readGuideErrorReceipt(value: unknown): GuideErrorReceipt | undefined {
+  const record = readRecord(value);
+  if (!record) {
+    return undefined;
+  }
+  const receipt: GuideErrorReceipt = {
+    schemaVersion: readOptionalNumber(record.schemaVersion),
+    code: readOptionalString(record.code),
+    diagnosticId: readOptionalString(record.diagnosticId),
+    retryable: readOptionalBoolean(record.retryable),
+    learnerAction: readOptionalString(record.learnerAction),
+    message: readOptionalString(record.message),
+  };
+  return Object.values(receipt).some((entry) => entry !== undefined) ? receipt : undefined;
+}
+
+function readRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
+}
+
+function readOptionalString(value: unknown) {
+  return typeof value === "string" && value.length ? value : undefined;
+}
+
+function readOptionalNumber(value: unknown) {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function readOptionalBoolean(value: unknown) {
+  return typeof value === "boolean" ? value : undefined;
 }

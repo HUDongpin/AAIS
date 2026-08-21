@@ -1,0 +1,77 @@
+{
+  "schemaVersion": 1,
+  "evidenceId": "aais-neon-staging-target-20260821-v1",
+  "observedAt": "2026-08-21T02:49:20.000Z",
+  "status": "verified",
+  "target": {
+    "purpose": "ai-release-migration-staging",
+    "resourceName": "aais-ai-release-staging-20260821",
+    "provider": "vercel-marketplace-neon",
+    "vercelStoreId": "store_fXwj4HTkNYOt7C0m",
+    "neonProjectId": "bitter-boat-08517020",
+    "neonBranchId": "br-plain-salad-b3a6u3tj",
+    "targetFingerprint": "7058b60cdf9787795cc6069c4dc4b3679cc600d84a54264864aa1176ff696be8",
+    "region": "aws-ap-southeast-1",
+    "vercelRegion": "sin1",
+    "plan": "Launch",
+    "postgresMajorVersion": 18,
+    "neonAuthEnabled": false,
+    "historyRetentionDaysObserved": 1,
+    "connectedVercelEnvironments": [
+      "development"
+    ],
+    "environmentVariablePrefix": "AAIS_RELEASE_STAGING",
+    "productionEnvironmentConnected": false,
+    "previewEnvironmentConnected": false,
+    "deploymentBranchesEnabled": false
+  },
+  "migration": {
+    "runner": "scripts/run-postgres-migrations.mjs",
+    "firstRun": {
+      "status": "pass",
+      "applied": 28,
+      "skipped": 0,
+      "redactedReportSha256": "70a5c4190b802a625e38e85f910bcbf09ecfee96e2508a77f52b5d9f2e033f1d"
+    },
+    "idempotentReapply": {
+      "status": "pass",
+      "applied": 0,
+      "skipped": 28,
+      "redactedReportSha256": "c12a13b994a67abd403b632b575861174995e01218bebf365458174936bc0402"
+    },
+    "migration0028": {
+      "version": "0028",
+      "name": "ai_guide_operation_idempotency",
+      "checksumSha256": "80ba8102a0c056f3b7080c77b770e852bb1e438f0b4697222a6d69de2a3cdb8d",
+      "ledgerCount": 28,
+      "verificationReportSha256": "97abfbbe8248bfeddfd7787088491fb39f4ceb4f6e92534376df54a1ad596943",
+      "catalog": {
+        "columnsVerified": 6,
+        "validatedConstraintsVerified": 2,
+        "partialIndexesVerified": 2,
+        "operationFunctionArguments": 9,
+        "operationFunctionVolatility": "volatile",
+        "operationFunctionSecurity": "invoker",
+        "operationFunctionSearchPath": "pg_catalog, public, pg_temp"
+      },
+      "behavior": {
+        "firstClaim": "reserved",
+        "replay": "in_progress",
+        "payloadConflict": "conflict",
+        "expiredLease": "failed",
+        "replacementClaim": "reserved",
+        "replacementReplay": "in_progress",
+        "chargedOnce": true,
+        "syntheticRowsRemoved": true
+      }
+    }
+  },
+  "productionDatabaseTouched": false,
+  "redaction": {
+    "connectionStrings": "omitted",
+    "databasePasswords": "omitted",
+    "environmentVariableValues": "omitted",
+    "syntheticStudentId": "fixed-non-personal-verifier-id",
+    "secrets": "omitted"
+  }
+}

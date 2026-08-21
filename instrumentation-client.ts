@@ -17,6 +17,8 @@ if (dsn) {
     environment: getAaisSentryEnvironment(),
     release: getAaisSentryRelease(),
     sendDefaultPii: false,
+    replaysSessionSampleRate: 0,
+    replaysOnErrorSampleRate: 0,
     tracesSampleRate: getAaisSentrySampleRate(
       process.env.NEXT_PUBLIC_SENTRY_TRACES_SAMPLE_RATE,
       process.env.NODE_ENV === "production" ? 0.05 : 0,

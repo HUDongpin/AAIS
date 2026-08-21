@@ -9,17 +9,13 @@ import { useContentPanelResize } from "@/components/pages/learning/use-content-p
 import { useLearningArtifactSave } from "@/components/pages/learning/use-learning-artifact-save";
 import { useLearningGuide } from "@/components/pages/learning/use-learning-guide";
 import { useLearningDocumentArchive } from "@/components/pages/learning/use-learning-document-archive";
+import { useLearningDocumentDownload } from "@/components/pages/learning/use-learning-document-download";
 import { useLearningContentNavigation } from "@/components/pages/learning/use-learning-content-navigation";
 import { useHydratedArtifactDraft } from "@/components/pages/learning/use-hydrated-artifact-draft";
 import { useLearningWorkspaceSession } from "@/components/pages/learning/use-learning-workspace-session";
-import {
-  clientNowMs,
-  isUserCancelledFilePicker,
-  type ArtifactDraftJournal,
-} from "@/components/pages/learning/client-helpers";
+import type { ArtifactDraftJournal } from "@/components/pages/learning/client-helpers";
 import { LearningResearchWorkspaceBoundary, type LearningResearchBoundary } from "@/components/pages/learning/research-telemetry-boundary";
-import { admitAaisResearchAction, captureAaisResearchActorGeneration, classifyAaisResearchClientError, createAaisResearchOperationId, recordAaisResearchEvent } from "@/lib/client/aais-research-telemetry";
-import { createLearningDocumentFileName, createLearningDocumentMarkdown, saveMarkdownDocumentToLocal } from "@/components/pages/learning/document-markdown";
+import { admitAaisResearchAction, createAaisResearchOperationId } from "@/lib/client/aais-research-telemetry";
 import type { ContentTab, SavedLearningDocument } from "@/components/pages/learning/learning-page-types";
 import type { Locale } from "@/data/aais";
 import { useLearningLocale } from "@/components/pages/learning/use-learning-locale";
@@ -75,9 +71,6 @@ function LearningWorkbenchState({
   const [activeTab, setActiveTab] = useState<ContentTab>("display");
   const [documentArchiveBusy, setDocumentArchiveBusy] = useState(false);
   const [documentCloseError, setDocumentCloseError] = useState("");
-  const [documentDownloadBusy, setDocumentDownloadBusy] = useState(false);
-  const [documentDownloadStatus, setDocumentDownloadStatus] = useState("");
-  const [documentDownloadError, setDocumentDownloadError] = useState("");
   const {
     activeHistoryDocumentId,
     activeTaskId,
@@ -159,6 +152,8 @@ function LearningWorkbenchState({
     hasGuideSubmission,
     removeGuideAttachment,
     resetGuideState,
+    retryGuideMessage,
+    rewriteGuideMessage,
     sendGuideMessage,
     setGuideDraft,
     setGuideError,
@@ -170,6 +165,19 @@ function LearningWorkbenchState({
     locale,
     persistedGuideMessages,
     studentId,
+  });
+  const {
+    documentDownloadBusy,
+    documentDownloadError,
+    documentDownloadStatus,
+    downloadDocumentToLocal,
+    resetDocumentDownloadState,
+  } = useLearningDocumentDownload({
+    artifactText,
+    editingTaskId,
+    flushPendingArtifactSave,
+    locale,
+    setBackendError,
   });
   const {
     activeContentId,
@@ -221,8 +229,7 @@ function LearningWorkbenchState({
     resetArtifactSaveState();
     setDocumentTaskId(null);
     setDocumentCloseError("");
-    setDocumentDownloadStatus("");
-    setDocumentDownloadError("");
+    resetDocumentDownloadState();
     resetContentNavigation();
     resetGuideState();
     resetWorkspaceSession(nextDataGeneration);
@@ -233,8 +240,7 @@ function LearningWorkbenchState({
   }
 
   function recordArtifact(value: string) {
-    setDocumentDownloadStatus("");
-    setDocumentDownloadError("");
+    resetDocumentDownloadState();
     setDocumentCloseError("");
     setArtifactText(value);
     scheduleArtifactSave(editingTaskId, value);
@@ -298,69 +304,6 @@ function LearningWorkbenchState({
     setDocumentCloseError,
     setDocumentTitle,
   });
-
-  async function downloadDocumentToLocal() {
-    if (documentDownloadBusy) {
-      return;
-    }
-    const operationId = createAaisResearchOperationId("document-download");
-    const telemetryActorGeneration = captureAaisResearchActorGeneration();
-    const startedAt = clientNowMs();
-    const downloadMethod = "showSaveFilePicker" in window ? "file_picker" : "browser_download";
-    if (!flushPendingArtifactSave("download")) {
-      return;
-    }
-    const downloadDetail = {
-      operation_id: operationId,
-      task_id: editingTaskId,
-      download_method: downloadMethod,
-      artifact_length: artifactText.length,
-    };
-    if (!admitAaisResearchAction({
-      actorGeneration: telemetryActorGeneration,
-      eventName: "document_download",
-      outcome: "attempted",
-      detail: downloadDetail,
-    })) {
-      return;
-    }
-    setDocumentDownloadBusy(true);
-    setDocumentDownloadStatus(copy.document.downloadPreparing);
-    setDocumentDownloadError("");
-    try {
-      await saveMarkdownDocumentToLocal({
-        fileName: createLearningDocumentFileName(editingTaskId),
-        markdown: createLearningDocumentMarkdown(artifactText),
-      });
-      setDocumentDownloadStatus(copy.document.downloadReady);
-      recordAaisResearchEvent({
-        actorGeneration: telemetryActorGeneration,
-        eventName: "document_download",
-        outcome: "success",
-        latencyMs: clientNowMs() - startedAt,
-        detail: downloadDetail,
-      });
-    } catch (error) {
-      const message = copy.document.downloadFailed;
-      setBackendError(message);
-      setDocumentDownloadStatus("");
-      setDocumentDownloadError(message);
-      recordAaisResearchEvent({
-        actorGeneration: telemetryActorGeneration,
-        eventName: "document_download",
-        outcome: "failure",
-        latencyMs: clientNowMs() - startedAt,
-        detail: {
-          ...downloadDetail,
-          error_kind: isUserCancelledFilePicker(error)
-            ? "user_cancelled"
-            : classifyAaisResearchClientError(error),
-        },
-      });
-    } finally {
-      setDocumentDownloadBusy(false);
-    }
-  }
 
   function openHistoryDocument(document: SavedLearningDocument) {
     if (hasUncommittedArtifactSave()) {
@@ -444,6 +387,8 @@ function LearningWorkbenchState({
             hasGuideSubmission={hasGuideSubmission}
             locale={locale}
             onRemoveAttachment={removeGuideAttachment}
+            onRetryGuideMessage={(messageId) => { void retryGuideMessage(messageId); }}
+            onRewriteGuideMessage={rewriteGuideMessage}
             sendGuideMessage={sendGuideMessage}
             setGuideDraft={setGuideDraft}
             setGuideError={setGuideError}

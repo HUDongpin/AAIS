@@ -6,6 +6,7 @@ import {
 import type {
   AaisClientSession,
   GuideMessage,
+  GuidePersistedDeliveryReceipt,
 } from "@/components/pages/learning/learning-page-types";
 
 export function useHydratePersistedGuideMessages(
@@ -59,11 +60,18 @@ export function getPersistedAttachmentGuideMessages(
     });
     const assistant = messages[index + 1];
     if (assistant?.kind === "assistant") {
+      const delivery = readSafePersistedGuideDelivery(assistant.orchestration?.delivery);
       restored.push({
         id: assistant.id,
         kind: "assistant",
         text: assistant.text,
         turns: assistant.turns,
+        runtime: delivery
+          ? {
+              fallback: false,
+              delivery,
+            }
+          : undefined,
         trace: assistant.orchestration
           ? {
               graphId: assistant.orchestration.graphId,
@@ -74,6 +82,30 @@ export function getPersistedAttachmentGuideMessages(
     }
   }
   return restored;
+}
+
+export function readSafePersistedGuideDelivery(
+  value: unknown,
+): GuidePersistedDeliveryReceipt | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+  const delivery = value as Record<string, unknown>;
+  if (
+    delivery.schemaVersion !== 1
+    || delivery.responseMode !== "live"
+    || (delivery.channel !== "primary" && delivery.channel !== "secondary")
+    || typeof delivery.degraded !== "boolean"
+    || delivery.degraded !== (delivery.channel === "secondary")
+  ) {
+    return undefined;
+  }
+  return {
+    schemaVersion: 1,
+    responseMode: "live",
+    channel: delivery.channel,
+    degraded: delivery.degraded,
+  };
 }
 
 export function getControlledGuideAttachmentMimeType(value: string | undefined) {

@@ -1,0 +1,94 @@
+{
+  "schemaVersion": 1,
+  "contractVersion": "aais-ai-live-release-v1",
+  "lockId": "aais-ai-qwen38-deepseek-pending-v1",
+  "releaseStatus": "blocked",
+  "deliveryPolicy": "require-live",
+  "providers": {
+    "primary": {
+      "role": "primary",
+      "required": true,
+      "provider": "qwen",
+      "model": "qwen3.8-max",
+      "endpointFingerprint": null,
+      "thinkingMode": null,
+      "temperature": null,
+      "maxTokens": null,
+      "observedModel": null,
+      "observedRevisionSha256": null,
+      "evalVersion": null,
+      "manifestSha256": null,
+      "evalSuiteSha256": null,
+      "evalDataSha256": null,
+      "agentPromptContractSha256": {
+        "A1": null,
+        "A2": null,
+        "A3": null,
+        "A4": null
+      },
+      "caBackgroundSha256": null,
+      "guardrailSha256": null,
+      "locales": [],
+      "passedAt": null,
+      "expiresAt": null,
+      "manifestSigningKeyId": null,
+      "manifestSignatureSha256": null,
+      "evidenceStatus": "pending",
+      "observedModelRequired": true
+    },
+    "secondary": {
+      "role": "secondary",
+      "required": true,
+      "provider": "deepseek",
+      "model": "deepseek-v4-flash",
+      "endpointFingerprint": "9c4742713a9f000db0ee433cce638395df58f5fdfab1b26333d0c7797862c5d2",
+      "thinkingMode": "disabled",
+      "temperature": 0.2,
+      "maxTokens": 600,
+      "observedModel": "deepseek-v4-flash",
+      "observedRevisionSha256": "da47ddb8311a680e525bf29d5c7edec3dfa755208983808bf556746776aa9571",
+      "evalVersion": "aais-deepseek-v4-flash-20260821-formal-v1",
+      "manifestSha256": "ba57d0c63175f0bf1a9819e33d4855423ff9d6cb1759ef38658de8b71c443b95",
+      "evalSuiteSha256": "d6eceec9c856b05647db9a84d5d6101688a7fc8129d47620d898c31482f3b7f3",
+      "evalDataSha256": "237603f255156cdee12d5e6badd0a5fd2e649a7b5546a53602235bd4c5b192fc",
+      "agentPromptContractSha256": {
+        "A1": "ddb4290317cdf5ec064bd28f7dd71741172826a4bcf597b6f25ea9290f98c814",
+        "A2": "ad9a043604ca5d2646ca65c895b57d96ae60c1cd32fa8aadc35ce0b5e46f743f",
+        "A3": "068241da2f4a8752b2da9a896dd88b3171cf8e7f524f373cb015467a149cd6f8",
+        "A4": "0faa13d149f3b5031afad99c0e4b0186133712e6d23af7426dd7209320200ce1"
+      },
+      "caBackgroundSha256": "455e227cff03afe3f8d5c5657ef5465e3ca3c4913309c050a5680ed5bb2c090b",
+      "guardrailSha256": "4edee29ff2c1f8f0758b9f1fd4e2a30c5aec23a3ef9f047a6a0cd74c6e852080",
+      "locales": [
+        "zh-CN",
+        "en-US"
+      ],
+      "passedAt": "2026-08-21T13:45:41.225Z",
+      "expiresAt": "2026-09-19T13:45:41.225Z",
+      "manifestSigningKeyId": "aais-deepseek-eval-20260821-v1",
+      "manifestSignatureSha256": "ab2b7ef04133db50aa790cdf5c8b73bb1fb20efb5f0ea4cbc4b0989716a525fd",
+      "evidenceStatus": "verified",
+      "observedModelRequired": true
+    }
+  },
+  "releaseReceipt": {
+    "required": true,
+    "verificationStage": "external-post-deploy",
+    "signingKeyId": "aais-production-audit-20260821-v1",
+    "verifyingKeySpkiSha256": "dd85266e4965bc110e015f42785c200b736532fa799cc3b7a12faca169c76324",
+    "productionUrl": null,
+    "gitCommitSha": null,
+    "deploymentId": null,
+    "configGeneration": null,
+    "auditNonce": null,
+    "operationIdDerivation": null,
+    "privacyEvidenceSha256": null,
+    "learnerCanaryEvidenceSha256": null
+  },
+  "redaction": {
+    "secrets": "omitted",
+    "modelIds": "fingerprint-only",
+    "rawPrompts": "omitted",
+    "rawOutputs": "omitted"
+  }
+}

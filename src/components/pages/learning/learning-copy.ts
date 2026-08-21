@@ -1,142 +1,7 @@
 import type { Locale } from "@/data/aais";
-import type {
-  AaisClientTaskStatus,
-  ContentItemId,
-  DocumentFontFamily,
-} from "@/components/pages/learning/learning-page-types";
+import type { LearningCopy } from "@/components/pages/learning/learning-copy-types";
 
-export type LearningCopy = {
-  main: {
-    heading: string;
-    description: string;
-  };
-  brand: {
-    logoLabel: string;
-    accountMenu: (displayName: string) => string;
-    avatar: (displayName: string) => string;
-    accountInfo: (displayName: string) => string;
-    exportLearnerData: string;
-    deleteLearnerData: string;
-    signOut: string;
-  };
-  guide: {
-    busy: string;
-    readingFiles: string;
-    quickStarts: string;
-    chooseFiles: string;
-    uploadFile: string;
-    inputLabel: string;
-    inputPlaceholder: string;
-    send: string;
-    uploadedFiles: string;
-    removeFile: (fileName: string) => string;
-    offlineScaffold: string;
-    assistant: string;
-    avatar: (agentId: string, label: string) => string;
-    attachmentUnavailable: string;
-    inputRequired: string;
-    requestAccepted: string;
-    requestUnavailable: string;
-    requestErrorAlert: string;
-    attachmentLimit: (maxFiles: number) => string;
-    fileReadFailed: string;
-    agentLabels: Record<string, string>;
-  };
-  content: {
-    resize: string;
-    panel: string;
-    displayTab: string;
-    editorTab: string;
-    saveAndClose: string;
-    downloading: string;
-    download: string;
-    displayNav: string;
-    backToDisplay: string;
-    back: string;
-    documentFolder: (title: string) => string;
-    items: Record<ContentItemId, { label: string; body: string }>;
-    taskCards: {
-      listLabel: string;
-      progress: (completed: number, total: number) => string;
-      ordinal: (index: number) => string;
-      phase: Record<"training" | "practice", string>;
-      status: Record<AaisClientTaskStatus, string>;
-      lockedHint: string;
-      enter: string;
-      continue: string;
-      review: string;
-      complete: string;
-      completing: string;
-      actionFailed: string;
-      lockedButton: (title: string) => string;
-      enterButton: (title: string) => string;
-      continueButton: (title: string) => string;
-      reviewButton: (title: string) => string;
-      completeButton: (title: string) => string;
-    };
-  };
-  editor: {
-    titleLabel: string;
-    titlePlaceholder: string;
-    toolbarLabel: string;
-    fontLabel: string;
-    fontFamilies: Record<DocumentFontFamily, string>;
-    sizeLabel: string;
-    bold: string;
-    italic: string;
-    underline: string;
-    alignLeft: string;
-    alignCenter: string;
-    alignRight: string;
-    bulletList: string;
-    numberedList: string;
-    heading1: string;
-    heading2: string;
-    heading3: string;
-    emptyPrompt: string;
-    inputLabel: string;
-  };
-  document: {
-    saveQueuedWhileSaving: string;
-    saveResearchPaused: string;
-    saving: string;
-    saved: string;
-    saveFailed: string;
-    archiveFailed: string;
-    saveQueued: string;
-    downloadPreparing: string;
-    downloadReady: string;
-    downloadFailed: string;
-    justSaved: string;
-    untitled: string;
-  };
-  workspace: {
-    sessionUnavailable: string;
-  };
-  account: {
-    waitForOperation: string;
-    waitForExportOperation: string;
-    signingOut: string;
-    researchSyncRequired: string;
-    signOutFailed: string;
-    exporting: string;
-    exported: string;
-    exportFailed: string;
-    deleteConfirmation: string;
-    deleting: string;
-    deleted: string;
-    deleteFailed: string;
-  };
-  researchBoundary: {
-    heading: string;
-    initializing: string;
-    offlineOrTemporary: string;
-    terminalBlocked: string;
-    safeExit: string;
-    safeExiting: string;
-    safeExitFailed: string;
-  };
-};
+export type { LearningCopy } from "@/components/pages/learning/learning-copy-types";
 
 export const learningCopyByLocale: Record<Locale, LearningCopy> = {
   "zh-CN": {
@@ -164,14 +29,31 @@ export const learningCopyByLocale: Record<Locale, LearningCopy> = {
       send: "发送",
       uploadedFiles: "已上传文件",
       removeFile: (fileName) => `移除 ${fileName}`,
-      offlineScaffold: "离线支架模式",
+      localScaffold: "本地安全支架",
+      providerFailureTitle: "AI 暂时降级",
+      providerFailureMessage: "实时 AI 链路暂时不可用。你的问题仍保留在本页，可直接重试。",
+      guardrailFailureTitle: "这次问题无法提交给 AI",
+      guardrailFailureMessage: "请换一种表述后再试。",
+      configurationFailureTitle: "AI 服务配置未就绪",
+      configurationFailureMessage: "实时 AI 服务尚未就绪。你的问题仍保留在本页，请凭支持码联系管理员。",
+      connectionFailureTitle: "连接中断，尚未确认保存",
+      connectionFailureMessage: "你的问题仍保留在本页。恢复网络后可直接重试。",
+      unknownFailureTitle: "AI 暂时无法回复",
+      unknownFailureMessage: "你的问题仍保留在本页，可稍后重试；如问题持续，请提供支持码。",
+      supportCode: (diagnosticId) => `支持码：${diagnosticId}`,
+      copySupportCode: "复制支持码",
+      supportCodeCopied: "支持码已复制",
+      supportCodeCopyFailed: "复制失败，请手动选择支持码。",
+      retryAction: "重试",
+      rewriteAction: "改写问题",
+      retryQuestion: "重试这个问题",
+      rewriteQuestion: "改写这个问题",
       assistant: "AI 助教",
       avatar: (_agentId, label) => `${label}大学教育风格头像`,
       attachmentUnavailable: "上传文件不可用。",
       inputRequired: "请输入你的想法后再发送。",
+      requestIdentityUnavailable: "当前浏览器无法安全创建请求标识。请升级浏览器后再试。",
       requestAccepted: "CAAIS 已收到，多智能体链路正在处理。",
-      requestUnavailable: "智能服务暂时不可用，已保留你的问题。请稍后重试。",
-      requestErrorAlert: "智能服务暂时不可用，已保留你的问题。",
       attachmentLimit: (maxFiles) => `一次最多上传 ${maxFiles} 个文件。`,
       fileReadFailed: "文件未能读取。",
       agentLabels: {
@@ -326,14 +208,31 @@ export const learningCopyByLocale: Record<Locale, LearningCopy> = {
       send: "Send",
       uploadedFiles: "Uploaded files",
       removeFile: (fileName) => `Remove ${fileName}`,
-      offlineScaffold: "Offline scaffold mode",
+      localScaffold: "Local safe scaffold",
+      providerFailureTitle: "AI is temporarily degraded",
+      providerFailureMessage: "The live AI chain is temporarily unavailable. Your question remains on this page, and you can retry it.",
+      guardrailFailureTitle: "This question could not be submitted to AI",
+      guardrailFailureMessage: "Please rephrase it and try again.",
+      configurationFailureTitle: "AI service configuration is not ready",
+      configurationFailureMessage: "The live AI service is not ready. Your question remains on this page; contact an administrator with the support code.",
+      connectionFailureTitle: "Connection interrupted; save not confirmed",
+      connectionFailureMessage: "Your question remains on this page. Restore your connection, then retry it.",
+      unknownFailureTitle: "AI cannot reply right now",
+      unknownFailureMessage: "Your question remains on this page. Retry shortly; if the issue continues, provide the support code.",
+      supportCode: (diagnosticId) => `Support code: ${diagnosticId}`,
+      copySupportCode: "Copy support code",
+      supportCodeCopied: "Support code copied",
+      supportCodeCopyFailed: "Copy failed. Select the support code manually.",
+      retryAction: "Retry",
+      rewriteAction: "Rewrite question",
+      retryQuestion: "Retry this question",
+      rewriteQuestion: "Rewrite this question",
       assistant: "AI teaching assistant",
       avatar: (_agentId, label) => `${label} university-education avatar`,
       attachmentUnavailable: "The selected file cannot be uploaded.",
       inputRequired: "Enter your thoughts before sending.",
+      requestIdentityUnavailable: "This browser cannot create a secure request identifier. Update your browser and try again.",
       requestAccepted: "CAAIS received your request; the multi-agent flow is working on it.",
-      requestUnavailable: "The AI service is temporarily unavailable. Your question has been kept; please try again shortly.",
-      requestErrorAlert: "The AI service is temporarily unavailable.",
       attachmentLimit: (maxFiles) => `You can upload up to ${maxFiles} files at once.`,
       fileReadFailed: "The file could not be read.",
       agentLabels: {

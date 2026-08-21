@@ -514,7 +514,8 @@ function shouldUseNeonServerlessDriver(databaseUrl, configuredDriverValue) {
   }
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (typeof process !== "undefined"
+  && import.meta.url === `file://${process.argv[1]}`) {
   main().catch((error) => {
     process.stderr.write(`${error instanceof Error ? error.message : "AAIS Postgres migration failed."}\n`);
     process.exitCode = 1;

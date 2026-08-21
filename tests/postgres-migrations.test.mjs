@@ -174,6 +174,12 @@ describe("AAIS Postgres migrations", () => {
         fileName: "0027_research_retention_stale_lease_signal.sql",
         checksum: expect.stringMatching(/^[a-f0-9]{64}$/),
       }),
+      expect.objectContaining({
+        version: "0028",
+        name: "ai_guide_operation_idempotency",
+        fileName: "0028_ai_guide_operation_idempotency.sql",
+        checksum: expect.stringMatching(/^[a-f0-9]{64}$/),
+      }),
     ]);
     expect(migrations[0].sql).toContain("create table if not exists aais_learner_sessions");
     expect(migrations[0].sql).toContain("create table if not exists aais_lrs_outbox");
@@ -183,6 +189,14 @@ describe("AAIS Postgres migrations", () => {
     expect(migrations[25].sql).toContain("aais_login_rate_limits_expires_idx");
     expect(migrations[26].sql).toContain("stale_raw_text_write_lease_count");
     expect(migrations[26].sql).toContain("aais_research_retention_runs_blocked_signal_check");
+    expect(migrations[27].sql).toContain("operation_id uuid");
+    expect(migrations[27].sql).toContain("payload_digest text");
+    expect(migrations[27].sql).toContain("aais_ai_guide_reservations_operation_idx");
+    expect(migrations[27].sql).toContain("p_operation_id uuid");
+    expect(migrations[27].sql).toContain("dispatched_uncertain");
+    expect(migrations[27].sql).toContain("set state = 'released'");
+    expect(migrations[27].sql).toContain("set used = greatest(0, usage_row.used - 1)");
+    expect(migrations[27].sql).toContain("and reservation.state = 'reserved'");
     expect(migrations[2].sql).toContain("create table if not exists aais_events");
     expect(migrations[2].sql).toContain("jsonb_array_elements");
     expect(migrations[2].sql).toContain("on conflict do nothing");
