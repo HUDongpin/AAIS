@@ -1,6 +1,14 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState, type ChangeEvent, type FormEvent } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type ChangeEvent,
+  type FormEvent,
+} from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
   CaretDown,
@@ -26,6 +34,10 @@ type LoginPageProps = {
   initialLocale?: LoginLocale;
   trialLoginEnabled?: boolean;
 };
+
+const subscribeToClientReady = () => () => {};
+const getClientReadySnapshot = () => true;
+const getServerClientReadySnapshot = () => false;
 
 export function LoginPage({
   initialLocale,
@@ -54,6 +66,11 @@ export function LoginPage({
   const [passwordToken, setPasswordToken] = useState("");
   const [passwordTokenConsumed, setPasswordTokenConsumed] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const clientReady = useSyncExternalStore(
+    subscribeToClientReady,
+    getClientReadySnapshot,
+    getServerClientReadySnapshot,
+  );
   const submittingRef = useRef(false);
   const passwordTokenCaptureCompletedRef = useRef(false);
   const accountInputRef = useRef<HTMLInputElement>(null);
@@ -294,6 +311,11 @@ export function LoginPage({
         setError(copy.emailError);
         return;
       }
+      const normalizedResetEmail = resetEmail.trim();
+      if (!isAaisEmail(normalizedResetEmail)) {
+        setError(copy.emailInvalidError);
+        return;
+      }
 
       submittingRef.current = true;
       setSubmitting(true);
@@ -306,7 +328,7 @@ export function LoginPage({
           },
           body: JSON.stringify({
             action: "request-reset",
-            email: resetEmail,
+            email: normalizedResetEmail,
           }),
         });
         const result = await response.json().catch(() => null);
@@ -331,6 +353,7 @@ export function LoginPage({
     <div
       className="aais-login-serif min-h-[100dvh] overflow-hidden bg-[#fbfdff] text-[#151a32]"
       data-trial-login={trialLoginEnabled ? "enabled" : "disabled"}
+      data-client-ready={clientReady ? "true" : "false"}
       data-locale={locale}
       lang={locale}
     >
@@ -488,7 +511,7 @@ export function LoginPage({
 
                 <button
                   type="submit"
-                  disabled={submitting}
+                  disabled={!clientReady || submitting}
                   className="inline-flex h-14 w-full items-center justify-center rounded-xl bg-[#1f6feb] px-6 text-base font-bold text-white shadow-[0_14px_34px_rgba(31,111,235,0.25)] outline-none transition hover:bg-[#1557c0] active:translate-y-px focus-visible:ring-4 focus-visible:ring-[#1f6feb]/25 disabled:cursor-not-allowed disabled:opacity-70"
                 >
                   {submitting ? copy.saving : copy.setPasswordSubmit}
@@ -538,7 +561,7 @@ export function LoginPage({
 
                 <button
                   type="submit"
-                  disabled={submitting}
+                  disabled={!clientReady || submitting}
                   className="inline-flex h-14 w-full items-center justify-center rounded-xl bg-[#1f6feb] px-6 text-base font-bold text-white shadow-[0_14px_34px_rgba(31,111,235,0.25)] outline-none transition hover:bg-[#1557c0] active:translate-y-px focus-visible:ring-4 focus-visible:ring-[#1f6feb]/25 disabled:cursor-not-allowed disabled:opacity-70"
                 >
                   {submitting ? copy.sending : copy.resetSubmit}
@@ -656,7 +679,7 @@ export function LoginPage({
 
                 <button
                   type="submit"
-                  disabled={submitting}
+                  disabled={!clientReady || submitting}
                   className="inline-flex h-14 w-full items-center justify-center rounded-xl bg-[#1f6feb] px-6 text-base font-bold text-white shadow-[0_14px_34px_rgba(31,111,235,0.25)] outline-none transition hover:bg-[#1557c0] active:translate-y-px focus-visible:ring-4 focus-visible:ring-[#1f6feb]/25 disabled:cursor-not-allowed disabled:opacity-70"
                 >
                   {submitting ? copy.signingIn : copy.submit}
