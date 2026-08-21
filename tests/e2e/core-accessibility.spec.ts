@@ -13,6 +13,8 @@ test("login can be completed with keyboard focus and named landmarks", async ({ 
   await expect(page.getByRole("main", {
     name: /欢迎来到 CAAIS/,
   })).toBeVisible();
+  await expect(page.locator("[data-client-ready]"))
+    .toHaveAttribute("data-client-ready", "true");
 
   await page.getByLabel("账号").focus();
   await page.keyboard.type(getAaisE2eStudentAccount());

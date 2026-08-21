@@ -125,6 +125,15 @@ describe("AAIS LoginPage", () => {
     });
   });
 
+  it("marks the login controls ready only after client hydration", async () => {
+    const { container } = render(<LoginPage />);
+
+    await waitFor(() => {
+      expect((container.firstElementChild as HTMLElement).dataset.clientReady).toBe("true");
+    });
+    expect(screen.getByRole("button", { name: "立即登录" })).toHaveProperty("disabled", false);
+  });
+
   it("switches the login controls between Chinese and English and records the choice", () => {
     const { container } = render(<LoginPage />);
 
@@ -210,6 +219,24 @@ describe("AAIS LoginPage", () => {
     expect(accountLogin.getAttribute("aria-pressed")).toBe("true");
     expect(forgotPassword.getAttribute("aria-pressed")).toBe("false");
     await waitFor(() => expect(document.activeElement).toBe(screen.getByLabelText("账号")));
+  });
+
+  it("rejects an invalid password-reset email without contacting the server", () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<LoginPage />);
+
+    fireEvent.click(screen.getByRole("button", { name: "忘记密码？" }));
+    fireEvent.change(screen.getByLabelText("账号邮箱"), {
+      target: {
+        value: "invalid-email",
+      },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "发送重置邮件" }));
+
+    expect(screen.getByRole("alert").textContent).toBe("请输入有效的账号邮箱。");
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("temporarily hides the enterprise SSO entry", () => {
@@ -735,7 +762,7 @@ describe("AAIS LoginPage", () => {
     fireEvent.click(screen.getByRole("button", { name: "忘记密码？" }));
     fireEvent.change(screen.getByLabelText("账号邮箱"), {
       target: {
-        value: "teacher@example.test",
+        value: "  teacher@example.test  ",
       },
     });
     fireEvent.click(screen.getByRole("button", { name: "发送重置邮件" }));
