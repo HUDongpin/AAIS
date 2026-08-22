@@ -2,7 +2,12 @@ import {
   defaultTaskId,
   documentDownloadContentType,
 } from "@/components/pages/learning/learning-page-constants";
-import type { SavedLearningDocument } from "@/components/pages/learning/learning-page-types";
+import { getLearningCopy } from "@/components/pages/learning/learning-copy";
+import type {
+  AaisClientSavedDocumentRecord,
+  SavedLearningDocument,
+} from "@/components/pages/learning/learning-page-types";
+import type { Locale } from "@/data/aais";
 
 type MarkdownFileHandle = {
   createWritable: () => Promise<{
@@ -25,29 +30,69 @@ export function createHistoryDocument({
   taskId,
   title,
   html,
+  locale = "zh-CN",
 }: {
   taskId: string;
   title: string;
   html: string;
+  locale?: Locale;
 }): SavedLearningDocument {
   const markdown = createLearningDocumentMarkdown(html);
   const savedAt = new Date();
   return {
     id: `${taskId || defaultTaskId}-${savedAt.getTime()}`,
     taskId: taskId || defaultTaskId,
-    title: normalizeDocumentTitle(title, markdown),
+    title: normalizeDocumentTitle(title, markdown, locale),
     html,
     markdown,
     savedAt,
   };
 }
 
-export function formatHistoryDocumentTime(savedAt: Date) {
+export function mergeHistoryDocument(
+  documents: SavedLearningDocument[],
+  savedDocument: SavedLearningDocument,
+  activeDocumentId: string | null,
+) {
+  const activeDocument = activeDocumentId
+    ? documents.find((document) => document.id === activeDocumentId)
+    : null;
+  if (!activeDocument) {
+    return [savedDocument, ...documents];
+  }
+  return documents.map((document) =>
+    document.id === activeDocument.id
+      ? {
+          ...savedDocument,
+          id: activeDocument.id,
+          taskId: activeDocument.taskId,
+        }
+      : document,
+  );
+}
+
+export function hydrateHistoryDocuments(
+  records: AaisClientSavedDocumentRecord[] | undefined,
+): SavedLearningDocument[] {
+  return (records ?? []).flatMap((record) => {
+    const savedAt = new Date(record.savedAt);
+    if (Number.isNaN(savedAt.getTime())) {
+      return [];
+    }
+    return [{
+      ...record,
+      markdown: createLearningDocumentMarkdown(record.html),
+      savedAt,
+    }];
+  });
+}
+
+export function formatHistoryDocumentTime(savedAt: Date, locale: Locale = "zh-CN") {
   const elapsedMs = Date.now() - savedAt.getTime();
   if (elapsedMs < 60_000) {
-    return "刚刚保存";
+    return getLearningCopy(locale).document.justSaved;
   }
-  return savedAt.toLocaleString("zh-Hans-CN", {
+  return savedAt.toLocaleString(locale === "en-US" ? "en-US" : "zh-Hans-CN", {
     month: "2-digit",
     day: "2-digit",
     hour: "2-digit",
@@ -107,9 +152,15 @@ export async function saveJsonDocumentToLocal({
   fileName: string;
   data: unknown;
 }) {
-  const blob = new Blob([`${JSON.stringify(data, null, 2)}\n`], {
-    type: "application/json;charset=utf-8",
-  });
+  const saveDocument = await prepareJsonDocumentSaveToLocal({ fileName });
+  await saveDocument(data);
+}
+
+export async function prepareJsonDocumentSaveToLocal({
+  fileName,
+}: {
+  fileName: string;
+}) {
   const saveFilePicker =
     typeof window === "undefined"
       ? undefined
@@ -127,13 +178,16 @@ export async function saveJsonDocumentToLocal({
         },
       ],
     });
-    const writable = await fileHandle.createWritable();
-    await writable.write(blob);
-    await writable.close();
-    return;
+    return async (data: unknown) => {
+      const writable = await fileHandle.createWritable();
+      await writable.write(createJsonDocumentBlob(data));
+      await writable.close();
+    };
   }
 
-  downloadBlob(fileName, blob);
+  return async (data: unknown) => {
+    downloadBlob(fileName, createJsonDocumentBlob(data));
+  };
 }
 
 export function createLearningDocumentFileName(taskId: string) {
@@ -161,14 +215,77 @@ export function sanitizeEditorHtml(value: string) {
   const template = document.createElement("template");
   template.innerHTML = value;
   template.content.querySelectorAll("script, style").forEach((element) => element.remove());
-  template.content.querySelectorAll("*").forEach((element) => {
+  const elements = Array.from(template.content.querySelectorAll("*")).reverse();
+  elements.forEach((element) => {
+    const tagName = element.tagName.toLowerCase();
+    if (!safeEditorTags.has(tagName)) {
+      element.replaceWith(...Array.from(element.childNodes));
+      return;
+    }
     Array.from(element.attributes).forEach((attribute) => {
-      if (attribute.name.toLowerCase().startsWith("on")) {
+      const attributeName = attribute.name.toLowerCase();
+      if (!isSafeEditorAttribute(tagName, attributeName, attribute.value)) {
         element.removeAttribute(attribute.name);
       }
     });
   });
   return template.innerHTML;
+}
+
+const safeEditorTags = new Set([
+  "b",
+  "blockquote",
+  "br",
+  "code",
+  "div",
+  "em",
+  "font",
+  "h1",
+  "h2",
+  "h3",
+  "h4",
+  "h5",
+  "h6",
+  "i",
+  "img",
+  "li",
+  "ol",
+  "p",
+  "pre",
+  "s",
+  "span",
+  "strike",
+  "strong",
+  "sub",
+  "sup",
+  "u",
+  "ul",
+]);
+
+function isSafeEditorAttribute(tagName: string, name: string, value: string) {
+  if (name === "align") {
+    return ["left", "center", "right"].includes(value.toLowerCase());
+  }
+  if (name === "dir") {
+    return ["ltr", "rtl", "auto"].includes(value.toLowerCase());
+  }
+  if (tagName === "img") {
+    return (name === "src" && isSafeEditorImageSource(value.trim()))
+      || ((name === "alt" || name === "title") && value.length <= 500);
+  }
+  if (tagName === "font" && name === "face") {
+    return value.length <= 160
+      && /^[A-Za-z0-9 ,.'"-]+$/.test(value)
+      && !/url|expression/i.test(value);
+  }
+  if (tagName === "ol" && name === "start") {
+    return /^-?[0-9]{1,6}$/.test(value);
+  }
+  return false;
+}
+
+function isSafeEditorImageSource(value: string) {
+  return /^data:image\/(?:png|jpe?g|gif|webp);base64,[a-z0-9+/=\s]+$/i.test(value);
 }
 
 function escapeHtml(value: string) {
@@ -180,7 +297,7 @@ function escapeHtml(value: string) {
     .replace(/'/g, "&#39;");
 }
 
-function normalizeDocumentTitle(title: string, markdown: string) {
+function normalizeDocumentTitle(title: string, markdown: string, locale: Locale) {
   const explicitTitle = title.trim();
   if (explicitTitle) {
     return explicitTitle;
@@ -190,7 +307,7 @@ function normalizeDocumentTitle(title: string, markdown: string) {
     return firstMarkdownHeading;
   }
   const firstContentLine = markdown.split("\n").find((line) => line.trim())?.trim();
-  return firstContentLine?.slice(0, 24) || "未命名文档";
+  return firstContentLine?.slice(0, 24) || getLearningCopy(locale).document.untitled;
 }
 
 function sanitizeFileName(value: string) {
@@ -206,6 +323,12 @@ function downloadBlob(fileName: string, blob: Blob) {
   link.click();
   link.remove();
   URL.revokeObjectURL(url);
+}
+
+function createJsonDocumentBlob(data: unknown) {
+  return new Blob([`${JSON.stringify(data, null, 2)}\n`], {
+    type: "application/json;charset=utf-8",
+  });
 }
 
 function htmlToMarkdown(html: string) {

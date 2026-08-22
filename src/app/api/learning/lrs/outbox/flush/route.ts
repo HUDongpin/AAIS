@@ -9,6 +9,15 @@ import {
 } from "@/lib/server/aais-learning-store";
 import { isAaisAuthError, requireAaisSessionActor } from "@/lib/server/aais-request-auth";
 import { createAaisApiErrorResponse } from "@/lib/server/aais-api-error";
+import { isAaisStrongOpaqueSecret } from "@/lib/server/aais-opaque-secret";
+
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
+export const runtime = "nodejs";
+// The worker stops starting provider calls within its 20-second budget. The
+// wider cap covers worst-case bounded Postgres claim/fence/finalize queries so
+// the platform does not kill an invocation after dispatch but before fencing.
+export const maxDuration = 120;
 
 type FlushAuthorization = {
   mode: "admin-session" | "bearer-token";
@@ -74,18 +83,22 @@ async function handleFlushRequest(
           outbox: sanitizeRequeueResult(result),
           secrets: "redacted",
         },
-        { status: result.status === "not_configured" ? 503 : 200 },
+        {
+          status: result.status === "not_configured" ? 503 : 200,
+          headers: { "cache-control": "private, no-store" },
+        },
       );
     }
 
     const result = await flushAaisPersistentLrsOutbox({
       limit,
     });
+    const flushFailed = isFlushResultFailure(result);
     recordOutboxAudit({
       action,
       authorization,
       limit,
-      outcome: result.status === "not_configured" ? "failure" : "success",
+      outcome: flushFailed ? "failure" : "success",
       result: sanitizeFlushResult(result),
     });
     recordOutboxMonitoringIfNeeded({
@@ -101,7 +114,12 @@ async function handleFlushRequest(
         outbox: sanitizeFlushResult(result),
         secrets: "redacted",
       },
-      { status: result.status === "not_configured" ? 503 : 200 },
+      {
+        status: result.status === "not_configured"
+          ? 503
+          : flushFailed ? 502 : 200,
+        headers: { "cache-control": "private, no-store" },
+      },
     );
   } catch (error) {
     recordOutboxAudit({
@@ -138,7 +156,7 @@ async function authorizeFlushRequest(
   const configuredTokens = [
     process.env.AAIS_LRS_OUTBOX_FLUSH_TOKEN?.trim(),
     process.env.CRON_SECRET?.trim(),
-  ].filter((token): token is string => Boolean(token));
+  ].filter((token): token is string => isAaisStrongOpaqueSecret(token));
   if (bearer) {
     if (configuredTokens.some((token) => tokenMatches(bearer, token))) {
       return { mode: "bearer-token" };
@@ -210,8 +228,20 @@ function sanitizeFlushResult(result: Awaited<ReturnType<typeof flushAaisPersiste
     sent: result.sent,
     ...(typeof result.batches === "number" ? { batches: result.batches } : {}),
     ...(typeof result.failed === "number" ? { failed: result.failed } : {}),
+    ...(typeof result.deferred === "number" ? { deferred: result.deferred } : {}),
+    ...(typeof result.stoppedReason === "string"
+      ? { stoppedReason: result.stoppedReason }
+      : {}),
+    ...(typeof result.hasMore === "boolean" ? { hasMore: result.hasMore } : {}),
     secrets: "redacted" as const,
   };
+}
+
+function isFlushResultFailure(
+  result: Awaited<ReturnType<typeof flushAaisPersistentLrsOutbox>>,
+) {
+  return result.status === "not_configured"
+    || (typeof result.failed === "number" && result.failed > 0);
 }
 
 function sanitizeAuthorization(authorization: FlushAuthorization) {
@@ -309,7 +339,14 @@ function recordOutboxMonitoringIfNeeded(input: {
   status: string;
   result: Record<string, unknown>;
 }) {
-  if (input.status !== "not_configured" && input.status !== "partial" && input.status !== "operation_failed") {
+  const partialFailure = input.status === "partial"
+    && typeof input.result.failed === "number"
+    && input.result.failed > 0;
+  if (
+    input.status !== "not_configured"
+    && input.status !== "operation_failed"
+    && !partialFailure
+  ) {
     return;
   }
   recordAaisMonitoringIssue({

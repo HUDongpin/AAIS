@@ -1,6 +1,14 @@
 "use client";
 
-import { useCallback, useRef, useState, type FormEvent } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type ChangeEvent,
+  type FormEvent,
+} from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
   CaretDown,
@@ -10,19 +18,41 @@ import {
   Sparkle,
   UserCircle,
 } from "@phosphor-icons/react";
-import { getAaisApiErrorMessage } from "@/lib/client/aais-api-error";
-import { loginCopy, loginSerifFontFamily } from "@/components/pages/login/login-design";
+import { clearAaisResearchTelemetryForActor } from "@/lib/client/aais-research-telemetry";
+import {
+  aaisLocaleStorageKey,
+  applyAaisLocaleToDocument,
+  saveAaisLocalePreference,
+} from "@/lib/aais-locale";
+import {
+  loginCopyByLocale,
+  type LoginLocale,
+} from "@/components/pages/login/login-design";
+import { isSafeAaisLocalRedirectTarget } from "@/lib/aais-local-redirect";
 
 type LoginPageProps = {
+  initialLocale?: LoginLocale;
   trialLoginEnabled?: boolean;
 };
 
-export function LoginPage({ trialLoginEnabled = true }: LoginPageProps) {
+const subscribeToClientReady = () => () => {};
+const getClientReadySnapshot = () => true;
+const getServerClientReadySnapshot = () => false;
+
+export function LoginPage({
+  initialLocale,
+  trialLoginEnabled = true,
+}: LoginPageProps) {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const inviteToken = searchParams.get("invite_token")?.trim() ?? "";
-  const resetToken = searchParams.get("reset_token")?.trim() ?? "";
-  const passwordToken = inviteToken || resetToken;
+  const legacyInviteToken = searchParams.get("invite_token")?.trim() ?? "";
+  const legacyResetToken = searchParams.get("reset_token")?.trim() ?? "";
+  const requestedLocale = parseLoginLocale(searchParams.get("lang"));
+  const [locale, setLocale] = useState<LoginLocale>(
+    requestedLocale ?? initialLocale ?? "zh-CN",
+  );
+  const copy = loginCopyByLocale[locale];
+  const researchLogoutAcknowledgementFailed = searchParams.get("researchLogout") === "ack-failed";
   const [account, setAccount] = useState("");
   const [password, setPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
@@ -33,10 +63,104 @@ export function LoginPage({ trialLoginEnabled = true }: LoginPageProps) {
   const [notice, setNotice] = useState("");
   const [resetMode, setResetMode] = useState(false);
   const [resetEmail, setResetEmail] = useState("");
+  const [passwordToken, setPasswordToken] = useState("");
   const [passwordTokenConsumed, setPasswordTokenConsumed] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const clientReady = useSyncExternalStore(
+    subscribeToClientReady,
+    getClientReadySnapshot,
+    getServerClientReadySnapshot,
+  );
   const submittingRef = useRef(false);
+  const passwordTokenCaptureCompletedRef = useRef(false);
+  const accountInputRef = useRef<HTMLInputElement>(null);
+  const resetEmailInputRef = useRef<HTMLInputElement>(null);
   const passwordTokenMode = Boolean(passwordToken) && !passwordTokenConsumed;
+  const displayedError = error || (researchLogoutAcknowledgementFailed
+    ? copy.researchLogoutAckWarning
+    : "");
+
+  useEffect(() => {
+    if (passwordTokenCaptureCompletedRef.current) {
+      return;
+    }
+    passwordTokenCaptureCompletedRef.current = true;
+    const url = new URL(window.location.href);
+    const fragmentContainsToken = /(?:^|[&#])(invite_token|reset_token)=/i.test(url.hash.slice(1));
+    const fragmentParams = fragmentContainsToken
+      ? new URLSearchParams(url.hash.slice(1))
+      : null;
+    const token = fragmentParams?.get("invite_token")?.trim()
+      || fragmentParams?.get("reset_token")?.trim()
+      || legacyInviteToken
+      || legacyResetToken;
+    setPasswordToken(token);
+    setPasswordTokenConsumed(false);
+
+    const hadLegacyQueryToken = url.searchParams.has("invite_token")
+      || url.searchParams.has("reset_token");
+    url.searchParams.delete("invite_token");
+    url.searchParams.delete("reset_token");
+    if (fragmentParams) {
+      fragmentParams.delete("invite_token");
+      fragmentParams.delete("reset_token");
+      const remainingFragment = fragmentParams.toString();
+      url.hash = remainingFragment ? `#${remainingFragment}` : "";
+    }
+    if (hadLegacyQueryToken || fragmentContainsToken) {
+      window.history.replaceState(
+        window.history.state,
+        "",
+        `${url.pathname}${url.search}${url.hash}`,
+      );
+    }
+  }, [legacyInviteToken, legacyResetToken]);
+
+  useEffect(() => {
+    if (requestedLocale || initialLocale) {
+      return;
+    }
+    const savedLocale = parseLoginLocale(window.localStorage.getItem(aaisLocaleStorageKey));
+    if (!savedLocale || savedLocale === locale) {
+      return;
+    }
+    const frameId = window.requestAnimationFrame(() => setLocale(savedLocale));
+    return () => window.cancelAnimationFrame(frameId);
+  }, [initialLocale, locale, requestedLocale]);
+
+  useEffect(() => {
+    applyAaisLocaleToDocument(locale);
+  }, [locale]);
+
+  const handleLanguageChange = useCallback((event: ChangeEvent<HTMLSelectElement>) => {
+    const nextLocale = parseLoginLocale(event.target.value) ?? "zh-CN";
+    setLocale(nextLocale);
+    setError("");
+    setNotice("");
+    saveAaisLocalePreference(nextLocale);
+
+    const url = new URL(window.location.href);
+    if (nextLocale === "zh-CN") {
+      url.searchParams.delete("lang");
+    } else {
+      url.searchParams.set("lang", nextLocale);
+    }
+    window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}${url.hash}`);
+  }, []);
+
+  const showAccountLogin = useCallback(() => {
+    setResetMode(false);
+    setError("");
+    setNotice("");
+    window.requestAnimationFrame(() => accountInputRef.current?.focus());
+  }, []);
+
+  const showPasswordReset = useCallback(() => {
+    setResetMode(true);
+    setError("");
+    setNotice("");
+    window.requestAnimationFrame(() => resetEmailInputRef.current?.focus());
+  }, []);
 
   const handleSubmit = useCallback(
     async (event: FormEvent<HTMLFormElement>) => {
@@ -48,11 +172,11 @@ export function LoginPage({ trialLoginEnabled = true }: LoginPageProps) {
       setNotice("");
 
       if (!account.trim() || !password) {
-        setError(loginCopy.emptyError);
+        setError(copy.emptyError);
         return;
       }
       if (!consentAccepted) {
-        setError(loginCopy.consentRequiredError);
+        setError(copy.consentRequiredError);
         return;
       }
 
@@ -82,32 +206,39 @@ export function LoginPage({ trialLoginEnabled = true }: LoginPageProps) {
             actor?: {
               id?: string;
               displayName?: string;
+              role?: string;
             };
           };
         } | null;
 
         if (!response.ok) {
           setError(response.status === 401
-            ? loginCopy.invalidError
-            : getAaisApiErrorMessage(result, loginCopy.serverError));
+            ? copy.invalidError
+            : getLocalizedLoginApiError(result, copy));
           return;
         }
 
-        if (result?.appSession?.actor?.id) {
-          window.localStorage.setItem("aais_student_id", result.appSession.actor.id);
+        if (!isAaisLoginSuccessResponse(result)) {
+          setError(copy.serverError);
+          return;
         }
-        if (result?.appSession?.actor?.displayName) {
-          window.localStorage.setItem("aais_display_name", result.appSession.actor.displayName);
-        }
-        router.replace(isSafeLocalRedirectTarget(result?.redirectTarget) ? result.redirectTarget : "/learning");
+
+        // A successful login establishes a new actor boundary. Discard any
+        // visit validation and unsent queue left by an expired/revoked prior
+        // session. The server-rendered page obtains the actor from the
+        // HttpOnly session, so no identity or display name belongs in web
+        // storage.
+        clearAaisResearchTelemetryForActor();
+        saveAaisLocalePreference(locale);
+        router.replace(result.redirectTarget);
       } catch {
-        setError(loginCopy.serverError);
+        setError(copy.serverError);
       } finally {
         submittingRef.current = false;
         setSubmitting(false);
       }
     },
-    [account, consentAccepted, password, router],
+    [account, consentAccepted, copy, locale, password, router],
   );
 
   const handleSetPassword = useCallback(
@@ -120,11 +251,11 @@ export function LoginPage({ trialLoginEnabled = true }: LoginPageProps) {
       setNotice("");
 
       if (newPassword.length < 10) {
-        setError(loginCopy.passwordLengthError);
+        setError(copy.passwordLengthError);
         return;
       }
       if (newPassword !== confirmPassword) {
-        setError(loginCopy.passwordMismatchError);
+        setError(copy.passwordMismatchError);
         return;
       }
 
@@ -145,22 +276,26 @@ export function LoginPage({ trialLoginEnabled = true }: LoginPageProps) {
         });
         const result = await response.json().catch(() => null);
         if (!response.ok) {
-          setError(getAaisApiErrorMessage(result, loginCopy.serverError));
+          setError(getLocalizedLoginApiError(result, copy));
+          return;
+        }
+        if (!isAaisSetPasswordSuccessResponse(result)) {
+          setError(copy.serverError);
           return;
         }
         setNewPassword("");
         setConfirmPassword("");
         setPasswordTokenConsumed(true);
-        setNotice(loginCopy.setPasswordSuccess);
+        setNotice(copy.setPasswordSuccess);
         router.replace("/login");
       } catch {
-        setError(loginCopy.serverError);
+        setError(copy.serverError);
       } finally {
         submittingRef.current = false;
         setSubmitting(false);
       }
     },
-    [confirmPassword, newPassword, passwordToken, router],
+    [confirmPassword, copy, newPassword, passwordToken, router],
   );
 
   const handleResetRequest = useCallback(
@@ -173,7 +308,12 @@ export function LoginPage({ trialLoginEnabled = true }: LoginPageProps) {
       setNotice("");
 
       if (!resetEmail.trim()) {
-        setError(loginCopy.emailError);
+        setError(copy.emailError);
+        return;
+      }
+      const normalizedResetEmail = resetEmail.trim();
+      if (!isAaisEmail(normalizedResetEmail)) {
+        setError(copy.emailInvalidError);
         return;
       }
 
@@ -188,46 +328,59 @@ export function LoginPage({ trialLoginEnabled = true }: LoginPageProps) {
           },
           body: JSON.stringify({
             action: "request-reset",
-            email: resetEmail,
+            email: normalizedResetEmail,
           }),
         });
         const result = await response.json().catch(() => null);
         if (!response.ok) {
-          setError(getAaisApiErrorMessage(result, loginCopy.serverError));
+          setError(getLocalizedLoginApiError(result, copy));
           return;
         }
         setResetEmail("");
         setResetMode(false);
-        setNotice(loginCopy.resetSuccess);
+        setNotice(copy.resetSuccess);
       } catch {
-        setError(loginCopy.serverError);
+        setError(copy.serverError);
       } finally {
         submittingRef.current = false;
         setSubmitting(false);
       }
     },
-    [resetEmail],
+    [copy, resetEmail],
   );
 
   return (
     <div
-      className="min-h-[100dvh] overflow-hidden bg-[#fbfdff] text-[#151a32]"
-      style={{ fontFamily: loginSerifFontFamily }}
+      className="aais-login-serif min-h-[100dvh] overflow-hidden bg-[#fbfdff] text-[#151a32]"
       data-trial-login={trialLoginEnabled ? "enabled" : "disabled"}
+      data-client-ready={clientReady ? "true" : "false"}
+      data-locale={locale}
+      lang={locale}
     >
       <div className="mx-auto grid min-h-[100dvh] w-full max-w-[1760px] grid-cols-1">
         <main
           className="relative mx-auto flex min-h-[100dvh] w-full max-w-[720px] items-center px-5 py-8 sm:px-8"
           aria-labelledby="aais-login-heading"
         >
-          <button
-            type="button"
-            className="absolute right-5 top-5 inline-flex h-10 items-center gap-1 rounded-full px-3 text-sm font-semibold text-[#202640] outline-none transition hover:bg-[#eef4ff] active:translate-y-px focus-visible:ring-2 focus-visible:ring-[#1f6feb] sm:right-8 sm:top-8"
-            aria-label="语言"
-          >
-            中文
-            <CaretDown size={14} weight="bold" />
-          </button>
+          <label className="absolute right-5 top-5 inline-flex h-10 items-center rounded-full text-sm font-semibold text-[#202640] transition hover:bg-[#eef4ff] focus-within:ring-2 focus-within:ring-[#1f6feb] sm:right-8 sm:top-8">
+            <span className="sr-only">{copy.languageLabel}</span>
+            <select
+              aria-label={copy.languageLabel}
+              value={locale}
+              onChange={handleLanguageChange}
+              disabled={submitting}
+              className="h-10 cursor-pointer appearance-none rounded-full bg-transparent py-0 pl-3 pr-8 font-semibold outline-none disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              <option value="zh-CN">中文</option>
+              <option value="en-US">English</option>
+            </select>
+            <CaretDown
+              size={14}
+              weight="bold"
+              aria-hidden="true"
+              className="pointer-events-none absolute right-3"
+            />
+          </label>
 
           <div className="mx-auto w-full max-w-[560px] pt-16 lg:pt-0">
             <div className="mb-10 flex items-center gap-3 lg:hidden">
@@ -235,9 +388,9 @@ export function LoginPage({ trialLoginEnabled = true }: LoginPageProps) {
                 <Sparkle size={23} weight="duotone" />
               </span>
               <span>
-                <span className="block text-lg font-semibold tracking-normal">{loginCopy.brandName}</span>
+                <span className="block text-lg font-semibold tracking-normal">{copy.brandName}</span>
                 <span className="block text-xs font-medium text-[#647089]">
-                  {loginCopy.brandSubline}
+                  {copy.brandSubline}
                 </span>
               </span>
             </div>
@@ -246,16 +399,47 @@ export function LoginPage({ trialLoginEnabled = true }: LoginPageProps) {
               id="aais-login-heading"
               className="text-2xl font-black leading-[1.16] tracking-normal text-[#171b35] sm:text-3xl"
             >
-              {loginCopy.welcome}
+              {copy.welcome}
             </h1>
 
-            <div className="mt-9 inline-flex border-b border-[#1f6feb] pb-2 text-base font-bold text-[#1f6feb]">
-              {passwordTokenMode
-                ? loginCopy.setPassword
-                : resetMode
-                  ? loginCopy.resetPassword
-                  : loginCopy.accountLogin}
-            </div>
+            {passwordTokenMode ? (
+              <h2 className="mt-9 inline-flex border-b border-[#1f6feb] pb-2 text-base font-bold text-[#1f6feb]">
+                {copy.setPassword}
+              </h2>
+            ) : (
+              <div
+                className="mt-9 flex items-end gap-5 border-b border-[#d6e4fb]"
+                role="group"
+                aria-label={copy.loginModeLabel}
+              >
+                <button
+                  type="button"
+                  aria-pressed={!resetMode}
+                  aria-controls="aais-account-login-form"
+                  onClick={showAccountLogin}
+                  className={`border-b-2 pb-2 text-base font-bold outline-none transition focus-visible:ring-2 focus-visible:ring-[#1f6feb] ${
+                    resetMode
+                      ? "border-transparent text-[#69758d] hover:text-[#1f6feb]"
+                      : "border-[#1f6feb] text-[#1f6feb]"
+                  }`}
+                >
+                  {copy.accountLogin}
+                </button>
+                <button
+                  type="button"
+                  aria-pressed={resetMode}
+                  aria-controls="aais-password-reset-form"
+                  onClick={showPasswordReset}
+                  className={`border-b-2 pb-2 text-sm font-bold outline-none transition focus-visible:ring-2 focus-visible:ring-[#1f6feb] ${
+                    resetMode
+                      ? "border-[#1f6feb] text-[#1f6feb]"
+                      : "border-transparent text-[#69758d] hover:text-[#1f6feb]"
+                  }`}
+                >
+                  {copy.forgotPassword}
+                </button>
+              </div>
+            )}
 
             {notice ? (
               <p
@@ -272,7 +456,7 @@ export function LoginPage({ trialLoginEnabled = true }: LoginPageProps) {
               <form onSubmit={handleSetPassword} className="mt-7 space-y-5" noValidate aria-busy={submitting}>
                 <label className="block space-y-2" htmlFor="aais-new-password">
                   <span className="text-sm font-semibold text-[#2a314a]">
-                    {loginCopy.newPasswordLabel}
+                    {copy.newPasswordLabel}
                   </span>
                   <span className="relative block">
                     <LockKey
@@ -286,7 +470,7 @@ export function LoginPage({ trialLoginEnabled = true }: LoginPageProps) {
                       onChange={(event) => setNewPassword(event.target.value)}
                       className="h-14 w-full rounded-lg border border-[#c8d9f5] bg-white pl-12 pr-4 text-base font-medium text-[#18213a] outline-none transition placeholder:text-[#8794aa] focus:border-[#1f6feb] focus:ring-4 focus:ring-[#1f6feb]/15"
                       autoComplete="new-password"
-                      placeholder={loginCopy.newPasswordPlaceholder}
+                      placeholder={copy.newPasswordPlaceholder}
                       type="password"
                     />
                   </span>
@@ -294,7 +478,7 @@ export function LoginPage({ trialLoginEnabled = true }: LoginPageProps) {
 
                 <label className="block space-y-2" htmlFor="aais-confirm-password">
                   <span className="text-sm font-semibold text-[#2a314a]">
-                    {loginCopy.confirmPasswordLabel}
+                    {copy.confirmPasswordLabel}
                   </span>
                   <span className="relative block">
                     <LockKey
@@ -308,36 +492,42 @@ export function LoginPage({ trialLoginEnabled = true }: LoginPageProps) {
                       onChange={(event) => setConfirmPassword(event.target.value)}
                       className="h-14 w-full rounded-lg border border-[#c8d9f5] bg-white pl-12 pr-4 text-base font-medium text-[#18213a] outline-none transition placeholder:text-[#8794aa] focus:border-[#1f6feb] focus:ring-4 focus:ring-[#1f6feb]/15"
                       autoComplete="new-password"
-                      placeholder={loginCopy.confirmPasswordPlaceholder}
+                      placeholder={copy.confirmPasswordPlaceholder}
                       type="password"
                     />
                   </span>
                 </label>
 
-                {error ? (
+                {displayedError ? (
                   <p
                     className="rounded-lg border border-[#f0b7c9] bg-[#fff1f5] px-4 py-3 text-sm font-semibold text-[#a12f56]"
                     role="alert"
                     aria-live="assertive"
                     aria-atomic="true"
                   >
-                    {error}
+                    {displayedError}
                   </p>
                 ) : null}
 
                 <button
                   type="submit"
-                  disabled={submitting}
+                  disabled={!clientReady || submitting}
                   className="inline-flex h-14 w-full items-center justify-center rounded-xl bg-[#1f6feb] px-6 text-base font-bold text-white shadow-[0_14px_34px_rgba(31,111,235,0.25)] outline-none transition hover:bg-[#1557c0] active:translate-y-px focus-visible:ring-4 focus-visible:ring-[#1f6feb]/25 disabled:cursor-not-allowed disabled:opacity-70"
                 >
-                  {submitting ? "保存中..." : loginCopy.setPasswordSubmit}
+                  {submitting ? copy.saving : copy.setPasswordSubmit}
                 </button>
               </form>
             ) : resetMode ? (
-              <form onSubmit={handleResetRequest} className="mt-7 space-y-5" noValidate aria-busy={submitting}>
+              <form
+                id="aais-password-reset-form"
+                onSubmit={handleResetRequest}
+                className="mt-7 space-y-5"
+                noValidate
+                aria-busy={submitting}
+              >
                 <label className="block space-y-2" htmlFor="aais-reset-email">
                   <span className="text-sm font-semibold text-[#2a314a]">
-                    {loginCopy.resetEmailLabel}
+                    {copy.resetEmailLabel}
                   </span>
                   <span className="relative block">
                     <UserCircle
@@ -347,52 +537,55 @@ export function LoginPage({ trialLoginEnabled = true }: LoginPageProps) {
                     />
                     <input
                       id="aais-reset-email"
+                      ref={resetEmailInputRef}
                       value={resetEmail}
                       onChange={(event) => setResetEmail(event.target.value)}
                       className="h-14 w-full rounded-lg border border-[#c8d9f5] bg-white pl-12 pr-4 text-base font-medium text-[#18213a] outline-none transition placeholder:text-[#8794aa] focus:border-[#1f6feb] focus:ring-4 focus:ring-[#1f6feb]/15"
                       autoComplete="email"
-                      placeholder={loginCopy.resetEmailPlaceholder}
+                      placeholder={copy.resetEmailPlaceholder}
                       type="email"
                     />
                   </span>
                 </label>
 
-                {error ? (
+                {displayedError ? (
                   <p
                     className="rounded-lg border border-[#f0b7c9] bg-[#fff1f5] px-4 py-3 text-sm font-semibold text-[#a12f56]"
                     role="alert"
                     aria-live="assertive"
                     aria-atomic="true"
                   >
-                    {error}
+                    {displayedError}
                   </p>
                 ) : null}
 
                 <button
                   type="submit"
-                  disabled={submitting}
+                  disabled={!clientReady || submitting}
                   className="inline-flex h-14 w-full items-center justify-center rounded-xl bg-[#1f6feb] px-6 text-base font-bold text-white shadow-[0_14px_34px_rgba(31,111,235,0.25)] outline-none transition hover:bg-[#1557c0] active:translate-y-px focus-visible:ring-4 focus-visible:ring-[#1f6feb]/25 disabled:cursor-not-allowed disabled:opacity-70"
                 >
-                  {submitting ? "发送中..." : loginCopy.resetSubmit}
+                  {submitting ? copy.sending : copy.resetSubmit}
                 </button>
 
                 <button
                   type="button"
-                  onClick={() => {
-                    setResetMode(false);
-                    setError("");
-                    setNotice("");
-                  }}
+                  onClick={showAccountLogin}
                   className="inline-flex h-11 w-full items-center justify-center rounded-lg border border-[#c8d9f5] bg-white px-4 text-sm font-bold text-[#1f6feb] outline-none transition hover:bg-[#eef4ff] focus-visible:ring-2 focus-visible:ring-[#1f6feb]"
                 >
-                  {loginCopy.backToLogin}
+                  {copy.backToLogin}
                 </button>
               </form>
             ) : (
-              <form onSubmit={handleSubmit} className="mt-7 space-y-5" noValidate aria-busy={submitting}>
+              <form
+                id="aais-account-login-form"
+                onSubmit={handleSubmit}
+                className="mt-7 space-y-5"
+                noValidate
+                aria-busy={submitting}
+              >
                 <label className="block space-y-2" htmlFor="aais-login-account">
                   <span className="text-sm font-semibold text-[#2a314a]">
-                    {loginCopy.accountLabel}
+                    {copy.accountLabel}
                   </span>
                   <span className="relative block">
                     <UserCircle
@@ -402,18 +595,19 @@ export function LoginPage({ trialLoginEnabled = true }: LoginPageProps) {
                     />
                     <input
                       id="aais-login-account"
+                      ref={accountInputRef}
                       value={account}
                       onChange={(event) => setAccount(event.target.value)}
                       className="h-14 w-full rounded-lg border border-[#c8d9f5] bg-white pl-12 pr-4 text-base font-medium text-[#18213a] outline-none transition placeholder:text-[#8794aa] focus:border-[#1f6feb] focus:ring-4 focus:ring-[#1f6feb]/15"
                       autoComplete="username"
-                      placeholder={loginCopy.accountPlaceholder}
+                      placeholder={copy.accountPlaceholder}
                     />
                   </span>
                 </label>
 
                 <label className="block space-y-2" htmlFor="aais-login-password">
                   <span className="text-sm font-semibold text-[#2a314a]">
-                    {loginCopy.passwordLabel}
+                    {copy.passwordLabel}
                   </span>
                   <span className="relative block">
                     <LockKey
@@ -427,14 +621,14 @@ export function LoginPage({ trialLoginEnabled = true }: LoginPageProps) {
                       onChange={(event) => setPassword(event.target.value)}
                       className="h-14 w-full rounded-lg border border-[#c8d9f5] bg-white pl-12 pr-12 text-base font-medium text-[#18213a] outline-none transition placeholder:text-[#8794aa] focus:border-[#1f6feb] focus:ring-4 focus:ring-[#1f6feb]/15"
                       autoComplete="current-password"
-                      placeholder={loginCopy.passwordPlaceholder}
+                      placeholder={copy.passwordPlaceholder}
                       type={showPassword ? "text" : "password"}
                     />
                     <button
                       type="button"
                       onClick={() => setShowPassword((current) => !current)}
                       className="absolute right-3 top-1/2 inline-flex size-9 -translate-y-1/2 items-center justify-center rounded-full text-[#6a7892] outline-none transition hover:bg-[#eef4ff] hover:text-[#1f6feb] focus-visible:ring-2 focus-visible:ring-[#1f6feb]"
-                      aria-label={showPassword ? "隐藏密码" : "显示密码"}
+                      aria-label={showPassword ? copy.hidePassword : copy.showPassword}
                     >
                       {showPassword ? (
                         <EyeSlash size={20} weight="duotone" />
@@ -456,60 +650,49 @@ export function LoginPage({ trialLoginEnabled = true }: LoginPageProps) {
                       className="mt-1 size-4 shrink-0 rounded border-[#aebfda] text-[#1f6feb] outline-none focus-visible:ring-2 focus-visible:ring-[#1f6feb]"
                     />
                     <span className="text-sm font-semibold leading-6 text-[#2a314a]">
-                      {loginCopy.consentCheckboxLabel}
+                      {copy.consentCheckboxLabel}
                     </span>
                   </label>
                   <p className="mt-2 pl-7 text-sm font-medium leading-6 text-[#5d6b84]">
-                    <a href="/terms" className="font-semibold text-[#1557c0] underline-offset-4 hover:underline">
-                      {loginCopy.terms}
+                    <span>{copy.consentBasisPrefix}</span>
+                    <a href={createLegalHref("/terms", locale)} className="font-semibold text-[#1557c0] underline-offset-4 hover:underline">
+                      {copy.terms}
                     </a>
-                    <span> 和 </span>
-                    <a href="/privacy" className="font-semibold text-[#1557c0] underline-offset-4 hover:underline">
-                      {loginCopy.privacy}
+                    <span>{copy.consentBasisConnector}</span>
+                    <a href={createLegalHref("/privacy", locale)} className="font-semibold text-[#1557c0] underline-offset-4 hover:underline">
+                      {copy.privacy}
                     </a>
-                    <span> 将作为本次登录确认的依据。</span>
+                    <span>{copy.consentBasisSuffix}</span>
                   </p>
                 </div>
 
-                {error ? (
+                {displayedError ? (
                   <p
                     className="rounded-lg border border-[#f0b7c9] bg-[#fff1f5] px-4 py-3 text-sm font-semibold text-[#a12f56]"
                     role="alert"
                     aria-live="assertive"
                     aria-atomic="true"
                   >
-                    {error}
+                    {displayedError}
                   </p>
                 ) : null}
 
                 <button
                   type="submit"
-                  disabled={submitting}
+                  disabled={!clientReady || submitting}
                   className="inline-flex h-14 w-full items-center justify-center rounded-xl bg-[#1f6feb] px-6 text-base font-bold text-white shadow-[0_14px_34px_rgba(31,111,235,0.25)] outline-none transition hover:bg-[#1557c0] active:translate-y-px focus-visible:ring-4 focus-visible:ring-[#1f6feb]/25 disabled:cursor-not-allowed disabled:opacity-70"
                 >
-                  {submitting ? "登录中..." : loginCopy.submit}
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => {
-                    setResetMode(true);
-                    setError("");
-                    setNotice("");
-                  }}
-                  className="inline-flex h-11 w-full items-center justify-center rounded-lg border border-[#c8d9f5] bg-white px-4 text-sm font-bold text-[#1f6feb] outline-none transition hover:bg-[#eef4ff] focus-visible:ring-2 focus-visible:ring-[#1f6feb]"
-                >
-                  {loginCopy.forgotPassword}
+                  {submitting ? copy.signingIn : copy.submit}
                 </button>
 
                 <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-[#69758d]">
-                  <span>继续登录即使用当前账号进入受保护的学习空间。</span>
-                  <a href="/terms" className="font-semibold text-[#1557c0] underline-offset-4 hover:underline">
-                    {loginCopy.terms}
+                  <span>{copy.protectedSpaceNotice}</span>
+                  <a href={createLegalHref("/terms", locale)} className="font-semibold text-[#1557c0] underline-offset-4 hover:underline">
+                    {copy.terms}
                   </a>
-                  <span>和</span>
-                  <a href="/privacy" className="font-semibold text-[#1557c0] underline-offset-4 hover:underline">
-                    {loginCopy.privacy}
+                  <span>{copy.consentBasisConnector.trim()}</span>
+                  <a href={createLegalHref("/privacy", locale)} className="font-semibold text-[#1557c0] underline-offset-4 hover:underline">
+                    {copy.privacy}
                   </a>
                 </p>
               </form>
@@ -521,6 +704,157 @@ export function LoginPage({ trialLoginEnabled = true }: LoginPageProps) {
   );
 }
 
-function isSafeLocalRedirectTarget(value: string | undefined): value is string {
-  return Boolean(value?.startsWith("/") && !value.startsWith("//"));
+type LoginCopy = (typeof loginCopyByLocale)[LoginLocale];
+
+type AaisLoginSuccessResponse = {
+  redirectTarget: string;
+  appSession: {
+    actor: {
+      id: string;
+      displayName: string;
+      role: "student" | "teacher" | "researcher" | "admin";
+    };
+  };
+};
+
+type AaisSetPasswordSuccessResponse = {
+  user: {
+    id: string;
+    email: string;
+    displayName: string;
+    role: "student" | "teacher" | "researcher" | "admin";
+    status: "active";
+    createdAt: string;
+    updatedAt: string;
+    lastLoginAt: string | null;
+  };
+  secrets: "redacted";
+};
+
+function isAaisLoginSuccessResponse(value: unknown): value is AaisLoginSuccessResponse {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+  const response = value as Record<string, unknown>;
+  if (
+    !isSafeAaisLocalRedirectTarget(
+      typeof response.redirectTarget === "string" ? response.redirectTarget : null,
+    )
+    || typeof response.appSession !== "object"
+    || response.appSession === null
+  ) {
+    return false;
+  }
+  const appSession = response.appSession as Record<string, unknown>;
+  if (typeof appSession.actor !== "object" || appSession.actor === null) {
+    return false;
+  }
+  const actor = appSession.actor as Record<string, unknown>;
+  return isAaisActorId(actor.id)
+    && isAaisDisplayName(actor.displayName)
+    && isAaisActorRole(actor.role);
+}
+
+function isAaisSetPasswordSuccessResponse(
+  value: unknown,
+): value is AaisSetPasswordSuccessResponse {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+  const response = value as Record<string, unknown>;
+  if (
+    response.secrets !== "redacted"
+    || typeof response.user !== "object"
+    || response.user === null
+  ) {
+    return false;
+  }
+  const user = response.user as Record<string, unknown>;
+  return isAaisActorId(user.id)
+    && isAaisEmail(user.email)
+    && isAaisDisplayName(user.displayName)
+    && isAaisActorRole(user.role)
+    && user.status === "active"
+    && isAaisIsoDate(user.createdAt)
+    && isAaisIsoDate(user.updatedAt)
+    && (user.lastLoginAt === null || isAaisIsoDate(user.lastLoginAt));
+}
+
+function isAaisActorId(value: unknown): value is string {
+  return typeof value === "string"
+    && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(value);
+}
+
+function isAaisDisplayName(value: unknown): value is string {
+  return typeof value === "string"
+    && value.trim().length > 0
+    && value.length <= 120;
+}
+
+function isAaisActorRole(
+  value: unknown,
+): value is "student" | "teacher" | "researcher" | "admin" {
+  return value === "student"
+    || value === "teacher"
+    || value === "researcher"
+    || value === "admin";
+}
+
+function isAaisEmail(value: unknown): value is string {
+  return typeof value === "string"
+    && value.length <= 254
+    && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+}
+
+function isAaisIsoDate(value: unknown): value is string {
+  if (typeof value !== "string") {
+    return false;
+  }
+  const date = new Date(value);
+  return !Number.isNaN(date.getTime()) && date.toISOString() === value;
+}
+
+function getLocalizedLoginApiError(
+  body: {
+    error?: string | {
+      code?: string;
+      message?: string;
+    };
+  } | null,
+  copy: LoginCopy,
+) {
+  const code = typeof body?.error === "object" && body.error !== null
+    ? body.error.code
+    : undefined;
+
+  switch (code) {
+    case "AAIS_INVALID_CREDENTIALS":
+      return copy.invalidError;
+    case "AAIS_LOGIN_RATE_LIMITED":
+    case "AAIS_SET_PASSWORD_RATE_LIMITED":
+      return copy.rateLimitError;
+    case "AAIS_PASSWORD_TOKEN_INVALID":
+      return copy.passwordTokenInvalidError;
+    case "AAIS_PASSWORD_INPUT_INVALID":
+    case "AAIS_PASSWORD_REQUEST_INVALID":
+      return copy.passwordInputInvalidError;
+    case "AAIS_PASSWORD_REQUEST_TOO_LARGE":
+      return copy.passwordRequestTooLargeError;
+    default:
+      // Auth responses can contain operational English text. The login page
+      // intentionally exposes only reviewed locale copy and never renders raw
+      // server or dependency messages.
+      return copy.serverError;
+  }
+}
+
+function parseLoginLocale(value: string | null): LoginLocale | null {
+  if (value === "zh-CN" || value === "en-US") {
+    return value;
+  }
+  return null;
+}
+
+function createLegalHref(pathname: "/privacy" | "/terms", locale: LoginLocale) {
+  return locale === "en-US" ? `${pathname}?lang=en-US` : pathname;
 }

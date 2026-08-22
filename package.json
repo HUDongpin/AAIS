@@ -16,9 +16,19 @@
     "type-check": "tsc --noEmit",
     "ci": "npm run lint && npm run type-check && npm test && npm run build",
     "db:migrate": "node -- scripts/run-postgres-migrations.mjs",
+    "db:migrate:research": "node -- scripts/run-postgres-migrations.mjs --research",
     "db:backfill": "node -- scripts/backfill-aais-events.mjs",
     "db:seed-users": "node -- scripts/seed-aais-users.mjs",
     "db:cleanup": "node -- scripts/cleanup-aais-retention.mjs",
+    "lrs:archive-legacy": "node -- scripts/archive-aais-legacy-lrs.mjs",
+    "study:rehearse": "node -- scripts/rehearse-aais-research.mjs",
+    "study:capture-browser": "node -- scripts/capture-aais-browser-rehearsal.mjs",
+    "study:reconcile-browser": "node -- scripts/reconcile-aais-browser-rehearsal.mjs",
+    "study:attest-runtime": "node -- scripts/attest-aais-runtime-build.mjs",
+    "study:attest-network": "node -- scripts/attest-aais-external-lrs-network.mjs",
+    "study:prepare-mainland-test": "node -- scripts/generate-aais-mainland-test-profile.mjs",
+    "study:run-mainland-test-lrs": "node -- scripts/run-aais-mainland-test-lrs.mjs",
+    "study:verify-governance-evidence": "node -- scripts/verify-aais-research-governance-evidence.mjs",
     "verify:postgres-restore": "node -- scripts/verify-postgres-restore.mjs",
     "hygiene:check": "node -- scripts/check-repo-hygiene.mjs",
     "smoke:prod": "node -- scripts/smoke-prod.mjs",
@@ -30,8 +40,10 @@
     "@phosphor-icons/react": "^2.1.10",
     "@sentry/nextjs": "^10.65.0",
     "@vercel/analytics": "^2.0.1",
+    "fflate": "0.8.3",
     "jose": "^6.2.3",
-    "next": "16.2.10",
+    "katex": "0.18.1",
+    "next": "16.2.12",
     "pdfjs-dist": "^6.1.200",
     "pg": "^8.22.0",
     "react": "19.2.7",
@@ -50,13 +62,14 @@
     "@types/ws": "^8.18.1",
     "@vitejs/plugin-react": "^6.0.2",
     "eslint": "^9",
-    "eslint-config-next": "16.2.10",
+    "eslint-config-next": "16.2.12",
     "jsdom": "^29.1.1",
     "tailwindcss": "^4",
     "typescript": "^5",
     "vitest": "^4.1.10"
   },
   "overrides": {
-    "postcss": "8.5.10"
+    "postcss": "8.5.26",
+    "sharp": "0.35.3"
   }
 }

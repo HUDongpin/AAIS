@@ -119,7 +119,10 @@ describe("AAIS TeacherDashboardPage", () => {
     expect(screen.getByRole("main", { name: "教师看板" })).toBeTruthy();
     expect(screen.getByText("学习者")).toBeTruthy();
     expect(screen.getAllByText("2").length).toBeGreaterThan(0);
-    expect(screen.getByText("A3/A2 信号")).toBeTruthy();
+    expect(screen.getByText("监督/教授信号")).toBeTruthy();
+    expect(screen.getByRole("option", { name: "小张" })).toBeTruthy();
+    expect(screen.getByRole("option", { name: "教授" })).toBeTruthy();
+    expect(document.body.textContent).not.toMatch(/\bA[12]\b/);
     expect(screen.getByText("AI 采纳")).toBeTruthy();
     expect(screen.getByText("风险分层")).toBeTruthy();
     expect(screen.getByText("推荐跟进")).toBeTruthy();
@@ -190,6 +193,44 @@ describe("AAIS TeacherDashboardPage", () => {
     expect(screen.getByText("规则推荐已暂停。")).toBeTruthy();
     expect(screen.queryByText("暂无需要立即跟进的规则建议。")).toBeNull();
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+  });
+
+  it.each([
+    [403, "AAIS_RECOMMENDATIONS_FORBIDDEN", "Recommendations require educator access."],
+    [500, "AAIS_RECOMMENDATIONS_FAILED", "Recommendations failed unexpectedly."],
+    [503, "AAIS_RECOMMENDATIONS_UNAVAILABLE", "Recommendations are temporarily unavailable."],
+  ])("shows recommendations as unavailable instead of false-empty after HTTP %i", async (
+    status,
+    code,
+    message,
+  ) => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "/api/learning/analytics?scope=cohort&limit=25&offset=0") {
+        return Response.json({ analytics: createAnalyticsFixture() });
+      }
+      if (url === "/api/learning/recommendations?scope=cohort") {
+        return Response.json({
+          error: { code, message },
+          secrets: "redacted",
+        }, { status });
+      }
+      return Response.json(
+        { error: { code: "AAIS_TEST_UNEXPECTED", message: "unexpected" } },
+        { status: 500 },
+      );
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<TeacherDashboardPage />);
+
+    expect(await screen.findByText("learner-beta")).toBeTruthy();
+    expect(screen.getByText("推荐跟进")).toBeTruthy();
+    expect(screen.getByText("不可用")).toBeTruthy();
+    const alert = screen.getByRole("alert", { name: "推荐跟进不可用" });
+    expect(alert.textContent).toContain(message);
+    expect(screen.queryByText("0 条")).toBeNull();
+    expect(screen.queryByText("暂无需要立即跟进的规则建议。")).toBeNull();
   });
 
   it("announces dashboard loading and disables refresh/export while cohort data loads", async () => {
@@ -280,6 +321,11 @@ describe("AAIS TeacherDashboardPage", () => {
         "/api/learning/analytics?scope=cohort&phase=practice&agent=A2&event=coaching_push&limit=25&offset=0",
       );
     });
+    expect(fetchMock).toHaveBeenCalledWith("/api/learning/recommendations?scope=cohort");
+    expect(fetchMock.mock.calls.some(([input]) =>
+      String(input).startsWith("/api/learning/recommendations?")
+      && String(input).includes("event=coaching_push")
+    )).toBe(false);
 
     const csvButton = screen.getByRole("button", { name: "CSV" }) as HTMLButtonElement;
     await waitFor(() => {

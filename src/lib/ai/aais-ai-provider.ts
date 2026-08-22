@@ -6,16 +6,23 @@ import type {
   Locale,
 } from "@/data/aais";
 import type { AaisGuideAttachment } from "@/lib/ai/aais-guide-attachments";
+import type { AaisFunctionScaffoldPlan } from "@/lib/ai/aais-guide-function-scaffold";
+import type { AaisGuideConversationMessage } from "@/lib/ai/orchestration/aais-learning-guide-graph";
 import {
   createDeterministicAaisAiRuntimeProfile,
   createManualAaisAiRuntimeProfile,
+  isAaisAiProviderEndpointAllowed,
+  normalizeAaisAiMaxRetries,
   readAaisAiRuntimeConfig,
   studentRuntimeDefaultMaxRetries,
   studentRuntimeDefaultTimeoutMs,
   studentRuntimeMaxTokens,
   type AaisAiRuntimeProfile,
   type AaisAiRuntimeProviderCandidate,
+  type AaisAiRuntimeProviderName,
 } from "@/lib/ai/aais-ai-runtime-config";
+import { getAaisAiEvalApproval } from "@/lib/server/aais-ai-eval-manifest";
+import { readAaisBoundedResponseJson } from "@/lib/server/aais-bounded-response";
 
 type AaisProviderWorkspaceState = {
   currentStep: string;
@@ -29,14 +36,25 @@ export type AaisModelRequest = {
   label: string;
   role?: string;
   mission?: string;
+  voice?: {
+    persona: string;
+    tone: string;
+    replyContract: string;
+    maxSentences?: number;
+    maxCharacters?: number;
+    maxOutputTokens?: number;
+  };
   caModules?: AaisCaModule[];
   caBackground?: AaisCognitiveApprenticeshipBackground;
   locale: Locale;
   phase: AaisPhase;
   taskId: string;
   learnerInput: string;
+  conversationHistory?: AaisGuideConversationMessage[];
+  scaffoldPlan?: AaisFunctionScaffoldPlan;
   workspaceState: AaisProviderWorkspaceState;
   fallbackText: string;
+  signal?: AbortSignal;
 };
 
 export type AaisModelRuntime = {
@@ -77,6 +95,7 @@ type OpenAiCompatibleProviderInput = {
   endpoint: string;
   apiKey: string;
   model: string;
+  provider?: AaisAiRuntimeProviderName;
   thinkingMode?: "disabled";
   fetchImpl?: typeof fetch;
   timeoutMs?: number;
@@ -100,6 +119,7 @@ type AaisProviderFailureReason =
   | "connect-timeout"
   | "empty-response"
   | "http-status"
+  | "truncated-response"
   | "provider-error";
 
 type AaisProviderFailure = {
@@ -129,18 +149,32 @@ const redaction = {
 } as const;
 
 const guardrailPolicy = "aais-age-appropriate-output-v1" as const;
+export const AAIS_AI_PROVIDER_RESPONSE_MAX_BYTES = 256 * 1024;
 
 export function createConfiguredAaisModelProvider(): AaisModelProvider {
   const runtimeConfig = readAaisAiRuntimeConfig();
-  if (runtimeConfig.primary && isLiveProviderApprovedForRuntime()) {
-    if (runtimeConfig.fallback) {
+  if (runtimeConfig.configurationStatus.primary === "invalid"
+    || runtimeConfig.configurationStatus.fallback === "invalid") {
+    return createDeterministicAaisProvider();
+  }
+  if (runtimeConfig.primary && isLiveProviderApprovedForRuntime(runtimeConfig.primary.model)) {
+    const fallbackApproved = runtimeConfig.fallback
+      ? isLiveProviderApprovedForRuntime(runtimeConfig.fallback.model)
+      : false;
+    const runtimeProfile = runtimeConfig.fallback && !fallbackApproved
+      ? {
+          ...runtimeConfig.profile,
+          fallback: null,
+        }
+      : runtimeConfig.profile;
+    if (runtimeConfig.fallback && fallbackApproved) {
       return createOpenAiCompatibleAaisProviderChain({
-        primary: toOpenAiCompatibleCandidate(runtimeConfig.primary, runtimeConfig.profile),
-        fallback: toOpenAiCompatibleCandidate(runtimeConfig.fallback, runtimeConfig.profile),
+        primary: toOpenAiCompatibleCandidate(runtimeConfig.primary, runtimeProfile),
+        fallback: toOpenAiCompatibleCandidate(runtimeConfig.fallback, runtimeProfile),
       });
     }
     return createOpenAiCompatibleAaisProvider(
-      toOpenAiCompatibleCandidate(runtimeConfig.primary, runtimeConfig.profile),
+      toOpenAiCompatibleCandidate(runtimeConfig.primary, runtimeProfile),
     );
   }
   return createDeterministicAaisProvider(runtimeConfig.profile);
@@ -151,6 +185,7 @@ export function createDeterministicAaisProvider(
 ): AaisModelProvider {
   return {
     async generate(request) {
+      throwIfAaisRequestAborted(request);
       return {
         text: request.fallbackText,
         runtime: {
@@ -177,11 +212,13 @@ export function createOpenAiCompatibleAaisProvider(
   const runtimeProfile = input.runtimeProfile ?? createManualAaisAiRuntimeProfile(input);
   return {
     async generate(request) {
+      throwIfAaisRequestAborted(request);
       const result = await generateWithOpenAiCompatibleCandidate({
         ...input,
         providerRole: "primary",
         runtimeProfile,
       }, request);
+      throwIfAaisRequestAborted(request);
       if (result.ok) {
         return result;
       }
@@ -210,7 +247,9 @@ function createOpenAiCompatibleAaisProviderChain(
 ): AaisModelProvider {
   return {
     async generate(request) {
+      throwIfAaisRequestAborted(request);
       const primaryResult = await generateWithOpenAiCompatibleCandidate(input.primary, request);
+      throwIfAaisRequestAborted(request);
       if (primaryResult.ok) {
         return {
           text: primaryResult.text,
@@ -234,6 +273,7 @@ function createOpenAiCompatibleAaisProviderChain(
 
       if (input.fallback) {
         const fallbackResult = await generateWithOpenAiCompatibleCandidate(input.fallback, request);
+        throwIfAaisRequestAborted(request);
         if (fallbackResult.ok) {
           return {
             text: fallbackResult.text,
@@ -276,13 +316,18 @@ async function generateWithOpenAiCompatibleCandidate(
   input: OpenAiCompatibleProviderCandidate,
   request: AaisModelRequest,
 ): Promise<AaisProviderAttemptResult> {
-  const maxAttempts = Math.max(1, (input.maxRetries ?? studentRuntimeDefaultMaxRetries) + 1);
+  const boundedRetries = normalizeAaisAiMaxRetries(
+    input.maxRetries ?? studentRuntimeDefaultMaxRetries,
+  );
+  const maxAttempts = boundedRetries + 1;
   let failureReason: AaisProviderFailureReason = "provider-error";
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    throwIfAaisRequestAborted(request);
     try {
       const text = await callOpenAiCompatibleProvider(input, request);
-      const guardrail = evaluateAaisModelOutput(text);
+      throwIfAaisRequestAborted(request);
+      const guardrail = evaluateAaisModelOutput(text, request);
       if (guardrail.status === "blocked") {
         return {
           ok: true,
@@ -312,6 +357,7 @@ async function generateWithOpenAiCompatibleCandidate(
         },
       };
     } catch (error) {
+      throwIfAaisRequestAborted(request);
       failureReason = classifyProviderError(error);
       if (attempt === maxAttempts) {
         break;
@@ -365,8 +411,14 @@ async function callOpenAiCompatibleProvider(
   input: OpenAiCompatibleProviderInput,
   request: AaisModelRequest,
 ) {
+  throwIfAaisRequestAborted(request);
+  if (!isAaisAiProviderEndpointAllowed(input.endpoint)) {
+    throw createProviderError("provider-error");
+  }
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), input.timeoutMs ?? studentRuntimeDefaultTimeoutMs);
+  const abortFromRequest = () => controller.abort(request.signal?.reason);
+  request.signal?.addEventListener("abort", abortFromRequest, { once: true });
   try {
     const response = await (input.fetchImpl ?? fetch)(input.endpoint, {
       method: "POST",
@@ -377,13 +429,12 @@ async function callOpenAiCompatibleProvider(
       body: JSON.stringify({
         model: input.model,
         temperature: 0.2,
-        max_tokens: input.maxTokens ?? studentRuntimeMaxTokens,
-        ...(input.thinkingMode === "disabled" ? { thinking: { type: "disabled" } } : {}),
+        max_tokens: resolveAgentMaxOutputTokens(input.maxTokens, request),
+        ...createThinkingModePayload(input),
         messages: [
           {
             role: "system",
-            content:
-              "You are an AAIS Cognitive Apprenticeship learning agent. Keep replies concise, pedagogical, and age-appropriate. Never reveal secrets or internal runtime details.",
+            content: createAgentSystemPrompt(request),
           },
           {
             role: "user",
@@ -392,12 +443,22 @@ async function callOpenAiCompatibleProvider(
               label: request.label,
               role: request.role,
               mission: request.mission,
+              voice: request.voice,
               caModules: request.caModules,
               caBackground: request.caBackground,
               locale: request.locale,
               phase: request.phase,
               taskId: request.taskId,
               learnerInput: request.learnerInput,
+              conversationHistory: request.conversationHistory ?? [],
+              availableVisualization: request.scaffoldPlan
+                ? {
+                    type: request.scaffoldPlan.visualization.type,
+                    expression: request.scaffoldPlan.visualization.expression,
+                    mode: request.scaffoldPlan.mode,
+                    placement: "immediately-below-reply",
+                  }
+                : null,
               workspaceState: {
                 currentStep: request.workspaceState.currentStep,
                 artifactCharacters: request.workspaceState.artifactText?.length ?? 0,
@@ -415,24 +476,46 @@ async function callOpenAiCompatibleProvider(
       }),
       signal: controller.signal,
     });
+    throwIfAaisRequestAborted(request);
     if (!response.ok) {
       throw createProviderError("http-status");
     }
-    const body = (await response.json()) as {
+    const body = (await readAaisBoundedResponseJson(
+      response,
+      AAIS_AI_PROVIDER_RESPONSE_MAX_BYTES,
+      "AAIS AI provider response is too large.",
+    )) as {
       choices?: Array<{
+        finish_reason?: unknown;
+        finishReason?: unknown;
+        stop_reason?: unknown;
         message?: {
           content?: string;
         };
       }>;
     };
-    const content = body.choices?.[0]?.message?.content?.trim();
+    throwIfAaisRequestAborted(request);
+    const choice = body.choices?.[0];
+    const finishReason = choice?.finish_reason ?? choice?.finishReason ?? choice?.stop_reason;
+    if (isTruncatedProviderFinishReason(finishReason)) {
+      throw createProviderError("truncated-response");
+    }
+    const content = choice?.message?.content?.trim();
     if (!content) {
       throw createProviderError("empty-response");
     }
     return content;
   } finally {
     clearTimeout(timeout);
+    request.signal?.removeEventListener("abort", abortFromRequest);
   }
+}
+
+function throwIfAaisRequestAborted(request: Pick<AaisModelRequest, "signal">) {
+  if (!request.signal?.aborted) {
+    return;
+  }
+  request.signal.throwIfAborted();
 }
 
 function toOpenAiCompatibleCandidate(
@@ -443,6 +526,7 @@ function toOpenAiCompatibleCandidate(
     endpoint: candidate.endpoint,
     apiKey: candidate.apiKey,
     model: candidate.model,
+    provider: candidate.profile.provider,
     thinkingMode: candidate.thinkingMode,
     timeoutMs: candidate.timeoutMs,
     maxRetries: candidate.maxRetries,
@@ -497,22 +581,103 @@ function isProviderFailureReason(value: unknown): value is AaisProviderFailureRe
     "connect-timeout",
     "empty-response",
     "http-status",
+    "truncated-response",
     "provider-error",
   ].includes(String(value));
 }
 
-function isLiveProviderApprovedForRuntime() {
-  if (!isProductionRuntime()) {
-    return true;
+function isTruncatedProviderFinishReason(value: unknown) {
+  if (typeof value !== "string") {
+    return false;
   }
-  return process.env.AAIS_AI_EVAL_APPROVED === "true"
-    && Boolean(process.env.AAIS_AI_EVAL_VERSION?.trim());
+  const normalized = value.trim().toLowerCase().replace(/[\s-]+/g, "_");
+  return [
+    "length",
+    "max_completion_tokens",
+    "max_length",
+    "max_output_tokens",
+    "max_tokens",
+    "token_limit",
+  ].includes(normalized);
 }
 
-function evaluateAaisModelOutput(text: string): AaisModelRuntime["guardrail"] {
+function createThinkingModePayload(input: OpenAiCompatibleProviderInput) {
+  if (
+    input.thinkingMode === "disabled"
+    && (input.provider === "qwen" || input.provider === "dashscope")
+  ) {
+    return {
+      enable_thinking: false,
+    };
+  }
+  return {};
+}
+
+function isLiveProviderApprovedForRuntime(model: string) {
+  return getAaisAiEvalApproval({
+    required: isProductionRuntime(),
+    provider: "openai-compatible",
+    model,
+  }).approved;
+}
+
+function createAgentSystemPrompt(request: AaisModelRequest) {
+  const responseRules = [
+    `You are ${request.label} (${request.agentId}), one distinct AAIS Cognitive Apprenticeship agent. Never speak as or imitate another agent.`,
+    request.locale === "zh-CN"
+      ? "Reply only in Simplified Chinese unless the learner explicitly requests another language."
+      : "Reply only in English unless the learner explicitly requests another language.",
+    request.locale === "zh-CN"
+      ? `Your public name is ${request.label}. Address the learner as “你”; never call the learner 小张 or 教授. Never expose the internal IDs A1 or A2 in the reply.`
+      : `Your public name is ${request.label}. Address the learner as “you”; never call the learner Xiao Zhang or Professor. Never expose the internal IDs A1 or A2 in the reply.`,
+    request.voice?.persona ? `Persona: ${request.voice.persona}` : null,
+    request.voice?.tone ? `Tone: ${request.voice.tone}` : null,
+    request.voice?.replyContract ? `Response contract: ${request.voice.replyContract}` : null,
+    request.conversationHistory?.length
+      ? "Use the bounded conversationHistory to resolve references to earlier learner goals, difficulties, and language preferences. Do not ask the learner to repeat information already present there."
+      : null,
+    "Capability truth: Never promise to draw, generate, or display a graph or image later. Only say a visual is shown when availableVisualization is present in the current request.",
+    request.scaffoldPlan
+      ? request.scaffoldPlan.mode === "demonstrate"
+        ? "A verified function graph will be rendered immediately below this reply. Show the worked substitution now, treat the graph as a scaffold, and do not ask the learner to retry before seeing it."
+        : "A verified function graph will be rendered immediately below this reply. Treat it as an immediate scaffold and never make viewing it conditional on a correct calculation."
+      : null,
+    request.voice?.maxSentences
+      ? `Hard limit: at most ${request.voice.maxSentences} sentences.`
+      : null,
+    request.voice?.maxCharacters
+      ? `Hard limit: at most ${request.voice.maxCharacters} characters, including spaces.`
+      : null,
+    "Stay pedagogical and age-appropriate. Never reveal secrets or internal runtime details.",
+  ];
+  return responseRules.filter((rule): rule is string => Boolean(rule)).join("\n");
+}
+
+function resolveAgentMaxOutputTokens(
+  configuredMaxTokens: number | undefined,
+  request: AaisModelRequest,
+) {
+  const runtimeLimit = configuredMaxTokens ?? studentRuntimeMaxTokens;
+  const agentLimit = request.voice?.maxOutputTokens;
+  return agentLimit ? Math.min(runtimeLimit, agentLimit) : runtimeLimit;
+}
+
+function evaluateAaisModelOutput(
+  text: string,
+  request: AaisModelRequest,
+): AaisModelRuntime["guardrail"] {
   const reasons: string[] = [];
   if (text.length > 1800) {
     reasons.push("too-long");
+  }
+  if (request.voice?.maxCharacters && text.length > request.voice.maxCharacters) {
+    reasons.push("agent-response-too-long");
+  }
+  if (
+    request.voice?.maxSentences
+    && countResponseSentences(text) > request.voice.maxSentences
+  ) {
+    reasons.push("agent-response-too-many-sentences");
   }
   if (containsSecretLikeContent(text)) {
     reasons.push("secret-like-content");
@@ -522,6 +687,15 @@ function evaluateAaisModelOutput(text: string): AaisModelRuntime["guardrail"] {
     status: reasons.length ? "blocked" : "passed",
     reasons,
   };
+}
+
+function countResponseSentences(text: string) {
+  return text
+    .replace(/[。！？!?]+/g, "$&\n")
+    .replace(/\.(?=\s|$)/g, ".\n")
+    .split(/\n+/)
+    .filter((part) => part.trim().length > 0)
+    .length;
 }
 
 function containsSecretLikeContent(text: string) {

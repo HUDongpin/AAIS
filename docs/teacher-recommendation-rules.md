@@ -1,6 +1,6 @@
 # AAIS Teacher Recommendation Rules
 
-AAIS recommendations are deterministic, rule-based follow-ups generated from pseudonymous cohort analytics. They are not model-generated diagnoses and do not include raw learner artifacts, guide messages, or self-report text.
+AAIS recommendations are deterministic, rule-based follow-ups generated from purpose-separated pseudonymous cohort analytics keyed by the dedicated, stable `AAIS_PRODUCT_PSEUDONYM_SECRET`. That key is separate from `AAIS_SESSION_SECRET`, so routine session-secret rotation cannot change recommendation identities. They are not model-generated diagnoses and do not include raw learner artifacts, guide messages, or self-report text.
 
 The current policy version is `aais-rule-recommendations-v1`. Teacher and admin users may record an override decision for any recommendation; overrides are stored as redacted `recommendation_override_recorded` events.
 

@@ -1,0 +1,369 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg"
+     width="1920"
+     height="1660"
+     viewBox="0 0 1920 1660"
+     role="img"
+     aria-labelledby="figure-title figure-desc">
+  <title id="figure-title">Technical Architecture of the Cognitive Apprenticeship AI System (CAAIS)</title>
+  <desc id="figure-desc">
+    Spacious publication layout of the implemented CAAIS runtime. Solid blue arrows show
+    implemented runtime and data flows. Dashed amber notation shows declared pedagogical
+    handoff semantics in trace metadata, not executable LangGraph edges. Gray dash-dot arrows
+    show optional integrations or the local-development storage alternative.
+  </desc>
+
+  <defs>
+    <style>
+      .title { font: 700 44px Arial, Helvetica, sans-serif; fill: #172536; }
+      .subtitle { font: 400 26px Arial, Helvetica, sans-serif; fill: #566474; }
+      .layer-title { font: 700 32px Arial, Helvetica, sans-serif; fill: #ffffff; letter-spacing: .2px; }
+      .group-title { font: 700 31px Arial, Helvetica, sans-serif; fill: #172536; }
+      .card-title { font: 700 30px Arial, Helvetica, sans-serif; fill: #172536; }
+      .body { font: 400 30px Arial, Helvetica, sans-serif; fill: #263646; }
+      .body-strong { font: 700 30px Arial, Helvetica, sans-serif; fill: #263646; }
+      .small { font: 400 26px Arial, Helvetica, sans-serif; fill: #566474; }
+      .small-strong { font: 700 26px Arial, Helvetica, sans-serif; fill: #344454; }
+      .micro { font: 400 23px Arial, Helvetica, sans-serif; fill: #617080; }
+      .micro-strong { font: 700 23px Arial, Helvetica, sans-serif; fill: #344454; }
+      .code { font: 400 27px "Courier New", Courier, monospace; fill: #263646; }
+      .white { font: 700 28px Arial, Helvetica, sans-serif; fill: #ffffff; }
+      .white-small { font: 700 23px Arial, Helvetica, sans-serif; fill: #ffffff; }
+      .runtime { fill: none; stroke: #315b78; stroke-width: 3.2; stroke-linecap: round; stroke-linejoin: round; marker-end: url(#arrow-runtime); }
+      .runtime-thin { fill: none; stroke: #4b6e86; stroke-width: 2.7; stroke-linecap: round; stroke-linejoin: round; marker-end: url(#arrow-runtime-small); }
+      .return { fill: none; stroke: #2676aa; stroke-width: 3.5; stroke-linecap: round; stroke-linejoin: round; marker-end: url(#arrow-return); }
+      .provider-line { fill: none; stroke: #75609a; stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; marker-end: url(#arrow-provider); }
+      .provider-chip-arrow { fill: none; stroke: #75609a; stroke-width: 2.4; stroke-linecap: round; marker-end: url(#arrow-provider-small); }
+      .provider-feed { fill: none; stroke: #75609a; stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; }
+      .bridge-line { fill: none; stroke: #4b6e86; stroke-width: 2.7; stroke-linecap: round; }
+      .context-line { fill: none; stroke: #ad6d18; stroke-width: 2.7; stroke-linecap: round; stroke-linejoin: round; marker-end: url(#arrow-context-small); }
+      .trace-line { fill: none; stroke: #ad6d18; stroke-width: 3; stroke-dasharray: 12 9; stroke-linecap: round; marker-end: url(#arrow-context); }
+      .optional { fill: none; stroke: #727d88; stroke-width: 2.8; stroke-dasharray: 12 6 3 6; stroke-linecap: round; stroke-linejoin: round; marker-end: url(#arrow-optional); }
+      .layer { fill: #ffffff; stroke: #aeb9c4; stroke-width: 1.8; }
+      .neutral { fill: #f6f8fa; stroke: #b7c1cb; stroke-width: 1.7; }
+      .visible { fill: #eaf3fa; stroke: #2f6f9f; stroke-width: 2.4; }
+      .background { fill: #e9f5f2; stroke: #2b7b73; stroke-width: 2.4; stroke-dasharray: 9 6; }
+      .knowledge { fill: #fff5e4; stroke: #b87825; stroke-width: 2.1; }
+      .provider { fill: #f2eef8; stroke: #75609a; stroke-width: 2.1; }
+      .trace { fill: #fff9ed; stroke: #b87825; stroke-width: 2.1; stroke-dasharray: 10 7; }
+      .data { fill: #eef3f7; stroke: #506d84; stroke-width: 2.1; }
+      .external { fill: #f8f9fb; stroke: #7d8792; stroke-width: 2; stroke-dasharray: 10 7; }
+      .chip-blue { fill: #dbeaf6; stroke: #8ab0ce; stroke-width: 1.4; }
+      .chip-gray { fill: #ffffff; stroke: #b7c1cb; stroke-width: 1.4; }
+      .chip-violet { fill: #e8e0f2; stroke: #a995c2; stroke-width: 1.4; }
+      .chip-amber { fill: #ffebca; stroke: #d3a25e; stroke-width: 1.4; }
+      .label-pill { fill: #ffffff; stroke: #aeb9c4; stroke-width: 1.4; }
+    </style>
+
+    <marker id="arrow-runtime" viewBox="0 0 10 10" refX="9" refY="5"
+            markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#315b78"/>
+    </marker>
+    <marker id="arrow-runtime-small" viewBox="0 0 10 10" refX="9" refY="5"
+            markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#4b6e86"/>
+    </marker>
+    <marker id="arrow-return" viewBox="0 0 10 10" refX="9" refY="5"
+            markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#2676aa"/>
+    </marker>
+    <marker id="arrow-provider" viewBox="0 0 10 10" refX="9" refY="5"
+            markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#75609a"/>
+    </marker>
+    <marker id="arrow-provider-small" viewBox="0 0 10 10" refX="9" refY="5"
+            markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#75609a"/>
+    </marker>
+    <marker id="arrow-context" viewBox="0 0 10 10" refX="9" refY="5"
+            markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#ad6d18"/>
+    </marker>
+    <marker id="arrow-context-small" viewBox="0 0 10 10" refX="9" refY="5"
+            markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#ad6d18"/>
+    </marker>
+    <marker id="arrow-optional" viewBox="0 0 10 10" refX="9" refY="5"
+            markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#727d88"/>
+    </marker>
+
+    <pattern id="background-hatch" width="13" height="13" patternUnits="userSpaceOnUse"
+             patternTransform="rotate(45)">
+      <line x1="0" y1="0" x2="0" y2="13" stroke="#b7d9d3" stroke-width="2.4"/>
+    </pattern>
+  </defs>
+
+  <rect width="1920" height="1660" fill="#ffffff"/>
+
+  <!-- Figure heading -->
+  <text x="40" y="52" class="title">Technical Architecture of the Cognitive Apprenticeship AI System (CAAIS)</text>
+  <text x="42" y="91" class="subtitle">Implemented runtime snapshot - learner-facing multi-agent guidance and evidence pipeline</text>
+
+  <path d="M 1322 82 H 1380" class="runtime-thin"/>
+  <text x="1394" y="90" class="small">runtime / data</text>
+  <path d="M 1600 82 H 1658" class="trace-line"/>
+  <text x="1672" y="90" class="small">trace semantics</text>
+
+  <!-- Layer backgrounds, drawn before every connector -->
+  <rect x="32" y="125" width="1856" height="225" rx="5" class="layer"/>
+  <path d="M 37 125 H 1883 A 5 5 0 0 1 1888 130 V 171 H 32 V 130 A 5 5 0 0 1 37 125 Z" fill="#17324d"/>
+  <text x="62" y="158" class="layer-title">1  Learner Experience - React / Next.js</text>
+
+  <rect x="32" y="380" width="1856" height="225" rx="5" class="layer"/>
+  <path d="M 37 380 H 1883 A 5 5 0 0 1 1888 385 V 426 H 32 V 385 A 5 5 0 0 1 37 380 Z" fill="#35516b"/>
+  <text x="62" y="413" class="layer-title">2  Secure Application Boundary</text>
+
+  <rect x="32" y="660" width="1856" height="600" rx="5" class="layer"/>
+  <path d="M 37 660 H 1883 A 5 5 0 0 1 1888 665 V 706 H 32 V 665 A 5 5 0 0 1 37 660 Z" fill="#23495d"/>
+  <text x="62" y="693" class="layer-title">3  CAAIS LangGraph Multi-Agent Orchestration</text>
+
+  <rect x="32" y="1290" width="1856" height="330" rx="5" class="layer"/>
+  <path d="M 37 1290 H 1883 A 5 5 0 0 1 1888 1295 V 1336 H 32 V 1295 A 5 5 0 0 1 37 1290 Z" fill="#40586e"/>
+  <text x="62" y="1323" class="layer-title">4  Evidence, Persistence, Interoperability, and Observability</text>
+
+  <!-- Main cards: Layer 1 -->
+  <rect x="190" y="190" width="1240" height="140" rx="7" class="neutral"/>
+  <rect x="215" y="240" width="370" height="72" rx="5" class="chip-blue"/>
+  <rect x="610" y="240" width="390" height="72" rx="5" class="chip-blue"/>
+  <rect x="1025" y="240" width="380" height="72" rx="5" class="chip-blue"/>
+  <rect x="1460" y="190" width="390" height="140" rx="7" class="visible"/>
+
+  <!-- Main cards: Layer 2 -->
+  <rect x="60" y="455" width="370" height="120" rx="7" class="neutral"/>
+  <rect x="480" y="445" width="880" height="140" rx="7" class="neutral"/>
+  <rect x="510" y="495" width="250" height="70" rx="5" class="chip-gray"/>
+  <rect x="785" y="495" width="250" height="70" rx="5" class="chip-gray"/>
+  <rect x="1060" y="495" width="270" height="70" rx="5" class="chip-blue"/>
+  <rect x="1390" y="455" width="460" height="120" rx="7" class="neutral"/>
+
+  <!-- Main cards: Layer 3 -->
+  <rect x="60" y="750" width="370" height="140" rx="7" class="neutral"/>
+  <rect x="60" y="930" width="370" height="250" rx="7" class="knowledge"/>
+
+  <rect x="520" y="760" width="390" height="130" rx="7" class="visible"/>
+  <rect x="950" y="760" width="390" height="130" rx="7" class="visible"/>
+  <rect x="520" y="930" width="390" height="130" rx="7" class="background"/>
+  <rect x="526" y="936" width="60" height="118" fill="url(#background-hatch)"/>
+  <rect x="950" y="930" width="390" height="130" rx="7" class="background"/>
+  <rect x="956" y="936" width="60" height="118" fill="url(#background-hatch)"/>
+
+  <rect x="520" y="1100" width="820" height="105" rx="7" class="neutral"/>
+  <rect x="1410" y="760" width="410" height="160" rx="7" class="provider"/>
+  <rect x="1410" y="950" width="410" height="130" rx="7" class="provider"/>
+  <rect x="1410" y="1090" width="410" height="135" rx="7" class="trace"/>
+
+  <!-- Main cards: Layer 4 -->
+  <rect x="60" y="1385" width="380" height="130" rx="7" class="data"/>
+  <rect x="490" y="1385" width="680" height="130" rx="7" class="data"/>
+  <rect x="515" y="1432" width="285" height="35" rx="5" class="chip-gray"/>
+  <rect x="815" y="1432" width="330" height="35" rx="5" class="chip-gray"/>
+  <rect x="515" y="1474" width="285" height="35" rx="5" class="chip-gray"/>
+  <rect x="815" y="1474" width="330" height="35" rx="5" class="chip-gray"/>
+  <rect x="1220" y="1385" width="300" height="130" rx="7" class="external"/>
+  <rect x="1570" y="1385" width="280" height="130" rx="7" class="external"/>
+  <rect x="60" y="1552" width="1790" height="58" rx="5" fill="#eef3f7"/>
+
+  <!-- Cross-layer and intra-layer connectors. All paths use reserved gutters. -->
+
+  <!-- Learner and cockpit -->
+  <path d="M 158 254 H 190" class="runtime"/>
+  <path d="M 1430 255 H 1460" class="return"/>
+
+  <!-- Cockpit request and SSE response use separate vertical ports -->
+  <path d="M 805 305 V 445" class="runtime"/>
+  <path d="M 1240 495 V 305" class="return"/>
+
+  <!-- Layer 2 governance -->
+  <path d="M 430 515 H 480" class="runtime-thin"/>
+  <path d="M 1360 515 H 1390" class="runtime-thin"/>
+
+  <!-- AI request uses the request lane; response uses the outer return lane -->
+  <path d="M 1195 565 V 720 H 245 V 750" class="runtime"/>
+  <path d="M 1230 1205 V 1248 H 1850 V 635 H 1240 V 565" class="return"/>
+
+  <!-- Targeting and START fan-out -->
+  <path d="M 430 825 H 468" class="runtime"/>
+  <circle cx="482" cy="825" r="14" fill="#315b78"/>
+  <path d="M 496 825 H 520" class="runtime"/>
+  <path d="M 482 811 V 735 H 1145 V 760" class="runtime-thin"/>
+  <path d="M 482 839 V 995 H 520" class="runtime-thin"/>
+  <path d="M 482 920 H 930 V 995 H 950" class="runtime-thin"/>
+  <path d="M 430 1047 H 458 V 875 H 482" class="context-line"/>
+
+  <!-- Agent turns enter the reducer through dedicated collectors -->
+  <path d="M 520 855 H 495 V 1152 H 520" class="runtime-thin"/>
+  <path d="M 1340 855 H 1365 V 1152 H 1340" class="runtime-thin"/>
+  <path d="M 715 1060 V 1100" class="runtime-thin"/>
+  <path d="M 1145 1060 V 1100" class="runtime-thin"/>
+
+  <!-- Provider-call buses occupy their own horizontal shelves -->
+  <path d="M 800 890 V 900 H 1380 V 900 H 1410" class="provider-line"/>
+  <path d="M 1230 890 V 900" class="provider-feed"/>
+  <path d="M 800 1060 V 1080 H 1380 V 1015 H 1410" class="provider-line"/>
+  <path d="M 1230 1060 V 1080" class="provider-feed"/>
+
+  <!-- Compact line bridges keep the A1 collector separate from fan-out arrows -->
+  <circle cx="495" cy="920" r="5" fill="#ffffff"/>
+  <path d="M 495 912 V 928" class="bridge-line"/>
+  <circle cx="495" cy="995" r="5" fill="#ffffff"/>
+  <path d="M 495 987 V 1003" class="bridge-line"/>
+
+  <!-- Explicit line bridges keep the A2 collector visually separate from provider buses -->
+  <circle cx="1365" cy="900" r="8" fill="#ffffff"/>
+  <path d="M 1365 890 V 910" class="bridge-line"/>
+  <circle cx="1365" cy="1080" r="8" fill="#ffffff"/>
+  <path d="M 1365 1070 V 1090" class="bridge-line"/>
+
+  <!-- Persistence leaves the reducer through a separate bottom port -->
+  <path d="M 630 1205 V 1270 H 1240 V 1355 H 250 V 1385" class="runtime"/>
+
+  <!-- Durable and optional storage paths -->
+  <path d="M 440 1450 H 490" class="runtime"/>
+  <path d="M 1170 1490 H 1192 V 1450 H 1220" class="optional"/>
+  <path d="M 250 1515 V 1535 H 1710 V 1515" class="optional"/>
+
+  <!-- White line-label pills, drawn above connectors -->
+  <rect x="715" y="350" width="180" height="36" rx="18" class="label-pill"/>
+  <text x="805" y="376" class="micro-strong" text-anchor="middle">HTTPS request</text>
+
+  <rect x="1188" y="350" width="104" height="36" rx="18" class="label-pill"/>
+  <text x="1240" y="376" class="micro-strong" text-anchor="middle">SSE</text>
+
+  <rect x="675" y="702" width="282" height="36" rx="18" class="label-pill"/>
+  <text x="816" y="728" class="micro-strong" text-anchor="middle">normalized model request</text>
+
+  <rect x="1465" y="617" width="250" height="36" rx="18" class="label-pill"/>
+  <text x="1590" y="643" class="micro-strong" text-anchor="middle">SSE / JSON response</text>
+
+  <rect x="760" y="1337" width="310" height="36" rx="18" class="label-pill"/>
+  <text x="915" y="1363" class="micro-strong" text-anchor="middle">persist exchange + events</text>
+
+  <rect x="1340" y="1517" width="250" height="36" rx="18" class="label-pill"/>
+  <text x="1465" y="1543" class="micro-strong" text-anchor="middle">development backend</text>
+
+  <!-- Text: Layer 1 -->
+  <circle cx="106" cy="225" r="25" fill="#eaf3fa" stroke="#2f6f9f" stroke-width="2.6"/>
+  <path d="M 63 307 C 68 268, 144 268, 149 307" fill="#eaf3fa" stroke="#2f6f9f" stroke-width="2.6"/>
+  <text x="69" y="329" class="small-strong">Learner</text>
+
+  <text x="220" y="224" class="group-title">CAAIS Learning Cockpit</text>
+  <text x="400" y="270" class="body-strong" text-anchor="middle">Task Workspace</text>
+  <text x="400" y="302" class="body-strong" text-anchor="middle">+ Editor</text>
+  <text x="805" y="270" class="body-strong" text-anchor="middle">Guide Chat</text>
+  <text x="805" y="302" class="body-strong" text-anchor="middle">+ Attachments</text>
+  <text x="1215" y="270" class="body-strong" text-anchor="middle">SSE Progress</text>
+  <text x="1215" y="302" class="body-strong" text-anchor="middle">+ A1/A2 Turns</text>
+
+  <text x="1490" y="226" class="group-title">Visible dialogue</text>
+  <text x="1490" y="266" class="body">A1 Guide + A2 Expert</text>
+  <text x="1490" y="302" class="small">@A1 / @A2 target mentions</text>
+
+  <!-- Text: Layer 2 -->
+  <path d="M 88 506 L 103 491 L 118 506 V 541 H 88 Z" fill="#dbeaf6" stroke="#2f6f9f" stroke-width="2.1"/>
+  <circle cx="103" cy="514" r="4" fill="#2f6f9f"/>
+  <text x="137" y="493" class="card-title">Identity + security</text>
+  <text x="137" y="532" class="small">signed session</text>
+  <text x="137" y="562" class="small">actor-bound CSRF</text>
+
+  <text x="510" y="478" class="group-title">Next.js Route Handlers - /api/learning</text>
+  <text x="557" y="525" class="card-title">Session API</text>
+  <text x="563" y="555" class="code">/session</text>
+  <text x="825" y="525" class="card-title">Scaffold API</text>
+  <text x="833" y="555" class="code">/scaffold</text>
+  <text x="1113" y="525" class="card-title">AI Guide API</text>
+  <text x="1125" y="555" class="code">/ai-guide</text>
+
+  <text x="1420" y="493" class="card-title">Governed request boundary</text>
+  <text x="1420" y="532" class="small">server-derived actor</text>
+  <text x="1420" y="562" class="small">daily budget + bounded files</text>
+
+  <!-- Text: Layer 3, left column -->
+  <text x="88" y="785" class="group-title">Target resolver + state</text>
+  <text x="88" y="824" class="body">default: A1 + A2</text>
+  <text x="88" y="854" class="micro">@A1 / @A2 select A1 or A2</text>
+  <text x="88" y="881" class="micro">A3 + A4 are always active</text>
+  <text x="474" y="834" class="white-small">S</text>
+
+  <text x="88" y="970" class="group-title">Shared CA contract</text>
+  <text x="80" y="1010" class="small-strong">CAAIS pedagogical context</text>
+  <text x="88" y="1054" class="body">Modelling -&gt; Coaching</text>
+  <text x="88" y="1097" class="body">Scaffolding + Fading</text>
+  <text x="88" y="1140" class="body">Articulation -&gt; Reflection</text>
+  <text x="88" y="1163" class="micro">passed to every A1-A4 turn</text>
+
+  <!-- Text: agent cards -->
+  <rect x="520" y="760" width="76" height="130" rx="7" fill="#2f6f9f"/>
+  <text x="542" y="834" class="white">A1</text>
+  <text x="622" y="800" class="card-title">Guide Agent</text>
+  <text x="622" y="840" class="body">Scaffolding + Fading</text>
+  <text x="622" y="875" class="small">learner-visible</text>
+
+  <rect x="950" y="760" width="76" height="130" rx="7" fill="#2f6f9f"/>
+  <text x="972" y="834" class="white">A2</text>
+  <text x="1040" y="800" class="card-title">Expert Agent</text>
+  <text x="1040" y="840" class="body">Modelling + Coaching</text>
+  <text x="1040" y="875" class="small">learner-visible</text>
+
+  <text x="541" y="1004" class="small-strong">A3</text>
+  <text x="610" y="970" class="card-title">Supervision Agent</text>
+  <text x="610" y="1010" class="body">Behavior signals</text>
+  <text x="610" y="1046" class="small">background + local</text>
+
+  <text x="971" y="1004" class="small-strong">A4</text>
+  <text x="1040" y="970" class="card-title">Reflection Agent</text>
+  <text x="1040" y="1010" class="body">Articulate + Reflect</text>
+  <text x="1040" y="1046" class="small">background + local</text>
+
+  <!-- Text: reducer and providers -->
+  <text x="550" y="1138" class="group-title">Reducer + ordered output partition</text>
+  <text x="550" y="1175" class="small">sort A1-A4; visible A1/A2; background A3/A4</text>
+  <text x="550" y="1198" class="micro">all nodes read the same initial request and terminate independently</text>
+
+  <text x="1440" y="795" class="group-title">Governed model-provider</text>
+  <text x="1440" y="829" class="card-title">boundary for A1/A2</text>
+  <rect x="1440" y="846" width="100" height="42" rx="5" class="chip-violet"/>
+  <rect x="1570" y="846" width="106" height="42" rx="5" class="chip-violet"/>
+  <rect x="1706" y="846" width="92" height="42" rx="5" class="chip-amber"/>
+  <path d="M 1548 867 H 1562" class="provider-chip-arrow"/>
+  <path d="M 1684 867 H 1698" class="provider-chip-arrow"/>
+  <text x="1456" y="876" class="micro-strong">Primary</text>
+  <text x="1585" y="876" class="micro-strong">Fallback</text>
+  <text x="1718" y="876" class="micro-strong">Local</text>
+  <text x="1440" y="912" class="micro">eval gate; retry / timeout; guardrail</text>
+
+  <text x="1440" y="990" class="group-title">Deterministic provider</text>
+  <text x="1440" y="1025" class="card-title">for A3/A4 background</text>
+  <text x="1440" y="1062" class="micro">local templates; no live-provider call</text>
+
+  <text x="1440" y="1125" class="small-strong">TRACE-ONLY HANDOFFS</text>
+  <text x="1440" y="1160" class="body">A1-&gt;A2    A2-&gt;A3</text>
+  <text x="1440" y="1195" class="body">A3-&gt;A1    A4-&gt;A1</text>
+  <text x="1794" y="1218" class="micro" text-anchor="end">metadata, not graph edges</text>
+
+  <!-- Text: Layer 4 -->
+  <text x="88" y="1425" class="group-title">CAAIS Learning Store</text>
+  <text x="88" y="1465" class="body">session + guide turns</text>
+  <text x="88" y="1502" class="small">agent-attributed evidence</text>
+
+  <text x="515" y="1420" class="group-title">Neon / PostgreSQL - production</text>
+  <text x="657.5" y="1458" class="code" text-anchor="middle">learner_sessions</text>
+  <text x="980" y="1458" class="code" text-anchor="middle">learner_task_state</text>
+  <text x="657.5" y="1500" class="code" text-anchor="middle">aais_events</text>
+  <text x="980" y="1500" class="code" text-anchor="middle">aais_lrs_outbox</text>
+
+  <text x="1248" y="1425" class="group-title">Optional services</text>
+  <text x="1248" y="1465" class="small">External LRS + xAPI</text>
+  <text x="1248" y="1502" class="small">Audit / Sentry</text>
+
+  <text x="1598" y="1425" class="group-title">Local storage</text>
+  <text x="1630" y="1467" class="code">.aais-data</text>
+  <text x="1622" y="1504" class="small">development only</text>
+
+  <text x="88" y="1588" class="small">
+    Privacy: server-derived identity; raw learner text excluded from analytics, xAPI, and telemetry; production fails closed without PostgreSQL
+  </text>
+
+  <text x="42" y="1647" class="micro">CAAIS implementation snapshot - 30 July 2026 - single Next.js application; agents are graph nodes, not services</text>
+  <text x="1878" y="1647" class="micro" text-anchor="end">Large-canvas vector master - IEEE full-width figure</text>
+</svg>

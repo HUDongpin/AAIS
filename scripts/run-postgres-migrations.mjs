@@ -8,14 +8,68 @@ import { Pool } from "pg";
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const defaultMigrationsDir = path.join(repoRoot, "migrations", "postgres");
 
-const migrationLedgerSql = `create table if not exists aais_schema_migrations (
+const migrationLedgerSql = `create table if not exists public.aais_schema_migrations (
   version text primary key,
   name text not null,
   checksum text not null,
   applied_at timestamptz not null default now()
 )`;
-const insertMigrationLedgerSql = `insert into aais_schema_migrations (version, name, checksum, applied_at)
-         values ($1, $2, $3, now())`;
+const applyMigrationFunctionSql = `create or replace function pg_temp.aais_apply_schema_migration(
+  p_version text,
+  p_name text,
+  p_checksum text,
+  p_statements text[]
+)
+returns text
+language plpgsql
+volatile
+security invoker
+set search_path = public, pg_catalog, pg_temp
+as $aais_apply_schema_migration$
+declare
+  v_applied_checksum text;
+  v_statement text;
+begin
+  perform pg_catalog.pg_advisory_xact_lock(
+    pg_catalog.hashtextextended('aais:schema-migration:' || p_version, 0)
+  );
+
+  select migration.checksum
+    into v_applied_checksum
+    from public.aais_schema_migrations migration
+   where migration.version = p_version;
+
+  if found then
+    if v_applied_checksum <> p_checksum then
+      raise exception 'AAIS migration checksum mismatch for %.', p_version;
+    end if;
+    return 'skipped';
+  end if;
+
+  foreach v_statement in array p_statements loop
+    execute v_statement;
+  end loop;
+
+  insert into public.aais_schema_migrations (
+    version,
+    name,
+    checksum,
+    applied_at
+  ) values (
+    p_version,
+    p_name,
+    p_checksum,
+    pg_catalog.now()
+  );
+  return 'applied';
+end
+$aais_apply_schema_migration$`;
+const callApplyMigrationFunctionSql = `select pg_temp.aais_apply_schema_migration(
+  $1,
+  $2,
+  $3,
+  $4::text[]
+) as status`;
 
 export async function loadAaisPostgresMigrations(
   migrationsDir = defaultMigrationsDir,
@@ -42,7 +96,7 @@ export async function runAaisPostgresMigrations(input) {
     left.version.localeCompare(right.version));
   await database.query(migrationLedgerSql);
   const appliedRows = await database.query(
-    "select version, checksum from aais_schema_migrations order by version",
+    "select version, checksum from public.aais_schema_migrations order by version",
   );
   const appliedChecksums = new Map(appliedRows.rows.map((row) => [
     String(row.version),
@@ -60,8 +114,9 @@ export async function runAaisPostgresMigrations(input) {
       continue;
     }
 
-    await applyAaisPostgresMigration(database, migration);
-    results.push(toMigrationResult(migration, "applied"));
+    const status = await applyAaisPostgresMigration(database, migration);
+    appliedChecksums.set(migration.version, migration.checksum);
+    results.push(toMigrationResult(migration, status));
   }
 
   const applied = results.filter((result) => result.status === "applied").length;
@@ -77,26 +132,27 @@ export async function runAaisPostgresMigrations(input) {
 }
 
 async function applyAaisPostgresMigration(database, migration) {
-  const ledgerParams = [migration.version, migration.name, migration.checksum];
-  if (typeof database.transaction === "function") {
-    await database.transaction([
-      ...splitAaisPostgresStatements(migration.sql).map((sql) => ({
-        sql,
-        params: [],
-      })),
-      { sql: insertMigrationLedgerSql, params: ledgerParams },
-    ]);
-    return;
+  if (typeof database.transaction !== "function") {
+    throw new Error("AAIS migration database client requires atomic transaction support.");
   }
-  await database.query("begin");
-  try {
-    await database.query(migration.sql);
-    await database.query(insertMigrationLedgerSql, ledgerParams);
-    await database.query("commit");
-  } catch (error) {
-    await database.query("rollback").catch(() => undefined);
-    throw error;
+  const statements = splitAaisPostgresStatements(migration.sql);
+  const transactionResults = await database.transaction([
+    { sql: applyMigrationFunctionSql, params: [] },
+    {
+      sql: callApplyMigrationFunctionSql,
+      params: [
+        migration.version,
+        migration.name,
+        migration.checksum,
+        statements,
+      ],
+    },
+  ]);
+  const status = transactionResults[1]?.rows?.[0]?.status;
+  if (status !== "applied" && status !== "skipped") {
+    throw new Error(`AAIS migration ${migration.version} returned an invalid transaction status.`);
   }
+  return status;
 }
 
 export function getAaisMigrationDatabaseConfiguration(env = process.env) {
@@ -132,6 +188,13 @@ export function getAaisMigrationDatabaseConfiguration(env = process.env) {
     sslmodeName: "POSTGRES_SSLMODE",
     sourceEnv: "POSTGRES_*",
   });
+}
+
+export function getAaisResearchMigrationDatabaseConfiguration(env = process.env) {
+  const url = env.AAIS_RESEARCH_DATABASE_URL?.trim();
+  return url
+    ? { url, sourceEnv: "AAIS_RESEARCH_DATABASE_URL" }
+    : null;
 }
 
 function getRawPgDatabaseConfiguration(env, input) {
@@ -294,6 +357,7 @@ function parseArgs(argv) {
   const options = {
     migrationsDir: defaultMigrationsDir,
     output: "",
+    research: false,
     help: false,
   };
   for (let index = 0; index < argv.length; index += 1) {
@@ -312,6 +376,10 @@ function parseArgs(argv) {
       index += 1;
       continue;
     }
+    if (arg === "--research") {
+      options.research = true;
+      continue;
+    }
     throw new Error(`Unknown AAIS migration argument: ${arg}`);
   }
   return options;
@@ -321,18 +389,28 @@ async function main() {
   const options = parseArgs(process.argv.slice(2));
   if (options.help) {
     process.stdout.write([
-      "Usage: npm run db:migrate -- [--migrations-dir <dir>] [--output <report.json>]",
+      "Usage: npm run db:migrate -- [--research] [--migrations-dir <dir>] [--output <report.json>]",
       "",
       "Applies tracked AAIS Postgres migrations and writes only redacted status summaries.",
+      "--research reads only AAIS_RESEARCH_DATABASE_URL and never falls back to the product database.",
       "",
     ].join("\n"));
     return;
   }
-  const config = getAaisMigrationDatabaseConfiguration();
+  const config = options.research
+    ? getAaisResearchMigrationDatabaseConfiguration()
+    : getAaisMigrationDatabaseConfiguration();
   if (!config) {
-    throw new Error("AAIS Postgres migrations require a configured Postgres database environment.");
+    throw new Error(options.research
+      ? "AAIS research migrations require AAIS_RESEARCH_DATABASE_URL."
+      : "AAIS Postgres migrations require a configured Postgres database environment.");
   }
-  const pool = createAaisMigrationDatabaseClient(config.url);
+  const pool = createAaisMigrationDatabaseClient(
+    config.url,
+    options.research
+      ? process.env.AAIS_RESEARCH_DATABASE_DRIVER
+      : process.env.AAIS_DATABASE_DRIVER,
+  );
   try {
     const migrations = await loadAaisPostgresMigrations(options.migrationsDir);
     const report = await runAaisPostgresMigrations({
@@ -358,11 +436,41 @@ async function main() {
   }
 }
 
-function createAaisMigrationDatabaseClient(databaseUrl) {
-  if (shouldUseNeonServerlessDriver(databaseUrl)) {
+function createAaisMigrationDatabaseClient(databaseUrl, configuredDriver) {
+  if (shouldUseNeonServerlessDriver(databaseUrl, configuredDriver)) {
     return createNeonServerlessMigrationDatabaseClient(databaseUrl);
   }
-  return new Pool({ connectionString: databaseUrl });
+  return createPgMigrationDatabaseClient(new Pool({ connectionString: databaseUrl }));
+}
+
+export function createPgMigrationDatabaseClient(pool) {
+  return {
+    async query(query, params = []) {
+      return normalizeDatabaseQueryResult(await pool.query(query, params));
+    },
+    async transaction(queries) {
+      const client = await pool.connect();
+      try {
+        await client.query("begin");
+        const results = [];
+        for (const query of queries) {
+          results.push(normalizeDatabaseQueryResult(
+            await client.query(query.sql, query.params ?? []),
+          ));
+        }
+        await client.query("commit");
+        return results;
+      } catch (error) {
+        await client.query("rollback").catch(() => undefined);
+        throw error;
+      } finally {
+        client.release();
+      }
+    },
+    async end() {
+      await pool.end();
+    },
+  };
 }
 
 function createNeonServerlessMigrationDatabaseClient(databaseUrl) {
@@ -391,8 +499,8 @@ function normalizeDatabaseQueryResult(result) {
   return { rows: [] };
 }
 
-function shouldUseNeonServerlessDriver(databaseUrl) {
-  const configuredDriver = process.env.AAIS_DATABASE_DRIVER?.trim().toLowerCase();
+function shouldUseNeonServerlessDriver(databaseUrl, configuredDriverValue) {
+  const configuredDriver = configuredDriverValue?.trim().toLowerCase();
   if (configuredDriver === "pg") {
     return false;
   }

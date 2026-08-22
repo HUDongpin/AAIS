@@ -39,6 +39,14 @@ type AaisRecommendationAnalytics = {
   };
 };
 
+export type AaisRecommendationPaginationInput = {
+  limit?: number;
+  offset?: number;
+};
+
+const defaultAaisRecommendationPageLimit = 25;
+const maxAaisRecommendationPageLimit = 100;
+
 type AaisRecommendationLearner = {
   learnerKey: string;
   sessionKey?: string;
@@ -53,6 +61,7 @@ type AaisRecommendationLearner = {
   reflectionStatus: string;
   riskLevel: "high" | "medium" | "low";
   priorityReasons: string[];
+  recommendationOverrideDecisions?: Record<string, AaisRecommendationOverrideDecision>;
 };
 
 export const aaisRecommendationPolicy = {
@@ -75,10 +84,23 @@ export const aaisRecommendationPolicy = {
 
 export function buildAaisLearnerRecommendations(
   analytics: AaisRecommendationAnalytics,
+  options: {
+    includeResolved?: boolean;
+    pagination?: AaisRecommendationPaginationInput;
+  } = {},
 ) {
-  const recommendations = analytics.learners.flatMap(createLearnerRecommendations);
+  const allRecommendations = analytics.learners.flatMap((learner) =>
+    createLearnerRecommendations(learner, options)
+  ).sort(compareRecommendations);
+  const pagination = options.pagination
+    ? normalizeAaisRecommendationPagination(options.pagination, allRecommendations.length)
+    : null;
+  const recommendations = pagination
+    ? allRecommendations.slice(pagination.offset, pagination.offset + pagination.limit)
+    : allRecommendations;
   return {
-    recommendations: recommendations.sort(compareRecommendations),
+    recommendations,
+    ...(pagination ? { pagination } : {}),
     policy: {
       ...aaisRecommendationPolicy,
       factLayer: analytics.integrations.factLayer,
@@ -89,6 +111,55 @@ export function buildAaisLearnerRecommendations(
       minimumNecessaryFields: true,
     },
   };
+}
+
+export function normalizeAaisRecommendationPagination(
+  input: AaisRecommendationPaginationInput = {},
+  totalRecommendations = 0,
+) {
+  const limit = normalizeAaisRecommendationPaginationNumber(
+    input.limit,
+    "limit",
+    defaultAaisRecommendationPageLimit,
+    1,
+    maxAaisRecommendationPageLimit,
+  );
+  const offset = normalizeAaisRecommendationPaginationNumber(
+    input.offset,
+    "offset",
+    0,
+    0,
+    Number.MAX_SAFE_INTEGER,
+  );
+  const boundedOffset = Math.min(offset, Math.max(0, totalRecommendations));
+  const returnedRecommendations = Math.max(
+    0,
+    Math.min(limit, totalRecommendations - boundedOffset),
+  );
+  return {
+    limit,
+    offset: boundedOffset,
+    returnedRecommendations,
+    totalRecommendations,
+    hasPreviousPage: boundedOffset > 0,
+    hasNextPage: boundedOffset + returnedRecommendations < totalRecommendations,
+  };
+}
+
+function normalizeAaisRecommendationPaginationNumber(
+  value: number | undefined,
+  label: "limit" | "offset",
+  fallback: number,
+  min: number,
+  max: number,
+) {
+  if (value === undefined) {
+    return fallback;
+  }
+  if (!Number.isSafeInteger(value) || value < min) {
+    throw new Error(`Invalid AAIS recommendation pagination ${label}.`);
+  }
+  return Math.min(value, max);
 }
 
 export function buildDisabledAaisRecommendations() {
@@ -112,7 +183,10 @@ export function isAaisRecommendationsEnabled(env: Record<string, string | undefi
   return configured !== "false" && configured !== "0" && configured !== "off";
 }
 
-function createLearnerRecommendations(learner: AaisRecommendationLearner): AaisLearnerRecommendation[] {
+function createLearnerRecommendations(
+  learner: AaisRecommendationLearner,
+  options: { includeResolved?: boolean },
+): AaisLearnerRecommendation[] {
   const recommendations: AaisLearnerRecommendation[] = [];
   const targetTaskId = learner.activePracticeTaskId ?? "practice_task_1";
 
@@ -148,10 +222,10 @@ function createLearnerRecommendations(learner: AaisRecommendationLearner): AaisL
       ruleId: "respond_to_coaching",
       priority: learner.riskLevel === "low" ? "medium" : "high",
       targetTaskId,
-      title: "跟进 A2 coaching",
+      title: "跟进教授 coaching",
       actionLabel: "查看教练提示后的下一步",
       reasonCodes: ["a2_coaching_signals", "no_ai_interaction_after_coaching"],
-      reasons: ["A3/A2 已出现 coaching 信号，但学生尚未形成后续 AI 互动或采纳决策。"],
+      reasons: ["后台监督与教授已出现 coaching 信号，但学生尚未形成后续 AI 互动或采纳决策。"],
     }));
   }
 
@@ -185,7 +259,13 @@ function createLearnerRecommendations(learner: AaisRecommendationLearner): AaisL
     }));
   }
 
-  return recommendations;
+  if (options.includeResolved) {
+    return recommendations;
+  }
+  return recommendations.filter((recommendation) => {
+    const decision = learner.recommendationOverrideDecisions?.[recommendation.id];
+    return decision !== "accepted" && decision !== "dismissed";
+  });
 }
 
 function createRecommendation(input: {

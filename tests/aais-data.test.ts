@@ -18,10 +18,14 @@ describe("AAIS cognitive apprenticeship data", () => {
       "A4",
     ]);
     expect(aaisAgents.map((agent) => agent.name["zh-CN"])).toEqual([
-      "导学智能体",
-      "专家智能体",
+      "小张",
+      "教授",
       "监督智能体",
       "反思智能体",
+    ]);
+    expect(aaisAgents.slice(0, 2).map((agent) => agent.handle)).toEqual([
+      "@小张",
+      "@教授",
     ]);
   });
 
@@ -68,6 +72,42 @@ describe("AAIS cognitive apprenticeship data", () => {
         caModules: ["Articulation", "Reflection"],
       }),
     ]);
+  });
+
+  it("gives A1 and A2 distinct voices and keeps A1 deliberately brief", () => {
+    const a1 = aaisAgents.find((agent) => agent.id === "A1");
+    const a2 = aaisAgents.find((agent) => agent.id === "A2");
+
+    expect(a1?.voice).toMatchObject({
+      persona: {
+        "zh-CN": expect.stringContaining("同龄学长"),
+      },
+      tone: {
+        "zh-CN": expect.stringContaining("温和直接"),
+      },
+      replyContract: {
+        "zh-CN": expect.stringContaining("最多 2 句"),
+      },
+      maxSentences: 2,
+      maxCharacters: {
+        "zh-CN": 120,
+        "en-US": 240,
+      },
+      maxOutputTokens: 120,
+    });
+    expect(a2?.voice).toMatchObject({
+      persona: {
+        "zh-CN": expect.stringContaining("教授型专家教练"),
+      },
+      tone: {
+        "zh-CN": expect.stringContaining("思维示范"),
+      },
+      replyContract: {
+        "zh-CN": expect.stringContaining("专家思路"),
+      },
+    });
+    expect(a1?.voice?.persona["zh-CN"]).not.toBe(a2?.voice?.persona["zh-CN"]);
+    expect(a1?.voice?.tone["zh-CN"]).not.toBe(a2?.voice?.tone["zh-CN"]);
   });
 
   it("keeps a runtime Cognitive Apprenticeship background model for the agents", () => {

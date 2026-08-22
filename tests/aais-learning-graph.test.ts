@@ -7,7 +7,7 @@ import {
 } from "@/lib/ai/aais-ai-provider";
 
 describe("AAIS LangGraph learning guide", () => {
-  it("matches the attached four-agent operating loop for learner support", async () => {
+  it("keeps ordinary learner support A1-led while background agents remain active", async () => {
     const result = await runAaisLearningGuideGraph({
       locale: "zh-CN",
       studentId: "S-image-loop",
@@ -31,30 +31,27 @@ describe("AAIS LangGraph learning guide", () => {
     expect(result.runtime).toMatchObject({
       engine: "aais-langgraph-runtime",
       status: "completed",
-      eventCount: 4,
+      eventCount: 3,
       modelProvider: {
         provider: "deterministic",
-        generatedTurns: 4,
-        fallbackTurns: 4,
+        generatedTurns: 3,
+        fallbackTurns: 3,
+      },
+      timings: {
+        fallback: true,
       },
     });
-    expect(result.runtimeEvents.map((event) => event.nodeId)).toEqual(["A1", "A2", "A3", "A4"]);
+    expect(result.runtimeEvents.map((event) => event.nodeId)).toEqual(["A1", "A3", "A4"]);
     expect(result.runtimeEvents.every((event) => event.redaction.secrets === "omitted")).toBe(true);
-    expect(result.visibleTurns.map((turn) => turn.agentId)).toEqual(["A1", "A2"]);
+    expect(result.visibleTurns.map((turn) => turn.agentId)).toEqual(["A1"]);
     expect(result.backgroundTurns.map((turn) => turn.agentId)).toEqual(["A3", "A4"]);
 
     expect(result.turns).toEqual([
       expect.objectContaining({
         agentId: "A1",
-        label: "导学智能体",
+        label: "小张",
         actions: ["guide-flow", "scaffold"],
-        content: expect.stringContaining("4 次直接辅助机会"),
-      }),
-      expect.objectContaining({
-        agentId: "A2",
-        label: "专家智能体",
-        actions: ["model", "coach", "mention-expert"],
-        content: expect.stringContaining("Modelling"),
+        content: expect.stringContaining("4 次直接辅助已用完"),
       }),
       expect.objectContaining({
         agentId: "A3",
@@ -69,14 +66,14 @@ describe("AAIS LangGraph learning guide", () => {
         content: expect.stringContaining("专家过程进行对比评估"),
       }),
     ]);
-    expect(result.turns[0]?.content).toContain("fading");
-    expect(result.turns[1]?.content).toContain("Coaching");
-    expect(result.turns[1]?.content).toContain("@");
-    expect(result.turns[2]?.content).toContain("practice-articulation-reflection");
-    expect(result.turns[3]?.content).toContain("反思性提问");
+    expect(result.turns[0]?.content.length).toBeLessThanOrEqual(120);
+    expect(result.turns[0]?.content).toContain("我只给一个小提示");
+    expect(result.turns[0]?.content).not.toContain("Modelling");
+    expect(result.turns[1]?.content).toContain("practice-articulation-reflection");
+    expect(result.turns[2]?.content).toContain("反思性提问");
     expect(result.messageText).toContain("AAIS 智能体已回复");
-    expect(result.messageText).toContain("导学智能体");
-    expect(result.messageText).toContain("专家智能体");
+    expect(result.messageText).toContain("小张");
+    expect(result.messageText).not.toContain("教授");
     expect(result.messageText).not.toContain("监督智能体");
     expect(result.messageText).not.toContain("反思智能体");
 
@@ -88,7 +85,7 @@ describe("AAIS LangGraph learning guide", () => {
     ]));
   });
 
-  it("runs only the requested visible agent through the governed provider", async () => {
+  it("runs only Professor when the learner explicitly targets @Professor", async () => {
     const generate = vi.fn(async (request: AaisModelRequest) => ({
         text: `${request.agentId} live provider response`,
         runtime: {
@@ -114,7 +111,7 @@ describe("AAIS LangGraph learning guide", () => {
       studentId: "S-target-a2",
       phase: "training",
       taskId: "training_task_1",
-      learnerInput: "@A2 请示范专家会怎样监控理解。",
+      learnerInput: "@Professor 请示范专家会怎样监控理解。",
       targetAgentIds: ["A2"],
       workspaceState: {
         currentStep: "guide",
@@ -128,12 +125,17 @@ describe("AAIS LangGraph learning guide", () => {
     expect(result.turns.map((turn) => turn.agentId)).toEqual(["A2", "A3", "A4"]);
     expect(result.visibleTurns.map((turn) => turn.agentId)).toEqual(["A2"]);
     expect(result.backgroundTurns.map((turn) => turn.agentId)).toEqual(["A3", "A4"]);
-    expect(result.messageText).toContain("专家智能体");
-    expect(result.messageText).not.toContain("导学智能体");
+    expect(result.messageText).toContain("教授");
+    expect(result.messageText).not.toContain("小张");
     expect(result.runtimeEvents.map((event) => event.nodeId)).toEqual(["A2", "A3", "A4"]);
     expect(result.runtime.timings).toMatchObject({
-      fallback: true,
+      fallback: false,
       timeoutReason: null,
+    });
+    expect(result.runtime.modelProvider).toMatchObject({
+      provider: "mixed",
+      generatedTurns: 3,
+      fallbackTurns: 2,
     });
     expect(result.runtime.timings.agents.map((agent) => ({
       agentId: agent.agentId,
@@ -146,13 +148,125 @@ describe("AAIS LangGraph learning guide", () => {
     ]);
   });
 
+  it("keeps deterministic English guidance in English when the workspace locale is en-US", async () => {
+    const result = await runAaisLearningGuideGraph({
+      locale: "en-US",
+      studentId: "S-english-guide",
+      phase: "training",
+      taskId: "training_task_1",
+      learnerInput: "@Professor Help me understand calculus.",
+      targetAgentIds: ["A2"],
+      workspaceState: {
+        currentStep: "guide",
+      },
+    }, {
+      modelProvider: createDeterministicAaisProvider(),
+    });
+
+    expect(result.visibleTurns).toEqual([
+      expect.objectContaining({
+        agentId: "A2",
+        label: "Professor",
+        content: expect.stringContaining("university calculus"),
+      }),
+    ]);
+    expect(result.messageText).toContain("AAIS agents replied:");
+    expect(result.messageText).toContain("Professor");
+    expect(result.messageText).not.toContain("专家智能体");
+  });
+
+  it("honors an explicit English reply preference and carries it across bounded history", async () => {
+    const first = await runAaisLearningGuideGraph({
+      locale: "zh-CN",
+      studentId: "S-explicit-english",
+      phase: "training",
+      taskId: "training_task_1",
+      learnerInput: "I mean answer all questions in English.",
+      targetAgentIds: ["A1"],
+      workspaceState: {
+        currentStep: "guide",
+      },
+    }, {
+      modelProvider: createDeterministicAaisProvider(),
+    });
+
+    expect(first.visibleTurns[0]?.content).toContain("direct assists remain");
+    expect(first.visibleTurns[0]?.content).not.toMatch(/[\u4e00-\u9fff]/);
+
+    const second = await runAaisLearningGuideGraph({
+      locale: "zh-CN",
+      studentId: "S-explicit-english",
+      phase: "training",
+      taskId: "training_task_1",
+      learnerInput: "I do not have the target.",
+      targetAgentIds: ["A1"],
+      conversationHistory: [
+        { kind: "user", text: "I mean answer all questions in English." },
+        { kind: "assistant", text: first.messageText },
+      ],
+      workspaceState: {
+        currentStep: "guide",
+      },
+    }, {
+      modelProvider: createDeterministicAaisProvider(),
+    });
+
+    expect(second.visibleTurns[0]?.content).toContain("direct assists remain");
+    expect(second.visibleTurns[0]?.content).not.toMatch(/[\u4e00-\u9fff]/);
+  });
+
+  it("gives A1 the prior learner context when the learner refers back to a stated difficulty", async () => {
+    const generate = vi.fn(async (request: AaisModelRequest) => ({
+      text: `${request.agentId} received context`,
+      runtime: {
+        provider: "test-provider",
+        model: "fixture-model",
+        attempts: 1,
+        status: "ok" as const,
+        guardrail: {
+          policy: "aais-age-appropriate-output-v1" as const,
+          status: "passed" as const,
+          reasons: [],
+        },
+        redaction: {
+          secrets: "omitted" as const,
+          prompt: "summarized" as const,
+        },
+      },
+    }));
+
+    await runAaisLearningGuideGraph({
+      locale: "zh-CN",
+      studentId: "S-context",
+      phase: "training",
+      taskId: "training_task_1",
+      learnerInput: "@小张 我刚才说的卡点是什么？",
+      targetAgentIds: ["A1"],
+      conversationHistory: [
+        { kind: "user", text: "我的卡点是高性能虚拟滚动列表。" },
+        { kind: "assistant", text: "请先说明具体困难。" },
+      ],
+      workspaceState: {
+        currentStep: "guide",
+      },
+    }, {
+      modelProvider: { generate },
+    });
+
+    const [request] = generate.mock.calls[0] ?? [];
+    expect(request?.conversationHistory).toEqual([
+      { kind: "user", text: "我的卡点是高性能虚拟滚动列表。" },
+      { kind: "assistant", text: "请先说明具体困难。" },
+    ]);
+  });
+
   it("uses contextual local scaffold text when A2 falls back for a learner topic", async () => {
     const result = await runAaisLearningGuideGraph({
       locale: "zh-CN",
       studentId: "S-a2-contextual-fallback",
       phase: "training",
       taskId: "training_task_1",
-      learnerInput: "@A2 帮我分析下，如何学习大学微积分？",
+      learnerInput: "@教授 帮我分析下，如何学习大学微积分？",
       targetAgentIds: ["A2"],
       workspaceState: {
         currentStep: "guide",
@@ -172,18 +286,10 @@ describe("AAIS LangGraph learning guide", () => {
     expect(result.visibleTurns[0]?.content).not.toContain("两位专家会在 Modelling 阶段共同展示元认知过程");
   });
 
-  it("starts default A1 and A2 provider work in parallel", async () => {
-    const releases = {
-      A1: createDeferred<void>(),
-      A2: createDeferred<void>(),
-    };
+  it("routes an ordinary prompt to only A1 provider work", async () => {
     const generate = vi.fn(async (request: AaisModelRequest) => {
-      const release = releases[request.agentId as "A1" | "A2"];
-      if (release) {
-        await release.promise;
-      }
       return {
-        text: `${request.agentId} parallel provider response`,
+        text: `${request.agentId} ordinary provider response`,
         runtime: {
           provider: "test-provider",
           model: "fixture-model",
@@ -202,12 +308,12 @@ describe("AAIS LangGraph learning guide", () => {
       };
     });
     const modelProvider: AaisModelProvider = { generate };
-    const resultPromise = runAaisLearningGuideGraph({
+    const result = await runAaisLearningGuideGraph({
       locale: "zh-CN",
-      studentId: "S-parallel",
+      studentId: "S-default-a1",
       phase: "training",
       taskId: "training_task_1",
-      learnerInput: "请同时给我导学和专家建议。",
+      learnerInput: "请帮我规划下一步。",
       workspaceState: {
         currentStep: "guide",
       },
@@ -215,24 +321,19 @@ describe("AAIS LangGraph learning guide", () => {
       modelProvider,
     });
 
-    try {
-      await waitUntil(() => generate.mock.calls.length >= 2);
-      expect(generate.mock.calls.map(([request]) => request.agentId)).toEqual(["A1", "A2"]);
-    } finally {
-      releases.A1.resolve();
-      releases.A2.resolve();
-    }
-
-    const result = await resultPromise;
-    expect(result.visibleTurns.map((turn) => turn.agentId)).toEqual(["A1", "A2"]);
+    expect(generate).toHaveBeenCalledTimes(1);
+    expect(generate.mock.calls.map(([request]) => request.agentId)).toEqual(["A1"]);
+    expect(result.turns.map((turn) => turn.agentId)).toEqual(["A1", "A3", "A4"]);
+    expect(result.visibleTurns.map((turn) => turn.agentId)).toEqual(["A1"]);
     expect(result.backgroundTurns.map((turn) => turn.agentId)).toEqual(["A3", "A4"]);
     expect(result.runtime.timings.agents.filter((agent) => agent.visible).map((agent) => agent.agentId)).toEqual([
       "A1",
-      "A2",
     ]);
+    expect(result.messageText).toContain("小张");
+    expect(result.messageText).not.toContain("教授");
   });
 
-  it("runs the four requirement agents as first-class LangGraph nodes", async () => {
+  it("keeps four-agent topology metadata while ordinary prompts run A1 plus background nodes", async () => {
     const result = await runAaisLearningGuideGraph({
       locale: "zh-CN",
       studentId: "S001",
@@ -251,19 +352,17 @@ describe("AAIS LangGraph learning guide", () => {
       graphId: "learning-ai-guide",
       topologicalOrder: ["A1", "A2", "A3", "A4"],
     });
-    expect(result.turns.map((turn) => turn.agentId)).toEqual(["A1", "A2", "A3", "A4"]);
-    expect(result.visibleTurns.map((turn) => turn.agentId)).toEqual(["A1", "A2"]);
+    expect(result.turns.map((turn) => turn.agentId)).toEqual(["A1", "A3", "A4"]);
+    expect(result.visibleTurns.map((turn) => turn.agentId)).toEqual(["A1"]);
     expect(result.backgroundTurns.map((turn) => turn.agentId)).toEqual(["A3", "A4"]);
-    expect(result.turns[0].content).toContain("导学智能体");
-    expect(result.turns[0].content).toContain("4 次直接辅助");
-    expect(result.turns[1].content).toContain("专家智能体");
-    expect(result.turns[1].content).toContain("本地支架模式");
-    expect(result.turns[1].content).toContain("Modelling/Coaching");
-    expect(result.turns[1].content).toContain("@");
-    expect(result.turns[2].content).toContain("监督智能体");
-    expect(result.turns[2].content).toContain("向 A1 发出信号");
-    expect(result.turns[3].content).toContain("反思智能体");
-    expect(result.turns[3].content).toContain("反思性提问");
+    expect(result.turns[0].label).toBe("小张");
+    expect(result.turns[0].content).toContain("还可直接求助 3 次");
+    expect(result.turns[0].content.length).toBeLessThanOrEqual(120);
+    expect(result.turns[1].content).toContain("监督智能体");
+    expect(result.turns[1].content).toContain("向 A1 发出信号");
+    expect(result.turns[2].content).toContain("反思智能体");
+    expect(result.turns[2].content).toContain("反思性提问");
+    expect(result.messageText).not.toContain("教授");
     expect(result.runtime.redaction).toEqual({
       secrets: "omitted",
       localFiles: "omitted",
@@ -271,7 +370,7 @@ describe("AAIS LangGraph learning guide", () => {
     });
   });
 
-  it("uses a governed model provider for visible agent turns when configured", async () => {
+  it("uses a governed model provider only for the ordinary A1 turn", async () => {
     const generate = vi.fn(async (request: AaisModelRequest) => ({
         text: `${request.agentId} governed provider response`,
         runtime: {
@@ -305,9 +404,8 @@ describe("AAIS LangGraph learning guide", () => {
       modelProvider,
     });
 
-    expect(generate).toHaveBeenCalledTimes(2);
+    expect(generate).toHaveBeenCalledTimes(1);
     expect(generate.mock.calls.map(([request]) => request.caBackground?.framework)).toEqual([
-      "Cognitive Apprenticeship",
       "Cognitive Apprenticeship",
     ]);
     expect(generate.mock.calls[0]?.[0].caBackground?.principles.map((principle) => principle.id)).toEqual([
@@ -318,15 +416,19 @@ describe("AAIS LangGraph learning guide", () => {
       "articulation",
       "reflection",
     ]);
+    expect(generate.mock.calls[0]?.[0].voice).toMatchObject({
+      persona: expect.stringContaining("同龄学长"),
+      maxSentences: 2,
+      maxCharacters: 120,
+      maxOutputTokens: 120,
+    });
     expect(result.turns.map((turn) => turn.content)).toEqual([
-      "A1 governed provider response",
-      "A2 governed provider response",
+      "小张 governed provider response",
       expect.stringContaining("监督智能体"),
       expect.stringContaining("反思智能体"),
     ]);
     expect(result.visibleTurns.map((turn) => turn.content)).toEqual([
-      "A1 governed provider response",
-      "A2 governed provider response",
+      "小张 governed provider response",
     ]);
     expect(result.backgroundTurns.map((turn) => turn.content)).toEqual([
       expect.stringContaining("监督智能体"),
@@ -334,14 +436,14 @@ describe("AAIS LangGraph learning guide", () => {
     ]);
     expect(result.runtime.modelProvider).toMatchObject({
       provider: "mixed",
-      generatedTurns: 4,
+      generatedTurns: 3,
       redaction: {
         secrets: "omitted",
       },
     });
   });
 
-  it("passes bounded guide attachment context to every governed provider turn", async () => {
+  it("passes bounded guide attachment context only to the selected A1 provider turn", async () => {
     const longAttachmentText = `${"a".repeat(12_000)}tail-marker`;
     const generate = vi.fn(async (request: AaisModelRequest) => ({
         text: `${request.agentId} read ${request.workspaceState.attachments?.[0]?.name}`,
@@ -384,7 +486,8 @@ describe("AAIS LangGraph learning guide", () => {
       modelProvider,
     });
 
-    expect(generate).toHaveBeenCalledTimes(2);
+    expect(generate).toHaveBeenCalledTimes(1);
+    expect(generate.mock.calls[0]?.[0].agentId).toBe("A1");
     for (const [request] of generate.mock.calls) {
       expect(request.workspaceState.attachments).toHaveLength(1);
       expect(request.workspaceState.attachments?.[0]).toMatchObject({
@@ -396,21 +499,116 @@ describe("AAIS LangGraph learning guide", () => {
     }
     expect(result.messageText).toContain("long-notes.txt");
   });
-});
 
-function createDeferred<T>() {
-  let resolve!: (value: T | PromiseLike<T>) => void;
-  const promise = new Promise<T>((nextResolve) => {
-    resolve = nextResolve;
+  it("propagates caller cancellation through LangGraph without converting it to fallback", async () => {
+    const controller = new AbortController();
+    let notifyGenerateStarted!: () => void;
+    const generateStarted = new Promise<void>((resolve) => {
+      notifyGenerateStarted = resolve;
+    });
+    const generate = vi.fn((request: AaisModelRequest) => {
+      notifyGenerateStarted();
+      return new Promise<never>((_resolve, reject) => {
+        request.signal?.addEventListener(
+          "abort",
+          () => reject(request.signal?.reason),
+          { once: true },
+        );
+      });
+    });
+
+    const result = runAaisLearningGuideGraph({
+      locale: "zh-CN",
+      studentId: "S-cancelled-graph",
+      phase: "training",
+      taskId: "training_task_1",
+      learnerInput: "@A1 这个请求会被取消。",
+      targetAgentIds: ["A1"],
+      workspaceState: { currentStep: "guide" },
+    }, {
+      modelProvider: { generate },
+      signal: controller.signal,
+    });
+    await generateStarted;
+    controller.abort();
+
+    await expect(result).rejects.toMatchObject({ name: "AbortError" });
+    expect(generate).toHaveBeenCalledTimes(1);
+    expect(generate.mock.calls[0]?.[0].signal?.aborted).toBe(true);
   });
-  return { promise, resolve };
-}
 
-async function waitUntil(predicate: () => boolean) {
-  for (let attempt = 0; attempt < 20; attempt += 1) {
-    if (predicate()) {
-      return;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 0));
-  }
-}
+  it("shows a verified function graph immediately instead of gating it on calculation", async () => {
+    const generate = vi.fn(async (request: AaisModelRequest) => ({
+      text: `${request.agentId}：你先算出顶点横坐标，我再帮你画图。`,
+      runtime: {
+        provider: "test-provider",
+        model: "fixture-model",
+        attempts: 1,
+        status: "ok" as const,
+        guardrail: {
+          policy: "aais-age-appropriate-output-v1" as const,
+          status: "passed" as const,
+          reasons: [],
+        },
+        redaction: {
+          secrets: "omitted" as const,
+          prompt: "summarized" as const,
+        },
+      },
+    }));
+
+    const result = await runAaisLearningGuideGraph({
+      locale: "zh-CN",
+      studentId: "S-function-graph",
+      phase: "training",
+      taskId: "training_task_1",
+      learnerInput: "给我看 y = 2x² + 3x + 4 的图像",
+      workspaceState: { currentStep: "guide" },
+    }, {
+      modelProvider: { generate },
+    });
+
+    expect(generate.mock.calls[0]?.[0].scaffoldPlan).toMatchObject({
+      mode: "visualize",
+      visualization: {
+        expression: "y = 2x² + 3x + 4",
+        vertex: { x: -0.75, y: 2.875 },
+      },
+    });
+    expect(result.visibleTurns[0]).toMatchObject({
+      agentId: "A1",
+      content: expect.stringContaining("计算不是看图的前置条件"),
+      actions: expect.arrayContaining(["show-function-graph"]),
+      visualizations: [expect.objectContaining({
+        type: "quadratic-function",
+        vertex: { x: -0.75, y: 2.875 },
+      })],
+    });
+    expect(result.visibleTurns[0]?.content).not.toContain("先算");
+  });
+
+  it("replaces a repeated calculation gate with a worked example and the graph", async () => {
+    const result = await runAaisLearningGuideGraph({
+      locale: "zh-CN",
+      studentId: "S-function-recovery",
+      phase: "training",
+      taskId: "training_task_1",
+      learnerInput: "y = 20?",
+      conversationHistory: [
+        { kind: "user", text: "我想看 y=2x^2+3x+4 的函数图像" },
+        { kind: "assistant", text: "再试一次，把 x=-3/4 代入后 y 等于多少？" },
+      ],
+      workspaceState: { currentStep: "guide" },
+    }, {
+      modelProvider: createDeterministicAaisProvider(),
+    });
+
+    expect(result.visibleTurns[0]).toMatchObject({
+      content: expect.stringContaining("我来示范"),
+      actions: expect.arrayContaining(["show-function-graph", "worked-example"]),
+    });
+    expect(result.visibleTurns[0]?.content).toContain("23/8");
+    expect(result.visibleTurns[0]?.content).not.toContain("再试一次");
+    expect(result.visibleTurns[0]?.visualizations).toHaveLength(1);
+  });
+});

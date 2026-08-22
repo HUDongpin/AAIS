@@ -1,53 +1,91 @@
-import type { KeyboardEvent, PointerEvent as ReactPointerEvent } from "react";
+import type { FocusEvent, KeyboardEvent, PointerEvent as ReactPointerEvent } from "react";
 import {
   contentPanelResizeStep,
+  defaultTaskId,
   maxContentPanelWidth,
   minContentPanelWidth,
 } from "@/components/pages/learning/learning-page-constants";
 import {
+  admitAaisResearchAction,
+  createAaisResearchOperationId,
+} from "@/lib/client/aais-research-telemetry";
+import {
   ContentDisplay,
-  contentDisplayItems,
+  getContentDisplayItems,
 } from "@/components/pages/learning/content-display";
 import { DocumentEditor } from "@/components/pages/learning/document-editor";
+import { getLearningCopy } from "@/components/pages/learning/learning-copy";
 import type {
+  AaisClientTaskRecord,
   ContentItemId,
   ContentTab,
   SavedLearningDocument,
 } from "@/components/pages/learning/learning-page-types";
+import type { Locale } from "@/data/aais";
 
 export function ContentResizeSeparator({
   contentPanelWidth,
   getMaxContentPanelWidth,
+  locale = "zh-CN",
   onResizeBy,
   onResizeStart,
   setContentPanelWidth,
 }: {
   contentPanelWidth: number;
   getMaxContentPanelWidth: () => number;
+  locale?: Locale;
   onResizeBy: (delta: number) => void;
   onResizeStart: (event: ReactPointerEvent<HTMLDivElement>) => void;
   setContentPanelWidth: (width: number) => void;
 }) {
+  const copy = getLearningCopy(locale);
   function handleKeyDown(event: KeyboardEvent<HTMLDivElement>) {
+    let nextWidth: number | null = null;
+    let applyResize: (() => void) | null = null;
     if (event.key === "ArrowLeft") {
       event.preventDefault();
-      onResizeBy(contentPanelResizeStep);
+      nextWidth = Math.min(getMaxContentPanelWidth(), contentPanelWidth + contentPanelResizeStep);
+      applyResize = () => onResizeBy(contentPanelResizeStep);
     } else if (event.key === "ArrowRight") {
       event.preventDefault();
-      onResizeBy(-contentPanelResizeStep);
+      nextWidth = Math.max(minContentPanelWidth, contentPanelWidth - contentPanelResizeStep);
+      applyResize = () => onResizeBy(-contentPanelResizeStep);
     } else if (event.key === "Home") {
       event.preventDefault();
-      setContentPanelWidth(minContentPanelWidth);
+      nextWidth = minContentPanelWidth;
+      applyResize = () => setContentPanelWidth(minContentPanelWidth);
     } else if (event.key === "End") {
       event.preventDefault();
-      setContentPanelWidth(getMaxContentPanelWidth());
+      const maxWidth = getMaxContentPanelWidth();
+      nextWidth = maxWidth;
+      applyResize = () => setContentPanelWidth(maxWidth);
+    }
+    if (
+      nextWidth !== null
+      && applyResize
+      && Math.round(nextWidth) !== Math.round(contentPanelWidth)
+    ) {
+      if (!admitAaisResearchAction({
+        eventName: "panel_resize_completed",
+        outcome: "success",
+        detail: {
+          operation_id: createAaisResearchOperationId("panel-resize"),
+          input_method: "keyboard",
+          trigger: event.key.toLowerCase(),
+          width_px: nextWidth,
+          delta_px: nextWidth - contentPanelWidth,
+        },
+      })) {
+        return;
+      }
+      applyResize();
     }
   }
 
   return (
     <div
       role="separator"
-      aria-label="调整内容展示区域宽度"
+      aria-label={copy.content.resize}
       aria-orientation="vertical"
       aria-valuemin={minContentPanelWidth}
       aria-valuemax={maxContentPanelWidth}
@@ -78,6 +116,7 @@ export function ContentResizeSeparator({
 
 export function ContentSidePanel({
   activeContentId,
+  activeTaskId = defaultTaskId,
   activeTab,
   artifactSaveBusy,
   artifactSaveError,
@@ -87,17 +126,28 @@ export function ContentSidePanel({
   documentDownloadError,
   documentDownloadStatus,
   documentTitle,
+  documentArchiveBusy = false,
+  documentNavigationLocked = false,
   flushPendingArtifactSave,
   historyDocuments,
+  locale = "zh-CN",
   onDocumentTitleChange,
   onDownloadDocument,
+  onBackContent,
+  onCompleteTask = () => undefined,
+  onOpenContent,
   onOpenDocument,
   onRecordArtifact,
   onSaveAndCloseDocument,
+  onSaveAndClosePointerDown = () => undefined,
+  onSelectTask = () => undefined,
   selectContentTab,
-  setActiveContentId,
+  taskActionBusy = false,
+  taskActionError = "",
+  tasks = [],
 }: {
   activeContentId: ContentItemId | null;
+  activeTaskId?: string;
   activeTab: ContentTab;
   artifactSaveBusy: boolean;
   artifactSaveError: string;
@@ -107,18 +157,29 @@ export function ContentSidePanel({
   documentDownloadError: string;
   documentDownloadStatus: string;
   documentTitle: string;
+  documentArchiveBusy?: boolean;
+  documentNavigationLocked?: boolean;
   flushPendingArtifactSave: () => void;
   historyDocuments: SavedLearningDocument[];
+  locale?: Locale;
   onDocumentTitleChange: (value: string) => void;
   onDownloadDocument: () => void;
+  onBackContent: () => void;
+  onCompleteTask?: (taskId: string) => void;
+  onOpenContent: (id: ContentItemId) => void;
   onOpenDocument: (document: SavedLearningDocument) => void;
   onRecordArtifact: (value: string) => void;
   onSaveAndCloseDocument: () => void;
+  onSaveAndClosePointerDown?: () => void;
+  onSelectTask?: (taskId: string) => void;
   selectContentTab: (nextTab: ContentTab) => void;
-  setActiveContentId: (id: ContentItemId | null) => void;
+  taskActionBusy?: boolean;
+  taskActionError?: string;
+  tasks?: AaisClientTaskRecord[];
 }) {
+  const copy = getLearningCopy(locale);
   const activeContent =
-    contentDisplayItems.find((item) => item.id === activeContentId) ?? null;
+    getContentDisplayItems(locale).find((item) => item.id === activeContentId) ?? null;
   const documentStatus = documentDownloadStatus || artifactSaveStatus;
   const documentError = documentDownloadError || artifactSaveError;
   const documentBusy = activeTab === "editor" && (artifactSaveBusy || documentDownloadBusy);
@@ -126,32 +187,40 @@ export function ContentSidePanel({
   return (
     <aside
       className="flex min-h-[620px] flex-col bg-[#fcfcfc] lg:min-h-0 lg:overflow-hidden"
-      aria-label="学习内容与文档"
-      aria-busy={documentBusy}
+      aria-label={copy.content.panel}
+      aria-busy={documentBusy || taskActionBusy}
     >
-      <div className="flex h-14 shrink-0 items-stretch border-b border-[#d7d7d7] bg-[#fcfcfc]">
-        <TabButton active={activeTab === "display"} onClick={() => selectContentTab("display")}>
-          内容展示
+      <div className="grid h-auto shrink-0 grid-cols-2 items-stretch border-b border-[#d7d7d7] bg-[#fcfcfc] lg:flex lg:h-14">
+        <TabButton
+          active={activeTab === "display"}
+          ariaDisabled={activeTab === "editor" && documentNavigationLocked}
+          disabled={documentArchiveBusy || (activeTab === "editor" && artifactSaveBusy)}
+          onClick={() => selectContentTab("display")}
+        >
+          {copy.content.displayTab}
         </TabButton>
-        <TabButton active={activeTab === "editor"} onClick={() => selectContentTab("editor")}>
-          文档编辑
+        <TabButton active={activeTab === "editor"} disabled={documentArchiveBusy} onClick={() => selectContentTab("editor")}>
+          {copy.content.editorTab}
         </TabButton>
         {activeTab === "editor" ? (
           <>
             <button
               type="button"
+              data-document-archive-action="true"
+              onPointerDown={onSaveAndClosePointerDown}
               onClick={onSaveAndCloseDocument}
-              className="inline-flex h-14 min-w-[104px] shrink-0 items-center justify-center whitespace-nowrap px-3 text-[14px] font-semibold text-[#536de8] outline-none transition hover:bg-white focus-visible:ring-2 focus-visible:ring-[#536de8]"
+              disabled={artifactSaveBusy || documentArchiveBusy}
+              className="inline-flex h-14 min-w-0 items-center justify-center whitespace-nowrap border-t border-[#d7d7d7] px-2 text-[14px] font-semibold text-[#536de8] outline-none transition hover:bg-white focus-visible:ring-2 focus-visible:ring-[#536de8] disabled:cursor-not-allowed disabled:opacity-70 lg:min-w-[104px] lg:shrink-0 lg:border-t-0 lg:px-3"
             >
-              保存并关闭
+              {copy.content.saveAndClose}
             </button>
             <button
               type="button"
               onClick={onDownloadDocument}
-              disabled={documentDownloadBusy}
-              className="ml-auto inline-flex h-14 min-w-[104px] shrink-0 items-center justify-center whitespace-nowrap px-3 text-[14px] font-semibold text-[#536de8] outline-none transition hover:bg-white focus-visible:ring-2 focus-visible:ring-[#536de8] disabled:cursor-not-allowed disabled:opacity-70"
+              disabled={documentDownloadBusy || documentArchiveBusy}
+              className="inline-flex h-14 min-w-0 items-center justify-center whitespace-nowrap border-t border-l border-[#d7d7d7] px-2 text-[14px] font-semibold text-[#536de8] outline-none transition hover:bg-white focus-visible:ring-2 focus-visible:ring-[#536de8] disabled:cursor-not-allowed disabled:opacity-70 lg:ml-auto lg:min-w-[104px] lg:shrink-0 lg:border-t-0 lg:border-l-0 lg:px-3"
             >
-              {documentDownloadBusy ? "下载中..." : "下载到本地"}
+              {documentDownloadBusy ? copy.content.downloading : copy.content.download}
             </button>
           </>
         ) : null}
@@ -159,7 +228,7 @@ export function ContentSidePanel({
 
       {activeTab === "editor" && documentStatus ? (
         <p
-          className="border-b border-[#cce9d6] bg-[#effff4] px-3 py-2 text-sm font-semibold text-[#166534]"
+          className="relative z-10 min-h-9 shrink-0 break-words border-b border-[#cce9d6] bg-[#effff4] px-3 py-2 text-sm font-semibold leading-5 text-[#166534]"
           role="status"
           aria-live="polite"
           aria-atomic="true"
@@ -169,7 +238,7 @@ export function ContentSidePanel({
       ) : null}
       {activeTab === "editor" && documentError ? (
         <p
-          className="border-b border-[#f0b7c9] bg-[#fff1f5] px-3 py-2 text-sm font-semibold text-[#a12f56]"
+          className="relative z-10 min-h-9 shrink-0 break-words border-b border-[#f0b7c9] bg-[#fff1f5] px-3 py-2 text-sm font-semibold leading-5 text-[#a12f56]"
           role="alert"
           aria-live="assertive"
           aria-atomic="true"
@@ -178,21 +247,43 @@ export function ContentSidePanel({
         </p>
       ) : null}
 
-      <div className="min-h-[580px] lg:min-h-0 lg:flex-1 lg:overflow-y-auto">
+      <div
+        className={[
+          "min-h-[580px] lg:min-h-0 lg:flex-1",
+          activeTab === "editor"
+            ? "lg:flex lg:overflow-hidden"
+            : "lg:overflow-y-auto",
+        ].join(" ")}
+      >
         {activeTab === "display" ? (
           <ContentDisplay
             activeContent={activeContent}
+            activeTaskId={activeTaskId}
             historyDocuments={historyDocuments}
-            onBack={() => setActiveContentId(null)}
-            onOpen={setActiveContentId}
+            locale={locale}
+            navigationLocked={documentNavigationLocked}
+            onBack={onBackContent}
+            onCompleteTask={onCompleteTask}
+            onOpen={onOpenContent}
             onOpenDocument={onOpenDocument}
+            onSelectTask={onSelectTask}
+            taskActionBusy={taskActionBusy}
+            taskActionError={taskActionError}
+            tasks={tasks}
           />
         ) : (
           <DocumentEditor
             artifactText={artifactText}
             documentTitle={documentTitle}
+            disabled={documentArchiveBusy}
+            locale={locale}
             onArtifactChange={onRecordArtifact}
-            onArtifactBlur={flushPendingArtifactSave}
+            onArtifactBlur={(event: FocusEvent<HTMLDivElement>) => {
+              const nextTarget = event.relatedTarget as HTMLElement | null;
+              if (!nextTarget?.dataset.documentArchiveAction) {
+                flushPendingArtifactSave();
+              }
+            }}
             onDocumentTitleChange={onDocumentTitleChange}
           />
         )}
@@ -203,23 +294,31 @@ export function ContentSidePanel({
 
 function TabButton({
   active,
+  ariaDisabled = false,
   children,
+  disabled,
   onClick,
 }: {
   active: boolean;
+  ariaDisabled?: boolean;
   children: string;
+  disabled: boolean;
   onClick: () => void;
 }) {
   return (
     <button
       type="button"
+      disabled={disabled}
+      aria-disabled={ariaDisabled || undefined}
       onClick={onClick}
       aria-pressed={active}
       className={[
-        "relative h-14 min-w-[148px] shrink-0 whitespace-nowrap border-r border-[#d7d7d7] px-6 text-center text-[20px] font-black leading-[56px] tracking-normal outline-none transition focus-visible:ring-2 focus-visible:ring-[#536de8]",
+        "relative h-14 min-w-0 whitespace-nowrap border-r border-[#d7d7d7] px-2 text-center text-[17px] font-black leading-[56px] tracking-normal outline-none transition focus-visible:ring-2 focus-visible:ring-[#536de8] lg:min-w-[148px] lg:shrink-0 lg:px-6 lg:text-[20px]",
         active
           ? "bg-[#f0f0ef] text-[#10131a] shadow-[inset_0_-3px_0_#536de8]"
-          : "bg-white text-[#16181d] hover:bg-[#f8f8f7]",
+          : ariaDisabled
+            ? "cursor-wait bg-white text-[#6b7280]"
+            : "bg-white text-[#16181d] hover:bg-[#f8f8f7]",
       ].join(" ")}
     >
       {children}

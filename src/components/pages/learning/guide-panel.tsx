@@ -1,7 +1,11 @@
-import type { Dispatch, FormEvent, RefObject, SetStateAction } from "react";
+import { useRef, type Dispatch, type FormEvent, type RefObject, type SetStateAction } from "react";
 import { ArrowUp, FileText, Plus, X } from "@phosphor-icons/react";
 import { aaisGuideFileAccept } from "@/lib/client/aais-guide-file-reader";
-import { guideQuickStarts } from "@/components/pages/learning/learning-page-constants";
+import {
+  admitAaisResearchAction,
+  createAaisResearchOperationId,
+} from "@/lib/client/aais-research-telemetry";
+import { getLearningCopy } from "@/components/pages/learning/learning-copy";
 import {
   formatGuideAttachmentSize,
   GuideBubble,
@@ -10,6 +14,7 @@ import type {
   GuideClientAttachment,
   GuideMessage,
 } from "@/components/pages/learning/learning-page-types";
+import type { Locale } from "@/data/aais";
 
 export function GuidePanel({
   addGuideFiles,
@@ -23,8 +28,8 @@ export function GuidePanel({
   guideFileInputRef,
   guideMessages,
   hasGuideSubmission,
+  locale = "zh-CN",
   onRemoveAttachment,
-  onSubmitGuideQuestion,
   sendGuideMessage,
   setGuideDraft,
   setGuideError,
@@ -40,17 +45,19 @@ export function GuidePanel({
   guideFileInputRef: RefObject<HTMLInputElement | null>;
   guideMessages: GuideMessage[];
   hasGuideSubmission: boolean;
+  locale?: Locale;
   onRemoveAttachment: (attachmentId: string) => void;
-  onSubmitGuideQuestion: (question: string) => void;
   sendGuideMessage: (event: FormEvent<HTMLFormElement>) => void;
   setGuideDraft: Dispatch<SetStateAction<string>>;
   setGuideError: Dispatch<SetStateAction<string>>;
 }) {
+  const copy = getLearningCopy(locale);
+  const guideTextInputRef = useRef<HTMLInputElement | null>(null);
   const guidePanelBusy = guideBusy || guideAttachmentBusy;
   const guideStatusText = guideBusy
-    ? "智能导学处理中..."
+    ? copy.guide.busy
     : guideAttachmentBusy
-      ? "文件正在读取..."
+      ? copy.guide.readingFiles
       : "";
 
   return (
@@ -61,7 +68,17 @@ export function GuidePanel({
       <div className="min-h-0 flex-1 overflow-y-auto px-5 py-6 sm:px-8">
         <div className="space-y-4" aria-live="polite">
           {guideMessages.map((message) => (
-            <GuideBubble key={message.id} message={message} />
+            <GuideBubble
+              key={message.id}
+              locale={locale}
+              message={message}
+              onSuggestedPrompt={(prompt) => {
+                setGuideDraft(prompt);
+                setGuideError("");
+                guideTextInputRef.current?.focus();
+              }}
+              suggestionsDisabled={guidePanelBusy}
+            />
           ))}
         </div>
       </div>
@@ -70,23 +87,12 @@ export function GuidePanel({
         onSubmit={sendGuideMessage}
         className="sticky bottom-0 z-10 shrink-0 border-t border-[#ececeb] bg-gradient-to-t from-[#fcfcfc] via-[#fcfcfc] to-[#fcfcfc]/90 px-5 py-3 sm:px-8"
       >
-        <div className="mb-3 flex flex-wrap gap-2" aria-label="元认知快速开始">
-          {guideQuickStarts.map((item) => (
-            <button
-              key={item.label}
-              type="button"
-              disabled={guidePanelBusy}
-              onClick={() => onSubmitGuideQuestion(item.prompt)}
-              className="min-h-9 rounded-full border border-[#d9dde7] bg-white px-3 text-[13px] font-semibold text-[#3d4656] shadow-[0_4px_14px_rgba(17,24,39,0.04)] outline-none transition hover:border-[#536de8] hover:text-[#324fd6] focus-visible:ring-2 focus-visible:ring-[#536de8] disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              {item.label}
-            </button>
-          ))}
-        </div>
         <div className="flex min-h-[72px] w-full items-center rounded-[28px] border border-[#d9dde7] bg-white px-5 shadow-[0_10px_32px_rgba(17,24,39,0.08)]">
           <input
             ref={guideFileInputRef}
-            aria-label="选择上传文件"
+            aria-label={copy.guide.chooseFiles}
+            aria-hidden="true"
+            tabIndex={-1}
             type="file"
             multiple
             accept={aaisGuideFileAccept}
@@ -100,27 +106,40 @@ export function GuidePanel({
           <button
             type="button"
             disabled={guidePanelBusy}
-            aria-label="Upload file"
-            title="Upload file"
-            onClick={() => guideFileInputRef.current?.click()}
+            aria-label={copy.guide.uploadFile}
+            title={copy.guide.uploadFile}
+            onClick={() => {
+              if (!admitAaisResearchAction({
+                eventName: "guide_attachment_picker_opened",
+                outcome: "success",
+                detail: {
+                  operation_id: createAaisResearchOperationId("attachment-picker"),
+                  trigger: "upload_button",
+                },
+              })) {
+                return;
+              }
+              guideFileInputRef.current?.click();
+            }}
             className="grid size-10 shrink-0 place-items-center rounded-full text-[#4b5563] outline-none transition hover:bg-[#f2f4f8] focus-visible:ring-2 focus-visible:ring-[#536de8] disabled:cursor-not-allowed disabled:opacity-60"
           >
             <Plus size={22} weight="bold" />
           </button>
           <input
-            aria-label="向智能导学输入你的想法"
+            ref={guideTextInputRef}
+            aria-label={copy.guide.inputLabel}
             value={guideDraft}
             onChange={(event) => {
               setGuideDraft(event.target.value);
               setGuideError("");
             }}
-            placeholder="输入你的想法..."
+            placeholder={copy.guide.inputPlaceholder}
             className="h-[72px] min-w-0 flex-1 rounded-[28px] bg-transparent px-4 text-base text-[#2b2f36] outline-none placeholder:text-[#a6adbb]"
           />
           <button
             type="submit"
             disabled={guidePanelBusy}
-            aria-label="发送"
+            aria-label={copy.guide.send}
             className={[
               "grid size-10 shrink-0 place-items-center rounded-full text-white outline-none transition active:translate-y-px focus-visible:ring-2 focus-visible:ring-[#202329] focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-70",
               hasGuideSubmission
@@ -132,7 +151,7 @@ export function GuidePanel({
           </button>
         </div>
         {guideAttachments.length ? (
-          <div className="mt-2 flex flex-wrap gap-2" aria-label="已上传文件">
+          <div className="mt-2 flex flex-wrap gap-2" aria-label={copy.guide.uploadedFiles}>
             {guideAttachments.map((attachment) => (
               <span
                 key={attachment.id}
@@ -145,7 +164,7 @@ export function GuidePanel({
                 </span>
                 <button
                   type="button"
-                  aria-label={`移除 ${attachment.name}`}
+                  aria-label={copy.guide.removeFile(attachment.name)}
                   disabled={guidePanelBusy}
                   onClick={() => onRemoveAttachment(attachment.id)}
                   className="-mr-1 grid size-6 shrink-0 place-items-center rounded-full text-[#7b8190] outline-none hover:bg-[#f2f4f8] hover:text-[#202329] disabled:cursor-not-allowed disabled:opacity-60 focus-visible:ring-2 focus-visible:ring-[#536de8]"

@@ -1,6 +1,8 @@
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { decodeProtectedHeader, importJWK, jwtVerify, type JWTPayload, type JWK } from "jose";
+import { normalizeAaisLocalRedirectTarget } from "@/lib/aais-local-redirect";
 import type { AaisSessionActor } from "@/lib/server/aais-session";
+import { requireAaisSessionSecret } from "@/lib/server/aais-session-secret";
 
 export type AaisOidcConfig = {
   issuer: string;
@@ -20,6 +22,8 @@ export type AaisOidcConfigurationStatus = {
 const aaisOidcRoleMappingEnvNames = [
   "AAIS_OIDC_TEACHER_GROUPS",
   "AAIS_OIDC_TEACHER_EMAILS",
+  "AAIS_OIDC_RESEARCHER_GROUPS",
+  "AAIS_OIDC_RESEARCHER_EMAILS",
   "AAIS_OIDC_ADMIN_GROUPS",
   "AAIS_OIDC_ADMIN_EMAILS",
 ] as const;
@@ -48,8 +52,63 @@ type SignedOidcStatePayload = AaisOidcState & {
 
 const oidcStateCookieName = "aais_oidc_state";
 const stateTtlSeconds = 10 * 60;
-const devSessionSecret = "aais-dev-session-secret-do-not-use-for-production";
+const oidcClockToleranceSeconds = 60;
+const oidcIdTokenMaxAgeSeconds = 15 * 60;
+const oidcProviderTimeoutMs = 10_000;
+const oidcDiscoveryMaxBytes = 64 * 1024;
+const oidcTokenResponseMaxBytes = 256 * 1024;
+const oidcJwksMaxBytes = 1024 * 1024;
+const oidcReturnTargetMaxLength = 2048;
+const oidcDiscoveryCacheTtlMs = 5 * 60 * 1000;
+const oidcDiscoveryNegativeCacheTtlMs = 15 * 1000;
+const oidcDiscoveryCacheMaxEntries = 32;
+const allowedOidcSigningAlgorithms = new Set([
+  "RS256",
+  "RS384",
+  "RS512",
+  "PS256",
+  "PS384",
+  "PS512",
+  "ES256",
+  "ES384",
+  "ES512",
+  "EdDSA",
+]);
 const invalidOidcEndpointConfig = Symbol("invalid-oidc-endpoints");
+
+type AaisOidcEndpoints = Pick<
+  AaisOidcConfig,
+  "authorizationEndpoint" | "tokenEndpoint" | "jwksUri"
+>;
+
+type AaisOidcDiscoveryOutcome =
+  | { status: "configured"; endpoints: AaisOidcEndpoints }
+  | { status: "missing" }
+  | { status: "unavailable" };
+
+const oidcDiscoveryCache = new Map<string, {
+  expiresAt: number;
+  outcome: AaisOidcDiscoveryOutcome;
+}>();
+const oidcDiscoveryInflight = new Map<string, Promise<AaisOidcDiscoveryOutcome>>();
+
+export class AaisOidcProviderUnavailableError extends Error {
+  constructor(readonly operation: "discovery" | "token" | "jwks", options?: { cause?: unknown }) {
+    super(`AAIS OIDC ${operation} provider is temporarily unavailable.`, options);
+    this.name = "AaisOidcProviderUnavailableError";
+  }
+}
+
+export function isAaisOidcProviderUnavailableError(
+  error: unknown,
+): error is AaisOidcProviderUnavailableError {
+  return error instanceof AaisOidcProviderUnavailableError;
+}
+
+export function resetAaisOidcDiscoveryCacheForTests() {
+  oidcDiscoveryCache.clear();
+  oidcDiscoveryInflight.clear();
+}
 
 export function getAaisOidcStateCookieName() {
   return oidcStateCookieName;
@@ -101,7 +160,41 @@ export function getAaisOidcRoleMappingStatus(): AaisOidcRoleMappingStatus {
   };
 }
 
-export async function resolveAaisOidcConfig(fetchImpl: typeof fetch = fetch): Promise<AaisOidcConfig | null> {
+export function getAaisOidcSessionPolicyFingerprint(
+  resolvedConfig?: Pick<AaisOidcConfig, "issuer" | "clientId">,
+) {
+  const baseConfig = resolvedConfig ?? getAaisOidcBaseConfig();
+  if (!baseConfig) {
+    return null;
+  }
+  const endpoints = getAaisOidcExplicitEndpoints();
+  if (endpoints === invalidOidcEndpointConfig) {
+    return null;
+  }
+  const roleMapping = Object.fromEntries(
+    aaisOidcRoleMappingEnvNames.map((name) => {
+      const values = name.endsWith("_EMAILS")
+        ? [...readLowercaseCsv(process.env[name])]
+        : [...readCsv(process.env[name])];
+      return [name, values.sort()];
+    }),
+  );
+  return createHash("sha256")
+    .update("aais.oidc.session-policy:v1\0", "utf8")
+    .update(JSON.stringify({
+      issuer: canonicalizeOidcIssuer(baseConfig.issuer),
+      clientId: baseConfig.clientId,
+      endpointMode: endpoints ? "explicit" : "discovery",
+      endpoints: endpoints ?? null,
+      roleMapping,
+    }), "utf8")
+    .digest("hex");
+}
+
+export async function resolveAaisOidcConfig(
+  fetchImpl: typeof fetch = fetch,
+  now = Date.now(),
+): Promise<AaisOidcConfig | null> {
   const baseConfig = getAaisOidcBaseConfig();
   if (!baseConfig) {
     return null;
@@ -116,14 +209,87 @@ export async function resolveAaisOidcConfig(fetchImpl: typeof fetch = fetch): Pr
       ...endpoints,
     };
   }
-  const discovery = await discoverAaisOidcEndpoints(baseConfig.issuer, fetchImpl);
-  if (!discovery) {
+  const cacheKey = JSON.stringify({
+    issuer: canonicalizeOidcIssuer(baseConfig.issuer),
+    endpointMode: "discovery",
+    clientId: baseConfig.clientId,
+    redirectUri: baseConfig.redirectUri,
+  });
+  const discovery = await resolveAaisOidcDiscovery(cacheKey, baseConfig.issuer, fetchImpl, now);
+  if (discovery.status === "unavailable") {
+    throw new AaisOidcProviderUnavailableError("discovery");
+  }
+  if (discovery.status === "missing") {
     return null;
   }
   return {
     ...baseConfig,
-    ...discovery,
+    ...discovery.endpoints,
   };
+}
+
+async function resolveAaisOidcDiscovery(
+  cacheKey: string,
+  issuer: string,
+  fetchImpl: typeof fetch,
+  now: number,
+): Promise<AaisOidcDiscoveryOutcome> {
+  const cached = oidcDiscoveryCache.get(cacheKey);
+  if (cached && cached.expiresAt > now) {
+    return cached.outcome;
+  }
+  if (cached) {
+    oidcDiscoveryCache.delete(cacheKey);
+  }
+  const current = oidcDiscoveryInflight.get(cacheKey);
+  if (current) {
+    return current;
+  }
+  const loading = loadAaisOidcDiscovery(issuer, fetchImpl)
+    .then((outcome) => {
+      pruneAaisOidcDiscoveryCache(now);
+      oidcDiscoveryCache.set(cacheKey, {
+        outcome,
+        expiresAt: now + (outcome.status === "configured"
+          ? oidcDiscoveryCacheTtlMs
+          : oidcDiscoveryNegativeCacheTtlMs),
+      });
+      return outcome;
+    })
+    .finally(() => {
+      oidcDiscoveryInflight.delete(cacheKey);
+    });
+  oidcDiscoveryInflight.set(cacheKey, loading);
+  return loading;
+}
+
+async function loadAaisOidcDiscovery(
+  issuer: string,
+  fetchImpl: typeof fetch,
+): Promise<AaisOidcDiscoveryOutcome> {
+  try {
+    const endpoints = await discoverAaisOidcEndpoints(issuer, fetchImpl);
+    return endpoints
+      ? { status: "configured", endpoints }
+      : { status: "missing" };
+  } catch {
+    return { status: "unavailable" };
+  }
+}
+
+function pruneAaisOidcDiscoveryCache(now: number) {
+  for (const [key, entry] of oidcDiscoveryCache) {
+    if (entry.expiresAt <= now) {
+      oidcDiscoveryCache.delete(key);
+    }
+  }
+  while (oidcDiscoveryCache.size >= oidcDiscoveryCacheMaxEntries) {
+    const oldestKey = oidcDiscoveryCache.keys().next().value as string | undefined;
+    if (!oldestKey) {
+      break;
+    }
+    oidcDiscoveryCache.delete(oldestKey);
+  }
 }
 
 function getAaisOidcBaseConfig() {
@@ -171,15 +337,26 @@ function getAaisOidcExplicitEndpoints() {
 
 async function discoverAaisOidcEndpoints(issuer: string, fetchImpl: typeof fetch) {
   const discoveryUrl = `${issuer.replace(/\/+$/, "")}/.well-known/openid-configuration`;
-  const response = await fetchImpl(discoveryUrl, {
-    headers: {
-      accept: "application/json",
-    },
-  });
+  let response: Response;
+  try {
+    response = await fetchImpl(discoveryUrl, {
+      headers: {
+        accept: "application/json",
+      },
+      signal: AbortSignal.timeout(oidcProviderTimeoutMs),
+    });
+  } catch (cause) {
+    throw new AaisOidcProviderUnavailableError("discovery", { cause });
+  }
+  if (response.status === 429 || response.status >= 500) {
+    await response.body?.cancel().catch(() => undefined);
+    throw new AaisOidcProviderUnavailableError("discovery");
+  }
   if (!response.ok) {
+    await response.body?.cancel().catch(() => undefined);
     return null;
   }
-  const metadata = await response.json().catch(() => null) as {
+  const metadata = await readBoundedOidcJson(response, oidcDiscoveryMaxBytes).catch(() => null) as {
     issuer?: unknown;
     authorization_endpoint?: unknown;
     token_endpoint?: unknown;
@@ -281,24 +458,9 @@ export function createAaisOidcState(returnTo: string, now = new Date()) {
 }
 
 function normalizeReturnTarget(returnTo: string) {
-  return isSafeLocalReturnTarget(returnTo) ? returnTo : "/learning";
-}
-
-function isSafeLocalReturnTarget(returnTo: string) {
-  if (!isPlainLocalPath(returnTo)) {
-    return false;
-  }
-  try {
-    return isPlainLocalPath(decodeURIComponent(returnTo));
-  } catch {
-    return false;
-  }
-}
-
-function isPlainLocalPath(value: string) {
-  return value.startsWith("/")
-    && !value.startsWith("//")
-    && !/[\\\u0000-\u001F\u007F]/.test(value);
+  return returnTo.length <= oidcReturnTargetMaxLength
+    ? normalizeAaisLocalRedirectTarget(returnTo)
+    : "/learning";
 }
 
 export function verifyAaisOidcState(
@@ -322,8 +484,11 @@ export function verifyAaisOidcState(
       || typeof payload.nonce !== "string"
       || typeof payload.returnTo !== "string"
       || typeof payload.codeVerifier !== "string"
+      || typeof payload.iat !== "number"
       || typeof payload.exp !== "number"
       || payload.state !== expectedState
+      || payload.iat > Math.floor(now.getTime() / 1000) + oidcClockToleranceSeconds
+      || payload.exp > payload.iat + stateTtlSeconds
       || payload.exp <= Math.floor(now.getTime() / 1000)
       || !isValidPkceCodeVerifier(payload.codeVerifier)
     ) {
@@ -332,7 +497,7 @@ export function verifyAaisOidcState(
     return {
       state: payload.state,
       nonce: payload.nonce,
-      returnTo: payload.returnTo,
+      returnTo: normalizeReturnTarget(payload.returnTo),
       codeVerifier: payload.codeVerifier,
     };
   } catch {
@@ -376,23 +541,43 @@ export async function exchangeAaisOidcCodeForIdToken(input: {
   if (input.codeVerifier) {
     body.set("code_verifier", input.codeVerifier);
   }
-  const response = await (input.fetchImpl ?? fetch)(input.config.tokenEndpoint, {
-    method: "POST",
-    headers: {
-      "content-type": "application/x-www-form-urlencoded",
-    },
-    body,
-  });
+  let response: Response;
+  try {
+    response = await (input.fetchImpl ?? fetch)(input.config.tokenEndpoint, {
+      method: "POST",
+      headers: {
+        "content-type": "application/x-www-form-urlencoded",
+      },
+      body,
+      signal: AbortSignal.timeout(oidcProviderTimeoutMs),
+    });
+  } catch (cause) {
+    throw new AaisOidcProviderUnavailableError("token", { cause });
+  }
+  if (response.status === 429 || response.status >= 500) {
+    await response.body?.cancel().catch(() => undefined);
+    throw new AaisOidcProviderUnavailableError("token");
+  }
   if (!response.ok) {
+    await response.body?.cancel().catch(() => undefined);
     throw new Error(`AAIS OIDC token exchange failed with ${response.status}`);
   }
-  const payload = (await response.json()) as {
-    id_token?: string;
-  };
-  if (!payload.id_token) {
-    throw new Error("AAIS OIDC token response did not include id_token.");
+  let payload: unknown;
+  try {
+    payload = await readBoundedOidcJson(response, oidcTokenResponseMaxBytes);
+  } catch (cause) {
+    throw new AaisOidcProviderUnavailableError("token", { cause });
   }
-  return payload.id_token;
+  if (
+    !payload
+    || typeof payload !== "object"
+    || Array.isArray(payload)
+    || typeof (payload as { id_token?: unknown }).id_token !== "string"
+    || !(payload as { id_token: string }).id_token
+  ) {
+    throw new AaisOidcProviderUnavailableError("token");
+  }
+  return (payload as { id_token: string }).id_token;
 }
 
 export async function verifyAaisOidcIdToken(input: {
@@ -402,30 +587,80 @@ export async function verifyAaisOidcIdToken(input: {
   fetchImpl?: typeof fetch;
 }): Promise<AaisSessionActor> {
   const header = decodeProtectedHeader(input.idToken);
-  const jwksResponse = await (input.fetchImpl ?? fetch)(input.config.jwksUri);
+  const algorithm = typeof header.alg === "string" ? header.alg : "";
+  if (!allowedOidcSigningAlgorithms.has(algorithm)) {
+    throw new Error("AAIS OIDC signing algorithm is not allowed.");
+  }
+  let jwksResponse: Response;
+  try {
+    jwksResponse = await (input.fetchImpl ?? fetch)(input.config.jwksUri, {
+      headers: {
+        accept: "application/json",
+      },
+      signal: AbortSignal.timeout(oidcProviderTimeoutMs),
+    });
+  } catch (cause) {
+    throw new AaisOidcProviderUnavailableError("jwks", { cause });
+  }
+  if (jwksResponse.status === 429 || jwksResponse.status >= 500) {
+    await jwksResponse.body?.cancel().catch(() => undefined);
+    throw new AaisOidcProviderUnavailableError("jwks");
+  }
   if (!jwksResponse.ok) {
+    await jwksResponse.body?.cancel().catch(() => undefined);
     throw new Error(`AAIS OIDC JWKS lookup failed with ${jwksResponse.status}`);
   }
-  const jwks = (await jwksResponse.json()) as {
-    keys?: JWK[];
-  };
-  const key = jwks.keys?.find((candidate) => !header.kid || candidate.kid === header.kid);
+  let jwksPayload: unknown;
+  try {
+    jwksPayload = await readBoundedOidcJson(jwksResponse, oidcJwksMaxBytes);
+  } catch (cause) {
+    throw new AaisOidcProviderUnavailableError("jwks", { cause });
+  }
+  if (
+    !jwksPayload
+    || typeof jwksPayload !== "object"
+    || Array.isArray(jwksPayload)
+    || !Array.isArray((jwksPayload as { keys?: unknown }).keys)
+    || !(jwksPayload as { keys: unknown[] }).keys.every((candidate) => (
+      Boolean(candidate) && typeof candidate === "object" && !Array.isArray(candidate)
+    ))
+  ) {
+    throw new AaisOidcProviderUnavailableError("jwks");
+  }
+  const jwks = jwksPayload as { keys: JWK[] };
+  const key = Array.isArray(jwks?.keys)
+    ? jwks.keys.find((candidate) => (
+        (!header.kid || candidate.kid === header.kid)
+        && (!candidate.alg || candidate.alg === algorithm)
+        && (!candidate.use || candidate.use === "sig")
+        && (!candidate.key_ops || candidate.key_ops.includes("verify"))
+      ))
+    : undefined;
   if (!key) {
     throw new Error("AAIS OIDC signing key was not found.");
   }
-  const publicKey = await importJWK(key, String(header.alg ?? "RS256"));
+  const publicKey = await importJWK(key, algorithm);
   const verified = await jwtVerify(input.idToken, publicKey, {
     issuer: input.config.issuer,
     audience: input.config.clientId,
+    algorithms: [...allowedOidcSigningAlgorithms],
+    requiredClaims: ["exp", "iat", "sub"],
+    maxTokenAge: oidcIdTokenMaxAgeSeconds,
+    clockTolerance: oidcClockToleranceSeconds,
   });
-  return createActorFromClaims(verified.payload, input.nonce);
+  validateAuthorizedParty(verified.payload, input.config.clientId);
+  return createActorFromClaims(verified.payload, input.nonce, input.config.issuer);
 }
 
-function createActorFromClaims(payload: JWTPayload, expectedNonce: string): AaisSessionActor {
+function createActorFromClaims(
+  payload: JWTPayload,
+  expectedNonce: string,
+  verifiedIssuer: string,
+): AaisSessionActor {
   if (payload.nonce !== expectedNonce) {
     throw new Error("AAIS OIDC nonce mismatch.");
   }
-  if (!payload.sub) {
+  if (typeof payload.sub !== "string" || !payload.sub) {
     throw new Error("AAIS OIDC subject is missing.");
   }
   if (typeof payload.email !== "string" || !payload.email.trim()) {
@@ -435,10 +670,40 @@ function createActorFromClaims(payload: JWTPayload, expectedNonce: string): Aais
     throw new Error("AAIS OIDC email is not verified.");
   }
   return {
-    id: `oidc:${payload.sub}`,
+    id: createAaisOidcActorId(verifiedIssuer, payload.sub),
     role: resolveAaisOidcActorRole(payload),
     displayName: String(payload.name ?? payload.email ?? payload.sub),
   };
+}
+
+export function createAaisOidcActorId(issuer: string, subject: string) {
+  const canonicalIssuer = canonicalizeOidcIssuer(issuer);
+  const digest = createHash("sha256")
+    .update("aais.oidc.actor-id:v2\0", "utf8")
+    .update(canonicalIssuer, "utf8")
+    .update("\0", "utf8")
+    .update(subject, "utf8")
+    .digest("hex");
+  return `oidc:v2:${digest}`;
+}
+
+function canonicalizeOidcIssuer(issuer: string) {
+  try {
+    return new URL(issuer).href;
+  } catch {
+    return issuer;
+  }
+}
+
+function validateAuthorizedParty(payload: JWTPayload, clientId: string) {
+  const audience = Array.isArray(payload.aud) ? payload.aud : [payload.aud];
+  const authorizedParty = payload.azp;
+  if (
+    (authorizedParty !== undefined && authorizedParty !== clientId)
+    || (audience.length > 1 && authorizedParty !== clientId)
+  ) {
+    throw new Error("AAIS OIDC authorized party mismatch.");
+  }
 }
 
 function resolveAaisOidcActorRole(payload: JWTPayload): AaisSessionActor["role"] {
@@ -451,6 +716,12 @@ function resolveAaisOidcActorRole(payload: JWTPayload): AaisSessionActor["role"]
     || intersects(claimValues, readCsv(process.env.AAIS_OIDC_ADMIN_GROUPS))
   ) {
     return "admin";
+  }
+  if (
+    (email && readLowercaseCsv(process.env.AAIS_OIDC_RESEARCHER_EMAILS).has(email))
+    || intersects(claimValues, readCsv(process.env.AAIS_OIDC_RESEARCHER_GROUPS))
+  ) {
+    return "researcher";
   }
   if (
     (email && readLowercaseCsv(process.env.AAIS_OIDC_TEACHER_EMAILS).has(email))
@@ -510,6 +781,55 @@ function createPkceCodeChallenge(codeVerifier: string) {
     .digest("base64url");
 }
 
+async function readBoundedOidcJson(response: Response, maxBytes: number): Promise<unknown> {
+  const declaredLength = Number(response.headers.get("content-length"));
+  if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
+    await response.body?.cancel().catch(() => undefined);
+    throw new Error("AAIS OIDC provider response is too large.");
+  }
+
+  const reader = response.body?.getReader();
+  if (!reader) {
+    throw new Error("AAIS OIDC provider response body is missing.");
+  }
+  const chunks: Uint8Array[] = [];
+  let byteLength = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) {
+        break;
+      }
+      byteLength += value.byteLength;
+      if (byteLength > maxBytes) {
+        await reader.cancel().catch(() => undefined);
+        throw new Error("AAIS OIDC provider response is too large.");
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  const bytes = new Uint8Array(byteLength);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  let jsonText: string;
+  try {
+    jsonText = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch {
+    throw new Error("AAIS OIDC provider response is not valid UTF-8.");
+  }
+  try {
+    return JSON.parse(jsonText) as unknown;
+  } catch {
+    throw new Error("AAIS OIDC provider response is not valid JSON.");
+  }
+}
+
 function isValidPkceCodeVerifier(value: string) {
   return /^[A-Za-z0-9._~-]{43,128}$/.test(value);
 }
@@ -523,14 +843,7 @@ function signatureMatches(encodedPayload: string, signature: string) {
 }
 
 function getSigningSecret() {
-  const secret = process.env.AAIS_SESSION_SECRET?.trim();
-  if (secret) {
-    return secret;
-  }
-  if (isProductionRuntime()) {
-    throw new Error("AAIS session secret is not configured.");
-  }
-  return devSessionSecret;
+  return requireAaisSessionSecret();
 }
 
 function isProductionRuntime() {

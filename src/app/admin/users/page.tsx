@@ -5,7 +5,7 @@ import { requireAaisAdminPageSession } from "@/lib/server/aais-page-auth";
 export const dynamic = "force-dynamic";
 
 export const metadata: Metadata = {
-  title: "AAIS Admin Users",
+  title: "CAAIS Admin Users",
   description: "AAIS user account administration",
 };
 

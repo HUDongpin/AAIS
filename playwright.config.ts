@@ -2,6 +2,7 @@ import { defineConfig, devices } from "@playwright/test";
 
 const port = Number(process.env.AAIS_E2E_PORT ?? 3000);
 const baseURL = process.env.AAIS_E2E_BASE_URL ?? `http://127.0.0.1:${port}`;
+const dataDir = process.env.AAIS_E2E_DATA_DIR ?? ".aais-e2e-data";
 const deployedE2e = Boolean(process.env.AAIS_E2E_BASE_URL);
 const protectionBypassSecret = process.env.VERCEL_AUTOMATION_BYPASS_SECRET?.trim();
 const e2eSmokeAccountsJson = JSON.stringify([
@@ -43,7 +44,7 @@ export default defineConfig({
         reuseExistingServer: !process.env.CI,
         timeout: 120_000,
         env: {
-          AAIS_DATA_DIR: ".aais-e2e-data",
+          AAIS_DATA_DIR: dataDir,
           AAIS_TRIAL_SMOKE_ACCOUNTS_JSON: e2eSmokeAccountsJson,
         },
       },

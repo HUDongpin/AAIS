@@ -1,7 +1,17 @@
+const aaisGuideAttachmentMaxFileSizeMiB = 20;
+
 export const aaisGuideAttachmentLimits = {
   maxFiles: 3,
-  maxFileSizeBytes: 2 * 1024 * 1024,
+  // Source files are parsed locally and never uploaded verbatim. This ceiling
+  // bounds browser CPU/RAM while the separate text cap bounds model context.
+  maxFileSizeMiB: aaisGuideAttachmentMaxFileSizeMiB,
+  maxFileSizeBytes: aaisGuideAttachmentMaxFileSizeMiB * 1024 * 1024,
   maxExtractedTextCharacters: 12_000,
+  maxTextReadBytes: 256 * 1024,
+  maxPdfPagesToScan: 100,
+  // DOCX is a ZIP container. Only word/document.xml is extracted and its
+  // declared uncompressed size is bounded before decompression.
+  maxDocxDocumentXmlBytes: 4 * 1024 * 1024,
 } as const;
 
 export const aaisGuideAttachmentMediaTypes = [
@@ -9,6 +19,7 @@ export const aaisGuideAttachmentMediaTypes = [
   "text/markdown",
   "text/csv",
   "application/pdf",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
 ] as const;
 
 export type AaisGuideAttachmentMediaType = (typeof aaisGuideAttachmentMediaTypes)[number];
@@ -19,6 +30,53 @@ export type AaisGuideAttachment = {
   sizeBytes: number;
   extractedText: string;
 };
+
+export type AaisGuideAttachmentMetadata = Omit<AaisGuideAttachment, "extractedText"> & {
+  status: "read";
+};
+
+export function toAaisGuideAttachmentMetadata(
+  attachment: AaisGuideAttachment,
+): AaisGuideAttachmentMetadata {
+  return {
+    name: attachment.name,
+    mediaType: attachment.mediaType,
+    sizeBytes: attachment.sizeBytes,
+    status: "read",
+  };
+}
+
+export function normalizeAaisGuideAttachmentMetadata(
+  value: unknown,
+): AaisGuideAttachmentMetadata[] {
+  if (value == null) {
+    return [];
+  }
+  if (!Array.isArray(value)) {
+    throw new Error("Guide attachment metadata must be an array.");
+  }
+  if (value.length > aaisGuideAttachmentLimits.maxFiles) {
+    throw new Error(
+      `Guide attachment metadata is limited to ${aaisGuideAttachmentLimits.maxFiles} files.`,
+    );
+  }
+
+  return value.map((attachment) => {
+    if (!attachment || typeof attachment !== "object") {
+      throw new Error("Guide attachment metadata must be an object.");
+    }
+    const record = attachment as Record<string, unknown>;
+    if (record.status !== "read") {
+      throw new Error("Guide attachment metadata has an invalid read status.");
+    }
+    return {
+      name: sanitizeAttachmentName(record.name),
+      mediaType: normalizeAttachmentMediaType(record.mediaType),
+      sizeBytes: normalizeAttachmentSize(record.sizeBytes, String(record.name ?? "attachment")),
+      status: "read",
+    };
+  });
+}
 
 export function normalizeAaisGuideAttachments(value: unknown): AaisGuideAttachment[] {
   if (value == null) {
@@ -97,7 +155,9 @@ function normalizeAttachmentSize(value: unknown, name: string) {
     throw new Error(`Guide attachment ${name} has an invalid size.`);
   }
   if (sizeBytes > aaisGuideAttachmentLimits.maxFileSizeBytes) {
-    throw new Error(`Guide attachment ${name} exceeds 2 MB.`);
+    throw new Error(
+      `Guide attachment ${name} exceeds the ${aaisGuideAttachmentLimits.maxFileSizeMiB} MB upload limit.`,
+    );
   }
   return Math.round(sizeBytes);
 }

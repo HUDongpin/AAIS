@@ -3,8 +3,10 @@
 .aais-e2e-data/
 .next/
 .playwright-cli/
+.worktrees/
 node_modules/
 All API Keys.docx
+/*.docx
 .vercel
 .env
 .env.*
@@ -12,8 +14,12 @@ All API Keys.docx
 .env*.local
 output/
 test-results/
+tmp/
+20260712_AAIS_bug detection_dialogue turns_Claude and Peter.md
 technical-review/.codex-render/
 technical-review/.codex-work/
 aais-load-sanity*.json
+aais-legacy-lrs-archive-manifest*.json
+aais-research-rehearsal*.json
 .aais-load-users*.json
 tsconfig.tsbuildinfo

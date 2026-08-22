@@ -15,13 +15,23 @@ import {
 } from "@/data/aais";
 import {
   aaisGuideTargetAgentIds,
-  resolveAaisGuideTargetAgentIds,
+  localizeAaisGuideAgentReferences,
+  selectAaisGuideReplyAgentIds,
   type AaisGuideTargetAgentId,
 } from "@/lib/ai/aais-guide-targets";
 import {
   normalizeAaisGuideAttachments,
   type AaisGuideAttachment,
 } from "@/lib/ai/aais-guide-attachments";
+import {
+  createAaisFunctionScaffoldPlan,
+  createAaisFunctionScaffoldResponse,
+  createAaisUnsupportedFunctionGraphResponse,
+  hasAaisGraphIntent,
+  isAaisFunctionGraphRequest,
+  type AaisFunctionScaffoldPlan,
+  type AaisGuideVisualization,
+} from "@/lib/ai/aais-guide-function-scaffold";
 
 type AaisWorkspaceState = {
   currentStep: string;
@@ -30,11 +40,17 @@ type AaisWorkspaceState = {
   attachments?: AaisGuideAttachment[];
 };
 
+export type AaisGuideConversationMessage = {
+  kind: "user" | "assistant";
+  text: string;
+};
+
 export type AaisGuideTurn = {
   agentId: AaisAgentId;
   label: string;
   content: string;
   actions: string[];
+  visualizations?: AaisGuideVisualization[];
 };
 
 type AaisGuideProviderRun = AaisModelRuntime & {
@@ -59,9 +75,11 @@ export type AaisGuideInput = {
   phase: AaisPhase;
   taskId: string;
   learnerInput: string;
+  conversationHistory?: AaisGuideConversationMessage[];
   targetAgentIds?: AaisGuideTargetAgentId[];
   workspaceState: AaisWorkspaceState;
   threadId?: string;
+  scaffoldPlan?: AaisFunctionScaffoldPlan;
 };
 
 type AaisGuideState = AaisGuideInput & {
@@ -78,6 +96,7 @@ type AaisGuideAgentRun = {
 
 type AaisGuideOptions = {
   modelProvider?: AaisModelProvider;
+  signal?: AbortSignal;
 };
 
 const redaction = {
@@ -89,6 +108,9 @@ const redaction = {
 const graphId = "learning-ai-guide" as const;
 const topologicalOrder: AaisAgentId[] = ["A1", "A2", "A3", "A4"];
 const backgroundAgentIds: AaisAgentId[] = ["A3", "A4"];
+const maxConversationMessages = 10;
+const maxConversationMessageCharacters = 1_200;
+const maxConversationCharacters = 6_000;
 
 const AaisGuideGraphState = Annotation.Root({
   input: Annotation<AaisGuideState>,
@@ -107,13 +129,38 @@ export async function runAaisLearningGuideGraph(
   input: AaisGuideInput,
   options: AaisGuideOptions = {},
 ) {
+  options.signal?.throwIfAborted();
+  const conversationHistory = normalizeConversationHistory(input.conversationHistory);
+  const responseLocale = resolveGuideResponseLocale(
+    input.locale,
+    input.learnerInput,
+    conversationHistory,
+  );
+  const scaffoldPlan = createAaisFunctionScaffoldPlan({
+    learnerInput: input.learnerInput,
+    conversationHistory,
+  });
+  const unsupportedGraphRequest = !scaffoldPlan && (
+    isAaisFunctionGraphRequest(input.learnerInput)
+    || (
+      hasAaisGraphIntent(input.learnerInput)
+      && conversationHistory
+        .filter((message) => message.kind === "user")
+        .slice(-6)
+        .some((message) => isAaisFunctionGraphRequest(message.text))
+    )
+  );
   const boundedInput: AaisGuideInput = {
     ...input,
+    locale: responseLocale,
+    targetAgentIds: selectAaisGuideReplyAgentIds(input.learnerInput),
+    ...(conversationHistory.length ? { conversationHistory } : { conversationHistory: undefined }),
     workspaceState: normalizeAaisGuideWorkspaceState(input.workspaceState),
+    ...(scaffoldPlan ? { scaffoldPlan } : { scaffoldPlan: undefined }),
   };
   const modelProvider = options.modelProvider ?? createConfiguredAaisModelProvider();
   const backgroundProvider = createDeterministicAaisProvider();
-  const targetAgentIds = resolveAaisGuideTargetAgentIds(boundedInput.targetAgentIds);
+  const targetAgentIds = boundedInput.targetAgentIds ?? ["A1"];
   const visibleAgentIds = topologicalOrder.filter((agentId): agentId is AaisGuideTargetAgentId =>
     targetAgentIds.includes(agentId as AaisGuideTargetAgentId),
   );
@@ -133,10 +180,17 @@ export async function runAaisLearningGuideGraph(
     ],
     modelProvider,
     backgroundProvider,
-  });
+  }, options.signal ? { signal: options.signal } : undefined);
+  options.signal?.throwIfAborted();
   const totalMs = Math.round(nowMs() - startedAt);
   const allRuns = sortAgentRuns(graphOutput.runs);
-  const turns = allRuns.flatMap((run) => run.turns);
+  const turns = applyAaisFunctionScaffold(
+    allRuns.flatMap((run) => run.turns),
+    boundedInput.scaffoldPlan,
+    unsupportedGraphRequest,
+    targetAgentIds,
+    boundedInput.locale,
+  );
   const providerRuns = allRuns.flatMap((run) => run.providerRuns);
   const agentTimings = allRuns.flatMap((run) => run.timings);
   const visibleTurns = turns.filter((turn) =>
@@ -193,10 +247,14 @@ export async function runAaisLearningGuideGraph(
 
 function createAaisLearningGuideLangGraph() {
   return new StateGraph(AaisGuideGraphState)
-    .addNode("A1", (state: AaisGuideGraphStateValue) => runAaisGuideAgentNode("A1", state))
-    .addNode("A2", (state: AaisGuideGraphStateValue) => runAaisGuideAgentNode("A2", state))
-    .addNode("A3", (state: AaisGuideGraphStateValue) => runAaisGuideAgentNode("A3", state))
-    .addNode("A4", (state: AaisGuideGraphStateValue) => runAaisGuideAgentNode("A4", state))
+    .addNode("A1", (state: AaisGuideGraphStateValue, runtime) =>
+      runAaisGuideAgentNode("A1", state, runtime.signal))
+    .addNode("A2", (state: AaisGuideGraphStateValue, runtime) =>
+      runAaisGuideAgentNode("A2", state, runtime.signal))
+    .addNode("A3", (state: AaisGuideGraphStateValue, runtime) =>
+      runAaisGuideAgentNode("A3", state, runtime.signal))
+    .addNode("A4", (state: AaisGuideGraphStateValue, runtime) =>
+      runAaisGuideAgentNode("A4", state, runtime.signal))
     .addConditionalEdges(START, (state: AaisGuideGraphStateValue) => state.activeAgentIds, {
       A1: "A1",
       A2: "A2",
@@ -215,7 +273,9 @@ function createAaisLearningGuideLangGraph() {
 async function runAaisGuideAgentNode(
   agentId: AaisAgentId,
   state: AaisGuideGraphStateValue,
+  signal?: AbortSignal,
 ) {
+  signal?.throwIfAborted();
   const modelProvider = backgroundAgentIds.includes(agentId)
     ? state.backgroundProvider
     : state.modelProvider;
@@ -227,6 +287,7 @@ async function runAaisGuideAgentNode(
         state.input,
         modelProvider,
         !backgroundAgentIds.includes(agentId),
+        signal,
       ),
     ],
   };
@@ -237,42 +298,67 @@ async function createAgentTurn(
   state: AaisGuideState,
   modelProvider: AaisModelProvider,
   visible: boolean,
+  signal?: AbortSignal,
 ) {
+  signal?.throwIfAborted();
   const startedAt = nowMs();
   const agent = aaisAgents.find((candidate) => candidate.id === agentId) ?? aaisAgents[0];
   const fallbackText = createAgentContent(agentId, state);
-  const response = await modelProvider.generate({
-    agentId,
-    label: agent.name[state.locale],
-    role: agent.role[state.locale],
-    mission: agent.mission[state.locale],
-    caModules: agent.caModules,
-    caBackground: aaisCognitiveApprenticeshipBackground,
-    locale: state.locale,
-    phase: state.phase,
-    taskId: state.taskId,
-    learnerInput: state.learnerInput,
-    workspaceState: state.workspaceState,
-    fallbackText,
-  }).catch(() => ({
-    text: fallbackText,
-    runtime: {
-      provider: "unavailable",
-      model: "fallback-template",
-      attempts: 1,
-      status: "fallback" as const,
-      guardrail: {
-        policy: "aais-age-appropriate-output-v1" as const,
-        status: "not-applicable" as const,
-        reasons: ["provider-unavailable"],
+  let response;
+  try {
+    response = await modelProvider.generate({
+      agentId,
+      label: agent.name[state.locale],
+      role: agent.role[state.locale],
+      mission: agent.mission[state.locale],
+      voice: agent.voice
+        ? {
+            persona: agent.voice.persona[state.locale],
+            tone: agent.voice.tone[state.locale],
+            replyContract: agent.voice.replyContract[state.locale],
+            maxSentences: agent.voice.maxSentences,
+            maxCharacters: agent.voice.maxCharacters?.[state.locale],
+            maxOutputTokens: agent.voice.maxOutputTokens,
+          }
+        : undefined,
+      caModules: agent.caModules,
+      caBackground: aaisCognitiveApprenticeshipBackground,
+      locale: state.locale,
+      phase: state.phase,
+      taskId: state.taskId,
+      learnerInput: state.learnerInput,
+      conversationHistory: state.conversationHistory,
+      workspaceState: state.workspaceState,
+      scaffoldPlan: state.scaffoldPlan,
+      fallbackText,
+      signal,
+    });
+  } catch {
+    signal?.throwIfAborted();
+    response = {
+      text: fallbackText,
+      runtime: {
+        provider: "unavailable",
+        model: "fallback-template",
+        attempts: 1,
+        status: "fallback" as const,
+        guardrail: {
+          policy: "aais-age-appropriate-output-v1" as const,
+          status: "not-applicable" as const,
+          reasons: ["provider-unavailable"],
+        },
+        redaction: {
+          secrets: "omitted" as const,
+          prompt: "summarized" as const,
+        },
       },
-      redaction: {
-        secrets: "omitted" as const,
-        prompt: "summarized" as const,
-      },
-    },
-  }));
+    };
+  }
+  signal?.throwIfAborted();
   const elapsedMs = Math.round(nowMs() - startedAt);
+  const learnerVisibleText = visible
+    ? localizeAaisGuideAgentReferences(response.text, state.locale)
+    : response.text;
   const providerRun = {
     agentId,
     ...response.runtime,
@@ -283,7 +369,7 @@ async function createAgentTurn(
       {
         agentId,
         label: agent.name[state.locale],
-        content: response.text,
+        content: learnerVisibleText,
         actions: createAgentActions(agentId, state.phase),
       },
     ],
@@ -329,7 +415,7 @@ function summarizeTimings(totalMs: number, timings: AaisGuideAgentTiming[]) {
       ? Math.max(...visibleTimings.map((timing) => timing.elapsedMs))
       : 0,
     attempts: timings.reduce((total, timing) => total + timing.attempts, 0),
-    fallback: timings.some((timing) => timing.fallback),
+    fallback: visibleTimings.some((timing) => timing.fallback),
     timeoutReason,
     agents: timings,
   };
@@ -356,12 +442,27 @@ function nowMs() {
 }
 
 function createAgentContent(agentId: AaisAgentId, state: AaisGuideState) {
-  const input = state.learnerInput.trim() || "学生尚未输入。";
+  const english = state.locale === "en-US";
+  const input = state.learnerInput.trim() || (english ? "The learner has not entered a response yet." : "学生尚未输入。");
   const helpCount = state.workspaceState.helpRequestsUsed ?? 0;
-  const attachmentSummary = formatAttachmentSummary(state.workspaceState.attachments);
+
+  if (english) {
+    if (agentId === "A1") {
+      return createA1ConciseFallback(state);
+    }
+    if (agentId === "A2") {
+      return createA2ContextualFallback(state, input);
+    }
+    if (agentId === "A3") {
+      return `Supervision Agent: I am collecting task-behavior signals for the current step, ${state.workspaceState.currentStep}, and will signal A1 when a scaffold may be useful. A1 remains responsible for responding to you.`;
+    }
+    return helpCount >= 4
+      ? "Reflection Agent: I will organize the metacognitive process record from your repeated help requests, return it to you, and invite comparison with an expert process."
+      : "Reflection Agent: Put your goal understanding, plan, adjustments, and reasons into words. I will form an articulation record and use reflective questions to support the next reflection.";
+  }
 
   if (agentId === "A1") {
-    return `导学智能体：我会围绕 ${state.taskId} 串联 CA 学习流程，并管理本任务的 4 次直接辅助机会。若辅助机会用完，我会先与你对话确认卡点，再给一定程度的协助，体现 fading。${attachmentSummary}你刚才说：${input}`;
+    return createA1ConciseFallback(state);
   }
   if (agentId === "A2") {
     return createA2ContextualFallback(state, input);
@@ -375,31 +476,79 @@ function createAgentContent(agentId: AaisAgentId, state: AaisGuideState) {
     : "反思智能体：请把解决问题时的目标理解、计划、调整和依据用文字表达出来，我会形成 articulation 记录，并通过反思性提问支持后续 reflection。";
 }
 
+function createA1ConciseFallback(state: AaisGuideState) {
+  const english = state.locale === "en-US";
+  const helpCount = Math.max(0, state.workspaceState.helpRequestsUsed ?? 0);
+  const remaining = Math.max(0, 4 - helpCount);
+  const priorLearnerFocus = findPriorLearnerFocus(state.conversationHistory);
+  const attachmentReference = createA1AttachmentReference(
+    state.workspaceState.attachments,
+    state.locale,
+  );
+
+  if (priorLearnerFocus && refersToPriorContext(state.learnerInput)) {
+    return english
+      ? `You previously identified this focus: ${priorLearnerFocus}. Let us work on its smallest verifiable next step.`
+      : `你刚才说的卡点是：${priorLearnerFocus}。我们先推进其中最小、可验证的一步。`;
+  }
+
+  if (remaining === 0) {
+    return english
+      ? "The 4 direct assists are used. Tell me where you are stuck; I will give one small next-step hint."
+      : "4 次直接辅助已用完。说说你卡在哪一步，我只给一个小提示。";
+  }
+
+  if (attachmentReference) {
+    return english
+      ? `I will use ${attachmentReference}; ${remaining} direct assists remain. Tell me the one step where you are stuck.`
+      : `我会参考 ${attachmentReference}，还可直接求助 ${remaining} 次。先说你卡在哪一步。`;
+  }
+
+  return english
+    ? `${remaining} direct assists remain. Tell me where you are stuck; I will help with only the next step.`
+    : `还可直接求助 ${remaining} 次。先说你卡在哪一步，我只帮你推进下一步。`;
+}
+
 function createA2ContextualFallback(state: AaisGuideState, learnerInput: string) {
-  const topic = summarizeLearnerTopic(learnerInput);
+  const english = state.locale === "en-US";
+  const topic = summarizeLearnerTopic(learnerInput, state.locale);
   const calculusFocus = /微积分|calculus/i.test(learnerInput);
   if (calculusFocus) {
+    if (english) {
+      return [
+        "Professor (local scaffold mode): the live AI has not returned, so I will help you move forward with a local scaffold.",
+        "For university calculus, begin with four moves: concept, graph, worked example, and review. Explain limits, derivatives, and integrals in one sentence each; use a function graph to connect rate of change and area; solve a few representative problems; then sort errors into definition, calculation, or modelling gaps.",
+        "Following the Modelling/Coaching rhythm, choose one concept such as a limit and explain what problem it solves in your own words. Mention @Professor again if you would like an expert model for one step.",
+      ].join("\n");
+    }
     return [
-      "专家智能体（本地支架模式）：live AI 暂时未返回，我先用本地支架帮你推进。",
+      "教授（本地支架模式）：live AI 暂时未返回，我先用本地支架帮你推进。",
       "针对大学微积分，先抓住“概念—图像—例题—复盘”四步：先把极限、导数、积分分别用一句话解释清楚，再画函数图像理解变化率和面积，接着做少量典型题检验概念，最后把错题归类到定义不清、计算不熟或建模不准。",
-      "按 Modelling/Coaching 的节奏，你下一步可以先选一个概念，比如极限，用自己的话写出它解决什么问题；如果需要专家示范，可以继续用 @A2 追问。",
+      "按 Modelling/Coaching 的节奏，你下一步可以先选一个概念，比如极限，用自己的话写出它解决什么问题；如果需要专家示范，可以继续用 @教授 追问。",
+    ].join("\n");
+  }
+  if (english) {
+    return [
+      "Professor (local scaffold mode): the live AI has not returned, so I will respond with a local scaffold.",
+      `You are focusing on: ${topic}`,
+      `I will use a Modelling/Coaching approach: first show how an expert would unpack the problem, then give you one practice prompt. Write three sentences: “What is my goal?”, “What do I know?”, and “What do I need to verify next?” Then mention @Professor so I can model one of those steps. Your current task is ${state.taskId}.`,
     ].join("\n");
   }
   return [
-    "专家智能体（本地支架模式）：live AI 暂时未返回，我先用本地支架回应你的问题。",
+    "教授（本地支架模式）：live AI 暂时未返回，我先用本地支架回应你的问题。",
     `你刚才关注的是：${topic}`,
-    `我会按 Modelling/Coaching 的方式处理：先示范专家会如何拆解这个问题，再给你一个练习提示。先写下“目标是什么、我已知什么、我下一步要验证什么”三句话，然后用 @A2 继续让我针对其中一步示范。当前任务是 ${state.taskId}。`,
+    `我会按 Modelling/Coaching 的方式处理：先示范专家会如何拆解这个问题，再给你一个练习提示。先写下“目标是什么、我已知什么、我下一步要验证什么”三句话，然后用 @教授 继续让我针对其中一步示范。当前任务是 ${state.taskId}。`,
   ].join("\n");
 }
 
-function summarizeLearnerTopic(input: string) {
+function summarizeLearnerTopic(input: string, locale: Locale) {
   const cleaned = input
     .replace(/@A\s*[12]/gi, "")
     .replace(/@\S+/g, "")
     .replace(/\s+/g, " ")
     .trim();
   if (!cleaned) {
-    return "这个学习任务";
+    return locale === "en-US" ? "this learning task" : "这个学习任务";
   }
   return cleaned.length > 80 ? `${cleaned.slice(0, 80)}...` : cleaned;
 }
@@ -416,6 +565,38 @@ function createAgentActions(agentId: AaisAgentId, phase: AaisPhase) {
     return ["monitor", "signal-a1"];
   }
   return ["articulate", "reflect", "compare"];
+}
+
+function applyAaisFunctionScaffold(
+  turns: AaisGuideTurn[],
+  plan: AaisFunctionScaffoldPlan | undefined,
+  unsupportedGraphRequest: boolean,
+  targetAgentIds: AaisGuideTargetAgentId[],
+  locale: Locale,
+) {
+  if (!plan && !unsupportedGraphRequest) {
+    return turns;
+  }
+  const targetAgentId = targetAgentIds[0];
+  let applied = false;
+  return turns.map((turn) => {
+    if (applied || turn.agentId !== targetAgentId) {
+      return turn;
+    }
+    applied = true;
+    return {
+      ...turn,
+      content: plan
+        ? createAaisFunctionScaffoldResponse(plan, locale)
+        : createAaisUnsupportedFunctionGraphResponse(locale),
+      actions: [...new Set([
+        ...turn.actions,
+        ...(plan ? ["show-function-graph"] : ["function-graph-unavailable"]),
+        ...(plan?.mode === "demonstrate" ? ["worked-example"] : []),
+      ])],
+      ...(plan ? { visualizations: [plan.visualization] } : { visualizations: undefined }),
+    };
+  });
 }
 
 function formatMessage(locale: Locale, turns: AaisGuideTurn[]) {
@@ -436,18 +617,113 @@ function normalizeAaisGuideWorkspaceState(workspaceState: AaisWorkspaceState) {
   };
 }
 
-function formatAttachmentSummary(attachments?: AaisGuideAttachment[]) {
+function createA1AttachmentReference(
+  attachments: AaisGuideAttachment[] | undefined,
+  locale: Locale,
+) {
   if (!attachments?.length) {
     return "";
   }
-  const names = attachments.map((attachment) => attachment.name).join("、");
-  return `我也会参考你上传的文件：${names}。`;
+  const firstName = attachments[0]?.name.replace(/\s+/g, " ").trim().slice(0, 48) || "";
+  if (!firstName) {
+    return locale === "en-US" ? "the uploaded material" : "已上传的材料";
+  }
+  if (attachments.length === 1) {
+    return firstName;
+  }
+  return locale === "en-US"
+    ? `${firstName} and ${attachments.length - 1} more file(s)`
+    : `${firstName} 等 ${attachments.length} 个文件`;
 }
 
 function createThreadId(input: AaisGuideInput) {
   return `aais-${hashSeed(
-    [input.studentId, input.phase, input.taskId, input.learnerInput].join("|"),
+    [input.studentId, input.phase, input.taskId].join("|"),
   )}`;
+}
+
+function normalizeConversationHistory(
+  history: AaisGuideConversationMessage[] | undefined,
+) {
+  const recent = (history ?? [])
+    .filter((message): message is AaisGuideConversationMessage =>
+      (message?.kind === "user" || message?.kind === "assistant")
+      && typeof message.text === "string"
+      && Boolean(message.text.trim()),
+    )
+    .slice(-maxConversationMessages);
+  const normalized: AaisGuideConversationMessage[] = [];
+  let remainingCharacters = maxConversationCharacters;
+
+  for (let index = recent.length - 1; index >= 0 && remainingCharacters > 0; index -= 1) {
+    const message = recent[index];
+    const text = message.text.trim().slice(0, maxConversationMessageCharacters);
+    const boundedText = text.slice(0, remainingCharacters);
+    if (boundedText) {
+      normalized.unshift({
+        kind: message.kind,
+        text: boundedText,
+      });
+      remainingCharacters -= boundedText.length;
+    }
+  }
+  return normalized;
+}
+
+function resolveGuideResponseLocale(
+  defaultLocale: Locale,
+  learnerInput: string,
+  history: AaisGuideConversationMessage[],
+) {
+  const candidates = [
+    learnerInput,
+    ...history
+      .filter((message) => message.kind === "user")
+      .map((message) => message.text)
+      .reverse(),
+  ];
+  for (const candidate of candidates) {
+    const preference = detectLanguagePreference(candidate);
+    if (preference) {
+      return preference;
+    }
+  }
+  return defaultLocale;
+}
+
+function detectLanguagePreference(value: string): Locale | null {
+  const englishPatterns = [
+    /\b(?:answer|reply|respond|speak|continue|write|use)\b[\s\S]{0,64}\b(?:in\s+|with\s+|using\s+)?english\b/i,
+    /\benglish(?:\s+only)?\b[\s\S]{0,48}\b(?:answers?|replies|responses?|questions?|from now on)\b/i,
+    /(?:请|以后|接下来|全部|所有|一直|改用|切换|使用|用).{0,18}(?:英文|英语)(?:回答|回复|交流|作答)?/,
+  ];
+  if (englishPatterns.some((pattern) => pattern.test(value))) {
+    return "en-US";
+  }
+  const chinesePatterns = [
+    /\b(?:answer|reply|respond|speak|continue|write|use)\b[\s\S]{0,64}\b(?:in\s+|with\s+|using\s+)?(?:chinese|mandarin)\b/i,
+    /(?:请|以后|接下来|全部|所有|一直|改用|切换|使用|用).{0,18}(?:中文|汉语)(?:回答|回复|交流|作答)?/,
+  ];
+  return chinesePatterns.some((pattern) => pattern.test(value)) ? "zh-CN" : null;
+}
+
+function findPriorLearnerFocus(history: AaisGuideConversationMessage[] | undefined) {
+  const priorUserMessage = [...(history ?? [])]
+    .reverse()
+    .find((message) => message.kind === "user" && !detectLanguagePreference(message.text));
+  if (!priorUserMessage) {
+    return "";
+  }
+  return priorUserMessage.text
+    .replace(/@A\s*[12]/gi, "")
+    .replace(/@(?:小张|教授|Professor)/gi, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 64);
+}
+
+function refersToPriorContext(value: string) {
+  return /刚才|之前|前面|上面|说过|提过|earlier|before|previous|already (?:said|mentioned)/i.test(value);
 }
 
 function hashSeed(seed: string) {

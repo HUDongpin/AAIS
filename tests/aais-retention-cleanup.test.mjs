@@ -9,7 +9,6 @@ describe("AAIS retention cleanup", () => {
       database,
       dryRun: true,
       now: new Date("2026-07-09T00:00:00.000Z"),
-      loginRateLimitWindowSeconds: 900,
     });
 
     expect(report).toMatchObject({
@@ -31,7 +30,7 @@ describe("AAIS retention cleanup", () => {
     });
     expect(database.authTokens).toHaveLength(2);
     expect(database.sessionRevocations).toHaveLength(2);
-    expect(database.loginRateLimits).toHaveLength(3);
+    expect(database.loginRateLimits).toHaveLength(4);
     expect(database.writeQueries).toEqual([]);
   });
 
@@ -42,7 +41,6 @@ describe("AAIS retention cleanup", () => {
       database,
       dryRun: false,
       now: new Date("2026-07-09T00:00:00.000Z"),
-      loginRateLimitWindowSeconds: 900,
     });
 
     expect(report).toMatchObject({
@@ -56,7 +54,31 @@ describe("AAIS retention cleanup", () => {
     });
     expect(database.authTokens.map((row) => row.id)).toEqual(["auth-active"]);
     expect(database.sessionRevocations.map((row) => row.token_hash)).toEqual(["token-active"]);
-    expect(database.loginRateLimits.map((row) => row.rate_limit_key)).toEqual(["limit-active"]);
+    expect(database.loginRateLimits.map((row) => row.rate_limit_key)).toEqual([
+      "limit-lock-ended-window-active",
+      "limit-active",
+    ]);
+  });
+
+  it("keeps a rate-limit bucket until expires_at even after its lock has ended", async () => {
+    const database = new FakeRetentionDatabase();
+
+    const report = await cleanupAaisRetentionRows({
+      database,
+      dryRun: false,
+      now: new Date("2026-07-09T00:00:00.000Z"),
+    });
+
+    expect(report.expiredRows.loginRateLimits).toBe(2);
+    expect(database.loginRateLimits.map((row) => row.rate_limit_key)).toContain(
+      "limit-lock-ended-window-active",
+    );
+    expect(database.loginRateLimits.map((row) => row.rate_limit_key)).not.toContain(
+      "limit-expired-by-retention",
+    );
+    expect(database.writeQueries.at(-1)?.params).toEqual([
+      new Date("2026-07-09T00:00:00.000Z"),
+    ]);
   });
 
   it("keeps reports free of raw ids, hashes, and account keys", async () => {
@@ -66,7 +88,6 @@ describe("AAIS retention cleanup", () => {
       database,
       dryRun: false,
       now: new Date("2026-07-09T00:00:00.000Z"),
-      loginRateLimitWindowSeconds: 900,
     });
     const serialized = JSON.stringify(report);
 
@@ -107,13 +128,23 @@ class FakeRetentionDatabase {
         client_key: "client-secret",
         first_failure_at: new Date("2026-07-08T23:40:00.000Z"),
         locked_until: null,
+        expires_at: new Date("2026-07-08T23:55:00.000Z"),
       },
       {
-        rate_limit_key: "limit-lock-expired",
+        rate_limit_key: "limit-expired-by-retention",
+        account_key: "account-secret",
+        client_key: "client-secret",
+        first_failure_at: new Date("2026-07-08T23:50:00.000Z"),
+        locked_until: new Date("2026-07-09T00:05:00.000Z"),
+        expires_at: new Date("2026-07-08T23:59:00.000Z"),
+      },
+      {
+        rate_limit_key: "limit-lock-ended-window-active",
         account_key: "account-secret",
         client_key: "client-secret",
         first_failure_at: new Date("2026-07-08T23:50:00.000Z"),
         locked_until: new Date("2026-07-08T23:59:00.000Z"),
+        expires_at: new Date("2026-07-09T00:10:00.000Z"),
       },
       {
         rate_limit_key: "limit-active",
@@ -121,6 +152,7 @@ class FakeRetentionDatabase {
         client_key: "client-secret",
         first_failure_at: new Date("2026-07-08T23:59:00.000Z"),
         locked_until: null,
+        expires_at: new Date("2026-07-09T00:14:00.000Z"),
       },
     ];
     this.writeQueries = [];
@@ -129,7 +161,6 @@ class FakeRetentionDatabase {
   async query(sql, params = []) {
     const normalized = sql.toLowerCase();
     const now = params[0] instanceof Date ? params[0] : new Date(String(params[0]));
-    const loginWindowSeconds = Number(params[1] ?? 900);
     if (normalized.includes("from aais_user_auth_tokens")) {
       const matches = this.authTokens.filter((row) => row.expires_at <= now);
       if (normalized.includes("delete from aais_user_auth_tokens")) {
@@ -148,12 +179,12 @@ class FakeRetentionDatabase {
     }
     if (normalized.includes("from aais_login_rate_limits")) {
       const matches = this.loginRateLimits.filter((row) =>
-        isExpiredRateLimit(row, now, loginWindowSeconds)
+        isExpiredRateLimit(row, now)
       );
       if (normalized.includes("delete from aais_login_rate_limits")) {
         this.writeQueries.push({ sql, params });
         this.loginRateLimits = this.loginRateLimits.filter((row) =>
-          !isExpiredRateLimit(row, now, loginWindowSeconds)
+          !isExpiredRateLimit(row, now)
         );
       }
       return { rows: [{ count: matches.length }] };
@@ -162,9 +193,6 @@ class FakeRetentionDatabase {
   }
 }
 
-function isExpiredRateLimit(row, now, loginWindowSeconds) {
-  if (row.locked_until) {
-    return row.locked_until <= now;
-  }
-  return row.first_failure_at.getTime() + loginWindowSeconds * 1000 <= now.getTime();
+function isExpiredRateLimit(row, now) {
+  return row.expires_at <= now;
 }

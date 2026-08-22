@@ -1,74 +1,143 @@
 "use client";
-
-import {
-  useEffect,
-  useRef,
-  useState,
-  type CSSProperties,
-} from "react";
-import { useRouter } from "next/navigation";
-import {
-  anthropicLearningFontFamily,
-  artifactSaveDebounceMs,
-  defaultTaskId,
-} from "@/components/pages/learning/learning-page-constants";
-import {
-  ContentResizeSeparator,
-  ContentSidePanel,
-} from "@/components/pages/learning/content-side-panel";
+import { useState } from "react";
+import { ContentResizeSeparator, ContentSidePanel } from "@/components/pages/learning/content-side-panel";
 import { GuidePanel } from "@/components/pages/learning/guide-panel";
-import { LearningTopBar } from "@/components/pages/learning/learning-top-bar";
-import { getInitialStudentId } from "@/components/pages/learning/client-helpers";
-import {
-  deleteAaisAppSession,
-  deleteLearnerPrivacyData,
-  fetchLearningSession,
-  fetchLearnerPrivacyData,
-  patchLearningSession,
-} from "@/components/pages/learning/learning-session-client";
+import { LearningAccountFeedback, LearningTopBar } from "@/components/pages/learning/learning-top-bar";
+import { getLearningCopy } from "@/components/pages/learning/learning-copy";
+import { useLearningAccount } from "@/components/pages/learning/use-learning-account";
 import { useContentPanelResize } from "@/components/pages/learning/use-content-panel-resize";
+import { useLearningArtifactSave } from "@/components/pages/learning/use-learning-artifact-save";
 import { useLearningGuide } from "@/components/pages/learning/use-learning-guide";
+import { useLearningDocumentArchive } from "@/components/pages/learning/use-learning-document-archive";
+import { useLearningContentNavigation } from "@/components/pages/learning/use-learning-content-navigation";
+import { useHydratedArtifactDraft } from "@/components/pages/learning/use-hydrated-artifact-draft";
+import { useLearningWorkspaceSession } from "@/components/pages/learning/use-learning-workspace-session";
 import {
-  createHistoryDocument,
-  createLearnerDataFileName,
-  createLearningDocumentFileName,
-  createLearningDocumentMarkdown,
-  saveJsonDocumentToLocal,
-  saveMarkdownDocumentToLocal,
-} from "@/components/pages/learning/document-markdown";
-import type {
-  AaisClientSession,
-  ContentItemId,
-  ContentTab,
-  SavedLearningDocument,
-} from "@/components/pages/learning/learning-page-types";
+  clientNowMs,
+  isUserCancelledFilePicker,
+  type ArtifactDraftJournal,
+} from "@/components/pages/learning/client-helpers";
+import { LearningResearchWorkspaceBoundary, type LearningResearchBoundary } from "@/components/pages/learning/research-telemetry-boundary";
+import { admitAaisResearchAction, captureAaisResearchActorGeneration, classifyAaisResearchClientError, createAaisResearchOperationId, recordAaisResearchEvent } from "@/lib/client/aais-research-telemetry";
+import { createLearningDocumentFileName, createLearningDocumentMarkdown, saveMarkdownDocumentToLocal } from "@/components/pages/learning/document-markdown";
+import type { ContentTab, SavedLearningDocument } from "@/components/pages/learning/learning-page-types";
+import type { Locale } from "@/data/aais";
+import { useLearningLocale } from "@/components/pages/learning/use-learning-locale";
+export type LearningPageActor = { id: string; displayName: string };
+export type LearningPageResearchBoundary = LearningResearchBoundary;
+export function LearningPage({ actor, locale: initialLocale = "zh-CN", research }: {
+  actor: LearningPageActor;
+  locale?: Locale;
+  research: LearningResearchBoundary;
+}) {
+  return (
+    <LearningResearchWorkspaceBoundary locale={initialLocale} research={research}>
+      <LearningWorkbench
+        actor={actor}
+        initialLocale={initialLocale}
+        researchRequired={research.required}
+      />
+    </LearningResearchWorkspaceBoundary>
+  );
+}
+function LearningWorkbench({ actor, initialLocale, researchRequired }: {
+  actor: LearningPageActor;
+  initialLocale: Locale;
+  researchRequired: boolean;
+}) {
+  const { hydrationReady, initialDraftJournal } = useHydratedArtifactDraft(actor.id, researchRequired);
+  return <LearningWorkbenchState
+    key={hydrationReady ? "hydrated" : "server"} actor={actor}
+    hydrationReady={hydrationReady}
+    initialDraftJournal={initialDraftJournal}
+    initialLocale={initialLocale}
+    researchRequired={researchRequired}
+  />;
+}
 
-export function LearningPage() {
-  const router = useRouter();
-  const [studentId] = useState(() => getInitialStudentId());
-  const [activeTaskId, setActiveTaskId] = useState(defaultTaskId);
+function LearningWorkbenchState({
+  actor, hydrationReady,
+  initialDraftJournal,
+  initialLocale,
+  researchRequired,
+}: {
+  actor: LearningPageActor; hydrationReady: boolean;
+  initialDraftJournal: ArtifactDraftJournal | null;
+  initialLocale: Locale;
+  researchRequired: boolean;
+}) {
+  const locale = useLearningLocale(initialLocale);
+  const copy = getLearningCopy(locale);
+  const studentId = actor.id;
+  const [documentTaskId, setDocumentTaskId] = useState<string | null>(
+    () => initialDraftJournal?.taskId ?? null,
+  );
   const [activeTab, setActiveTab] = useState<ContentTab>("display");
-  const [activeContentId, setActiveContentId] = useState<ContentItemId | null>(null);
-  const [accountMenuOpen, setAccountMenuOpen] = useState(false);
-  const [loggingOut, setLoggingOut] = useState(false);
-  const [privacyBusy, setPrivacyBusy] = useState(false);
-  const [accountStatus, setAccountStatus] = useState("");
-  const [accountError, setAccountError] = useState("");
-  const [artifactText, setArtifactText] = useState("");
-  const [documentTitle, setDocumentTitle] = useState("");
-  const [historyDocuments, setHistoryDocuments] = useState<SavedLearningDocument[]>([]);
-  const [backendError, setBackendError] = useState("");
-  const [artifactSaveBusy, setArtifactSaveBusy] = useState(false);
-  const [artifactSaveStatus, setArtifactSaveStatus] = useState("");
-  const [artifactSaveError, setArtifactSaveError] = useState("");
+  const [documentArchiveBusy, setDocumentArchiveBusy] = useState(false);
+  const [documentCloseError, setDocumentCloseError] = useState("");
   const [documentDownloadBusy, setDocumentDownloadBusy] = useState(false);
   const [documentDownloadStatus, setDocumentDownloadStatus] = useState("");
   const [documentDownloadError, setDocumentDownloadError] = useState("");
-  const artifactSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const pendingArtifactSaveRef = useRef<{
-    taskId: string;
-    value: string;
-  } | null>(null);
+  const {
+    activeHistoryDocumentId,
+    activeTaskId,
+    artifactText,
+    backendError,
+    documentTitle,
+    getArtifactRevision,
+    historyDocuments,
+    lastSavedArtifactLengthRef,
+    learnerDataGeneration,
+    patchSession,
+    persistedGuideMessages,
+    resetWorkspaceSession,
+    setArtifactText,
+    setActiveHistoryDocumentId,
+    setBackendError,
+    setDocumentTitle,
+    setHistoryDocuments,
+    waitForLearnerDataGeneration,
+    tasks,
+  } = useLearningWorkspaceSession(
+    locale,
+    {
+      activeDocumentId: initialDraftJournal?.activeDocumentId ?? null,
+      artifactText: initialDraftJournal?.value ?? "",
+      documentTitle: initialDraftJournal?.title ?? "",
+    },
+  );
+  const editingTaskId = documentTaskId ?? activeTaskId;
+  const {
+    archiveIntentRef,
+    artifactSaveBusy,
+    artifactSaveError,
+    artifactSaveStatus,
+    cancelPendingArtifactSave,
+    completeArtifactArchive,
+    documentTitleRef,
+    flushPendingArtifactSave,
+    hasPendingArtifactSave,
+    hasUncommittedArtifactSave,
+    isOperationCurrent,
+    resetArtifactSaveState,
+    restorePendingArtifactSave,
+    scheduleArtifactSave,
+    setArtifactSaveBusy,
+    setArtifactSaveError,
+    setArtifactSaveStatus,
+  } = useLearningArtifactSave({
+    activeHistoryDocumentId,
+    copy,
+    documentTitle,
+    getArtifactRevision,
+    initialDraftJournal,
+    lastSavedArtifactLengthRef,
+    learnerDataGeneration,
+    patchSession,
+    researchRequired,
+    setBackendError,
+    studentId,
+  });
   const {
     contentPanelWidth,
     getMaxContentPanelWidth,
@@ -89,302 +158,277 @@ export function LearningPage() {
     guideMessages,
     hasGuideSubmission,
     removeGuideAttachment,
+    resetGuideState,
     sendGuideMessage,
     setGuideDraft,
     setGuideError,
-    submitGuideQuestion,
   } = useLearningGuide({
-    activeTaskId,
+    activeTaskId: editingTaskId,
     artifactText,
+    displayName: actor.displayName,
+    waitForLearnerDataGeneration,
+    locale,
+    persistedGuideMessages,
+    studentId,
+  });
+  const {
+    activeContentId,
+    completeLearningTask,
+    openContentItem,
+    resetContentNavigation,
+    returnToContentMenu,
+    selectLearningTask,
+    setActiveContentId,
+    taskActionBusy,
+    taskActionError,
+  } = useLearningContentNavigation({
+    activeTaskId,
+    flushPendingArtifactSave,
+    hasUncommittedArtifactSave,
+    onOpenTaskEditor: () => {
+      setDocumentTaskId(null);
+      selectContentTab("editor");
+    },
+    patchSession,
+    taskActionErrorMessage: copy.content.taskCards.actionFailed,
+  });
+  const operationBusy = guideBusy
+    || guideAttachmentBusy
+    || hasUncommittedArtifactSave()
+    || documentArchiveBusy
+    || documentDownloadBusy
+    || taskActionBusy;
+  const {
+    accountError,
+    accountMenuOpen,
+    accountStatus,
+    handleDeleteLearnerData,
+    handleExportLearnerData,
+    handleLogout,
+    learnerDeleteBusy,
+    loggingOut,
+    privacyBusy,
+    toggleAccountMenu,
+  } = useLearningAccount({
+    learnerDataGeneration,
+    operationBusy,
+    onLearnerDataDeleteSucceeded: resetLearnerWorkspace,
+    locale,
     studentId,
   });
 
-  function applySession(session: AaisClientSession) {
-    const nextTaskId = session.activeTaskId || defaultTaskId;
-    setActiveTaskId(nextTaskId);
-    const selectedTask =
-      session.tasks?.find((task) => task.taskId === nextTaskId) ?? session.tasks?.[0];
-    setArtifactText(selectedTask?.artifactText ?? "");
-  }
-
-  async function patchSession(body: Record<string, unknown>) {
-    const session = await patchLearningSession(body);
-    applySession(session);
-    setBackendError("");
-    return session;
-  }
-
-  async function handleLogout() {
-    if (loggingOut) {
-      return;
-    }
-    setLoggingOut(true);
-    setAccountStatus("正在退出...");
-    setAccountError("");
-    try {
-      await deleteAaisAppSession();
-    } catch {
-      // A local redirect still returns the learner to the login surface if the network call fails.
-    }
-    window.localStorage.removeItem("aais_student_id");
-    window.localStorage.removeItem("aais_display_name");
-    setAccountMenuOpen(false);
-    router.replace("/login");
-    setLoggingOut(false);
-  }
-
-  async function handleExportLearnerData() {
-    if (privacyBusy) {
-      return;
-    }
-    setPrivacyBusy(true);
-    setAccountStatus("正在导出学习数据...");
-    setAccountError("");
-    try {
-      const data = await fetchLearnerPrivacyData();
-      await saveJsonDocumentToLocal({
-        fileName: createLearnerDataFileName(studentId),
-        data,
-      });
-      setAccountStatus("学习数据已导出。");
-      setAccountMenuOpen(false);
-    } catch {
-      setAccountStatus("");
-      setAccountError("学习数据导出未能完成，请稍后重试。");
-    } finally {
-      setPrivacyBusy(false);
-    }
-  }
-
-  async function handleDeleteLearnerData() {
-    if (privacyBusy) {
-      return;
-    }
-    const confirmed = window.confirm("确定要删除当前学习数据吗？此操作会清除你的学习记录，但不会删除账号。");
-    if (!confirmed) {
-      return;
-    }
-    setPrivacyBusy(true);
-    setAccountStatus("正在删除学习数据...");
-    setAccountError("");
-    setArtifactSaveStatus("");
-    setArtifactSaveError("");
+  function resetLearnerWorkspace(nextDataGeneration: number) {
+    resetArtifactSaveState();
+    setDocumentTaskId(null);
+    setDocumentCloseError("");
     setDocumentDownloadStatus("");
     setDocumentDownloadError("");
-    if (artifactSaveTimerRef.current) {
-      clearTimeout(artifactSaveTimerRef.current);
-      artifactSaveTimerRef.current = null;
-    }
-    pendingArtifactSaveRef.current = null;
-    try {
-      await deleteLearnerPrivacyData();
-      setActiveTaskId(defaultTaskId);
-      setActiveTab("display");
-      setActiveContentId(null);
-      setArtifactText("");
-      setDocumentTitle("");
-      setHistoryDocuments([]);
-      setBackendError("");
-      setAccountStatus("学习数据已删除。");
-      setAccountMenuOpen(false);
-    } catch {
-      setAccountStatus("");
-      setAccountError("学习数据删除未能完成，请稍后重试。");
-    } finally {
-      setPrivacyBusy(false);
-    }
-  }
-
-  function flushPendingArtifactSave() {
-    const pending = pendingArtifactSaveRef.current;
-    pendingArtifactSaveRef.current = null;
-    if (artifactSaveTimerRef.current) {
-      clearTimeout(artifactSaveTimerRef.current);
-      artifactSaveTimerRef.current = null;
-    }
-    if (!pending) {
-      return;
-    }
-    setArtifactSaveBusy(true);
-    setArtifactSaveStatus("正在保存文档...");
-    setArtifactSaveError("");
-    void patchSession({
-      action: "save-artifact",
-      taskId: pending.taskId,
-      artifactText: pending.value,
-    })
-      .then(() => {
-        setArtifactSaveStatus("文档已保存。");
-      })
-      .catch(() => {
-        const message = "任务过程记录未能保存到后端。";
-        setBackendError(message);
-        setArtifactSaveStatus("");
-        setArtifactSaveError(message);
-      })
-      .finally(() => {
-        setArtifactSaveBusy(false);
-      });
-  }
-
-  function scheduleArtifactSave(taskId: string, value: string) {
-    setArtifactSaveStatus("文档更改待保存。");
-    setArtifactSaveError("");
-    pendingArtifactSaveRef.current = {
-      taskId,
-      value,
-    };
-    if (artifactSaveTimerRef.current) {
-      clearTimeout(artifactSaveTimerRef.current);
-    }
-    artifactSaveTimerRef.current = setTimeout(flushPendingArtifactSave, artifactSaveDebounceMs);
+    resetContentNavigation();
+    resetGuideState();
+    resetWorkspaceSession(nextDataGeneration);
+    setActiveTab("display");
+    setDocumentTitle("");
+    setHistoryDocuments([]);
+    setActiveHistoryDocumentId(null);
   }
 
   function recordArtifact(value: string) {
+    setDocumentDownloadStatus("");
+    setDocumentDownloadError("");
+    setDocumentCloseError("");
     setArtifactText(value);
-    scheduleArtifactSave(activeTaskId, value);
+    scheduleArtifactSave(editingTaskId, value);
+  }
+
+  function recordDocumentTitle(value: string) {
+    documentTitleRef.current = value;
+    setDocumentTitle(value);
+    scheduleArtifactSave(editingTaskId, artifactText, { documentTitle: value });
   }
 
   function selectContentTab(nextTab: ContentTab) {
+    if (
+      activeTab === "editor"
+      && nextTab !== "editor"
+      && hasUncommittedArtifactSave()
+    ) {
+      flushPendingArtifactSave("navigation");
+      return;
+    }
+    if (!admitAaisResearchAction({
+      eventName: "content_tab_selected",
+      outcome: "success",
+      detail: {
+        operation_id: createAaisResearchOperationId("content-tab"),
+        tab_id: nextTab,
+      },
+    })) {
+      return;
+    }
     setActiveTab(nextTab);
     if (nextTab === "display") {
       setActiveContentId(null);
     }
   }
 
-  function saveAndCloseDocument() {
-    flushPendingArtifactSave();
-    const sourceHtml = artifactText.trim();
-    if (sourceHtml || documentTitle.trim()) {
-      const archivedDocument = createHistoryDocument({
-        taskId: activeTaskId,
-        title: documentTitle,
-        html: sourceHtml,
-      });
-      setHistoryDocuments((currentDocuments) => [archivedDocument, ...currentDocuments]);
-    }
-    setActiveTab("display");
-    setActiveContentId("history");
-  }
+  const saveAndCloseDocument = useLearningDocumentArchive({
+    activeHistoryDocumentId,
+    activeTaskId: editingTaskId,
+    archiveIntentRef,
+    artifactSaveBusy,
+    artifactText,
+    cancelPendingArtifactSave,
+    documentTitle,
+    hasPendingArtifactSave,
+    locale,
+    isOperationCurrent,
+    onArchiveSucceeded: () => {
+      completeArtifactArchive();
+      setDocumentTaskId(null);
+    },
+    patchSession,
+    restorePendingArtifactSave,
+    setActiveContentId,
+    setActiveHistoryDocumentId,
+    setActiveTab,
+    setArtifactSaveBusy,
+    setArtifactSaveError,
+    setArtifactSaveStatus,
+    setDocumentArchiveBusy,
+    setDocumentCloseError,
+    setDocumentTitle,
+  });
 
   async function downloadDocumentToLocal() {
     if (documentDownloadBusy) {
       return;
     }
-    flushPendingArtifactSave();
+    const operationId = createAaisResearchOperationId("document-download");
+    const telemetryActorGeneration = captureAaisResearchActorGeneration();
+    const startedAt = clientNowMs();
+    const downloadMethod = "showSaveFilePicker" in window ? "file_picker" : "browser_download";
+    if (!flushPendingArtifactSave("download")) {
+      return;
+    }
+    const downloadDetail = {
+      operation_id: operationId,
+      task_id: editingTaskId,
+      download_method: downloadMethod,
+      artifact_length: artifactText.length,
+    };
+    if (!admitAaisResearchAction({
+      actorGeneration: telemetryActorGeneration,
+      eventName: "document_download",
+      outcome: "attempted",
+      detail: downloadDetail,
+    })) {
+      return;
+    }
     setDocumentDownloadBusy(true);
-    setDocumentDownloadStatus("正在准备下载...");
+    setDocumentDownloadStatus(copy.document.downloadPreparing);
     setDocumentDownloadError("");
     try {
       await saveMarkdownDocumentToLocal({
-        fileName: createLearningDocumentFileName(activeTaskId),
+        fileName: createLearningDocumentFileName(editingTaskId),
         markdown: createLearningDocumentMarkdown(artifactText),
       });
-      setDocumentDownloadStatus("文档下载已准备。");
-    } catch {
-      const message = "文档下载未能完成，请稍后重试。";
+      setDocumentDownloadStatus(copy.document.downloadReady);
+      recordAaisResearchEvent({
+        actorGeneration: telemetryActorGeneration,
+        eventName: "document_download",
+        outcome: "success",
+        latencyMs: clientNowMs() - startedAt,
+        detail: downloadDetail,
+      });
+    } catch (error) {
+      const message = copy.document.downloadFailed;
       setBackendError(message);
       setDocumentDownloadStatus("");
       setDocumentDownloadError(message);
+      recordAaisResearchEvent({
+        actorGeneration: telemetryActorGeneration,
+        eventName: "document_download",
+        outcome: "failure",
+        latencyMs: clientNowMs() - startedAt,
+        detail: {
+          ...downloadDetail,
+          error_kind: isUserCancelledFilePicker(error)
+            ? "user_cancelled"
+            : classifyAaisResearchClientError(error),
+        },
+      });
     } finally {
       setDocumentDownloadBusy(false);
     }
   }
 
   function openHistoryDocument(document: SavedLearningDocument) {
+    if (hasUncommittedArtifactSave()) {
+      flushPendingArtifactSave("history-navigation");
+      return;
+    }
+    if (!admitAaisResearchAction({
+      eventName: "history_document_opened",
+      outcome: "success",
+      detail: {
+        operation_id: createAaisResearchOperationId("history-document"),
+        task_id: document.taskId,
+        document_id: document.id,
+        title_length: document.title.length,
+        artifact_length: document.html.length,
+      },
+    })) {
+      return;
+    }
+    documentTitleRef.current = document.title;
     setDocumentTitle(document.title);
     setArtifactText(document.html);
+    setActiveHistoryDocumentId(document.id);
+    setDocumentTaskId(document.taskId);
     setActiveContentId(null);
     setActiveTab("editor");
   }
-  useEffect(() => {
-    let cancelled = false;
-
-    async function loadSession() {
-      try {
-        const session = await fetchLearningSession();
-        if (!cancelled) {
-          applySession(session);
-          setBackendError("");
-        }
-      } catch {
-        if (!cancelled) {
-          setBackendError("学习记录服务暂时不可用，本页会保留当前输入但不会完成持久化。");
-        }
-      }
-    }
-
-    void loadSession();
-
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  useEffect(() => () => {
-    if (artifactSaveTimerRef.current) {
-      clearTimeout(artifactSaveTimerRef.current);
-    }
-  }, []);
-
   return (
     <div
-      className="min-h-[100dvh] bg-[#fcfcfc] text-[#0e0e0e]"
-      style={{ fontFamily: anthropicLearningFontFamily }}
+      className="aais-learning-serif min-h-[100dvh] bg-[#fcfcfc] text-[#0e0e0e]"
+      data-locale={locale}
+      lang={locale}
     >
       <main
         data-testid="learning-shell"
+        data-client-ready={hydrationReady ? "true" : "false"}
+        aria-busy={!hydrationReady || undefined}
+        aria-hidden={!hydrationReady || undefined}
+        inert={!hydrationReady || undefined}
         className="flex min-h-[100dvh] w-full max-w-none flex-col bg-[#fcfcfc] text-[#0e0e0e] lg:h-[100dvh] lg:overflow-hidden"
         aria-labelledby="aais-learning-heading"
         aria-describedby="aais-learning-description"
       >
         <h1 id="aais-learning-heading" className="sr-only">
-          CAAIS 学习工作台
+          {copy.main.heading}
         </h1>
         <p id="aais-learning-description" className="sr-only">
-          使用智能导学、内容展示和文档编辑完成认知学徒学习任务。
+          {copy.main.description}
         </p>
-
         <LearningTopBar
           accountMenuOpen={accountMenuOpen}
+          displayName={actor.displayName}
           loggingOut={loggingOut}
+          locale={locale}
           privacyBusy={privacyBusy}
-          onDeleteLearnerData={() => { void handleDeleteLearnerData(); }}
-          onExportLearnerData={() => { void handleExportLearnerData(); }}
+          onDeleteLearnerData={handleDeleteLearnerData}
+          onExportLearnerData={handleExportLearnerData}
           onLogout={handleLogout}
-          onToggleAccountMenu={() => setAccountMenuOpen((open) => !open)}
+          onToggleAccountMenu={toggleAccountMenu}
         />
-
-        {accountStatus ? (
-          <p
-            className="border-b border-[#cce9d6] bg-[#effff4] px-4 py-2 text-sm font-semibold text-[#166534]"
-            role="status"
-            aria-live="polite"
-            aria-atomic="true"
-          >
-            {accountStatus}
-          </p>
-        ) : null}
-        {accountError ? (
-          <p
-            className="border-b border-[#f0b7c9] bg-[#fff1f5] px-4 py-2 text-sm font-semibold text-[#a12f56]"
-            role="alert"
-            aria-live="assertive"
-            aria-atomic="true"
-          >
-            {accountError}
-          </p>
-        ) : null}
-
+        <LearningAccountFeedback error={accountError} status={accountStatus} />
         <div
           ref={splitLayoutRef}
+          aria-busy={learnerDeleteBusy}
           data-testid="learning-split-layout"
-          style={
-            {
-              "--content-panel-width": `${contentPanelWidth}px`,
-            } as CSSProperties
-          }
-          className="grid min-h-0 flex-1 lg:grid-cols-[minmax(0,1fr)_8px_var(--content-panel-width)] lg:overflow-hidden"
+          data-content-panel-width={Math.round(contentPanelWidth)}
+          inert={learnerDeleteBusy || undefined}
+          className="aais-learning-split-layout grid min-h-0 flex-1 lg:overflow-hidden"
         >
           <GuidePanel
             addGuideFiles={(files) => { void addGuideFiles(files); }}
@@ -398,8 +442,8 @@ export function LearningPage() {
             guideFileInputRef={guideFileInputRef}
             guideMessages={guideMessages}
             hasGuideSubmission={hasGuideSubmission}
+            locale={locale}
             onRemoveAttachment={removeGuideAttachment}
-            onSubmitGuideQuestion={(question) => { void submitGuideQuestion(question); }}
             sendGuideMessage={sendGuideMessage}
             setGuideDraft={setGuideDraft}
             setGuideError={setGuideError}
@@ -408,6 +452,7 @@ export function LearningPage() {
           <ContentResizeSeparator
             contentPanelWidth={contentPanelWidth}
             getMaxContentPanelWidth={getMaxContentPanelWidth}
+            locale={locale}
             onResizeBy={resizeContentPanelBy}
             onResizeStart={startContentPanelResize}
             setContentPanelWidth={setContentPanelWidth}
@@ -415,24 +460,37 @@ export function LearningPage() {
 
           <ContentSidePanel
             activeContentId={activeContentId}
+            activeTaskId={activeTaskId}
             activeTab={activeTab}
             artifactSaveBusy={artifactSaveBusy}
-            artifactSaveError={artifactSaveError}
+            artifactSaveError={documentCloseError || artifactSaveError}
             artifactSaveStatus={artifactSaveStatus}
             artifactText={artifactText}
             documentDownloadBusy={documentDownloadBusy}
             documentDownloadError={documentDownloadError}
             documentDownloadStatus={documentDownloadStatus}
             documentTitle={documentTitle}
-            flushPendingArtifactSave={flushPendingArtifactSave}
+            documentArchiveBusy={documentArchiveBusy}
+            documentNavigationLocked={hasUncommittedArtifactSave()}
+            flushPendingArtifactSave={() => flushPendingArtifactSave("blur")}
             historyDocuments={historyDocuments}
-            onDocumentTitleChange={setDocumentTitle}
+            locale={locale}
+            onDocumentTitleChange={recordDocumentTitle}
             onDownloadDocument={() => { void downloadDocumentToLocal(); }}
+            onCompleteTask={(taskId) => { void completeLearningTask(taskId); }}
             onOpenDocument={openHistoryDocument}
             onRecordArtifact={recordArtifact}
             onSaveAndCloseDocument={saveAndCloseDocument}
+            onSaveAndClosePointerDown={() => {
+              archiveIntentRef.current = true;
+            }}
+            onSelectTask={(taskId) => { void selectLearningTask(taskId); }}
             selectContentTab={selectContentTab}
-            setActiveContentId={setActiveContentId}
+            onBackContent={returnToContentMenu}
+            onOpenContent={openContentItem}
+            taskActionBusy={taskActionBusy}
+            taskActionError={taskActionError}
+            tasks={tasks}
           />
         </div>
       </main>

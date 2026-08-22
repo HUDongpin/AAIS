@@ -1,0 +1,319 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg"
+     width="1432"
+     height="1000"
+     viewBox="0 0 1432 1000"
+     role="img"
+     aria-labelledby="figure-title figure-desc">
+  <title id="figure-title">Technical Architecture of the Cognitive Apprenticeship AI System (CAAIS)</title>
+  <desc id="figure-desc">
+    Implemented CAAIS runtime architecture. Solid arrows show runtime control and data flow.
+    Dashed arrows show pedagogical handoff semantics recorded as trace metadata rather than
+    executable LangGraph dependencies. A1 and A2 are learner-visible agents; A3 and A4 are
+    deterministic background agents.
+  </desc>
+
+  <defs>
+    <style>
+      .title { font: 700 34px Arial, Helvetica, sans-serif; fill: #172536; }
+      .subtitle { font: 400 20px Arial, Helvetica, sans-serif; fill: #566474; }
+      .layer-title { font: 700 23px Arial, Helvetica, sans-serif; fill: #ffffff; letter-spacing: .2px; }
+      .section-title { font: 700 23px Arial, Helvetica, sans-serif; fill: #172536; }
+      .card-title { font: 700 22px Arial, Helvetica, sans-serif; fill: #172536; }
+      .body { font: 400 20px Arial, Helvetica, sans-serif; fill: #263646; }
+      .body-strong { font: 700 20px Arial, Helvetica, sans-serif; fill: #263646; }
+      .small { font: 400 18px Arial, Helvetica, sans-serif; fill: #566474; }
+      .small-strong { font: 700 18px Arial, Helvetica, sans-serif; fill: #344454; }
+      .micro { font: 400 16px Arial, Helvetica, sans-serif; fill: #617080; }
+      .code { font: 400 18px "Courier New", Courier, monospace; fill: #263646; }
+      .white-small { font: 700 18px Arial, Helvetica, sans-serif; fill: #ffffff; }
+      .runtime-line { fill: none; stroke: #274c70; stroke-width: 2.6; marker-end: url(#arrow-runtime); }
+      .runtime-line-thin { fill: none; stroke: #486982; stroke-width: 2.1; marker-end: url(#arrow-runtime-small); }
+      .return-line { fill: none; stroke: #2f6f9f; stroke-width: 2.6; marker-end: url(#arrow-blue); }
+      .context-line { fill: none; stroke: #a5671b; stroke-width: 2.1; marker-end: url(#arrow-amber); }
+      .trace-line { fill: none; stroke: #a5671b; stroke-width: 2.4; stroke-dasharray: 9 7; marker-end: url(#arrow-amber); }
+      .optional-line { fill: none; stroke: #6b7280; stroke-width: 2.2; stroke-dasharray: 10 5 2 5; marker-end: url(#arrow-gray); }
+      .plain-line { fill: none; stroke: #7e8a96; stroke-width: 1.8; }
+      .layer-box { fill: #ffffff; stroke: #aeb9c4; stroke-width: 1.5; }
+      .subtle-box { fill: #f6f8fa; stroke: #b7c1cb; stroke-width: 1.4; }
+      .visible-card { fill: #eaf3fa; stroke: #2f6f9f; stroke-width: 2.1; }
+      .background-card { fill: #e9f5f2; stroke: #2b7b73; stroke-width: 2.1; stroke-dasharray: 7 4; }
+      .knowledge-card { fill: #fff5e4; stroke: #b87825; stroke-width: 1.8; }
+      .provider-card { fill: #f2eef8; stroke: #75609a; stroke-width: 1.8; }
+      .trace-card { fill: #fff9ed; stroke: #b87825; stroke-width: 1.8; stroke-dasharray: 8 5; }
+      .data-card { fill: #eef3f7; stroke: #506d84; stroke-width: 1.8; }
+      .external-card { fill: #f8f9fb; stroke: #7d8792; stroke-width: 1.7; stroke-dasharray: 9 5; }
+      .chip-blue { fill: #dbeaf6; stroke: #8ab0ce; stroke-width: 1.1; }
+      .chip-teal { fill: #dceeea; stroke: #81b7b0; stroke-width: 1.1; }
+      .chip-gray { fill: #ffffff; stroke: #b7c1cb; stroke-width: 1.1; }
+      .chip-violet { fill: #e8e0f2; stroke: #a995c2; stroke-width: 1.1; }
+      .chip-amber { fill: #ffebca; stroke: #d3a25e; stroke-width: 1.1; }
+    </style>
+
+    <marker id="arrow-runtime" viewBox="0 0 10 10" refX="9" refY="5"
+            markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#274c70"/>
+    </marker>
+    <marker id="arrow-runtime-small" viewBox="0 0 10 10" refX="9" refY="5"
+            markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#486982"/>
+    </marker>
+    <marker id="arrow-blue" viewBox="0 0 10 10" refX="9" refY="5"
+            markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#2f6f9f"/>
+    </marker>
+    <marker id="arrow-amber" viewBox="0 0 10 10" refX="9" refY="5"
+            markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#a5671b"/>
+    </marker>
+    <marker id="arrow-gray" viewBox="0 0 10 10" refX="9" refY="5"
+            markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#6b7280"/>
+    </marker>
+
+    <pattern id="background-hatch" width="10" height="10" patternUnits="userSpaceOnUse"
+             patternTransform="rotate(45)">
+      <line x1="0" y1="0" x2="0" y2="10" stroke="#b7d9d3" stroke-width="2"/>
+    </pattern>
+  </defs>
+
+  <rect width="1432" height="1000" fill="#ffffff"/>
+
+  <!-- Figure heading and line-style legend -->
+  <text x="36" y="42" class="title">Technical Architecture of the Cognitive Apprenticeship AI System (CAAIS)</text>
+  <text x="38" y="72" class="subtitle">Implemented runtime snapshot · learner-facing multi-agent guidance and evidence pipeline</text>
+
+  <path d="M 925 65 H 975" class="runtime-line-thin"/>
+  <text x="985" y="71" class="small">runtime / data</text>
+  <path d="M 1121 65 H 1171" class="trace-line"/>
+  <text x="1181" y="71" class="small">trace semantics</text>
+
+  <!-- Layer 1 -->
+  <rect x="24" y="92" width="1384" height="145" rx="4" class="layer-box"/>
+  <path d="M 28 92 H 1404 A 4 4 0 0 1 1408 96 V 124 H 24 V 96 A 4 4 0 0 1 28 92 Z" fill="#17324d"/>
+  <text x="48" y="116" class="layer-title">1 · Learner Experience — React / Next.js</text>
+
+  <!-- Learner icon -->
+  <circle cx="72" cy="158" r="17" fill="#eaf3fa" stroke="#2f6f9f" stroke-width="2"/>
+  <path d="M 43 208 C 47 181, 97 181, 101 208" fill="#eaf3fa" stroke="#2f6f9f" stroke-width="2"/>
+  <text x="47" y="226" class="small-strong">Learner</text>
+  <path d="M 108 180 H 133" class="runtime-line"/>
+
+  <!-- Cockpit -->
+  <rect x="135" y="136" width="963" height="85" rx="5" class="subtle-box"/>
+  <text x="153" y="161" class="card-title">CAAIS Learning Cockpit</text>
+
+  <rect x="153" y="171" width="265" height="38" rx="4" class="chip-blue"/>
+  <text x="168" y="195" class="body-strong">Task Workspace + Editor</text>
+
+  <rect x="431" y="171" width="285" height="38" rx="4" class="chip-blue"/>
+  <text x="446" y="195" class="body-strong">Guide Chat + Attachments</text>
+
+  <rect x="729" y="171" width="350" height="38" rx="4" class="chip-blue"/>
+  <text x="744" y="195" class="body-strong">SSE Progress + A1/A2 Turns</text>
+
+  <rect x="1123" y="139" width="255" height="79" rx="5" class="visible-card"/>
+  <text x="1142" y="166" class="card-title">Visible dialogue</text>
+  <text x="1142" y="193" class="body">A1 Guide · A2 Expert</text>
+  <text x="1142" y="211" class="micro">@A1 / @A2 target mentions</text>
+  <path d="M 1098 178 H 1123" class="return-line"/>
+
+  <!-- Layer 1 to Layer 2 -->
+  <path d="M 281 221 V 266 H 448 V 286" class="runtime-line"/>
+  <path d="M 571 221 V 256 H 826 V 286" class="runtime-line"/>
+  <path d="M 904 221 V 247 H 940 V 286" class="return-line"/>
+
+  <!-- Layer 2 -->
+  <rect x="24" y="248" width="1384" height="128" rx="4" class="layer-box"/>
+  <path d="M 28 248 H 1404 A 4 4 0 0 1 1408 252 V 280 H 24 V 252 A 4 4 0 0 1 28 248 Z" fill="#35516b"/>
+  <text x="48" y="272" class="layer-title">2 · Secure Application Boundary — Next.js Route Handlers (/api/learning)</text>
+
+  <rect x="51" y="292" width="287" height="66" rx="5" class="subtle-box"/>
+  <path d="M 69 317 L 79 307 L 89 317 V 336 H 69 Z" fill="#dbeaf6" stroke="#2f6f9f" stroke-width="1.7"/>
+  <circle cx="79" cy="321" r="3" fill="#2f6f9f"/>
+  <text x="101" y="315" class="body-strong">Identity + request security</text>
+  <text x="101" y="338" class="small">signed session · CSRF</text>
+  <path d="M 338 325 H 366" class="runtime-line-thin"/>
+
+  <rect x="366" y="287" width="190" height="72" rx="5" class="chip-gray"/>
+  <text x="387" y="316" class="body-strong">Session API</text>
+  <text x="412" y="342" class="code">/session</text>
+
+  <rect x="570" y="287" width="190" height="72" rx="5" class="chip-gray"/>
+  <text x="593" y="316" class="body-strong">Scaffold API</text>
+  <text x="603" y="342" class="code">/scaffold</text>
+
+  <rect x="774" y="287" width="220" height="72" rx="5" class="chip-blue"/>
+  <text x="799" y="316" class="body-strong">AI Guide API</text>
+  <text x="824" y="342" class="code">/ai-guide</text>
+
+  <rect x="1020" y="292" width="359" height="66" rx="5" class="subtle-box"/>
+  <text x="1040" y="315" class="body-strong">Governed request boundary</text>
+  <text x="1040" y="338" class="small">server actor · daily budget · bounded files</text>
+  <path d="M 994 325 H 1020" class="runtime-line-thin"/>
+
+  <!-- AI request into target resolver -->
+  <path d="M 884 359 V 407 H 195 V 440" class="runtime-line"/>
+  <rect x="475" y="394" width="236" height="25" rx="12" fill="#ffffff" stroke="#b7c1cb"/>
+  <text x="492" y="412" class="micro">normalized guide request</text>
+
+  <!-- Layer 3 -->
+  <rect x="24" y="387" width="1384" height="390" rx="4" class="layer-box"/>
+  <path d="M 28 387 H 1404 A 4 4 0 0 1 1408 391 V 419 H 24 V 391 A 4 4 0 0 1 28 387 Z" fill="#23495d"/>
+  <text x="48" y="411" class="layer-title">3 · CAAIS LangGraph Multi-Agent Orchestration</text>
+
+  <!-- Targeting -->
+  <rect x="59" y="440" width="272" height="97" rx="5" class="subtle-box"/>
+  <text x="79" y="467" class="card-title">Target resolver + state</text>
+  <text x="79" y="492" class="body">default: A1 + A2</text>
+  <text x="79" y="517" class="small">@A1 / @A2 · A3+A4 always on</text>
+  <path d="M 331 489 H 357" class="runtime-line"/>
+  <circle cx="369" cy="489" r="12" fill="#274c70"/>
+  <text x="363" y="496" class="white-small">S</text>
+
+  <!-- CA context -->
+  <rect x="59" y="554" width="272" height="157" rx="5" class="knowledge-card"/>
+  <text x="79" y="581" class="card-title">Shared CA contract</text>
+  <text x="79" y="607" class="small-strong">CAAIS pedagogical context</text>
+  <text x="79" y="634" class="body">Modelling → Coaching</text>
+  <text x="79" y="660" class="body">Scaffolding + Fading</text>
+  <text x="79" y="686" class="body">Articulation → Reflection</text>
+  <path d="M 331 631 H 347 V 503 H 357" class="context-line"/>
+  <text x="79" y="704" class="micro">passed to every A1–A4 model turn</text>
+
+  <!-- Runtime fan-out -->
+  <path d="M 381 489 H 390" class="runtime-line"/>
+  <path d="M 369 477 V 430 H 635 V 479 H 645" class="runtime-line-thin"/>
+  <path d="M 369 501 V 581 H 390" class="runtime-line-thin"/>
+  <path d="M 369 501 V 632 H 635 V 581 H 645" class="runtime-line-thin"/>
+
+  <!-- A1 -->
+  <rect x="390" y="440" width="235" height="79" rx="5" class="visible-card"/>
+  <rect x="390" y="440" width="53" height="79" rx="5" fill="#2f6f9f"/>
+  <text x="401" y="486" class="white-small">A1</text>
+  <text x="457" y="467" class="card-title">Guide Agent</text>
+  <text x="457" y="492" class="body">Scaffolding · Fading</text>
+  <text x="457" y="511" class="micro">learner-visible</text>
+
+  <!-- A2 -->
+  <rect x="645" y="440" width="235" height="79" rx="5" class="visible-card"/>
+  <rect x="645" y="440" width="53" height="79" rx="5" fill="#2f6f9f"/>
+  <text x="656" y="486" class="white-small">A2</text>
+  <text x="712" y="467" class="card-title">Expert Agent</text>
+  <text x="712" y="492" class="body">Modelling · Coaching</text>
+  <text x="712" y="511" class="micro">learner-visible</text>
+
+  <!-- A3 -->
+  <rect x="390" y="542" width="235" height="79" rx="5" class="background-card"/>
+  <rect x="395" y="547" width="43" height="69" fill="url(#background-hatch)"/>
+  <text x="401" y="588" class="small-strong">A3</text>
+  <text x="457" y="569" class="card-title">Supervision</text>
+  <text x="457" y="594" class="body">Behavior signals</text>
+  <text x="457" y="613" class="micro">background · local</text>
+
+  <!-- A4 -->
+  <rect x="645" y="542" width="235" height="79" rx="5" class="background-card"/>
+  <rect x="650" y="547" width="43" height="69" fill="url(#background-hatch)"/>
+  <text x="656" y="588" class="small-strong">A4</text>
+  <text x="712" y="569" class="card-title">Reflection</text>
+  <text x="712" y="594" class="body">Articulate · Reflect</text>
+  <text x="712" y="613" class="micro">background · local</text>
+
+  <!-- Provider boundary -->
+  <rect x="935" y="440" width="420" height="96" rx="5" class="provider-card"/>
+  <text x="955" y="466" class="card-title">Governed model-provider boundary</text>
+  <rect x="955" y="479" width="108" height="33" rx="4" class="chip-violet"/>
+  <text x="975" y="501" class="small-strong">Primary</text>
+  <text x="1070" y="502" class="body-strong">→</text>
+  <rect x="1093" y="479" width="111" height="33" rx="4" class="chip-violet"/>
+  <text x="1110" y="501" class="small-strong">Fallback</text>
+  <text x="1211" y="502" class="body-strong">→</text>
+  <rect x="1234" y="479" width="102" height="33" rx="4" class="chip-amber"/>
+  <text x="1247" y="501" class="small-strong">Template</text>
+  <text x="955" y="529" class="micro">A1/A2 · production eval gate · retry/timeout · output guardrail</text>
+  <path d="M 880 479 H 935" class="runtime-line"/>
+  <path d="M 507 440 V 429 H 915 V 464 H 935" class="runtime-line-thin"/>
+
+  <rect x="935" y="554" width="420" height="78" rx="5" class="provider-card"/>
+  <text x="955" y="581" class="card-title">Deterministic background provider</text>
+  <text x="955" y="607" class="body">A3/A4 local role-specific templates</text>
+  <text x="955" y="624" class="micro">no live-provider call in current graph</text>
+  <path d="M 880 581 H 935" class="runtime-line"/>
+
+  <!-- Agent result aggregation, routed around background cards where necessary -->
+  <path d="M 390 502 H 363 V 680 H 390" class="runtime-line-thin"/>
+  <path d="M 880 502 H 902 V 680 H 880" class="runtime-line-thin"/>
+  <path d="M 507 621 V 652" class="runtime-line-thin"/>
+  <path d="M 762 621 V 652" class="runtime-line-thin"/>
+  <rect x="390" y="652" width="490" height="54" rx="5" class="subtle-box"/>
+  <text x="414" y="678" class="card-title">Reducer + ordered output partition</text>
+  <text x="414" y="699" class="small">sort A1→A4 · visible A1/A2 · background A3/A4</text>
+
+  <!-- Declared trace semantics: intentionally separate from executable graph -->
+  <rect x="935" y="652" width="420" height="70" rx="5" class="trace-card"/>
+  <text x="955" y="675" class="small-strong">DECLARED HANDOFFS · TRACE METADATA</text>
+  <text x="955" y="699" class="body">A1⇢A2 · A2⇢A3 · A3⇢A1 · A4⇢A1</text>
+  <text x="1335" y="717" class="micro" text-anchor="end">not executable graph edges</text>
+
+  <!-- Result return and persistence branches -->
+  <path d="M 635 652 V 627 H 907 V 363 H 884" class="return-line"/>
+  <rect x="786" y="612" width="131" height="24" rx="12" fill="#ffffff" stroke="#8ab0ce"/>
+  <text x="801" y="629" class="micro">SSE / JSON</text>
+  <path d="M 390 680 H 350 V 881 H 334" class="runtime-line"/>
+  <text x="356" y="753" class="small">persist completed exchange + events</text>
+
+  <rect x="59" y="730" width="1296" height="29" rx="4" fill="#f6f8fa" stroke="#ccd4dc"/>
+  <path d="M 81 744 H 126" class="runtime-line-thin"/>
+  <text x="138" y="751" class="small">implemented control/data flow</text>
+  <path d="M 404 744 H 449" class="trace-line"/>
+  <text x="462" y="751" class="small">pedagogical handoff semantics only</text>
+  <text x="807" y="751" class="small-strong">Parallel START fan-out; every node reads the same request.</text>
+
+  <!-- Layer 4 -->
+  <rect x="24" y="788" width="1384" height="180" rx="4" class="layer-box"/>
+  <path d="M 28 788 H 1404 A 4 4 0 0 1 1408 792 V 820 H 24 V 792 A 4 4 0 0 1 28 788 Z" fill="#40586e"/>
+  <text x="48" y="812" class="layer-title">4 · Evidence, Persistence, Interoperability, and Observability</text>
+
+  <!-- Learning store -->
+  <rect x="58" y="836" width="276" height="91" rx="5" class="data-card"/>
+  <text x="79" y="864" class="card-title">CAAIS Learning Store</text>
+  <text x="79" y="890" class="body">session + guide exchange</text>
+  <text x="79" y="914" class="small">append agent-attributed events</text>
+
+  <!-- Postgres -->
+  <rect x="379" y="830" width="515" height="104" rx="5" class="data-card"/>
+  <text x="399" y="858" class="card-title">Neon / PostgreSQL · production</text>
+  <rect x="399" y="870" width="222" height="29" rx="4" class="chip-gray"/>
+  <text x="409" y="891" class="code">learner_sessions</text>
+  <rect x="632" y="870" width="238" height="29" rx="4" class="chip-gray"/>
+  <text x="642" y="891" class="code">learner_task_state</text>
+  <rect x="399" y="904" width="222" height="29" rx="4" class="chip-gray"/>
+  <text x="438" y="925" class="code">aais_events</text>
+  <rect x="632" y="904" width="238" height="29" rx="4" class="chip-gray"/>
+  <text x="653" y="925" class="code">aais_lrs_outbox</text>
+  <path d="M 334 881 H 379" class="runtime-line"/>
+
+  <!-- External systems -->
+  <rect x="928" y="830" width="225" height="104" rx="5" class="external-card"/>
+  <text x="948" y="857" class="card-title">Optional services</text>
+  <text x="948" y="886" class="body">External LRS · xAPI</text>
+  <text x="948" y="913" class="body">Redacted audit · Sentry</text>
+  <path d="M 870 918 H 910 V 884 H 928" class="optional-line"/>
+  <text x="874" y="905" class="micro">outbox</text>
+
+  <!-- Local store -->
+  <rect x="1186" y="836" width="192" height="91" rx="5" class="external-card"/>
+  <text x="1207" y="864" class="card-title">Local storage</text>
+  <text x="1217" y="892" class="code">.aais-data</text>
+  <text x="1207" y="916" class="small">development only</text>
+  <path d="M 196 836 V 825 H 1282 V 836" class="optional-line"/>
+
+  <!-- Privacy / governance footer -->
+  <rect x="58" y="942" width="1320" height="18" rx="3" fill="#eef3f7"/>
+  <text x="78" y="957" class="micro">
+    Privacy boundary: server-derived identity · raw learner text excluded from cohort analytics, xAPI, and telemetry · production storage fails closed without PostgreSQL
+  </text>
+
+  <text x="34" y="991" class="micro">CAAIS implementation snapshot · 30 July 2026 · single Next.js application; agents are graph nodes, not services</text>
+  <text x="1398" y="991" class="micro" text-anchor="end">Vector master · IEEE two-column width</text>
+</svg>

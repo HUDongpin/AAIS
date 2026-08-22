@@ -2,38 +2,6 @@
 
 @custom-variant dark (&:where(.dark, .dark *));
 
-@font-face {
-  font-family: "Anthropic Serif";
-  src: url("https://cdn.prod.website-files.com/67ce28cfec624e2b733f8a52/69971a1551eb6cda0d656e8a_AnthropicSerif-Roman-Web.woff2") format("woff2");
-  font-display: swap;
-  font-style: normal;
-  font-weight: 300 800;
-}
-
-@font-face {
-  font-family: "Anthropic Serif";
-  src: url("https://cdn.prod.website-files.com/67ce28cfec624e2b733f8a52/69971a15a9fb8c1107a3570e_AnthropicSerif-Italic-Web.woff2") format("woff2");
-  font-display: swap;
-  font-style: italic;
-  font-weight: 300 800;
-}
-
-@font-face {
-  font-family: "Anthropic Sans";
-  src: url("https://cdn.prod.website-files.com/67ce28cfec624e2b733f8a52/69971a00a3295036497e1a28_AnthropicSans-Roman-Web.woff2") format("woff2");
-  font-display: swap;
-  font-style: normal;
-  font-weight: 300 800;
-}
-
-@font-face {
-  font-family: "Anthropic Sans";
-  src: url("https://cdn.prod.website-files.com/67ce28cfec624e2b733f8a52/69971a016067bf14b9b8f48d_AnthropicSans-Italic-Web.woff2") format("woff2");
-  font-display: swap;
-  font-style: italic;
-  font-weight: 300 800;
-}
-
 :root {
   --background: #f5f9ff;
   --foreground: #172033;
@@ -94,6 +62,123 @@ body {
   background: var(--background);
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
+}
+
+.aais-login-serif {
+  font-family: "Anthropic Serif", Georgia, "Times New Roman", "Noto Serif SC", "Songti SC", serif;
+}
+
+.aais-learning-serif {
+  font-family: "Anthropic Serif", "Tiempos Text", Georgia, "Times New Roman", "Songti SC", "SimSun", serif;
+}
+
+.aais-learning-navigation {
+  font-family: "Anthropic Sans", Arial, "Helvetica Neue", "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+
+.aais-document-editor[data-font-family="system"] {
+  font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+.aais-document-editor[data-font-family="serif"] {
+  font-family: "Anthropic Serif", "Tiempos Text", Georgia, "Times New Roman", "Songti SC", "SimSun", serif;
+}
+
+.aais-document-editor[data-font-family="mono"] {
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+}
+
+.aais-document-editor[data-font-size="17"] {
+  font-size: 17px;
+}
+
+.aais-document-editor[data-font-size="20"] {
+  font-size: 20px;
+}
+
+.aais-document-editor[data-font-size="24"] {
+  font-size: 24px;
+}
+
+.aais-document-editor[data-font-size="28"] {
+  font-size: 28px;
+}
+
+/* Keep rich editor text and pasted media inside the editable page. */
+.aais-document-editor {
+  overflow-wrap: anywhere;
+}
+
+/* Tailwind's reset removes native list markers. Restore them only inside the
+   rich editor, including simple nested levels created by Tab or pasted HTML. */
+.aais-document-editor :where(ul, ol) {
+  display: block;
+  margin-block: 0.625rem;
+  padding-inline-start: 1.75rem;
+  list-style-position: outside;
+}
+
+.aais-document-editor :where(ul, ol) :where(ul, ol) {
+  margin-block: 0.25rem;
+  padding-inline-start: 1.5rem;
+}
+
+.aais-document-editor ul {
+  list-style-type: disc;
+}
+
+.aais-document-editor ol {
+  list-style-type: decimal;
+}
+
+.aais-document-editor :is(ul, ol) ul {
+  list-style-type: circle;
+}
+
+.aais-document-editor :is(ul, ol) :is(ul, ol) ul {
+  list-style-type: square;
+}
+
+.aais-document-editor :is(ul, ol) ol {
+  list-style-type: lower-alpha;
+}
+
+.aais-document-editor :is(ul, ol) :is(ul, ol) ol {
+  list-style-type: lower-roman;
+}
+
+.aais-document-editor li {
+  display: list-item;
+  padding-inline-start: 0.25rem;
+}
+
+.aais-document-editor img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin-block: 0.75rem;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.aais-document-editor u {
+  text-decoration-line: underline;
+  text-decoration-style: solid;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 0.12em;
+  text-decoration-skip-ink: auto;
+}
+
+body[data-aais-panel-resizing="true"] {
+  cursor: col-resize;
+  user-select: none;
+}
+
+@media (min-width: 64rem) {
+  .aais-learning-split-layout {
+    grid-template-columns: minmax(0, 1fr) 8px 600px;
+    grid-template-columns: minmax(0, 1fr) 8px attr(data-content-panel-width px, 600px);
+  }
 }
 
 button,

@@ -1,8 +1,20 @@
-import type { ReactNode } from "react";
 import type { AaisGuideAttachment } from "@/lib/ai/aais-guide-attachments";
+import { CheckCircle, FileText } from "@phosphor-icons/react";
+import {
+  localizeAaisGuideAgentReferences,
+  localizeAaisGuideTargetMentions,
+} from "@/lib/ai/aais-guide-targets";
+import type { Locale } from "@/data/aais";
 import {
   visibleGuideAgentIds,
 } from "@/components/pages/learning/learning-page-constants";
+import {
+  getGuideAgentLabel,
+  getLearningCopy,
+} from "@/components/pages/learning/learning-copy";
+import { SafeMarkdownText } from "@/components/pages/learning/guide-safe-markdown";
+import { FunctionGraph } from "@/components/pages/learning/function-graph";
+import { normalizeAaisGuideVisualizations } from "@/lib/ai/aais-guide-function-scaffold";
 import type {
   GuideClientAttachment,
   GuideMessage,
@@ -10,16 +22,6 @@ import type {
 } from "@/components/pages/learning/learning-page-types";
 
 type GuideAgentAvatarVariant = "guide" | "expert";
-
-type SafeMarkdownBlock =
-  | {
-      type: "paragraph";
-      lines: string[];
-    }
-  | {
-      type: "ordered-list" | "unordered-list";
-      items: string[];
-    };
 
 const guideAgentPresentation: Record<
   string,
@@ -31,14 +33,14 @@ const guideAgentPresentation: Record<
   }
 > = {
   A1: {
-    label: "导学智能体",
+    label: "小张",
     avatarVariant: "guide",
     avatarClassName:
       "border-[#d8e0ca] bg-[#f5f8ef] text-[#4c5b32] shadow-[0_4px_12px_rgba(76,91,50,0.12)]",
     bubbleClassName: "border-[#dfe7d2] bg-white",
   },
   A2: {
-    label: "专家智能体",
+    label: "教授",
     avatarVariant: "expert",
     avatarClassName:
       "border-[#d7e3f6] bg-[#f4f8fd] text-[#1f4f86] shadow-[0_4px_12px_rgba(31,79,134,0.14)]",
@@ -65,265 +67,194 @@ export function formatGuideAttachmentSize(sizeBytes: number) {
   return `${(sizeBytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-export function GuideBubble({ message }: { message: GuideMessage }) {
+export function GuideBubble({
+  locale = "zh-CN",
+  message,
+  onSuggestedPrompt,
+  suggestionsDisabled = false,
+}: {
+  locale?: Locale;
+  message: GuideMessage;
+  onSuggestedPrompt?: (prompt: string) => void;
+  suggestionsDisabled?: boolean;
+}) {
+  const copy = getLearningCopy(locale);
   const assistant = message.kind === "assistant";
+  const visibleMessageText = assistant
+    ? localizeAaisGuideAgentReferences(message.text, locale)
+    : localizeAaisGuideTargetMentions(message.text, locale);
   const visibleTurns = getVisibleGuideTurns(message.turns);
   if (assistant && visibleTurns.length) {
     return (
       <div className="space-y-3">
         {message.runtime?.fallback ? (
           <p className="inline-flex rounded-full border border-[#f2d6a2] bg-[#fff8ed] px-3 py-1 text-xs font-bold text-[#8a5a12]">
-            离线支架模式
+            {copy.guide.offlineScaffold}
           </p>
         ) : null}
         {visibleTurns.map((turn) => (
-          <AgentTurnBubble key={`${message.id}-${turn.agentId}`} turn={turn} />
+          <AgentTurnBubble
+            key={`${message.id}-${turn.agentId}`}
+            locale={locale}
+            onSuggestedPrompt={onSuggestedPrompt}
+            suggestionsDisabled={suggestionsDisabled}
+            turn={turn}
+          />
         ))}
       </div>
     );
   }
 
   return (
-    <div className={assistant ? "flex items-start gap-3" : "flex justify-end"}>
+    <div className={assistant ? "flex min-w-0 items-start gap-3" : "flex min-w-0 justify-end"}>
       {assistant ? (
-        <AgentAvatar agentId="A1" label="导学智能体" />
+        <AgentAvatar agentId="A1" label={getGuideAgentLabel(locale, "A1")} locale={locale} />
       ) : null}
       <div
         className={[
-          "rounded-[18px] px-5 py-4 text-[17px] leading-8 shadow-[0_6px_18px_rgba(17,24,39,0.05)]",
+          "min-w-0 rounded-[18px] px-5 py-4 text-[17px] leading-8 shadow-[0_6px_18px_rgba(17,24,39,0.05)]",
           assistant
             ? "max-w-[760px] border border-[#e3e6ef] bg-white text-[#30343b]"
             : "max-w-[640px] bg-[#536de8] text-white",
         ].join(" ")}
       >
         {assistant ? (
-          <p className="mb-2 text-sm font-medium text-[#9aa0ad]">AI 助教</p>
+          <p className="mb-2 text-sm font-medium text-[#9aa0ad]">{copy.guide.assistant}</p>
         ) : null}
         {assistant && message.runtime?.fallback ? (
           <p className="mb-2 inline-flex rounded-full border border-[#f2d6a2] bg-[#fff8ed] px-3 py-1 text-xs font-bold text-[#8a5a12]">
-            离线支架模式
+            {copy.guide.offlineScaffold}
           </p>
         ) : null}
-        <SafeMarkdownText text={message.text} />
+        <SafeMarkdownText text={visibleMessageText} />
+        {!assistant && message.attachments?.length ? (
+          <GuideMessageAttachmentCards attachments={message.attachments} locale={locale} />
+        ) : null}
       </div>
     </div>
   );
 }
 
-function AgentTurnBubble({ turn }: { turn: GuideTurn }) {
-  const presentation = getAgentPresentation(turn);
+function GuideMessageAttachmentCards({
+  attachments,
+  locale,
+}: {
+  attachments: NonNullable<GuideMessage["attachments"]>;
+  locale: Locale;
+}) {
+  const copy = locale === "en-US"
+    ? {
+        list: "Files sent with this message",
+        status: "Upload complete · Read",
+        card: (name: string, type: string, size: string) =>
+          `Attachment ${name}, ${type}, ${size}, upload complete and read`,
+      }
+    : {
+        list: "此消息已发送的文件",
+        status: "上传成功 · 已读取",
+        card: (name: string, type: string, size: string) =>
+          `附件 ${name}，${type}，${size}，上传成功并已读取`,
+      };
+
   return (
-    <div className="flex items-start gap-3">
-      <AgentAvatar agentId={turn.agentId} label={presentation.label} />
+    <ul aria-label={copy.list} className="mt-3 space-y-2">
+      {attachments.map((attachment, index) => {
+        const typeLabel = formatGuideAttachmentType(attachment.mediaType, locale);
+        const sizeLabel = formatGuideAttachmentSize(attachment.sizeBytes);
+        return (
+          <li
+            key={`${attachment.name}-${attachment.sizeBytes}-${index}`}
+            aria-label={copy.card(attachment.name, typeLabel, sizeLabel)}
+            className="flex min-w-0 items-center gap-3 rounded-xl border border-white/35 bg-white px-3 py-2 text-left text-[#30343b] shadow-[0_4px_12px_rgba(17,24,39,0.12)]"
+          >
+            <FileText aria-hidden="true" className="shrink-0 text-[#536de8]" size={24} weight="duotone" />
+            <span className="min-w-0 flex-1">
+              <span className="block truncate text-sm font-bold">{attachment.name}</span>
+              <span className="block text-xs text-[#687084]">
+                {typeLabel} · {sizeLabel}
+              </span>
+            </span>
+            <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-[#eef7e9] px-2 py-1 text-[11px] font-bold text-[#476238]">
+              <CheckCircle aria-hidden="true" size={14} weight="fill" />
+              {copy.status}
+            </span>
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
+function formatGuideAttachmentType(
+  mediaType: NonNullable<GuideMessage["attachments"]>[number]["mediaType"],
+  locale: Locale,
+) {
+  if (mediaType === "application/pdf") {
+    return "PDF";
+  }
+  if (mediaType === "application/vnd.openxmlformats-officedocument.wordprocessingml.document") {
+    return locale === "en-US" ? "Word document" : "Word 文档";
+  }
+  if (mediaType === "text/markdown") {
+    return "Markdown";
+  }
+  if (mediaType === "text/csv") {
+    return "CSV";
+  }
+  return locale === "en-US" ? "Plain text" : "纯文本";
+}
+
+function AgentTurnBubble({
+  locale,
+  onSuggestedPrompt,
+  suggestionsDisabled,
+  turn,
+}: {
+  locale: Locale;
+  onSuggestedPrompt?: (prompt: string) => void;
+  suggestionsDisabled: boolean;
+  turn: GuideTurn;
+}) {
+  const presentation = getAgentPresentation(turn, locale);
+  const visualizations = normalizeAaisGuideVisualizations(turn.visualizations);
+  return (
+    <div className="flex min-w-0 items-start gap-3">
+      <AgentAvatar agentId={turn.agentId} label={presentation.label} locale={locale} />
       <article
         className={[
-          "max-w-[760px] rounded-[18px] px-5 py-4 text-[17px] leading-8 text-[#30343b] shadow-[0_6px_18px_rgba(17,24,39,0.05)]",
+          "min-w-0 max-w-[760px] flex-1 rounded-[18px] px-5 py-4 text-[17px] leading-8 text-[#30343b] shadow-[0_6px_18px_rgba(17,24,39,0.05)]",
           presentation.bubbleClassName,
         ].join(" ")}
       >
         <p className="mb-2 text-sm font-semibold text-[#59657a]">
-          {turn.agentId} {presentation.label}
+          {presentation.label}
         </p>
-        <SafeMarkdownText text={turn.content} />
+        <SafeMarkdownText text={localizeAaisGuideAgentReferences(turn.content, locale)} />
+        {visualizations.map((visualization) => (
+          <FunctionGraph
+            disabled={suggestionsDisabled}
+            key={visualization.id}
+            locale={locale}
+            onSuggestedPrompt={onSuggestedPrompt}
+            visualization={visualization}
+          />
+        ))}
       </article>
     </div>
   );
 }
 
-function SafeMarkdownText({ text }: { text: string }) {
-  const blocks = parseSafeMarkdownBlocks(text);
-
-  return (
-    <>
-      {blocks.map((block, blockIndex) => {
-        const spacingClassName = blockIndex > 0 ? "mt-2" : "";
-        if (block.type === "paragraph") {
-          return (
-            <p
-              key={`paragraph-${blockIndex}`}
-              className={["whitespace-pre-line", spacingClassName].filter(Boolean).join(" ")}
-            >
-              {renderSafeMarkdownInline(block.lines.join("\n"), `paragraph-${blockIndex}`)}
-            </p>
-          );
-        }
-
-        const ListTag = block.type === "ordered-list" ? "ol" : "ul";
-        const listClassName = [
-          block.type === "ordered-list" ? "list-decimal" : "list-disc",
-          "space-y-1 pl-6",
-          spacingClassName,
-        ]
-          .filter(Boolean)
-          .join(" ");
-
-        return (
-          <ListTag key={`${block.type}-${blockIndex}`} className={listClassName}>
-            {block.items.map((item, itemIndex) => (
-              <li key={`${block.type}-${blockIndex}-${itemIndex}`}>
-                {renderSafeMarkdownInline(item, `${block.type}-${blockIndex}-${itemIndex}`)}
-              </li>
-            ))}
-          </ListTag>
-        );
-      })}
-    </>
-  );
-}
-
-function parseSafeMarkdownBlocks(text: string): SafeMarkdownBlock[] {
-  const normalizedLines = text.replace(/\r\n?/g, "\n").split("\n");
-  const blocks: SafeMarkdownBlock[] = [];
-  let paragraphLines: string[] = [];
-  let lineIndex = 0;
-
-  function flushParagraph() {
-    if (!paragraphLines.some((line) => line.trim())) {
-      paragraphLines = [];
-      return;
-    }
-
-    blocks.push({
-      type: "paragraph",
-      lines: paragraphLines,
-    });
-    paragraphLines = [];
-  }
-
-  while (lineIndex < normalizedLines.length) {
-    const line = normalizedLines[lineIndex] ?? "";
-    const listItem = parseSafeMarkdownListItem(line);
-
-    if (!line.trim()) {
-      flushParagraph();
-      lineIndex += 1;
-      continue;
-    }
-
-    if (listItem) {
-      const items: string[] = [];
-      flushParagraph();
-
-      while (lineIndex < normalizedLines.length) {
-        const nextItem = parseSafeMarkdownListItem(normalizedLines[lineIndex] ?? "");
-        if (!nextItem || nextItem.type !== listItem.type) {
-          break;
-        }
-
-        items.push(nextItem.content);
-        lineIndex += 1;
-      }
-
-      blocks.push({
-        type: listItem.type,
-        items,
-      });
-      continue;
-    }
-
-    paragraphLines.push(line);
-    lineIndex += 1;
-  }
-
-  flushParagraph();
-
-  return blocks;
-}
-
-function parseSafeMarkdownListItem(line: string) {
-  const orderedMatch = line.match(/^\s*\d+\.\s+(.+)$/);
-  if (orderedMatch) {
-    return {
-      type: "ordered-list" as const,
-      content: orderedMatch[1],
-    };
-  }
-
-  const unorderedMatch = line.match(/^\s*[-*]\s+(.+)$/);
-  if (unorderedMatch) {
-    return {
-      type: "unordered-list" as const,
-      content: unorderedMatch[1],
-    };
-  }
-
-  return null;
-}
-
-function renderSafeMarkdownInline(text: string, keyPrefix: string): ReactNode[] {
-  const nodes: ReactNode[] = [];
-  const inlinePattern = /(`([^`\n]+)`|\*\*([\s\S]+?)\*\*|__([\s\S]+?)__|\[([^\]\n]+)\]\(([^)\s]+)\))/g;
-  let lastIndex = 0;
-  let match: RegExpExecArray | null;
-
-  while ((match = inlinePattern.exec(text)) !== null) {
-    if (match.index > lastIndex) {
-      nodes.push(text.slice(lastIndex, match.index));
-    }
-
-    const [token, , code, strongAsterisk, strongUnderscore, linkLabel, linkHref] = match;
-    const key = `${keyPrefix}-${match.index}`;
-
-    if (code !== undefined) {
-      nodes.push(
-        <code key={key} className="rounded bg-black/5 px-1 py-0.5 font-mono text-[0.92em]">
-          {code}
-        </code>,
-      );
-    } else if (strongAsterisk !== undefined || strongUnderscore !== undefined) {
-      const strongText = strongAsterisk ?? strongUnderscore ?? "";
-      nodes.push(
-        <strong key={key} className="font-semibold">
-          {renderSafeMarkdownInline(strongText, key)}
-        </strong>,
-      );
-    } else if (linkLabel !== undefined && linkHref !== undefined) {
-      const safeHref = getSafeMarkdownHref(linkHref);
-      if (safeHref) {
-        nodes.push(
-          <a
-            key={key}
-            className="font-medium underline decoration-current/40 underline-offset-4"
-            href={safeHref}
-            rel="noreferrer"
-            target="_blank"
-          >
-            {renderSafeMarkdownInline(linkLabel, key)}
-          </a>,
-        );
-      } else {
-        nodes.push(token);
-      }
-    } else {
-      nodes.push(token);
-    }
-
-    lastIndex = match.index + token.length;
-  }
-
-  if (lastIndex < text.length) {
-    nodes.push(text.slice(lastIndex));
-  }
-
-  return nodes;
-}
-
-function getSafeMarkdownHref(href: string) {
-  try {
-    const parsedUrl = new URL(href);
-    if (["http:", "https:", "mailto:"].includes(parsedUrl.protocol)) {
-      return href;
-    }
-  } catch {
-    return null;
-  }
-
-  return null;
-}
-
-function AgentAvatar({ agentId, label }: { agentId: string; label: string }) {
+function AgentAvatar({
+  agentId,
+  label,
+  locale,
+}: {
+  agentId: string;
+  label: string;
+  locale: Locale;
+}) {
   const presentation = guideAgentPresentation[agentId] ?? guideAgentPresentation.A1;
-  const avatarLabel = `${agentId} ${label}大学教育风格头像`;
+  const avatarLabel = getLearningCopy(locale).guide.avatar(agentId, label);
   return (
     <span
       aria-label={avatarLabel}
@@ -380,9 +311,14 @@ export function getVisibleGuideTurns(turns?: GuideTurn[]) {
   ) ?? [];
 }
 
-function getAgentPresentation(turn: GuideTurn) {
-  return guideAgentPresentation[turn.agentId] ?? {
-    ...guideAgentPresentation.A1,
-    label: turn.label,
+function getAgentPresentation(turn: GuideTurn, locale: Locale) {
+  const canonicalVisibleLabel = visibleGuideAgentIds.includes(
+    turn.agentId as (typeof visibleGuideAgentIds)[number],
+  )
+    ? getGuideAgentLabel(locale, turn.agentId)
+    : null;
+  return {
+    ...(guideAgentPresentation[turn.agentId] ?? guideAgentPresentation.A1),
+    label: canonicalVisibleLabel || turn.label || getGuideAgentLabel(locale, turn.agentId),
   };
 }

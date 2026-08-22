@@ -10,50 +10,72 @@ import {
   getAaisOidcConfigurationStatus,
   getAaisOidcExpiredCookieOptions,
   getAaisOidcRoleMappingStatus,
+  getAaisOidcSessionPolicyFingerprint,
   getAaisOidcStateCookieName,
+  isAaisOidcProviderUnavailableError,
   resolveAaisOidcConfig,
   verifyAaisOidcIdToken,
   verifyAaisOidcState,
 } from "@/lib/server/aais-oidc";
 import {
   createAaisSessionToken,
-  getAaisDisplayCookieOptions,
+  getAaisOidcSessionTtlSeconds,
   getAaisSessionCookieName,
   getAaisSessionCookieOptions,
+  type AaisSessionActor,
 } from "@/lib/server/aais-session";
 import { createAaisApiErrorResponse } from "@/lib/server/aais-api-error";
+import { AaisSessionConfigurationError } from "@/lib/server/aais-session-secret";
 
 export async function GET(request: Request) {
-  const config = await resolveAaisOidcConfig();
-  if (!config) {
-    return createAaisApiErrorResponse({
-      code: "AAIS_OIDC_NOT_CONFIGURED",
-      message: "AAIS OIDC is not configured.",
-      status: 503,
-      extra: { secrets: "redacted" },
-    });
-  }
+  let completedCallback: {
+    actor: AaisSessionActor;
+    response: NextResponse;
+  };
   const url = new URL(request.url);
   const code = url.searchParams.get("code");
   const state = url.searchParams.get("state");
   const stateCookie = readCookie(request.headers.get("cookie"), getAaisOidcStateCookieName());
-  const oidcState = verifyAaisOidcState(
-    stateCookie,
-    state ?? "",
-  );
-  if (!code || !oidcState) {
-    recordAaisAuditEvent({
-      event: "auth.oidc.failure",
-      outcome: "failure",
-      metadata: {
-        ...getOidcAuditContext(),
-        reason: "invalid_state",
-        codePresent: Boolean(code),
-        statePresent: Boolean(state),
-        stateCookiePresent: Boolean(stateCookie),
-      },
-    });
-    return createOidcFailureResponse("AAIS OIDC state is invalid.");
+  if (!code || !state || !stateCookie) {
+    return createInvalidStateResponse({ code, state, stateCookie });
+  }
+  let oidcState;
+  try {
+    oidcState = verifyAaisOidcState(
+      stateCookie,
+      state ?? "",
+    );
+  } catch (error) {
+    if (error instanceof AaisSessionConfigurationError) {
+      recordOidcFailure("session_configuration");
+      return createOidcUnavailableResponse(
+        "AAIS_SESSION_SECRET_NOT_CONFIGURED",
+        "AAIS session secret is not configured securely.",
+        error,
+      );
+    }
+    throw error;
+  }
+  if (!oidcState) {
+    return createInvalidStateResponse({ code, state, stateCookie });
+  }
+  let config;
+  try {
+    config = await resolveAaisOidcConfig();
+  } catch (error) {
+    recordOidcFailure("provider_configuration_unavailable");
+    return createOidcUnavailableResponse(
+      "AAIS_OIDC_PROVIDER_UNAVAILABLE",
+      "AAIS OIDC provider configuration is temporarily unavailable.",
+      error,
+    );
+  }
+  if (!config) {
+    recordOidcFailure("provider_configuration_unavailable");
+    return createOidcUnavailableResponse(
+      "AAIS_OIDC_NOT_CONFIGURED",
+      "AAIS OIDC is not configured.",
+    );
   }
 
   try {
@@ -67,28 +89,43 @@ export async function GET(request: Request) {
       idToken,
       nonce: oidcState.nonce,
     });
-    recordAaisAuditEvent({
-      event: "auth.oidc.success",
-      actorId: actor.id,
-      outcome: "success",
-      metadata: {
-        ...getOidcAuditContext(),
-        actorRole: actor.role,
-      },
+    const sessionPolicyFingerprint = getAaisOidcSessionPolicyFingerprint(config);
+    if (!sessionPolicyFingerprint) {
+      throw new Error("AAIS OIDC session policy is unavailable.");
+    }
+    const oidcSessionTtlSeconds = getAaisOidcSessionTtlSeconds();
+    const sessionToken = createAaisSessionToken(actor, new Date(), {
+      authSource: "oidc",
+      oidcPolicyFingerprint: sessionPolicyFingerprint,
+      ttlSeconds: oidcSessionTtlSeconds,
     });
+    const csrfToken = createAaisCsrfToken(actor.id);
     const response = new NextResponse(null, {
       status: 307,
       headers: {
         location: oidcState.returnTo,
+        "cache-control": "private, no-store",
+        "referrer-policy": "no-referrer",
       },
     });
-    response.cookies.set(getAaisSessionCookieName(), createAaisSessionToken(actor), getAaisSessionCookieOptions());
-    response.cookies.set(getAaisCsrfCookieName(), createAaisCsrfToken(actor.id), getAaisCsrfCookieOptions());
-    response.cookies.set("aais_student_id", actor.id, getAaisDisplayCookieOptions());
-    response.cookies.set("aais_display_name", actor.displayName, getAaisDisplayCookieOptions());
-    response.cookies.set(getAaisOidcStateCookieName(), "", getAaisOidcExpiredCookieOptions());
-    return response;
+    response.cookies.set(
+      getAaisSessionCookieName(),
+      sessionToken,
+      getAaisSessionCookieOptions(oidcSessionTtlSeconds),
+    );
+    response.cookies.set(getAaisCsrfCookieName(), csrfToken, getAaisCsrfCookieOptions());
+    expireOidcCallbackCookies(response);
+    completedCallback = { actor, response };
   } catch (error) {
+    if (isAaisOidcProviderUnavailableError(error)) {
+      recordOidcFailure(`${error.operation}_provider_unavailable`);
+      return createOidcUnavailableResponse(
+        "AAIS_OIDC_PROVIDER_UNAVAILABLE",
+        "AAIS OIDC provider is temporarily unavailable.",
+        error,
+        502,
+      );
+    }
     recordAaisAuditEvent({
       event: "auth.oidc.failure",
       outcome: "failure",
@@ -99,6 +136,16 @@ export async function GET(request: Request) {
     });
     return createOidcFailureResponse("AAIS OIDC callback failed.");
   }
+  recordAaisAuditEvent({
+    event: "auth.oidc.success",
+    actorId: completedCallback.actor.id,
+    outcome: "success",
+    metadata: {
+      ...getOidcAuditContext(),
+      actorRole: completedCallback.actor.role,
+    },
+  });
+  return completedCallback.response;
 }
 
 function createOidcFailureResponse(message: string) {
@@ -110,8 +157,68 @@ function createOidcFailureResponse(message: string) {
     status: 401,
     extra: { secrets: "redacted" },
   });
-  response.cookies.set(getAaisOidcStateCookieName(), "", getAaisOidcExpiredCookieOptions());
+  expireOidcCallbackCookies(response);
+  response.headers.set("referrer-policy", "no-referrer");
   return response;
+}
+
+function createOidcUnavailableResponse(
+  code:
+    | "AAIS_OIDC_NOT_CONFIGURED"
+    | "AAIS_OIDC_PROVIDER_UNAVAILABLE"
+    | "AAIS_SESSION_SECRET_NOT_CONFIGURED",
+  message: string,
+  cause?: unknown,
+  status: 502 | 503 = 503,
+) {
+  const response = createAaisApiErrorResponse({
+    code,
+    message,
+    status,
+    extra: { secrets: "redacted" },
+    cause,
+    route: "/api/auth/oidc/callback",
+  });
+  expireOidcCallbackCookies(response);
+  response.headers.set("referrer-policy", "no-referrer");
+  return response;
+}
+
+function createInvalidStateResponse(input: {
+  code: string | null;
+  state: string | null;
+  stateCookie: string | null;
+}) {
+  recordAaisAuditEvent({
+    event: "auth.oidc.failure",
+    outcome: "failure",
+    metadata: {
+      ...getOidcAuditContext(),
+      reason: "invalid_state",
+      codePresent: Boolean(input.code),
+      statePresent: Boolean(input.state),
+      stateCookiePresent: Boolean(input.stateCookie),
+    },
+  });
+  return createOidcFailureResponse("AAIS OIDC state is invalid.");
+}
+
+function recordOidcFailure(reason: string) {
+  recordAaisAuditEvent({
+    event: "auth.oidc.failure",
+    outcome: "failure",
+    metadata: {
+      ...getOidcAuditContext(),
+      reason,
+    },
+  });
+}
+
+function expireOidcCallbackCookies(response: NextResponse) {
+  const options = getAaisOidcExpiredCookieOptions();
+  response.cookies.set(getAaisOidcStateCookieName(), "", options);
+  response.cookies.set("aais_student_id", "", options);
+  response.cookies.set("aais_display_name", "", options);
 }
 
 function getOidcAuditContext() {
@@ -168,5 +275,9 @@ function readCookie(cookieHeader: string | null, name: string) {
   if (!cookie) {
     return null;
   }
-  return decodeURIComponent(cookie.slice(name.length + 1));
+  try {
+    return decodeURIComponent(cookie.slice(name.length + 1));
+  } catch {
+    return null;
+  }
 }

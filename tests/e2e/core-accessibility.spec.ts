@@ -3,6 +3,8 @@ import {
   authenticateAaisE2eActor,
   getAaisE2eStudentAccount,
   getAaisE2eStudentPassword,
+  stubLocalAaisCohortExport,
+  waitForAaisLearningClientReady,
 } from "./aais-e2e-helpers";
 
 test("login can be completed with keyboard focus and named landmarks", async ({ page }) => {
@@ -11,6 +13,8 @@ test("login can be completed with keyboard focus and named landmarks", async ({ 
   await expect(page.getByRole("main", {
     name: /欢迎来到 CAAIS/,
   })).toBeVisible();
+  await expect(page.locator("[data-client-ready]"))
+    .toHaveAttribute("data-client-ready", "true");
 
   await page.getByLabel("账号").focus();
   await page.keyboard.type(getAaisE2eStudentAccount());
@@ -33,14 +37,19 @@ test("learning cockpit exposes a named main region and keyboard-operable content
   });
 
   await page.goto("/learning");
+  await waitForAaisLearningClientReady(page);
 
   const learningMain = page.getByRole("main", { name: "CAAIS 学习工作台" });
   await expect(learningMain).toBeVisible();
   await expect(learningMain).toHaveAttribute("aria-describedby", "aais-learning-description");
+  await expect(page.getByRole("button", { name: "理论知识" })).toBeVisible();
 
-  await page.getByRole("button", { name: "理论知识" }).focus();
+  await page.getByRole("button", { name: "任务卡片" }).focus();
   await page.keyboard.press("Enter");
-  await expect(page.getByRole("heading", { name: "理论知识" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "任务卡片" })).toBeVisible();
+  await expect(page.getByRole("button", {
+    name: "L1 挑战：复述与计划，已锁定",
+  })).toBeDisabled();
 
   await page.getByRole("button", { name: "文档编辑" }).focus();
   await page.keyboard.press("Enter");
@@ -49,12 +58,27 @@ test("learning cockpit exposes a named main region and keyboard-operable content
   })).toBeVisible();
 });
 
+test("legacy theory accessible name still opens the renamed task-card surface", async ({ page }) => {
+  await authenticateAaisE2eActor(page, {
+    id: `legacy-a11y-student-${Date.now()}`,
+    role: "student",
+    displayName: "Legacy A11y Student",
+  });
+
+  await page.goto("/learning");
+
+  await page.getByRole("button", { name: "理论知识" }).focus();
+  await page.keyboard.press("Enter");
+  await expect(page.getByRole("heading", { name: "理论知识" })).toBeVisible();
+});
+
 test("teacher dashboard exposes a named main region and keyboard export path", async ({ page }) => {
   await authenticateAaisE2eActor(page, {
     id: "teacher-e2e",
     role: "teacher",
     displayName: "Teacher E2E",
   });
+  await stubLocalAaisCohortExport(page);
 
   await page.goto("/dashboard");
 
@@ -85,6 +109,7 @@ test("core screens meet minimum text contrast inside their main regions", async 
     displayName: "Contrast Student",
   });
   await page.goto("/learning");
+  await waitForAaisLearningClientReady(page);
   await expect(page.getByRole("main", { name: "CAAIS 学习工作台" })).toBeVisible();
   expect(await getContrastFailures(page, "main")).toEqual([]);
 

@@ -52,15 +52,27 @@ export type AaisAiRuntimeConfig = {
   profile: AaisAiRuntimeProfile;
   primary: AaisAiRuntimeProviderCandidate | null;
   fallback: AaisAiRuntimeProviderCandidate | null;
+  configurationStatus: {
+    primary: "valid" | "missing" | "invalid";
+    fallback: "valid" | "missing" | "invalid";
+  };
 };
 
 export const qwenDashScopeEndpoint = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions";
-export const qwenDefaultModel = "qwen3.7-max";
+export const qwenDefaultModel = "qwen3.8-max";
 export const studentRuntimeDefaultTimeoutMs = 12_000;
 export const studentRuntimeMinTimeoutMs = 3_000;
 export const studentRuntimeMaxTimeoutMs = 30_000;
 export const studentRuntimeDefaultMaxRetries = 1;
+export const studentRuntimeMaxRetries = 3;
 export const studentRuntimeMaxTokens = 600;
+
+export function normalizeAaisAiMaxRetries(value: number | undefined) {
+  const parsed = typeof value === "number" && Number.isFinite(value)
+    ? Math.trunc(value)
+    : studentRuntimeDefaultMaxRetries;
+  return clamp(parsed, 0, studentRuntimeMaxRetries);
+}
 
 const redactedRuntimeProfile = {
   secrets: "omitted",
@@ -69,8 +81,13 @@ const redactedRuntimeProfile = {
 } as const;
 
 export function readAaisAiRuntimeConfig(env: NodeJS.ProcessEnv = process.env): AaisAiRuntimeConfig {
-  const primary = readConfiguredPrimaryProvider(env);
-  const fallback = readConfiguredFallbackProvider(env);
+  const configurationStatus = getAaisAiRuntimeConfigurationStatus(env);
+  const primary = configurationStatus.primary === "valid"
+    ? readConfiguredPrimaryProvider(env)
+    : null;
+  const fallback = configurationStatus.fallback === "valid"
+    ? readConfiguredFallbackProvider(env)
+    : null;
   return {
     profile: {
       mode: primary ? "live" : "deterministic",
@@ -80,7 +97,95 @@ export function readAaisAiRuntimeConfig(env: NodeJS.ProcessEnv = process.env): A
     },
     primary,
     fallback,
+    configurationStatus,
   };
+}
+
+export function getAaisAiRuntimeConfigurationStatus(
+  env: NodeJS.ProcessEnv = process.env,
+): AaisAiRuntimeConfig["configurationStatus"] {
+  const provider = env.AAIS_AI_PROVIDER?.trim().toLowerCase();
+  const explicitEndpoint = env.AAIS_AI_ENDPOINT?.trim();
+  const explicitApiKey = env.AAIS_AI_API_KEY?.trim();
+  const explicitModel = env.AAIS_AI_MODEL?.trim();
+  const qwenApiKey = env.DASHSCOPE_API_KEY?.trim() || env.QWEN_API_KEY?.trim();
+  const qwenEndpointOverride = env.DASHSCOPE_OPENAI_ENDPOINT?.trim()
+    || env.QWEN_API_ENDPOINT?.trim()
+    || env.DASHSCOPE_BASE_URL?.trim()
+    || env.QWEN_BASE_URL?.trim();
+  const qwenModelOverride = env.DASHSCOPE_MODEL?.trim() || env.QWEN_MODEL?.trim();
+  const qwenMode = provider === "qwen" || provider === "dashscope";
+  const openAiCompatibleMode = provider === "openai-compatible";
+  const qwenAliasMode = !provider && Boolean(qwenApiKey);
+  const primaryFieldsPresent = Boolean(
+    provider
+      || explicitEndpoint
+      || explicitApiKey
+      || explicitModel
+      || qwenApiKey
+      || qwenEndpointOverride
+      || qwenModelOverride,
+  );
+
+  let primary: "valid" | "missing" | "invalid" = "missing";
+  if (primaryFieldsPresent) {
+    if (provider && !openAiCompatibleMode && !qwenMode) {
+      primary = "invalid";
+    } else {
+      const useQwenDefaults = qwenMode || qwenAliasMode || Boolean(!explicitApiKey && qwenApiKey);
+      const endpoint = explicitEndpoint || (useQwenDefaults ? readQwenEndpoint(env) : undefined);
+      const apiKey = explicitApiKey || qwenApiKey;
+      const model = explicitModel || (useQwenDefaults ? readQwenModel(env) : undefined);
+      primary = endpoint
+        && apiKey
+        && model
+        && isAaisAiProviderEndpointAllowed(endpoint, env)
+        ? "valid"
+        : "invalid";
+    }
+  }
+
+  const fallbackEndpoint = env.AAIS_AI_FALLBACK_ENDPOINT?.trim();
+  const fallbackApiKey = env.AAIS_AI_FALLBACK_API_KEY?.trim();
+  const fallbackModel = env.AAIS_AI_FALLBACK_MODEL?.trim();
+  const fallbackFieldsPresent = Boolean(fallbackEndpoint || fallbackApiKey || fallbackModel);
+  const fallback = !fallbackFieldsPresent
+    ? "missing" as const
+    : fallbackEndpoint
+      && fallbackApiKey
+      && fallbackModel
+      && isAaisAiProviderEndpointAllowed(fallbackEndpoint, env)
+      ? "valid" as const
+      : "invalid" as const;
+
+  return { primary, fallback };
+}
+
+export function isAaisAiProviderEndpointAllowed(
+  endpoint: string,
+  env: Partial<Pick<NodeJS.ProcessEnv, "NODE_ENV" | "VERCEL_ENV">> = process.env,
+) {
+  let parsed: URL;
+  try {
+    parsed = new URL(endpoint);
+  } catch {
+    return false;
+  }
+  if (parsed.username
+    || parsed.password
+    || parsed.search
+    || parsed.hash
+    || endpoint.includes("?")
+    || endpoint.includes("#")) {
+    return false;
+  }
+  if (parsed.protocol === "https:") {
+    return true;
+  }
+  const production = env.NODE_ENV === "production" || env.VERCEL_ENV === "production";
+  return !production
+    && parsed.protocol === "http:"
+    && isLoopbackHostname(parsed.hostname);
 }
 
 export function createDeterministicAaisAiRuntimeProfile(): AaisAiRuntimeProfile {
@@ -113,7 +218,7 @@ export function createManualAaisAiRuntimeProfile(input: {
       thinkingMode: input.thinkingMode === "disabled" ? "disabled" : "provider-default",
       thinkingModeSource: input.thinkingMode === "disabled" ? "manual" : "default",
       timeoutMs,
-      maxRetries: Math.max(0, input.maxRetries ?? studentRuntimeDefaultMaxRetries),
+      maxRetries: normalizeAaisAiMaxRetries(input.maxRetries),
       maxTokens: input.maxTokens ?? studentRuntimeMaxTokens,
     },
     fallback: null,
@@ -215,7 +320,9 @@ function createProviderCandidate(input: {
     rawValue: input.timeoutValue,
     source: input.timeoutValue ? input.timeoutSourceName : null,
   });
-  const maxRetries = readNonNegativeInteger(input.maxRetriesValue, studentRuntimeDefaultMaxRetries);
+  const maxRetries = normalizeAaisAiMaxRetries(
+    readNonNegativeInteger(input.maxRetriesValue, studentRuntimeDefaultMaxRetries),
+  );
   const profile: AaisAiRuntimeProviderProfile = {
     providerRole: input.providerRole,
     provider: input.provider,
@@ -330,4 +437,10 @@ function readNonNegativeInteger(value: string | undefined, fallback: number) {
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(Math.max(value, min), max);
+}
+
+function isLoopbackHostname(hostname: string) {
+  return hostname === "localhost"
+    || hostname === "127.0.0.1"
+    || hostname === "[::1]";
 }

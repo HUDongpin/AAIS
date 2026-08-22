@@ -182,8 +182,8 @@ export function selectSafeRecommendations(recommendations: AaisLearnerRecommenda
   return recommendations
     .filter((recommendation) =>
       /^recommendation-[a-f0-9]{12}$/.test(recommendation.id)
-      && /^learner-[a-f0-9]{12}$/.test(recommendation.learnerKey)
-      && /^session-[a-f0-9]{12}$/.test(recommendation.sessionKey)
+      && /^(?:learner-[a-f0-9]{12}|learner-v2-[a-f0-9]{32})$/.test(recommendation.learnerKey)
+      && /^(?:session-[a-f0-9]{12}|session-v2-[a-f0-9]{32})$/.test(recommendation.sessionKey)
     )
     .map((recommendation) => {
       const priority: AaisLearnerRecommendation["priority"] =
@@ -210,7 +210,8 @@ export function buildCohortAnalyticsUrl(filters: CohortFilterState, pagination?:
 }
 
 export function buildCohortRecommendationsUrl(filters: CohortFilterState) {
-  return buildCohortUrl("/api/learning/recommendations", filters);
+  void filters;
+  return "/api/learning/recommendations?scope=cohort";
 }
 
 export function buildCohortExportUrl(filters: CohortFilterState, format: "csv" | "json") {
@@ -265,7 +266,7 @@ export function formatPriorityReason(reason: string) {
   const labels: Record<string, string> = {
     training_incomplete: "训练未完成",
     reflection_missing: "需补反思",
-    a2_coaching_signals: "A3/A2 已触发",
+    a2_coaching_signals: "监督/教授已触发",
     high_scaffold_dependency: "支架依赖高",
     no_ai_interaction_after_coaching: "需要跟进 AI 使用决策",
   };
@@ -421,9 +422,13 @@ function readClientCookie(name: string) {
   if (typeof document === "undefined") {
     return "";
   }
-  const cookie = document.cookie
-    .split(";")
-    .map((part) => part.trim())
-    .find((part) => part.startsWith(`${name}=`));
-  return cookie ? decodeURIComponent(cookie.slice(name.length + 1)) : "";
+  try {
+    const cookie = document.cookie
+      .split(";")
+      .map((part) => part.trim())
+      .find((part) => part.startsWith(`${name}=`));
+    return cookie ? decodeURIComponent(cookie.slice(name.length + 1)) : "";
+  } catch {
+    return "";
+  }
 }

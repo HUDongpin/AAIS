@@ -9,6 +9,11 @@ import {
   minContentPanelWidth,
   minGuidePanelWidth,
 } from "@/components/pages/learning/learning-page-constants";
+import {
+  admitAaisResearchAction,
+  createAaisResearchOperationId,
+  recordAaisResearchEvent,
+} from "@/lib/client/aais-research-telemetry";
 
 export function useContentPanelResize() {
   const splitLayoutRef = useRef<HTMLDivElement | null>(null);
@@ -29,12 +34,21 @@ export function useContentPanelResize() {
     return Math.min(Math.max(width, minContentPanelWidth), getMaxContentPanelWidth());
   }
 
-  function resizeContentPanelFromClientX(clientX: number) {
+  function getContentPanelWidthFromClientX(clientX: number) {
     const layoutRect = splitLayoutRef.current?.getBoundingClientRect();
     if (!layoutRect) {
-      return;
+      return null;
     }
-    setContentPanelWidth(clampContentPanelWidth(layoutRect.right - clientX));
+    return clampContentPanelWidth(layoutRect.right - clientX);
+  }
+
+  function resizeContentPanelFromClientX(clientX: number) {
+    const nextWidth = getContentPanelWidthFromClientX(clientX);
+    if (nextWidth === null) {
+      return null;
+    }
+    setContentPanelWidth(nextWidth);
+    return nextWidth;
   }
 
   function resizeContentPanelBy(delta: number) {
@@ -42,25 +56,56 @@ export function useContentPanelResize() {
   }
 
   function startContentPanelResize(event: ReactPointerEvent<HTMLDivElement>) {
+    const initialWidth = contentPanelWidth;
+    const nextWidth = getContentPanelWidthFromClientX(event.clientX);
+    const operationId = createAaisResearchOperationId("panel-resize");
     event.preventDefault();
+    if (nextWidth === null || !admitAaisResearchAction({
+      eventName: "panel_resize_completed",
+      outcome: "attempted",
+      detail: {
+        operation_id: operationId,
+        input_method: "pointer",
+        trigger: "pointer_start",
+        width_px: nextWidth,
+        delta_px: nextWidth - initialWidth,
+      },
+    })) {
+      return;
+    }
     event.currentTarget.setPointerCapture?.(event.pointerId);
     resizeContentPanelFromClientX(event.clientX);
+    let finalWidth = nextWidth;
 
-    const previousCursor = document.body.style.cursor;
-    const previousUserSelect = document.body.style.userSelect;
-    document.body.style.cursor = "col-resize";
-    document.body.style.userSelect = "none";
+    const previousResizeState = document.body.getAttribute("data-aais-panel-resizing");
+    document.body.setAttribute("data-aais-panel-resizing", "true");
 
-    function stopResize() {
-      document.body.style.cursor = previousCursor;
-      document.body.style.userSelect = previousUserSelect;
+    function stopResize(stopEvent: PointerEvent) {
+      if (previousResizeState === null) {
+        document.body.removeAttribute("data-aais-panel-resizing");
+      } else {
+        document.body.setAttribute("data-aais-panel-resizing", previousResizeState);
+      }
       document.removeEventListener("pointermove", handlePointerMove);
       document.removeEventListener("pointerup", stopResize);
       document.removeEventListener("pointercancel", stopResize);
+      if (Math.round(finalWidth) !== Math.round(initialWidth)) {
+        recordAaisResearchEvent({
+          eventName: "panel_resize_completed",
+          outcome: stopEvent.type === "pointercancel" ? "failure" : "success",
+          detail: {
+            operation_id: operationId,
+            input_method: "pointer",
+            trigger: stopEvent.type === "pointercancel" ? "pointer_cancel" : "pointer_end",
+            width_px: finalWidth,
+            delta_px: finalWidth - initialWidth,
+          },
+        });
+      }
     }
 
     function handlePointerMove(moveEvent: PointerEvent) {
-      resizeContentPanelFromClientX(moveEvent.clientX);
+      finalWidth = resizeContentPanelFromClientX(moveEvent.clientX) ?? finalWidth;
     }
 
     document.addEventListener("pointermove", handlePointerMove);

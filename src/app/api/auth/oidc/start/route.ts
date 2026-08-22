@@ -6,9 +6,22 @@ import {
   resolveAaisOidcConfig,
 } from "@/lib/server/aais-oidc";
 import { createAaisApiErrorResponse } from "@/lib/server/aais-api-error";
+import { AaisSessionConfigurationError } from "@/lib/server/aais-session-secret";
 
 export async function GET(request: Request) {
-  const config = await resolveAaisOidcConfig();
+  let config;
+  try {
+    config = await resolveAaisOidcConfig();
+  } catch (error) {
+    return createAaisApiErrorResponse({
+      code: "AAIS_OIDC_PROVIDER_UNAVAILABLE",
+      message: "AAIS OIDC provider configuration is temporarily unavailable.",
+      status: 503,
+      extra: { secrets: "redacted" },
+      cause: error,
+      route: "/api/auth/oidc/start",
+    });
+  }
   if (!config) {
     return createAaisApiErrorResponse({
       code: "AAIS_OIDC_NOT_CONFIGURED",
@@ -18,7 +31,20 @@ export async function GET(request: Request) {
     });
   }
   const url = new URL(request.url);
-  const state = createAaisOidcState(url.searchParams.get("from") ?? "/learning");
+  let state;
+  try {
+    state = createAaisOidcState(url.searchParams.get("from") ?? "/learning");
+  } catch (error) {
+    if (error instanceof AaisSessionConfigurationError) {
+      return createAaisApiErrorResponse({
+        code: "AAIS_SESSION_SECRET_NOT_CONFIGURED",
+        message: "AAIS session secret is not configured securely.",
+        status: 503,
+        extra: { secrets: "redacted" },
+      });
+    }
+    throw error;
+  }
   const authorizationUrl = new URL(config.authorizationEndpoint);
   authorizationUrl.searchParams.set("response_type", "code");
   authorizationUrl.searchParams.set("client_id", config.clientId);
@@ -35,5 +61,6 @@ export async function GET(request: Request) {
     state.cookieValue,
     getAaisOidcStateCookieOptions(),
   );
+  response.headers.set("cache-control", "private, no-store");
   return response;
 }

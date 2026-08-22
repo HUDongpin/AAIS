@@ -55,11 +55,15 @@ export function createAaisApiErrorResponse(input: {
       route: input.route,
     });
   }
+  const headers = new Headers(input.headers);
+  if (!headers.has("cache-control")) {
+    headers.set("cache-control", "private, no-store");
+  }
   return NextResponse.json(
     createAaisApiErrorBody(input.code, input.message, input.extra),
     {
       status: input.status,
-      headers: input.headers,
+      headers,
     },
   );
 }

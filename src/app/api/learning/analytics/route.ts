@@ -3,23 +3,29 @@ import {
   type AaisCohortAnalyticsFilters,
   type AaisCohortLearnerPaginationInput,
   getAaisLearningStore,
+  isAaisEducatorScopeAuthorizationError,
+  isAaisLearnerSessionNotFoundError,
+  isAaisLegacyResearchDataAccessDisabledError,
   isAaisLearningStorageConfigurationError,
   normalizeAaisCohortLearnerPagination,
   normalizeCohortAnalyticsFilters,
 } from "@/lib/server/aais-learning-store";
-import { isAaisAuthError, requireAaisSessionActor, resolveAaisStudentId } from "@/lib/server/aais-request-auth";
+import { isAaisAuthError, requireAaisSessionActor } from "@/lib/server/aais-request-auth";
 import { createAaisApiErrorResponse } from "@/lib/server/aais-api-error";
 
 export async function GET(request: Request) {
   try {
+    const actor = await requireAaisSessionActor(request);
     const url = new URL(request.url);
-    const scope = url.searchParams.get("scope");
+    const scope = readAnalyticsScope(url.searchParams);
     const analytics = scope === "cohort"
-      ? await getAuthorizedCohortAnalytics(request, url.searchParams)
-      : await getAaisLearningStore().getAnalytics(await resolveAaisStudentId(request));
+      ? await getAuthorizedCohortAnalytics(actor, url.searchParams)
+      : await getAaisLearningStore().getAnalytics(actor.id);
     return NextResponse.json({
       analytics,
       secrets: "redacted",
+    }, {
+      headers: { "cache-control": "private, no-store" },
     });
   } catch (error) {
     return createAaisApiErrorResponse(getErrorResponseInput(error));
@@ -27,16 +33,29 @@ export async function GET(request: Request) {
 }
 
 async function getAuthorizedCohortAnalytics(
-  request: Request,
+  actor: Awaited<ReturnType<typeof requireAaisSessionActor>>,
   params: URLSearchParams,
 ) {
-  const actor = await requireAaisSessionActor(request);
   if (actor.role !== "teacher" && actor.role !== "admin") {
     throw new AaisAnalyticsAuthorizationError();
   }
   const filters = readCohortAnalyticsFilters(params);
   const pagination = readCohortLearnerPagination(params);
-  return getAaisLearningStore().getCohortAnalytics(filters, pagination);
+  return getAaisLearningStore().getEducatorCohortAnalytics({
+    actorId: actor.id,
+    actorRole: actor.role,
+  }, filters, pagination);
+}
+
+function readAnalyticsScope(params: URLSearchParams): "owner" | "cohort" {
+  const value = params.get("scope")?.trim();
+  if (!value || value === "owner") {
+    return "owner";
+  }
+  if (value === "cohort") {
+    return value;
+  }
+  throw new AaisAnalyticsQueryError();
 }
 
 function readCohortAnalyticsFilters(params: URLSearchParams): AaisCohortAnalyticsFilters {
@@ -82,6 +101,12 @@ class AaisAnalyticsAuthorizationError extends Error {
   }
 }
 
+class AaisAnalyticsQueryError extends Error {
+  constructor() {
+    super("AAIS analytics query is invalid.");
+  }
+}
+
 function getErrorResponseInput(error: unknown) {
   if (isAaisAuthError(error)) {
     return {
@@ -95,6 +120,38 @@ function getErrorResponseInput(error: unknown) {
     return {
       code: "AAIS_COHORT_ANALYTICS_FORBIDDEN",
       message: "AAIS teacher analytics requires educator authorization.",
+      status: 403,
+      extra: { secrets: "redacted" },
+    };
+  }
+  if (error instanceof AaisAnalyticsQueryError) {
+    return {
+      code: "AAIS_ANALYTICS_QUERY_INVALID",
+      message: "AAIS analytics query is invalid.",
+      status: 400,
+      extra: { secrets: "redacted" },
+    };
+  }
+  if (isAaisEducatorScopeAuthorizationError(error)) {
+    return {
+      code: "AAIS_COHORT_ANALYTICS_FORBIDDEN",
+      message: "AAIS teacher analytics requires an active educator enrollment.",
+      status: 403,
+      extra: { secrets: "redacted" },
+    };
+  }
+  if (isAaisLearnerSessionNotFoundError(error)) {
+    return {
+      code: "AAIS_LEARNER_SESSION_NOT_FOUND",
+      message: "AAIS learner session was not found.",
+      status: 404,
+      extra: { secrets: "redacted" },
+    };
+  }
+  if (isAaisLegacyResearchDataAccessDisabledError(error)) {
+    return {
+      code: "AAIS_RESEARCH_CONTROLLED_EXPORT_REQUIRED",
+      message: "Legacy product analytics are disabled on the controlled research deployment.",
       status: 403,
       extra: { secrets: "redacted" },
     };
@@ -118,7 +175,7 @@ function getErrorResponseInput(error: unknown) {
   return {
     code: "AAIS_ANALYTICS_REQUEST_FAILED",
     message: "AAIS analytics request failed.",
-    status: 400,
+    status: 500,
     extra: { secrets: "redacted" },
     cause: error,
     route: "/api/learning/analytics",

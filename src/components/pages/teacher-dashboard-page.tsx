@@ -41,10 +41,65 @@ import {
   type CohortFilterState,
 } from "@/components/pages/teacher-dashboard/teacher-dashboard-support";
 
+type CohortRecommendationsLoadResult = {
+  availability: "available" | "paused" | "unavailable";
+  error: string;
+  recommendations: AaisLearnerRecommendation[];
+};
+
+async function loadCohortRecommendations(
+  url: string,
+): Promise<CohortRecommendationsLoadResult> {
+  try {
+    const response = await fetch(url);
+    const body = (await response.json().catch(() => null)) as AaisRecommendationsResponse | null;
+    if (!response.ok) {
+      return {
+        availability: "unavailable",
+        error: getAaisApiErrorMessage(
+          body,
+          response.status === 403
+            ? "当前账户无权读取推荐跟进。"
+            : "推荐跟进暂时不可用，请稍后刷新重试。",
+        ),
+        recommendations: [],
+      };
+    }
+    if (!body || !Array.isArray(body.recommendations)) {
+      return {
+        availability: "unavailable",
+        error: "推荐跟进响应无效，请稍后刷新重试。",
+        recommendations: [],
+      };
+    }
+    if (body.policy?.enabled === false) {
+      return {
+        availability: "paused",
+        error: "",
+        recommendations: [],
+      };
+    }
+    return {
+      availability: "available",
+      error: "",
+      recommendations: body.recommendations,
+    };
+  } catch {
+    return {
+      availability: "unavailable",
+      error: "推荐跟进暂时不可用，请检查网络后刷新重试。",
+      recommendations: [],
+    };
+  }
+}
+
 export function TeacherDashboardPage() {
   const [analytics, setAnalytics] = useState<AaisCohortAnalytics | null>(null);
   const [recommendations, setRecommendations] = useState<AaisLearnerRecommendation[]>([]);
-  const [recommendationsEnabled, setRecommendationsEnabled] = useState(true);
+  const [recommendationsAvailability, setRecommendationsAvailability] = useState<
+    "loading" | "available" | "paused" | "unavailable"
+  >("loading");
+  const [recommendationsError, setRecommendationsError] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
   const [filters, setFilters] = useState<CohortFilterState>(defaultFilters);
@@ -66,35 +121,36 @@ export function TeacherDashboardPage() {
 
     async function loadCohortAnalytics() {
       setLoading(true);
+      setRecommendationsAvailability("loading");
+      setRecommendationsError("");
       try {
-        const [response, recommendationsResponse] = await Promise.all([
+        const [response, recommendationsResult] = await Promise.all([
           fetch(analyticsUrl),
-          fetch(recommendationsUrl),
+          loadCohortRecommendations(recommendationsUrl),
         ]);
-        const body = (await response.json()) as AaisCohortAnalyticsResponse;
-        if (!response.ok || !body.analytics) {
+        const body = (await response.json().catch(() => null)) as AaisCohortAnalyticsResponse | null;
+        if (!response.ok || !body?.analytics) {
           throw new Error(response.status === 403
             ? "教师或管理员登录后可查看 cohort dashboard。"
             : getAaisApiErrorMessage(body, "AAIS cohort analytics request failed."));
         }
-        const recommendationsBody = recommendationsResponse.ok
-          ? (await recommendationsResponse.json()) as AaisRecommendationsResponse
-          : null;
-        const nextRecommendationsEnabled = recommendationsBody?.policy?.enabled !== false;
         if (!cancelled) {
           setAnalytics(selectSafeCohortAnalytics(body.analytics));
-          setRecommendations(nextRecommendationsEnabled
-            ? selectSafeRecommendations(recommendationsBody?.recommendations ?? [])
-            : []
+          setRecommendations(
+            recommendationsResult.availability === "available"
+              ? selectSafeRecommendations(recommendationsResult.recommendations)
+              : [],
           );
-          setRecommendationsEnabled(nextRecommendationsEnabled);
+          setRecommendationsAvailability(recommendationsResult.availability);
+          setRecommendationsError(recommendationsResult.error);
           setError("");
         }
       } catch (caught) {
         if (!cancelled) {
           setAnalytics(null);
           setRecommendations([]);
-          setRecommendationsEnabled(true);
+          setRecommendationsAvailability("unavailable");
+          setRecommendationsError("");
           setError(caught instanceof Error
             ? caught.message
             : "AAIS cohort analytics request failed.");
@@ -217,7 +273,7 @@ export function TeacherDashboardPage() {
                 教师看板
               </h1>
               <p className="mt-2 max-w-3xl text-sm leading-6 text-[#59657a]">
-                聚合训练完成、支架依赖、A3 监督与 A2 coaching 信号、AI 互动和反思证据，帮助教师快速定位需要跟进的学习者。
+                聚合训练完成、支架依赖、后台监督与教授 coaching 信号、AI 互动和反思证据，帮助教师快速定位需要跟进的学习者。
               </p>
             </div>
             <div className="grid gap-2 rounded-xl border border-[#d8e6fb] bg-[#f8fbff] px-4 py-3 text-sm font-semibold text-[#3f4b69]">
@@ -272,8 +328,8 @@ export function TeacherDashboardPage() {
               options={[
                 ["all", "全部"],
                 ["platform", "Platform"],
-                ["A1", "A1"],
-                ["A2", "A2"],
+                ["A1", "小张"],
+                ["A2", "教授"],
                 ["A3", "A3"],
                 ["A4", "A4"],
               ]}
@@ -284,7 +340,7 @@ export function TeacherDashboardPage() {
               onChange={(value) => updateFilter({ ...filters, event: value as CohortFilterState["event"] })}
               options={[
                 ["all", "全部"],
-                ["coaching_push", "A2 coaching"],
+                ["coaching_push", "教授 coaching"],
                 ["ai_acceptance_recorded", "AI acceptance"],
                 ["artifact_saved", "Artifact saved"],
                 ["artifact_edited", "Artifact edited"],
@@ -338,7 +394,7 @@ export function TeacherDashboardPage() {
           <MetricTile icon={CheckCircle} label="完成训练" value={cohort.trainingCompleted} />
           <MetricTile icon={Student} label="练习完成数" value={cohort.completedPracticeTasks} />
           <MetricTile icon={ArrowsLeftRight} label="支架请求" value={cohort.scaffoldRequests} />
-          <MetricTile icon={WarningCircle} label="A3/A2 信号" value={cohort.coachingSignals} />
+          <MetricTile icon={WarningCircle} label="监督/教授信号" value={cohort.coachingSignals} />
           <MetricTile icon={ChartLineUp} label="AI 互动" value={cohort.aiInteractions} />
           <MetricTile icon={CheckCircle} label="AI 采纳" value={cohort.aiAcceptanceDecisions} />
         </section>
@@ -349,7 +405,7 @@ export function TeacherDashboardPage() {
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div>
                   <h2 className="text-lg font-black text-[#171b35]">学习者风险队列</h2>
-                  <p className="mt-1 text-sm text-[#68708a]">优先显示训练未完成、反思证据不足或 A3/A2 信号较多的学习者。</p>
+                  <p className="mt-1 text-sm text-[#68708a]">优先显示训练未完成、反思证据不足或监督/教授信号较多的学习者。</p>
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
                   <span className="rounded-full border border-[#d8e6fb] bg-[#f8fbff] px-3 py-1 text-xs font-bold text-[#1557c0]">
@@ -383,7 +439,7 @@ export function TeacherDashboardPage() {
                     <th className="px-4 py-3 font-bold">Training</th>
                     <th className="px-4 py-3 font-bold">Practice</th>
                     <th className="px-4 py-3 font-bold">Scaffold</th>
-                    <th className="px-4 py-3 font-bold">A2</th>
+                    <th className="px-4 py-3 font-bold">教授</th>
                     <th className="px-4 py-3 font-bold">AI</th>
                     <th className="px-4 py-3 font-bold">Reflection</th>
                     <th className="px-5 py-3 font-bold">Action</th>
@@ -455,11 +511,33 @@ export function TeacherDashboardPage() {
               <div className="flex items-center justify-between gap-3">
                 <h2 className="text-lg font-black text-[#171b35]">推荐跟进</h2>
                 <span className="text-xs font-bold text-[#68708a]">
-                  {recommendationsEnabled ? `${recommendations.length} 条` : "已暂停"}
+                  {recommendationsAvailability === "available"
+                    ? `${recommendations.length} 条`
+                    : recommendationsAvailability === "paused"
+                      ? "已暂停"
+                      : recommendationsAvailability === "unavailable"
+                        ? "不可用"
+                        : "加载中"}
                 </span>
               </div>
               <div className="mt-4 grid gap-3">
-                {!recommendationsEnabled ? (
+                {recommendationsAvailability === "loading" ? (
+                  <p className="text-sm font-semibold leading-6 text-[#68708a]">
+                    正在加载规则推荐...
+                  </p>
+                ) : recommendationsAvailability === "unavailable" ? (
+                  recommendationsError ? (
+                    <p
+                      className="rounded-lg border border-[#f0b7c9] bg-[#fff1f5] px-3 py-2 text-sm font-semibold leading-6 text-[#a12f56]"
+                      role="alert"
+                      aria-label="推荐跟进不可用"
+                      aria-live="assertive"
+                      aria-atomic="true"
+                    >
+                      {recommendationsError}
+                    </p>
+                  ) : null
+                ) : recommendationsAvailability === "paused" ? (
                   <p className="text-sm font-semibold leading-6 text-[#68708a]">
                     规则推荐已暂停。
                   </p>

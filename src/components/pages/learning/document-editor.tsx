@@ -2,18 +2,46 @@ import {
   useEffect,
   useRef,
   useState,
+  type FocusEvent,
   type MouseEvent as ReactMouseEvent,
+  type ReactNode,
 } from "react";
+import {
+  ListBullets,
+  ListNumbers,
+  TextHOne,
+  TextHThree,
+  TextHTwo,
+} from "@phosphor-icons/react";
 import { anthropicLearningFontFamily } from "@/components/pages/learning/learning-page-constants";
 import {
+  admitAaisResearchAction,
+  createAaisResearchOperationId,
+} from "@/lib/client/aais-research-telemetry";
+import {
+  sanitizeEditorHtml,
   toEditableHtml,
 } from "@/components/pages/learning/document-markdown";
+import { getLearningCopy } from "@/components/pages/learning/learning-copy";
+import {
+  applyAlignmentFallback,
+  applyHeadingFallback,
+  applyInlineFallback,
+  applyListFallback,
+  initialEditorFormatState,
+  queryEditorCommandState,
+  readEditorFormatState,
+  type EditorAlignment,
+  type EditorFormatState,
+  type EditorInlineTag,
+} from "@/components/pages/learning/document-editor-dom";
 import type {
   DocumentFontFamily,
   DocumentFontSize,
   DocumentHeadingTag,
   DocumentListTag,
 } from "@/components/pages/learning/learning-page-types";
+import type { Locale } from "@/data/aais";
 
 const documentFontFamilyStyles: Record<DocumentFontFamily, string> = {
   system:
@@ -27,25 +55,36 @@ const documentFontSizeOptions: DocumentFontSize[] = ["17", "20", "24", "28"];
 export function DocumentEditor({
   artifactText,
   documentTitle,
+  disabled = false,
+  locale = "zh-CN",
   onArtifactChange,
   onArtifactBlur,
   onDocumentTitleChange,
 }: {
   artifactText: string;
   documentTitle: string;
+  disabled?: boolean;
+  locale?: Locale;
   onArtifactChange: (value: string) => void;
-  onArtifactBlur: () => void;
+  onArtifactBlur: (event: FocusEvent<HTMLDivElement>) => void;
   onDocumentTitleChange: (value: string) => void;
 }) {
+  const copy = getLearningCopy(locale);
   const editorRef = useRef<HTMLDivElement | null>(null);
   const editorSelectionRef = useRef<Range | null>(null);
+  const editorComposingRef = useRef(false);
+  const titleAtFocusRef = useRef(documentTitle);
   const [fontFamily, setFontFamily] = useState<DocumentFontFamily>("serif");
   const [fontSize, setFontSize] = useState<DocumentFontSize>("17");
   const [editorEmpty, setEditorEmpty] = useState(!artifactText.trim());
+  const [formatState, setFormatState] = useState<EditorFormatState>(initialEditorFormatState);
 
   useEffect(() => {
     const editor = editorRef.current;
     if (!editor) {
+      return;
+    }
+    if (editorComposingRef.current) {
       return;
     }
     const nextHtml = toEditableHtml(artifactText);
@@ -60,8 +99,13 @@ export function DocumentEditor({
     if (!editor) {
       return;
     }
+    const sanitizedHtml = sanitizeEditorHtml(editor.innerHTML);
+    if (sanitizedHtml !== editor.innerHTML) {
+      editor.innerHTML = sanitizedHtml;
+      placeCaretAtEditorEnd(editor);
+    }
     setEditorEmpty(!editor.textContent?.trim());
-    onArtifactChange(editor.innerHTML);
+    onArtifactChange(sanitizedHtml);
   }
 
   function focusEditor() {
@@ -82,9 +126,26 @@ export function DocumentEditor({
   }
 
   function saveEditorSelection() {
+    const editor = editorRef.current;
     const range = getEditorRange();
-    if (range) {
+    if (editor && range) {
       editorSelectionRef.current = range.cloneRange();
+      const nextFormatState = readEditorFormatState(range, editor);
+      const onlyChildTag = editor.children.length === 1 && !editor.textContent?.trim()
+        ? editor.firstElementChild?.tagName.toLowerCase()
+        : null;
+
+      // Chromium can leave an empty-editor caret on the contentEditable root after
+      // creating the first list. The DOM is formatted correctly, but a root range
+      // has no UL/OL ancestor, so keep the pressed state in sync with that sole
+      // empty block until the learner starts typing.
+      if (onlyChildTag === "ul" || onlyChildTag === "ol") {
+        nextFormatState.list = onlyChildTag;
+      } else if (onlyChildTag === "h1" || onlyChildTag === "h2" || onlyChildTag === "h3") {
+        nextFormatState.heading = onlyChildTag;
+      }
+
+      setFormatState(nextFormatState);
     }
   }
 
@@ -121,7 +182,53 @@ export function DocumentEditor({
     saveEditorSelection();
   }
 
+  function runInlineCommand(formatId: string, command: string, tagName: EditorInlineTag) {
+    if (!admitEditorFormat(formatId)) {
+      return;
+    }
+    const editor = editorRef.current;
+    restoreEditorSelection();
+    const previousHtml = editor?.innerHTML;
+    const commandApplied =
+      typeof document.execCommand === "function" &&
+      document.execCommand(command, false, undefined);
+
+    if (
+      !commandApplied
+      || (editor?.innerHTML === previousHtml && queryEditorCommandState(command) !== true)
+    ) {
+      applyInlineFallback(
+        editor,
+        getEditorRange() ?? editorSelectionRef.current,
+        tagName,
+      );
+    }
+    syncEditorValue();
+    saveEditorSelection();
+  }
+
+  function runAlignmentCommand(
+    formatId: string,
+    alignment: EditorAlignment,
+  ) {
+    if (!admitEditorFormat(formatId)) {
+      return;
+    }
+    const editor = editorRef.current;
+    restoreEditorSelection();
+    applyAlignmentFallback(
+      editor,
+      getEditorRange() ?? editorSelectionRef.current,
+      alignment,
+    );
+    syncEditorValue();
+    saveEditorSelection();
+  }
+
   function runHeadingCommand(tagName: DocumentHeadingTag) {
+    if (!admitEditorFormat("heading", tagName)) {
+      return;
+    }
     const editor = editorRef.current;
     restoreEditorSelection();
     const previousHtml = editor?.innerHTML;
@@ -131,13 +238,20 @@ export function DocumentEditor({
       document.execCommand("formatBlock", false, commandValue);
 
     if (!commandApplied || editor?.innerHTML === previousHtml) {
-      applyHeadingFallback(tagName);
+      applyHeadingFallback(
+        editor,
+        getEditorRange() ?? editorSelectionRef.current,
+        tagName,
+      );
     }
     syncEditorValue();
     saveEditorSelection();
   }
 
   function runListCommand(command: "insertUnorderedList" | "insertOrderedList", tagName: DocumentListTag) {
+    if (!admitEditorFormat("list", tagName === "ul" ? "unordered" : "ordered")) {
+      return;
+    }
     const editor = editorRef.current;
     restoreEditorSelection();
     const previousHtml = editor?.innerHTML;
@@ -146,109 +260,92 @@ export function DocumentEditor({
       document.execCommand(command, false);
 
     if (!commandApplied || editor?.innerHTML === previousHtml) {
-      applyListFallback(tagName);
+      applyListFallback(
+        editor,
+        getEditorRange() ?? editorSelectionRef.current,
+        tagName,
+      );
     }
     syncEditorValue();
     saveEditorSelection();
   }
 
-  function applyHeadingFallback(tagName: DocumentHeadingTag) {
-    const editor = editorRef.current;
-    if (!editor) {
-      return;
-    }
-    const range = getEditorRange() ?? editorSelectionRef.current;
-    const targetBlock = range ? findEditableBlock(range.startContainer, editor) : null;
-    const heading = document.createElement(tagName);
-
-    if (targetBlock) {
-      heading.innerHTML = targetBlock.innerHTML || "<br>";
-      targetBlock.replaceWith(heading);
-      placeCaretAtEnd(heading);
-      return;
-    }
-
-    while (editor.firstChild) {
-      heading.appendChild(editor.firstChild);
-    }
-    if (!heading.childNodes.length) {
-      heading.appendChild(document.createElement("br"));
-    }
-    editor.appendChild(heading);
-    placeCaretAtEnd(heading);
-  }
-
-  function applyListFallback(tagName: DocumentListTag) {
-    const editor = editorRef.current;
-    if (!editor) {
-      return;
-    }
-    const range = getEditorRange() ?? editorSelectionRef.current;
-    const targetBlock = range ? findEditableBlock(range.startContainer, editor) : null;
-    const list = document.createElement(tagName);
-    const listItem = document.createElement("li");
-
-    if (targetBlock) {
-      listItem.innerHTML = targetBlock.innerHTML || "<br>";
-      list.appendChild(listItem);
-      targetBlock.replaceWith(list);
-      placeCaretAtEnd(listItem);
-      return;
-    }
-
-    while (editor.firstChild) {
-      listItem.appendChild(editor.firstChild);
-    }
-    if (!listItem.childNodes.length) {
-      listItem.appendChild(document.createElement("br"));
-    }
-    list.appendChild(listItem);
-    editor.appendChild(list);
-    placeCaretAtEnd(listItem);
-  }
-
   function setEditorFontFamily(nextFontFamily: DocumentFontFamily) {
+    if (!admitEditorFormat("font_family", nextFontFamily)) {
+      return;
+    }
     setFontFamily(nextFontFamily);
     const cssFontFamily = documentFontFamilyStyles[nextFontFamily];
     runEditorCommand("fontName", cssFontFamily);
   }
 
   function setEditorFontSize(nextFontSize: DocumentFontSize) {
+    if (!admitEditorFormat("font_size", nextFontSize)) {
+      return;
+    }
     setFontSize(nextFontSize);
     focusEditor();
     syncEditorValue();
   }
 
-  const toolbarButtonClass =
-    "inline-flex h-10 min-w-10 items-center justify-center px-3 text-base outline-none transition hover:bg-white focus-visible:ring-2 focus-visible:ring-[#536de8]";
-  const editorFontStyle = {
-    fontFamily: documentFontFamilyStyles[fontFamily],
-    fontSize: `${fontSize}px`,
-  };
+  function admitEditorFormat(formatId: string, valueId?: string) {
+    return admitAaisResearchAction({
+      eventName: "editor_format_applied",
+      outcome: "success",
+      detail: {
+        operation_id: createAaisResearchOperationId("editor-format"),
+        format_id: formatId,
+        ...(valueId ? { value_id: valueId } : {}),
+      },
+    });
+  }
 
+  const toolbarButtonClass =
+    "group relative inline-flex min-h-11 min-w-11 items-center justify-center gap-1.5 rounded-md border border-transparent px-2.5 text-sm font-medium text-[#4a4a4a] outline-none transition-colors duration-150 hover:border-[#cbd4ff] hover:bg-white hover:text-[#324fd6] active:bg-[#dfe5ff] aria-pressed:border-[#aab8ff] aria-pressed:bg-[#e8ecff] aria-pressed:text-[#253fb0] focus-visible:ring-2 focus-visible:ring-[#536de8] focus-visible:ring-offset-2 focus-visible:ring-offset-[#f8f8f8]";
   return (
-    <section className="px-3 py-4">
+    <fieldset className="flex min-w-0 flex-1 flex-col px-3 py-4 lg:h-full" disabled={disabled}>
       <input
-        aria-label="文档标题"
+        aria-label={copy.editor.titleLabel}
         value={documentTitle}
+        onFocus={(event) => {
+          titleAtFocusRef.current = event.currentTarget.value;
+        }}
         onChange={(event) => onDocumentTitleChange(event.target.value)}
-        placeholder="输入标题..."
+        onBlur={(event) => {
+          if (event.currentTarget.value === titleAtFocusRef.current) {
+            return;
+          }
+          admitAaisResearchAction({
+            eventName: "document_title_committed",
+            outcome: "success",
+            detail: {
+              operation_id: createAaisResearchOperationId("document-title"),
+              trigger: "blur",
+              title_length: event.currentTarget.value.trim().length,
+            },
+          });
+        }}
+        placeholder={copy.editor.titlePlaceholder}
         className="h-12 w-full rounded-md border border-[#e7e7e7] px-4 text-[17px] text-[#333333] outline-none placeholder:text-[#b5b5b5] focus:border-[#536de8]"
       />
-      <div className="mt-3 rounded-lg border border-[#e7e7e7] bg-[#f8f8f8] p-3 text-base text-[#5a5a5a]">
+      <div
+        className="mt-3 rounded-lg border border-[#e7e7e7] bg-[#f8f8f8] p-3 text-base text-[#5a5a5a]"
+        role="toolbar"
+        aria-label={copy.editor.toolbarLabel}
+      >
         <div className="flex flex-wrap items-center gap-3">
           <select
-            aria-label="字体"
+            aria-label={copy.editor.fontLabel}
             value={fontFamily}
             onChange={(event) => setEditorFontFamily(event.target.value as DocumentFontFamily)}
             className="h-10 rounded-md border border-[#dddddd] bg-white px-3 text-base outline-none focus-visible:ring-2 focus-visible:ring-[#536de8]"
           >
-            <option value="system">默认</option>
-            <option value="serif">衬线</option>
-            <option value="mono">等宽</option>
+            <option value="system">{copy.editor.fontFamilies.system}</option>
+            <option value="serif">{copy.editor.fontFamilies.serif}</option>
+            <option value="mono">{copy.editor.fontFamilies.mono}</option>
           </select>
           <select
-            aria-label="字号"
+            aria-label={copy.editor.sizeLabel}
             value={fontSize}
             onChange={(event) => setEditorFontSize(event.target.value as DocumentFontSize)}
             className="h-10 rounded-md border border-[#dddddd] bg-white px-3 text-base outline-none focus-visible:ring-2 focus-visible:ring-[#536de8]"
@@ -259,47 +356,91 @@ export function DocumentEditor({
               </option>
             ))}
           </select>
-          <EditorButton label="加粗" className={`${toolbarButtonClass} font-bold`} onMouseDown={keepEditorSelection} onClick={() => runEditorCommand("bold")}>B</EditorButton>
-          <EditorButton label="斜体" className={`${toolbarButtonClass} italic`} onMouseDown={keepEditorSelection} onClick={() => runEditorCommand("italic")}>I</EditorButton>
-          <EditorButton label="下划线" className={`${toolbarButtonClass} underline`} onMouseDown={keepEditorSelection} onClick={() => runEditorCommand("underline")}>U</EditorButton>
-          <EditorButton label="左对齐" className={toolbarButtonClass} onMouseDown={keepEditorSelection} onClick={() => runEditorCommand("justifyLeft")}>L</EditorButton>
-          <EditorButton label="居中" className={toolbarButtonClass} onMouseDown={keepEditorSelection} onClick={() => runEditorCommand("justifyCenter")}>C</EditorButton>
-          <EditorButton label="右对齐" className={toolbarButtonClass} onMouseDown={keepEditorSelection} onClick={() => runEditorCommand("justifyRight")}>R</EditorButton>
+          <EditorButton label={copy.editor.bold} pressed={formatState.bold} className={`${toolbarButtonClass} font-bold`} onMouseDown={keepEditorSelection} onClick={() => runInlineCommand("bold", "bold", "strong")}>B</EditorButton>
+          <EditorButton label={copy.editor.italic} pressed={formatState.italic} className={`${toolbarButtonClass} italic`} onMouseDown={keepEditorSelection} onClick={() => runInlineCommand("italic", "italic", "em")}>I</EditorButton>
+          <EditorButton label={copy.editor.underline} pressed={formatState.underline} className={`${toolbarButtonClass} underline`} onMouseDown={keepEditorSelection} onClick={() => runInlineCommand("underline", "underline", "u")}>U</EditorButton>
+          <EditorButton label={copy.editor.alignLeft} pressed={formatState.alignment === "left"} className={toolbarButtonClass} onMouseDown={keepEditorSelection} onClick={() => runAlignmentCommand("align_left", "left")}>L</EditorButton>
+          <EditorButton label={copy.editor.alignCenter} pressed={formatState.alignment === "center"} className={toolbarButtonClass} onMouseDown={keepEditorSelection} onClick={() => runAlignmentCommand("align_center", "center")}>C</EditorButton>
+          <EditorButton label={copy.editor.alignRight} pressed={formatState.alignment === "right"} className={toolbarButtonClass} onMouseDown={keepEditorSelection} onClick={() => runAlignmentCommand("align_right", "right")}>R</EditorButton>
         </div>
-        <div className="mt-3 flex flex-wrap items-center gap-3">
-          <EditorButton label="项目符号" className={toolbarButtonClass} onMouseDown={keepEditorSelection} onClick={() => runListCommand("insertUnorderedList", "ul")}>=</EditorButton>
-          <EditorButton label="编号列表" className={toolbarButtonClass} onMouseDown={keepEditorSelection} onClick={() => runListCommand("insertOrderedList", "ol")}>#</EditorButton>
-          <EditorButton label="一级标题" className={`${toolbarButtonClass} font-semibold`} onMouseDown={keepEditorSelection} onClick={() => runHeadingCommand("h1")}>H1</EditorButton>
-          <EditorButton label="二级标题" className={`${toolbarButtonClass} font-semibold`} onMouseDown={keepEditorSelection} onClick={() => runHeadingCommand("h2")}>H2</EditorButton>
-          <EditorButton label="三级标题" className={`${toolbarButtonClass} font-semibold`} onMouseDown={keepEditorSelection} onClick={() => runHeadingCommand("h3")}>H3</EditorButton>
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          <EditorButton label={copy.editor.bulletList} pressed={formatState.list === "ul"} className={toolbarButtonClass} onMouseDown={keepEditorSelection} onClick={() => runListCommand("insertUnorderedList", "ul")}>
+            <ListBullets aria-hidden="true" size={20} weight="bold" />
+            <span className="whitespace-nowrap">{copy.editor.bulletList}</span>
+          </EditorButton>
+          <EditorButton label={copy.editor.numberedList} pressed={formatState.list === "ol"} className={toolbarButtonClass} onMouseDown={keepEditorSelection} onClick={() => runListCommand("insertOrderedList", "ol")}>
+            <ListNumbers aria-hidden="true" size={20} weight="bold" />
+            <span className="whitespace-nowrap">{copy.editor.numberedList}</span>
+          </EditorButton>
+          <EditorButton label={copy.editor.heading1} pressed={formatState.heading === "h1"} className={toolbarButtonClass} onMouseDown={keepEditorSelection} onClick={() => runHeadingCommand("h1")}>
+            <TextHOne aria-hidden="true" size={20} weight="bold" />
+            <span className="whitespace-nowrap">{copy.editor.heading1}</span>
+          </EditorButton>
+          <EditorButton label={copy.editor.heading2} pressed={formatState.heading === "h2"} className={toolbarButtonClass} onMouseDown={keepEditorSelection} onClick={() => runHeadingCommand("h2")}>
+            <TextHTwo aria-hidden="true" size={20} weight="bold" />
+            <span className="whitespace-nowrap">{copy.editor.heading2}</span>
+          </EditorButton>
+          <EditorButton label={copy.editor.heading3} pressed={formatState.heading === "h3"} className={toolbarButtonClass} onMouseDown={keepEditorSelection} onClick={() => runHeadingCommand("h3")}>
+            <TextHThree aria-hidden="true" size={20} weight="bold" />
+            <span className="whitespace-nowrap">{copy.editor.heading3}</span>
+          </EditorButton>
         </div>
       </div>
-      <div className="relative mt-3">
+      <div className="relative mt-3 flex min-h-[404px] flex-1 lg:min-h-0">
         {editorEmpty ? (
           <span className="pointer-events-none absolute left-4 top-4 text-[17px] leading-7 text-[#b5b5b5]">
-            在这里开始记录...
+            {copy.editor.emptyPrompt}
           </span>
         ) : null}
         <div
           ref={editorRef}
-          aria-label="在这里写下任务理解、计划、执行过程或最终产出。"
+          aria-label={copy.editor.inputLabel}
           aria-multiline="true"
           role="textbox"
-          contentEditable
+          aria-disabled={disabled || undefined}
+          contentEditable={!disabled}
           suppressContentEditableWarning
           onInput={() => {
             syncEditorValue();
+            if (!editorComposingRef.current) {
+              saveEditorSelection();
+            }
+          }}
+          onCompositionStart={() => {
+            editorComposingRef.current = true;
+          }}
+          onCompositionEnd={() => {
+            editorComposingRef.current = false;
+            syncEditorValue();
             saveEditorSelection();
           }}
-          onKeyUp={saveEditorSelection}
+          onFocus={saveEditorSelection}
+          onKeyUp={() => {
+            if (!editorComposingRef.current) {
+              saveEditorSelection();
+            }
+          }}
           onMouseUp={saveEditorSelection}
           onBlur={onArtifactBlur}
-          style={editorFontStyle}
-          className="min-h-[404px] w-full resize-none overflow-y-auto rounded-lg border border-[#e5e5e5] bg-white p-4 leading-7 text-[#333333] outline-none focus:border-[#536de8]"
+          data-font-family={fontFamily}
+          data-font-size={fontSize}
+          className="aais-document-editor min-h-[404px] w-full flex-1 resize-none overflow-x-hidden overflow-y-auto rounded-lg border border-[#e5e5e5] bg-white p-4 leading-7 text-[#333333] outline-none focus:border-[#536de8] lg:min-h-0"
         />
       </div>
-    </section>
+    </fieldset>
   );
+}
+
+function placeCaretAtEditorEnd(editor: HTMLElement) {
+  const selection = window.getSelection();
+  if (!selection) {
+    return;
+  }
+  const range = document.createRange();
+  range.selectNodeContents(editor);
+  range.collapse(false);
+  selection.removeAllRanges();
+  selection.addRange(range);
 }
 
 function EditorButton({
@@ -308,12 +449,14 @@ function EditorButton({
   label,
   onClick,
   onMouseDown,
+  pressed,
 }: {
-  children: string;
+  children: ReactNode;
   className: string;
   label: string;
   onClick: () => void;
   onMouseDown: (event: ReactMouseEvent<HTMLButtonElement>) => void;
+  pressed: boolean;
 }) {
   return (
     <button
@@ -322,48 +465,16 @@ function EditorButton({
       onClick={onClick}
       className={className}
       aria-label={label}
+      aria-pressed={pressed}
+      title={label}
     >
       {children}
+      <span
+        aria-hidden="true"
+        className="pointer-events-none invisible absolute left-1/2 bottom-full z-30 mb-2 -translate-x-1/2 whitespace-nowrap rounded bg-[#172033] px-2 py-1 text-xs font-normal text-white opacity-0 shadow-lg transition-opacity duration-150 group-hover:visible group-hover:opacity-100 group-focus-visible:visible group-focus-visible:opacity-100"
+      >
+        {label}
+      </span>
     </button>
   );
-}
-
-function findEditableBlock(node: Node, editor: HTMLElement) {
-  const blockTags = new Set([
-    "BLOCKQUOTE",
-    "DIV",
-    "H1",
-    "H2",
-    "H3",
-    "H4",
-    "H5",
-    "H6",
-    "LI",
-    "P",
-    "PRE",
-  ]);
-  let current =
-    node.nodeType === Node.ELEMENT_NODE
-      ? (node as HTMLElement)
-      : node.parentElement;
-
-  while (current && current !== editor) {
-    if (blockTags.has(current.tagName)) {
-      return current;
-    }
-    current = current.parentElement;
-  }
-  return null;
-}
-
-function placeCaretAtEnd(element: HTMLElement) {
-  const selection = window.getSelection();
-  if (!selection) {
-    return;
-  }
-  const range = document.createRange();
-  range.selectNodeContents(element);
-  range.collapse(false);
-  selection.removeAllRanges();
-  selection.addRange(range);
 }

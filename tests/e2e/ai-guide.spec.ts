@@ -1,5 +1,8 @@
 import { expect, test } from "@playwright/test";
-import { authenticateAaisE2eActor } from "./aais-e2e-helpers";
+import {
+  authenticateAaisE2eActor,
+  waitForAaisLearningClientReady,
+} from "./aais-e2e-helpers";
 
 test("student guide turn shows fallback state when the AI route reports template guidance", async ({ page }) => {
   await page.route("**/api/learning/ai-guide", async (route) => {
@@ -7,7 +10,7 @@ test("student guide turn shows fallback state when the AI route reports template
       learnerInput?: string;
       targetAgentIds?: string[];
     };
-    expect(requestBody.learnerInput).toContain("@A2");
+    expect(requestBody.learnerInput).toContain("@教授");
     expect(requestBody.targetAgentIds).toEqual(["A2"]);
     await route.fulfill({
       status: 200,
@@ -19,7 +22,7 @@ test("student guide turn shows fallback state when the AI route reports template
         turns: [
           {
             agentId: "A2",
-            label: "专家智能体",
+            label: "教授",
             content: "A2 已用本地支架示范一次元认知拆解。",
             actions: ["model", "coach"],
           },
@@ -27,7 +30,7 @@ test("student guide turn shows fallback state when the AI route reports template
         orchestration: {
           graph: {
             graphId: "learning-ai-guide",
-            topologicalOrder: ["A1", "A2", "A3", "A4"],
+            topologicalOrder: ["A2"],
           },
           runtime: {
             timings: {
@@ -46,10 +49,11 @@ test("student guide turn shows fallback state when the AI route reports template
   });
   await page.goto("/learning");
   await expect(page).toHaveURL(/\/learning$/);
+  await waitForAaisLearningClientReady(page);
 
-  await page.getByLabel("向智能导学输入你的想法").fill("@A2 请示范一次元认知拆解");
+  await page.getByLabel("向智能导学输入你的想法").fill("@教授 请示范一次元认知拆解");
   await page.getByRole("button", { name: "发送" }).click();
 
   await expect(page.getByText("离线支架模式")).toBeVisible();
-  await expect(page.getByText("A2 已用本地支架示范一次元认知拆解。")).toBeVisible();
+  await expect(page.getByText("教授已用本地支架示范一次元认知拆解。")).toBeVisible();
 });
