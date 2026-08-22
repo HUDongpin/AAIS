@@ -40,9 +40,14 @@ const zhCnLoginCopy = {
   consentRequiredError: "请先确认用户协议、隐私政策和必要的监护人同意。",
   emptyError: "请输入账号和密码。",
   emailError: "请输入账号邮箱。",
+  emailInvalidError: "请输入有效的账号邮箱。",
   passwordLengthError: "密码至少需要 10 个字符。",
   passwordMismatchError: "两次输入的密码不一致。",
   invalidError: "账号或密码不匹配，请使用已授权的 CAAIS 账号登录。",
+  rateLimitError: "请求过于频繁，请稍后再试。",
+  passwordTokenInvalidError: "该密码设置链接无效或已过期，请重新申请。",
+  passwordInputInvalidError: "密码请求内容无效，请检查后重试。",
+  passwordRequestTooLargeError: "密码请求内容过长，请缩短后重试。",
   serverError: "登录服务暂时不可用，请稍后再试。",
   researchLogoutAckWarning: "账号已安全退出，但最终研究事件未获确认。请告知研究人员，且不要将本次实验标记为完成。",
   showPassword: "显示密码",
@@ -88,9 +93,14 @@ const enUsLoginCopy: typeof zhCnLoginCopy = {
   consentRequiredError: "Confirm the Terms of Use, Privacy Policy, and any required parent or guardian consent before signing in.",
   emptyError: "Enter your account and password.",
   emailError: "Enter your account email.",
+  emailInvalidError: "Enter a valid account email.",
   passwordLengthError: "The password must contain at least 10 characters.",
   passwordMismatchError: "The passwords do not match.",
   invalidError: "The account or password did not match. Use an authorized CAAIS account.",
+  rateLimitError: "Too many requests. Try again later.",
+  passwordTokenInvalidError: "This password link is invalid or has expired. Request a new one.",
+  passwordInputInvalidError: "The password request is invalid. Check it and try again.",
+  passwordRequestTooLargeError: "The password request is too large. Shorten it and try again.",
   serverError: "The sign-in service is temporarily unavailable. Try again later.",
   researchLogoutAckWarning: "You were signed out securely, but the final research event was not acknowledged. Tell the researcher and do not mark this session complete.",
   showPassword: "Show password",
@@ -133,7 +143,7 @@ export const loginDeckCards: LoginDeckCard[] = [
     accent: "训练阶段",
     chips: ["专家示范视频", "理解测评反馈", "任务说明分发"],
     footer: "从专家建模开始，逐步进入训练任务",
-    assetSrc: "/login/uais-student-card-illustration.png",
+    assetSrc: "/login/uais-student-card-illustration.webp",
     assetAlt: "两位学生使用平板电脑和笔记本电脑自主学习",
   },
   {
@@ -142,7 +152,7 @@ export const loginDeckCards: LoginDeckCard[] = [
     accent: "练习阶段",
     chips: ["行为监测推送", "专家轨迹对比", "元认知支架"],
     footer: "把学习过程、反思文本和最终产出保留下来",
-    assetSrc: "/login/uais-teacher-card-illustration.png",
+    assetSrc: "/login/uais-teacher-card-illustration.webp",
     assetAlt: "学习者在智能系统中整理任务和反馈",
   },
 ];
@@ -196,7 +206,7 @@ function LoginDesignCard({ card }: { card: LoginDeckCard }) {
             alt={card.assetAlt}
             width={320}
             height={240}
-            loading="eager"
+            loading={guided ? "eager" : "lazy"}
             decoding="async"
             className="h-full w-full object-contain object-center"
           />

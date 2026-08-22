@@ -5,11 +5,13 @@ import { readFile } from "node:fs/promises";
 import { describe, expect, it, vi } from "vitest";
 import type { AaisSessionActor } from "@/lib/server/aais-session";
 import {
+  AaisResearchConfigurationError,
   encryptAaisResearchIdentity,
   type AaisResearchConfiguration,
 } from "@/lib/server/aais-research-contract";
 import {
   AaisResearchAuthorizationError,
+  AaisResearchEventLimitError,
   AaisResearchVisitInactiveError,
   AaisResearchVisitMismatchError,
   createAaisResearchStore,
@@ -229,6 +231,36 @@ describe("AAIS research Postgres store", () => {
     ]));
   });
 
+  it("maps the per-visit research event cap before any additional event is persisted", async () => {
+    const database = new ScriptedDatabase([
+      {
+        participant_id: ids[0],
+        study_run_id: ids[1],
+        visit_id: ids[2],
+        condition: "treatment",
+        status: "active",
+      },
+      new Error("research visit event limit reached"),
+    ]);
+    const store = createAaisResearchStore({
+      configuration,
+      database,
+      now: () => new Date("2026-07-30T10:00:00.100Z"),
+    });
+
+    await expect(store.recordEvent(student, {
+      clientEventId: ids[3],
+      clientTime: "2026-07-30T10:00:00.000Z",
+      expectedVisitId: ids[2],
+      eventName: "content_tab_selected",
+      outcome: "success",
+      detail: { tab_id: "editor" },
+    })).rejects.toThrow(AaisResearchEventLimitError);
+
+    expect(database.calls).toHaveLength(2);
+    expect(database.calls[1]?.sql).toContain("aais_research_record_event");
+  });
+
   it("rejects an event bound to another visit before event SQL", async () => {
     const database = new ScriptedDatabase([{
       participant_id: ids[0],
@@ -290,15 +322,173 @@ describe("AAIS research Postgres store", () => {
     expect(exported.rowCount).toBe(1);
     expect(exported.fileSha256).toMatch(/^[0-9a-f]{64}$/);
     expect(exported.body).not.toContain("Student One");
-    expect(database.calls[0]?.sql).toContain("where project_id = $1");
-    expect(database.calls[0]?.sql).toContain("and study_id = $2");
-    expect(database.calls[0]?.sql).toContain("and environment = $3");
-    expect(database.calls[0]?.sql).toContain("and lrs_namespace = $4");
+    expect(database.calls[0]?.sql).toContain("public.aais_research_export_events");
+    expect(database.calls[0]?.params).toEqual([
+      configuration.projectId,
+      configuration.studyId,
+      configuration.environment,
+      configuration.lrsNamespace,
+      ids[1],
+      10_000,
+    ]);
     expect(database.calls[1]?.sql).toContain("aais_research_export_audit");
     expect(database.calls[1]?.params).toContain(exported.fileSha256);
     expect(database.calls[1]?.params).toContain("approved_analysis");
     expect(database.calls[1]?.params).toContain(1);
     expect(database.calls[1]?.params).toContain(configuration.commitSha);
+  });
+
+  it("rejects a controlled export after the withdrawal barrier closes without writing success audit", async () => {
+    const database = new ScriptedDatabase([
+      new Error("research study run is not exportable"),
+    ]);
+    const store = createAaisResearchStore({
+      configuration,
+      database,
+      env: {
+        AAIS_RESEARCH_EXPORT_ENABLED: "true",
+        AAIS_RESEARCH_EXPORT_ACTOR_IDS: "researcher-1",
+      },
+    });
+
+    await expect(store.exportEvents({
+      actor: researcher,
+      studyRunId: ids[1],
+      format: "json",
+      purpose: "approved_analysis",
+    })).rejects.toThrow(AaisResearchVisitInactiveError);
+
+    expect(database.calls).toHaveLength(1);
+    expect(database.calls[0]?.sql).toContain("public.aais_research_export_events");
+    expect(database.calls.some((call) => call.sql.includes("aais_research_export_audit")))
+      .toBe(false);
+  });
+
+  it("fails controlled export closed as configuration unavailable when migration 0022 is missing", async () => {
+    const missingFunction = Object.assign(
+      new Error("function public.aais_research_export_events does not exist"),
+      { code: "42883" },
+    );
+    const database = new ScriptedDatabase([missingFunction]);
+    const store = createAaisResearchStore({
+      configuration,
+      database,
+      env: {
+        AAIS_RESEARCH_EXPORT_ENABLED: "true",
+        AAIS_RESEARCH_EXPORT_ACTOR_IDS: "researcher-1",
+      },
+    });
+
+    await expect(store.exportEvents({
+      actor: researcher,
+      studyRunId: ids[1],
+      format: "json",
+      purpose: "approved_analysis",
+    })).rejects.toThrow(AaisResearchConfigurationError);
+    expect(database.calls).toHaveLength(1);
+  });
+
+  it("keeps export closed while restricted raw-text deletion is still in progress", async () => {
+    const encryptedIdentity = encryptAaisResearchIdentity({
+      actor: student,
+      configuration,
+      randomBytesImpl: () => Buffer.alloc(12, 6),
+    });
+    const calls: Array<{ sql: string; params: unknown[] }> = [];
+    let visitStatus = "active";
+    const database: AaisResearchDatabaseClient = {
+      async query(sql, params = []) {
+        calls.push({ sql, params });
+        if (sql.includes("aais_research_begin_withdrawal")) {
+          visitStatus = "withdrawing";
+          return { rows: [{
+            visit_id: ids[2],
+            participant_id: ids[0],
+            status: visitStatus,
+            active_raw_write_lease_count: 0,
+          }] };
+        }
+        if (sql.includes("aais_research_identity.aais_research_participation_ledger")) {
+          return { rows: [{
+            ciphertext: encryptedIdentity.ciphertext,
+            iv: encryptedIdentity.iv,
+            authentication_tag: encryptedIdentity.authenticationTag,
+            key_version: encryptedIdentity.keyVersion,
+            identity_participant_id: ids[0],
+            raw_text_deleted_at: null,
+            raw_text_storage: null,
+            existing_withdrawal_id: null,
+          }] };
+        }
+        if (sql.includes("aais_research_export_events")) {
+          if (visitStatus !== "active" && visitStatus !== "completed") {
+            throw new Error("research study run is not exportable");
+          }
+          return { rows: [createEventRow()] };
+        }
+        if (sql.includes("aais_research_withdraw(")) {
+          visitStatus = "withdrawn";
+          return { rows: [{
+            withdrawal_id: ids[4],
+            participant_id: ids[0],
+            visit_id: ids[2],
+            local_event_count: 1,
+            deletion_request_count: 1,
+            identity_deleted: true,
+            restricted_raw_text_deleted: true,
+            created: true,
+          }] };
+        }
+        if (sql.includes("aais_research_export_audit")) {
+          return { rows: [] };
+        }
+        throw new Error(`Unexpected research SQL: ${sql}`);
+      },
+    };
+    let markDeletionStarted: (() => void) | undefined;
+    const deletionStarted = new Promise<void>((resolve) => {
+      markDeletionStarted = resolve;
+    });
+    let finishDeletion: ((value: { storageMode: "postgres" }) => void) | undefined;
+    const deleteLearnerRawData = vi.fn(() => {
+      markDeletionStarted?.();
+      return new Promise<{ storageMode: "postgres" }>((resolve) => {
+        finishDeletion = resolve;
+      });
+    });
+    const store = createAaisResearchStore({
+      configuration,
+      database,
+      deleteLearnerRawData,
+      randomUuid: () => ids[4],
+      now: () => new Date("2026-07-30T10:02:00.000Z"),
+      env: {
+        AAIS_RESEARCH_PI_ACTOR_IDS: "researcher-1",
+        AAIS_RESEARCH_EXPORT_ENABLED: "true",
+        AAIS_RESEARCH_EXPORT_ACTOR_IDS: "researcher-1",
+      },
+    });
+
+    const withdrawal = store.withdrawStudyRun({
+      actor: researcher,
+      studyRunId: ids[1],
+    });
+    await deletionStarted;
+
+    await expect(store.exportEvents({
+      actor: researcher,
+      studyRunId: ids[1],
+      format: "json",
+      purpose: "approved_analysis",
+    })).rejects.toThrow(AaisResearchVisitInactiveError);
+    expect(calls.some((call) => call.sql.includes("aais_research_export_audit")))
+      .toBe(false);
+
+    finishDeletion?.({ storageMode: "postgres" });
+    await expect(withdrawal).resolves.toMatchObject({
+      studyRunId: ids[1],
+      restrictedRawTextDeleted: true,
+    });
   });
 
   it("fails closed for withdrawal unless the researcher is an approved PI or custodian", async () => {
@@ -517,6 +707,8 @@ describe("AAIS research Postgres store", () => {
       sent: 1,
       retried: 0,
       deadLetter: 0,
+      stoppedReason: "empty",
+      hasMore: false,
     });
     expect(database.calls[0]?.sql).toContain("for update skip locked");
     expect(database.calls[0]?.sql).toContain("left join aais_research_events e");
@@ -528,6 +720,122 @@ describe("AAIS research Postgres store", () => {
     expect(database.calls[1]?.sql).toContain("and status = 'sending'");
     expect(database.calls[1]?.params).toContain(ids[0]);
     expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["events", "deletions", "requeue-events", "requeue-deletions"] as const)(
+    "parses the safe LRS configuration once before claiming %s work",
+    async (action) => {
+      const database = new ScriptedDatabase([]);
+      const store = createAaisResearchStore({
+        configuration,
+        database,
+        env: {},
+      });
+
+      const operation = action === "events"
+        ? store.flushLrsOutbox(1)
+        : action === "deletions"
+          ? store.flushLrsDeletions(1)
+          : action === "requeue-events"
+            ? store.requeueLrsOutboxDeadLetters(1)
+            : store.requeueLrsDeletionDeadLetters(1);
+      await expect(operation).rejects.toBeInstanceOf(AaisResearchConfigurationError);
+      expect(database.calls).toHaveLength(0);
+    },
+  );
+
+  it.each([
+    { failure: "transport", status: null },
+    { failure: "HTTP 408", status: 408 },
+    { failure: "HTTP 429", status: 429 },
+    { failure: "HTTP 503", status: 503 },
+  ])("keeps a fifth-attempt $failure delivery retryable with persisted backoff", async ({ status }) => {
+    const database = new ScriptedDatabase([
+      [createClaimedOutboxRow(createOutboxPayload(), 4)],
+      [{ outbox_id: ids[4] }],
+    ]);
+    const store = createAaisResearchStore({
+      configuration,
+      database,
+      randomUuid: () => ids[0],
+      fetchImpl: status === null
+        ? async () => { throw new Error("simulated transport failure"); }
+        : async () => new Response("unavailable", { status }),
+      env: createResearchLrsEnv(),
+    });
+
+    await expect(store.flushLrsOutbox(1)).resolves.toEqual({
+      selected: 1,
+      sent: 0,
+      retried: 1,
+      deadLetter: 0,
+      stoppedReason: "limit",
+      hasMore: true,
+    });
+    expect(database.calls[0]?.sql).toContain("o.status = 'retry'");
+    expect(database.calls[0]?.sql).toContain("o.updated_at <= now()");
+    expect(database.calls[1]?.params).toContain("retry");
+    expect(database.calls[1]?.params).not.toContain("dead_letter");
+  });
+
+  it("dead-letters a provider-rejected immutable event payload without retrying it", async () => {
+    const database = new ScriptedDatabase([
+      [createClaimedOutboxRow()],
+      [{ outbox_id: ids[4] }],
+    ]);
+    const fetchImpl = vi.fn(async () => new Response("invalid statement", { status: 422 }));
+    const store = createAaisResearchStore({
+      configuration,
+      database,
+      randomUuid: () => ids[0],
+      fetchImpl,
+      env: createResearchLrsEnv(),
+    });
+
+    await expect(store.flushLrsOutbox(1)).resolves.toMatchObject({
+      selected: 1,
+      sent: 0,
+      retried: 0,
+      deadLetter: 1,
+    });
+    expect(fetchImpl).toHaveBeenCalledOnce();
+    expect(database.calls[1]?.params).toEqual(expect.arrayContaining([
+      "dead_letter",
+      422,
+      "research_lrs_permanent_http_error",
+    ]));
+  });
+
+  it("stops a worker invocation at its wall-clock budget before claiming another row", async () => {
+    const payload = createOutboxPayload();
+    const database = new ScriptedDatabase([
+      [createClaimedOutboxRow(payload)],
+      [{ outbox_id: ids[4] }],
+    ]);
+    let workerNow = Date.parse("2026-07-30T10:00:00.000Z");
+    const fetchImpl = vi.fn(async () => {
+      workerNow += 19_500;
+      return new Response("", { status: 200 });
+    });
+    const store = createAaisResearchStore({
+      configuration,
+      database,
+      now: () => new Date(workerNow),
+      randomUuid: () => ids[0],
+      fetchImpl,
+      env: createResearchLrsEnv(),
+    });
+
+    await expect(store.flushLrsOutbox(25)).resolves.toEqual({
+      selected: 1,
+      sent: 1,
+      retried: 0,
+      deadLetter: 0,
+      stoppedReason: "runtime_budget",
+      hasMore: true,
+    });
+    expect(database.calls).toHaveLength(2);
+    expect(fetchImpl).toHaveBeenCalledOnce();
   });
 
   it("never contacts the LRS when a claimed outbox payload drifts from its immutable scope", async () => {
@@ -551,8 +859,10 @@ describe("AAIS research Postgres store", () => {
     await expect(store.flushLrsOutbox(1)).resolves.toEqual({
       selected: 1,
       sent: 0,
-      retried: 1,
-      deadLetter: 0,
+      retried: 0,
+      deadLetter: 1,
+      stoppedReason: "limit",
+      hasMore: true,
     });
     expect(fetchImpl).not.toHaveBeenCalled();
     expect(database.calls[1]?.sql).toContain("last_error = $9");
@@ -580,8 +890,10 @@ describe("AAIS research Postgres store", () => {
       await expect(store.flushLrsOutbox(1)).resolves.toEqual({
         selected: 1,
         sent: 0,
-        retried: 1,
-        deadLetter: 0,
+        retried: 0,
+        deadLetter: 1,
+        stoppedReason: "limit",
+        hasMore: true,
       });
       expect(fetchImpl).not.toHaveBeenCalled();
       expect(database.calls[1]?.params).toContain("research_lrs_payload_fact_mismatch");
@@ -607,7 +919,8 @@ describe("AAIS research Postgres store", () => {
     await expect(store.flushLrsOutbox(1)).resolves.toMatchObject({
       selected: 1,
       sent: 0,
-      retried: 1,
+      retried: 0,
+      deadLetter: 1,
     });
     expect(fetchImpl).not.toHaveBeenCalled();
     expect(database.calls[1]?.params).toContain("research_lrs_payload_fact_mismatch");
@@ -641,11 +954,130 @@ describe("AAIS research Postgres store", () => {
         confirmed: 0,
         retried: 1,
         deadLetter: 0,
+        stoppedReason: "limit",
+        hasMore: true,
       });
       expect(database.calls[1]?.sql).toContain("research_lrs_absence_confirmation_pending");
       expect(database.calls[1]?.params).toContain("retry");
     },
   );
+
+  it.each([
+    { failure: "transport", status: null },
+    { failure: "HTTP 408", status: 408 },
+    { failure: "HTTP 429", status: 429 },
+    { failure: "HTTP 503", status: 503 },
+  ])("keeps a fifth-attempt deletion $failure retryable with backoff", async ({ status }) => {
+    const database = new ScriptedDatabase([
+      [{
+        deletion_id: ids[4],
+        statement_id: ids[3],
+        lrs_store_id: configuration.lrsStoreId,
+        attempts: 4,
+      }],
+      [{ deletion_id: ids[4] }],
+    ]);
+    const store = createAaisResearchStore({
+      configuration,
+      database,
+      randomUuid: () => ids[0],
+      fetchImpl: status === null
+        ? async () => { throw new Error("simulated transport failure"); }
+        : async () => new Response("unavailable", { status }),
+      env: createResearchLrsEnv(),
+    });
+
+    await expect(store.flushLrsDeletions(1)).resolves.toEqual({
+      selected: 1,
+      confirmed: 0,
+      retried: 1,
+      deadLetter: 0,
+      stoppedReason: "limit",
+      hasMore: true,
+    });
+    expect(database.calls[1]?.sql).toContain("then greatest(not_before");
+    expect(database.calls[1]?.params).toContain("retry");
+    expect(database.calls[1]?.params).not.toContain("dead_letter");
+  });
+
+  it("requeues an event dead letter only after revalidating its immutable event fact", async () => {
+    const database = new ScriptedDatabase([
+      [createClaimedOutboxRow()],
+      [{ outbox_id: ids[4] }],
+    ]);
+    const store = createAaisResearchStore({
+      configuration,
+      database,
+      randomUuid: () => ids[0],
+      env: createResearchLrsEnv(),
+    });
+
+    await expect(store.requeueLrsOutboxDeadLetters(1)).resolves.toEqual({
+      selected: 1,
+      requeued: 1,
+      rejected: 0,
+      stoppedReason: "limit",
+      hasMore: true,
+    });
+    expect(database.calls[0]?.sql).toContain("o.status = 'dead_letter'");
+    expect(database.calls[0]?.sql).toContain("left join aais_research_events e");
+    expect(database.calls[1]?.sql).toContain("set status = 'retry', attempts = 0");
+  });
+
+  it("keeps a poisoned event dead letter quarantined during bounded requeue", async () => {
+    const payload = { ...createOutboxPayload(), studyId: "tampered-study" };
+    const database = new ScriptedDatabase([
+      [createClaimedOutboxRow(payload)],
+      [{ outbox_id: ids[4] }],
+    ]);
+    const store = createAaisResearchStore({
+      configuration,
+      database,
+      randomUuid: () => ids[0],
+      env: createResearchLrsEnv(),
+    });
+
+    await expect(store.requeueLrsOutboxDeadLetters(1)).resolves.toEqual({
+      selected: 1,
+      requeued: 0,
+      rejected: 1,
+      stoppedReason: "limit",
+      hasMore: true,
+    });
+    expect(database.calls[1]?.sql).toContain("set status = 'dead_letter'");
+    expect(database.calls[1]?.params).toContain("research_lrs_payload_fact_mismatch");
+  });
+
+  it("requeues a scoped deletion dead letter without contacting the provider", async () => {
+    const database = new ScriptedDatabase([
+      [{
+        deletion_id: ids[4],
+        statement_id: ids[3],
+        lrs_store_id: configuration.lrsStoreId,
+        attempts: 5,
+      }],
+      [{ deletion_id: ids[4] }],
+    ]);
+    const fetchImpl = vi.fn();
+    const store = createAaisResearchStore({
+      configuration,
+      database,
+      randomUuid: () => ids[0],
+      fetchImpl,
+      env: createResearchLrsEnv(),
+    });
+
+    await expect(store.requeueLrsDeletionDeadLetters(1)).resolves.toEqual({
+      selected: 1,
+      requeued: 1,
+      rejected: 0,
+      stoppedReason: "limit",
+      hasMore: true,
+    });
+    expect(database.calls[0]?.sql).toContain("status = 'dead_letter'");
+    expect(database.calls[1]?.sql).toContain("set status = 'retry', attempts = 0");
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
 
   it("confirms an LRS deletion only with matched provider settlement evidence", async () => {
     const receipt = "provider-signed-final-absence-receipt";
@@ -692,6 +1124,8 @@ describe("AAIS research Postgres store", () => {
       confirmed: 1,
       retried: 0,
       deadLetter: 0,
+      stoppedReason: "limit",
+      hasMore: true,
     });
     expect(database.calls[1]?.sql).toContain("provider_absence_confirmed_at = $10::timestamptz");
     expect(database.calls[1]?.sql).toContain("provider_receipt_key_id = $11");
@@ -739,6 +1173,7 @@ describe("AAIS research Postgres store", () => {
       randomBytesImpl: () => Buffer.alloc(12, 6),
     });
     const retentionDatabase = new ScriptedDatabase([
+      { count: 0, stale_raw_text_write_lease_count: 0 },
       [{
         visit_id: ids[2],
         participant_id: ids[0],
@@ -748,7 +1183,6 @@ describe("AAIS research Postgres store", () => {
         key_version: encryptedIdentity.keyVersion,
       }],
       [{ visit_id: ids[2] }],
-      { count: 0 },
       [{ participant_id: ids[0] }],
       {
         local_event_deleted_count: 7,
@@ -773,7 +1207,7 @@ describe("AAIS research Postgres store", () => {
       deleteLearnerRawData,
     });
 
-    await expect(retentionStore.runRetention(30)).resolves.toEqual({
+    await expect(retentionStore.runRetention(25)).resolves.toEqual({
       cutoffAt: completedAt.toISOString(),
       rawTextDeletedCount: 1,
       identityDeletedCount: 1,
@@ -788,15 +1222,197 @@ describe("AAIS research Postgres store", () => {
       lrsDeletionReceiptDeletedCount: 3,
       legacyArchiveReceiptDeletedCount: 0,
       blockedActiveVisitCount: 0,
+      staleRawTextWriteLeaseCount: 0,
       status: "success",
+      stoppedReason: "empty",
+      hasMore: false,
     });
     expect(deleteLearnerRawData).toHaveBeenCalledWith("student-1");
-    expect(retentionDatabase.calls[0]?.sql).toContain(
+    expect(retentionDatabase.calls[1]?.sql).toContain(
       "from aais_research_raw_write_leases l",
     );
-    expect(retentionDatabase.calls[0]?.sql).toContain("and l.visit_id = v.visit_id");
+    expect(retentionDatabase.calls[1]?.sql).toContain("and l.visit_id = v.visit_id");
     expect(retentionDatabase.calls[4]?.sql).toContain("aais_research_apply_fact_retention");
     expect(retentionDatabase.calls[5]?.sql).toContain("aais_research_retention_runs");
+  });
+
+  it("records a stale raw-text write lease as blocked without reclaiming it", async () => {
+    const retentionDatabase = new ScriptedDatabase([
+      { count: 0, stale_raw_text_write_lease_count: 1 },
+      [],
+      [],
+      {
+        local_event_deleted_count: 0,
+        lrs_deletion_request_count: 0,
+        participation_ledger_deleted_count: 0,
+        withdrawal_deleted_count: 0,
+        visit_deleted_count: 0,
+        participant_deleted_count: 0,
+        export_audit_deleted_count: 0,
+        retention_receipt_deleted_count: 0,
+        lrs_deletion_receipt_deleted_count: 0,
+        legacy_archive_receipt_deleted_count: 0,
+      },
+      [],
+    ]);
+    const retentionStore = createAaisResearchStore({
+      configuration,
+      database: retentionDatabase,
+      now: () => new Date("2026-07-30T10:00:00.000Z"),
+      randomUuid: () => ids[4],
+    });
+
+    await expect(retentionStore.runRetention()).resolves.toMatchObject({
+      blockedActiveVisitCount: 0,
+      staleRawTextWriteLeaseCount: 1,
+      status: "blocked",
+    });
+    expect(retentionDatabase.calls[0]?.sql).toContain(
+      "stale_lease.expires_at <= $5::timestamptz",
+    );
+    expect(retentionDatabase.calls[4]?.sql).toContain(
+      "stale_raw_text_write_lease_count",
+    );
+    expect(retentionDatabase.calls[4]?.params[19]).toBe(1);
+    expect(retentionDatabase.calls[4]?.params[20]).toBe("blocked");
+    expect(retentionDatabase.calls.map((call) => call.sql).join("\n")).not.toMatch(
+      /delete\s+from\s+aais_research_raw_write_leases/i,
+    );
+  });
+
+  it("stops retention at its invocation budget and records only completed counts", async () => {
+    const encryptedIdentity = encryptAaisResearchIdentity({
+      actor: student,
+      configuration,
+      randomBytesImpl: () => Buffer.alloc(12, 7),
+    });
+    const rawCandidates = Array.from({ length: 100 }, (_, index) => ({
+      visit_id: `20000000-0000-4000-8000-${String(index + 1).padStart(12, "0")}`,
+      participant_id: ids[0],
+      ciphertext: encryptedIdentity.ciphertext,
+      iv: encryptedIdentity.iv,
+      authentication_tag: encryptedIdentity.authenticationTag,
+      key_version: encryptedIdentity.keyVersion,
+    }));
+    const retentionDatabase = new ScriptedDatabase([
+      { count: 0, stale_raw_text_write_lease_count: 0 },
+      rawCandidates,
+      [{ visit_id: rawCandidates[0]?.visit_id }],
+      [],
+    ]);
+    let workerNow = Date.parse("2026-07-30T10:00:00.000Z");
+    const deleteLearnerRawData = vi.fn(async () => {
+      workerNow += 19_500;
+      return { storageMode: "postgres" as const };
+    });
+    const retentionStore = createAaisResearchStore({
+      configuration,
+      database: retentionDatabase,
+      now: () => new Date(workerNow),
+      randomUuid: () => ids[4],
+      deleteLearnerRawData,
+    });
+
+    await expect(retentionStore.runRetention(25)).resolves.toEqual({
+      cutoffAt: "2026-07-30T10:00:00.000Z",
+      rawTextDeletedCount: 1,
+      identityDeletedCount: 0,
+      localEventDeletedCount: 0,
+      lrsDeletionRequestCount: 0,
+      participationLedgerDeletedCount: 0,
+      withdrawalDeletedCount: 0,
+      visitDeletedCount: 0,
+      participantDeletedCount: 0,
+      exportAuditDeletedCount: 0,
+      retentionReceiptDeletedCount: 0,
+      lrsDeletionReceiptDeletedCount: 0,
+      legacyArchiveReceiptDeletedCount: 0,
+      blockedActiveVisitCount: 0,
+      staleRawTextWriteLeaseCount: 0,
+      status: "success",
+      stoppedReason: "runtime_budget",
+      hasMore: true,
+    });
+    expect(deleteLearnerRawData).toHaveBeenCalledOnce();
+    expect(deleteLearnerRawData).toHaveBeenCalledWith("student-1");
+    expect(retentionDatabase.calls).toHaveLength(4);
+    expect(retentionDatabase.calls[3]?.sql).toContain("aais_research_retention_runs");
+    expect(retentionDatabase.calls[3]?.params[6]).toBe(1);
+    expect(retentionDatabase.calls.some((call) =>
+      call.sql.includes("aais_research_apply_fact_retention")
+    )).toBe(false);
+  });
+
+  it("returns an empty resumable state when no retention class reaches its limit", async () => {
+    const retentionDatabase = new ScriptedDatabase([
+      { count: 0, stale_raw_text_write_lease_count: 0 },
+      [],
+      [],
+      {
+        local_event_deleted_count: 0,
+        lrs_deletion_request_count: 0,
+        participation_ledger_deleted_count: 0,
+        withdrawal_deleted_count: 0,
+        visit_deleted_count: 0,
+        participant_deleted_count: 0,
+        export_audit_deleted_count: 0,
+        retention_receipt_deleted_count: 0,
+        lrs_deletion_receipt_deleted_count: 0,
+        legacy_archive_receipt_deleted_count: 0,
+      },
+      [],
+    ]);
+    const retentionStore = createAaisResearchStore({
+      configuration,
+      database: retentionDatabase,
+      now: () => new Date("2026-07-30T10:00:00.000Z"),
+      randomUuid: () => ids[4],
+    });
+
+    await expect(retentionStore.runRetention()).resolves.toMatchObject({
+      rawTextDeletedCount: 0,
+      identityDeletedCount: 0,
+      stoppedReason: "empty",
+      hasMore: false,
+    });
+    expect(retentionDatabase.calls[1]?.params.at(-1)).toBe(10);
+  });
+
+  it("reports a bounded retention page as resumable when a class reaches the limit", async () => {
+    const identityRows = Array.from({ length: 25 }, (_, index) => ({
+      participant_id: `30000000-0000-4000-8000-${String(index + 1).padStart(12, "0")}`,
+    }));
+    const retentionDatabase = new ScriptedDatabase([
+      { count: 0, stale_raw_text_write_lease_count: 0 },
+      [],
+      identityRows,
+      {
+        local_event_deleted_count: 0,
+        lrs_deletion_request_count: 0,
+        participation_ledger_deleted_count: 0,
+        withdrawal_deleted_count: 0,
+        visit_deleted_count: 0,
+        participant_deleted_count: 0,
+        export_audit_deleted_count: 0,
+        retention_receipt_deleted_count: 0,
+        lrs_deletion_receipt_deleted_count: 0,
+        legacy_archive_receipt_deleted_count: 0,
+      },
+      [],
+    ]);
+    const retentionStore = createAaisResearchStore({
+      configuration,
+      database: retentionDatabase,
+      now: () => new Date("2026-07-30T10:00:00.000Z"),
+      randomUuid: () => ids[4],
+    });
+
+    await expect(retentionStore.runRetention(10_000)).resolves.toMatchObject({
+      identityDeletedCount: 25,
+      stoppedReason: "limit",
+      hasMore: true,
+    });
+    expect(retentionDatabase.calls[1]?.params.at(-1)).toBe(25);
   });
 
   it("declares isolated tables, atomic functions, and an executable retention queue", async () => {
@@ -953,6 +1569,7 @@ function createOutboxPayload() {
 
 function createClaimedOutboxRow(
   payload: Record<string, unknown> = createOutboxPayload(),
+  attempts = 0,
 ) {
   const fact = createEventRow();
   return {
@@ -960,7 +1577,7 @@ function createClaimedOutboxRow(
     event_id: fact.event_id,
     statement_id: fact.event_id,
     payload,
-    attempts: 0,
+    attempts,
     outbox_project_id: fact.project_id,
     outbox_study_id: fact.study_id,
     outbox_environment: fact.environment,

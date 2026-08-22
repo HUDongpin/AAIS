@@ -49,7 +49,7 @@ describe("AdminUsersPage", () => {
               lastLoginAt: null,
             },
             delivery: {
-              status: "not_configured",
+              status: "queued",
               provider: "resend",
             },
           },
@@ -73,7 +73,12 @@ describe("AdminUsersPage", () => {
       }
       if (body.action === "password-reset") {
         return Response.json({
-          reset: null,
+          reset: {
+            delivery: {
+              status: "queued",
+              provider: "resend",
+            },
+          },
           secrets: "redacted",
         });
       }
@@ -102,9 +107,9 @@ describe("AdminUsersPage", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: "Invite" }));
 
-    await waitFor(() => expect(screen.queryByText("Invite created.")).not.toBeNull());
+    await waitFor(() => expect(screen.queryByText("Invite queued for delivery.")).not.toBeNull());
     let status = screen.getByRole("status");
-    expect(status.textContent).toBe("Invite created.");
+    expect(status.textContent).toBe("Invite queued for delivery.");
     expect(status.getAttribute("aria-live")).toBe("polite");
     expect(status.getAttribute("aria-atomic")).toBe("true");
     expect(fetchMock.mock.calls.some(([, init]) =>
@@ -160,6 +165,77 @@ describe("AdminUsersPage", () => {
     expect(alert.textContent).toBe("Email and display name are required.");
     expect(alert.getAttribute("aria-live")).toBe("assertive");
     expect(alert.getAttribute("aria-atomic")).toBe("true");
+  });
+
+  it("does not report an invite as queued when its delivery receipt is missing", async () => {
+    document.cookie = "aais_csrf=csrf-123; path=/";
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === "/api/auth/users" && !init?.method) {
+        return Response.json({ users: [], secrets: "redacted" });
+      }
+      return Response.json({
+        invite: {
+          user: {
+            id: "user-stale-invite",
+            email: "stale-invite@example.test",
+            displayName: "Stale Invite",
+            role: "student",
+            status: "invited",
+            createdAt: "2026-08-20T00:00:00.000Z",
+            updatedAt: "2026-08-20T00:00:00.000Z",
+            lastLoginAt: null,
+          },
+        },
+        secrets: "redacted",
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<AdminUsersPage />);
+    await screen.findByRole("heading", { name: "用户管理" });
+    fireEvent.change(screen.getByLabelText("Email"), {
+      target: { value: "stale-invite@example.test" },
+    });
+    fireEvent.change(screen.getByLabelText("Display name"), {
+      target: { value: "Stale Invite" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Invite" }));
+
+    expect((await screen.findByRole("alert")).textContent).toBe(
+      "The invite was not queued. Refresh the account list and try again.",
+    );
+    expect(screen.queryByText("Invite queued for delivery.")).toBeNull();
+    expect(screen.queryByText("stale-invite@example.test", { selector: "p" })).toBeNull();
+  });
+
+  it("does not report a stale password-reset target as queued", async () => {
+    document.cookie = "aais_csrf=csrf-123; path=/";
+    const user = {
+      id: "user-stale-reset",
+      email: "stale-reset@example.test",
+      displayName: "Stale Reset",
+      role: "teacher",
+      status: "active",
+      createdAt: "2026-08-20T00:00:00.000Z",
+      updatedAt: "2026-08-20T00:00:00.000Z",
+      lastLoginAt: null,
+    };
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === "/api/auth/users" && !init?.method) {
+        return Response.json({ users: [user], secrets: "redacted" });
+      }
+      return Response.json({ reset: null, secrets: "redacted" });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<AdminUsersPage />);
+    await screen.findByText(user.email);
+    fireEvent.click(screen.getByRole("button", { name: `Reset password for ${user.email}` }));
+
+    expect((await screen.findByRole("alert")).textContent).toBe(
+      "The password reset was not queued. Refresh the account list and try again.",
+    );
+    expect(screen.queryByText("Password reset request recorded.")).toBeNull();
   });
 
   it("announces invite progress and blocks duplicate invite submissions", async () => {
@@ -222,14 +298,14 @@ describe("AdminUsersPage", () => {
           lastLoginAt: null,
         },
         delivery: {
-          status: "not_configured",
+          status: "queued",
           provider: "resend",
         },
       },
       secrets: "redacted",
     }));
 
-    await screen.findByText("Invite created.");
+    await screen.findByText("Invite queued for delivery.");
     expect(screen.getByRole("main", { name: "用户管理" }).getAttribute("aria-busy")).toBe("false");
   });
 
@@ -331,12 +407,63 @@ describe("AdminUsersPage", () => {
     )).toHaveLength(1);
 
     resetResponse.resolve(Response.json({
-      reset: null,
+      reset: {
+        delivery: {
+          status: "queued",
+          provider: "resend",
+        },
+      },
       secrets: "redacted",
     }));
 
     await screen.findByText("Password reset request recorded.");
     expect(main.getAttribute("aria-busy")).toBe("false");
+  });
+
+  it("clears stale save progress and exposes a retry after an access update fails", async () => {
+    document.cookie = "aais_csrf=csrf-123; path=/";
+    const user = {
+      id: "user-teacher",
+      email: "teacher@example.test",
+      displayName: "Teacher",
+      role: "teacher",
+      status: "active",
+      createdAt: "2026-07-09T00:00:00.000Z",
+      updatedAt: "2026-07-09T00:00:00.000Z",
+      lastLoginAt: null,
+    };
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === "/api/auth/users" && !init?.method) {
+        return Response.json({ users: [user], secrets: "redacted" });
+      }
+      return Response.json({
+        error: {
+          code: "AAIS_ACCESS_UPDATE_UNAVAILABLE",
+          message: "Access update is temporarily unavailable. Please retry.",
+        },
+        secrets: "redacted",
+      }, { status: 503 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<AdminUsersPage />);
+    await screen.findByText(user.email);
+
+    fireEvent.click(screen.getByRole("button", { name: `Save access for ${user.email}` }));
+
+    expect(screen.getByRole("status").textContent).toBe("Saving access...");
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toBe("Access update is temporarily unavailable. Please retry.");
+    expect(screen.queryByRole("status")).toBeNull();
+    const retryButton = screen.getByRole("button", {
+      name: `Save access for ${user.email}`,
+    }) as HTMLButtonElement;
+    expect(retryButton.disabled).toBe(false);
+
+    fireEvent.click(retryButton);
+    await waitFor(() => expect(fetchMock.mock.calls.filter(([, init]) =>
+      String(init?.body).includes("\"action\":\"update-access\"")
+    )).toHaveLength(2));
   });
 });
 

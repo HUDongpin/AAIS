@@ -18,6 +18,7 @@ afterEach(async () => {
   delete process.env.AAIS_DATA_DIR;
   delete process.env.AAIS_SESSION_SECRET;
   vi.unstubAllEnvs();
+  vi.doUnmock("@/lib/server/aais-learning-store");
   await rm(tempDir, { force: true, recursive: true });
 });
 
@@ -28,6 +29,23 @@ describe("AAIS learner privacy route", () => {
     const s001Cookie = createAuthedCookie("S001");
     const phoebeCookie = createAuthedCookie("Phoebe");
 
+    for (const [studentId, cookie] of [
+      ["S001", s001Cookie],
+      ["Phoebe", phoebeCookie],
+    ] as const) {
+      const response = await sessionRoute.POST(new Request(
+        "http://localhost/api/learning/session",
+        {
+          method: "POST",
+          headers: {
+            cookie,
+            "x-aais-csrf": createAaisCsrfToken(studentId),
+          },
+        },
+      ));
+      expect(response.status).toBe(200);
+    }
+
     await sessionRoute.PATCH(
       new Request("http://localhost/api/learning/session", {
         method: "PATCH",
@@ -36,9 +54,12 @@ describe("AAIS learner privacy route", () => {
           "x-aais-csrf": createAaisCsrfToken("S001"),
         },
         body: JSON.stringify({
+          dataGeneration: 1,
           action: "save-artifact",
           taskId: "training_task_1",
           artifactText: "S001 raw learner artifact for privacy export",
+          expectedArtifactRevision: 0,
+          mutationId: "privacy-s001-artifact-save",
         }),
       }),
     );
@@ -50,9 +71,12 @@ describe("AAIS learner privacy route", () => {
           "x-aais-csrf": createAaisCsrfToken("Phoebe"),
         },
         body: JSON.stringify({
+          dataGeneration: 1,
           action: "save-artifact",
           taskId: "training_task_1",
           artifactText: "Phoebe data must remain after S001 deletion",
+          expectedArtifactRevision: 0,
+          mutationId: "privacy-phoebe-artifact-save",
         }),
       }),
     );
@@ -67,7 +91,7 @@ describe("AAIS learner privacy route", () => {
     const exported = await exportResponse.json();
 
     expect(exportResponse.status).toBe(200);
-    expect(exportResponse.headers.get("cache-control")).toBe("no-store");
+    expect(exportResponse.headers.get("cache-control")).toBe("private, no-store");
     expect(exported).toMatchObject({
       schemaVersion: 1,
       exportScope: "learner-data",
@@ -99,6 +123,21 @@ describe("AAIS learner privacy route", () => {
       message: "AAIS CSRF token is required.",
     });
 
+    const missingGenerationResponse = await privacyRoute.DELETE(
+      new Request("http://localhost/api/learning/privacy", {
+        method: "DELETE",
+        headers: {
+          cookie: s001Cookie,
+          "x-aais-csrf": createAaisCsrfToken("S001"),
+        },
+        body: JSON.stringify({}),
+      }),
+    );
+    expect(missingGenerationResponse.status).toBe(409);
+    await expect(missingGenerationResponse.json()).resolves.toMatchObject({
+      error: { code: "AAIS_LEARNER_DATA_GENERATION_REQUIRED" },
+    });
+
     const deleteResponse = await privacyRoute.DELETE(
       new Request("http://localhost/api/learning/privacy", {
         method: "DELETE",
@@ -106,6 +145,7 @@ describe("AAIS learner privacy route", () => {
           cookie: s001Cookie,
           "x-aais-csrf": createAaisCsrfToken("S001"),
         },
+        body: JSON.stringify({ dataGeneration: 1 }),
       }),
     );
     const deleteBody = await deleteResponse.json();
@@ -115,7 +155,15 @@ describe("AAIS learner privacy route", () => {
       studentId: "S001",
       storageMode: "file",
       learnerRecordDeleted: true,
+      nextGeneration: 2,
       accountRetained: true,
+      antiAbuseGuideUsage: {
+        retained: true,
+        scope: "content-free-account-daily-aggregate",
+        rawLearnerContent: false,
+        quotaEffectEndsAt: expect.stringMatching(/T00:00:00\.000Z$/),
+        cleanup: "next-quota-maintenance-after-utc-reset",
+      },
       secrets: "redacted",
     });
 
@@ -156,6 +204,47 @@ describe("AAIS learner privacy route", () => {
       secrets: "redacted",
     });
   });
+
+  it.each([
+    ["in_flight", "AAIS_LRS_DELIVERY_IN_FLIGHT"],
+    ["reconciliation_required", "AAIS_LRS_DELIVERY_RECONCILIATION_REQUIRED"],
+  ] as const)(
+    "does not report deletion success while the LRS fence is %s",
+    async (reason, expectedCode) => {
+      vi.doMock("@/lib/server/aais-learning-store", async (importOriginal) => {
+        const actual = await importOriginal<
+          typeof import("@/lib/server/aais-learning-store")
+        >();
+        return {
+          ...actual,
+          getAaisLearningStore: () => ({
+            deleteLearnerData: async () => {
+              throw new actual.AaisLearnerDataDeliveryFenceError(reason);
+            },
+          }),
+        };
+      });
+      const privacyRoute = await import("@/app/api/learning/privacy/route");
+      const response = await privacyRoute.DELETE(
+        new Request("http://localhost/api/learning/privacy", {
+          method: "DELETE",
+          headers: {
+            cookie: createAuthedCookie("S001"),
+            "x-aais-csrf": createAaisCsrfToken("S001"),
+          },
+          body: JSON.stringify({ dataGeneration: 1 }),
+        }),
+      );
+
+      expect(response.status).toBe(409);
+      await expect(response.json()).resolves.toMatchObject({
+        error: { code: expectedCode },
+        deletionCompleted: false,
+        externalDeliveryState: reason,
+        secrets: "redacted",
+      });
+    },
+  );
 });
 
 function createAuthedCookie(id: string, role: "student" | "teacher" | "admin" = "student") {
@@ -164,6 +253,6 @@ function createAuthedCookie(id: string, role: "student" | "teacher" | "admin" = 
     id,
     role,
     displayName: id,
-  });
+  }, new Date(), { authSource: "development" });
   return `aais_session=${sessionToken}; ${getAaisCsrfCookieName()}=${csrfToken}`;
 }

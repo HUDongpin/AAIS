@@ -30,7 +30,12 @@ const oidcRoleMappingEnvNames = [
 ];
 
 const requiredByCategory = {
-  core: ["AAIS_SESSION_SECRET", "AAIS_RELEASE_ID", "AAIS_DEPLOYMENT_GIT_COMMIT_SHA"],
+  core: [
+    "AAIS_SESSION_SECRET",
+    "AAIS_PRODUCT_PSEUDONYM_SECRET",
+    "AAIS_RELEASE_ID",
+    "AAIS_DEPLOYMENT_GIT_COMMIT_SHA",
+  ],
   storage: ["AAIS_DATABASE_URL", "AAIS_DATABASE_PROVIDER"],
   releaseMode: ["AAIS_TRIAL_LOGIN_ENABLED"],
   oidc: [

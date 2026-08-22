@@ -3,6 +3,7 @@ import { verifyAaisVercelEnvironment } from "../scripts/verify-vercel-env.mjs";
 
 const requiredProductionEnv = [
   "AAIS_SESSION_SECRET",
+  "AAIS_PRODUCT_PSEUDONYM_SECRET",
   "AAIS_RELEASE_ID",
   "AAIS_DEPLOYMENT_GIT_COMMIT_SHA",
   "AAIS_DATABASE_URL",
@@ -28,6 +29,7 @@ const requiredProductionEnv = [
 
 const requiredTrialProductionEnv = [
   "AAIS_SESSION_SECRET",
+  "AAIS_PRODUCT_PSEUDONYM_SECRET",
   "AAIS_RELEASE_ID",
   "AAIS_DEPLOYMENT_GIT_COMMIT_SHA",
   "AAIS_DATABASE_URL",
@@ -390,7 +392,12 @@ describe("AAIS Vercel environment verifier", () => {
       requiredProductionEnv.filter((name) => !name.startsWith("LRS_")),
     );
     expect(report.categories).toMatchObject({
-      core: ["AAIS_SESSION_SECRET", "AAIS_RELEASE_ID", "AAIS_DEPLOYMENT_GIT_COMMIT_SHA"],
+      core: [
+        "AAIS_SESSION_SECRET",
+        "AAIS_PRODUCT_PSEUDONYM_SECRET",
+        "AAIS_RELEASE_ID",
+        "AAIS_DEPLOYMENT_GIT_COMMIT_SHA",
+      ],
       storage: ["AAIS_DATABASE_URL", "AAIS_DATABASE_PROVIDER"],
       releaseMode: ["AAIS_TRIAL_LOGIN_ENABLED"],
       oidc: [
@@ -427,9 +434,15 @@ describe("AAIS Vercel environment verifier", () => {
       actions: [
         {
           category: "core",
-          missing: ["AAIS_SESSION_SECRET", "AAIS_RELEASE_ID", "AAIS_DEPLOYMENT_GIT_COMMIT_SHA"],
+          missing: [
+            "AAIS_SESSION_SECRET",
+            "AAIS_PRODUCT_PSEUDONYM_SECRET",
+            "AAIS_RELEASE_ID",
+            "AAIS_DEPLOYMENT_GIT_COMMIT_SHA",
+          ],
           commands: [
             "vercel env add AAIS_SESSION_SECRET production",
+            "vercel env add AAIS_PRODUCT_PSEUDONYM_SECRET production",
             "vercel env add AAIS_RELEASE_ID production",
             "vercel env add AAIS_DEPLOYMENT_GIT_COMMIT_SHA production",
           ],

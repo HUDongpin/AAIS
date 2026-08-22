@@ -60,11 +60,35 @@ describe("AAIS Vercel production deploy guard", () => {
   it("wires the guard into the Vercel build command", () => {
     const vercelConfig = JSON.parse(readFileSync("vercel.json", "utf8"));
     const packageJson = JSON.parse(readFileSync("package.json", "utf8"));
+    const vercelIgnore = readFileSync(".vercelignore", "utf8");
     const packageScripts = Object.values(packageJson.scripts ?? {}).join("\n");
 
     expect(vercelConfig.buildCommand).toBe(
       "node -- scripts/guard-vercel-production-deploy.mjs && npm run build",
     );
+    expect(vercelConfig.crons).toContainEqual({
+      path: "/api/learning/lrs/outbox/flush",
+      schedule: "*/5 * * * *",
+    });
+    expect(vercelConfig.crons).toContainEqual({
+      path: "/api/auth/email-outbox/flush",
+      schedule: "*/5 * * * *",
+    });
+    expect(vercelIgnore).toMatch(/^\/\*\.docx$/m);
+    expect(vercelIgnore).toMatch(/^docs\/figures\/$/m);
     expect(packageScripts).not.toContain("vercel deploy --prod");
+  });
+
+  it("keeps dynamic file-store paths out of Next server trace expansion", () => {
+    const learningStoreSource = readFileSync(
+      "src/lib/server/aais-learning-store.ts",
+      "utf8",
+    );
+
+    expect(learningStoreSource).not.toContain(
+      'path.join(process.cwd(), ".aais-data")',
+    );
+    expect(learningStoreSource.match(/\/\*turbopackIgnore: true\*\//g)?.length ?? 0)
+      .toBeGreaterThanOrEqual(7);
   });
 });

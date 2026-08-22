@@ -42,4 +42,25 @@ $$\frac{-b \pm \sqrt{b^2 - 4ac}}{2a}$$`,
     expect(expression.querySelector("annotation[encoding='application/x-tex']")?.textContent)
       .toBe("\\frac{-b \\pm \\sqrt{b^2 - 4ac}}{2a}");
   });
+
+  it("keeps untrusted TeX from creating executable HTML or links", () => {
+    render(
+      <GuideBubble
+        locale="en-US"
+        message={{
+          id: "formula-untrusted",
+          kind: "assistant",
+          text: String.raw`$\href{javascript:alert(1)}{click}$ and $<img src=x onerror=alert(1)>$`,
+        }}
+      />,
+    );
+
+    const expressions = screen.getAllByTestId("math-inline");
+    expect(expressions).toHaveLength(2);
+    expressions.forEach((expression) => {
+      expect(expression.querySelector("math")).toBeTruthy();
+      expect(expression.querySelector("a, img, script, iframe, object, foreignObject")).toBeNull();
+      expect(expression.querySelector("[href], [src], [onerror], [onclick]")).toBeNull();
+    });
+  });
 });

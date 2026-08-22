@@ -1,9 +1,18 @@
 import { expect, test } from "@playwright/test";
-import { authenticateAaisE2eActor } from "./aais-e2e-helpers";
+import {
+  authenticateAaisE2eActor,
+  waitForAaisLearningClientReady,
+} from "./aais-e2e-helpers";
 
 test("student artifact edit persists after reload", async ({ page }) => {
   const artifactText = `E2E artifact ${Date.now()}`;
   const studentId = `Persist${Date.now()}`;
+  const hydrationErrors: string[] = [];
+  page.on("console", (message) => {
+    if (message.type() === "error" && /hydrat(?:e|ion)/i.test(message.text())) {
+      hydrationErrors.push(message.text());
+    }
+  });
 
   await authenticateAaisE2eActor(page, {
     id: studentId,
@@ -12,6 +21,7 @@ test("student artifact edit persists after reload", async ({ page }) => {
   });
   await page.goto("/learning");
   await expect(page).toHaveURL(/\/learning$/);
+  await waitForAaisLearningClientReady(page);
 
   await page.getByRole("button", { name: "文档编辑" }).click();
   const editor = page.getByRole("textbox", {
@@ -22,7 +32,8 @@ test("student artifact edit persists after reload", async ({ page }) => {
   await page.waitForTimeout(800);
 
   await page.reload();
-  await expect(page.getByTestId("learning-shell")).toBeVisible();
+  await waitForAaisLearningClientReady(page);
   await page.getByRole("button", { name: "文档编辑" }).click();
   await expect(editor).toContainText(artifactText);
+  expect(hydrationErrors).toEqual([]);
 });

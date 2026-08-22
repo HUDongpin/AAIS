@@ -49,7 +49,7 @@ describe("AAIS research API fail-closed boundaries", () => {
       role: "student",
       displayName: "Student One",
     };
-    const session = createAaisSessionToken(actor);
+    const session = createAaisSessionToken(actor, new Date(), { authSource: "development" });
     const [{ GET: exportEvents }, { GET: getAnalytics }] = await Promise.all([
       import("@/app/api/learning/export/route"),
       import("@/app/api/learning/analytics/route"),
@@ -86,7 +86,7 @@ describe("AAIS research API fail-closed boundaries", () => {
       role,
       displayName: role,
     };
-    const session = createAaisSessionToken(actor);
+    const session = createAaisSessionToken(actor, new Date(), { authSource: "development" });
     const csrf = createAaisCsrfToken(actor.id);
     const { POST } = await import("@/app/api/research/lrs/flush/route");
 
@@ -113,7 +113,7 @@ describe("AAIS research API fail-closed boundaries", () => {
       role: "researcher",
       displayName: "Researcher One",
     };
-    const session = createAaisSessionToken(actor);
+    const session = createAaisSessionToken(actor, new Date(), { authSource: "development" });
     const { GET } = await import("@/app/api/research/events/export/route");
 
     const response = await GET(new Request(
@@ -130,6 +130,35 @@ describe("AAIS research API fail-closed boundaries", () => {
     });
   });
 
+  it("rejects an explicit unsupported controlled-export format", async () => {
+    process.env.AAIS_RESEARCH_MODE = "true";
+    const actor: AaisSessionActor = {
+      id: "researcher-format-audit",
+      role: "researcher",
+      displayName: "Researcher Format Audit",
+    };
+    const session = createAaisSessionToken(actor, new Date(), { authSource: "development" });
+    const csrf = createAaisCsrfToken(actor.id);
+    const { GET } = await import("@/app/api/research/events/export/route");
+
+    const response = await GET(new Request(
+      "http://localhost/api/research/events/export?format=xml",
+      {
+        headers: {
+          cookie: `aais_session=${session}; aais_csrf=${csrf}`,
+          "x-aais-csrf": csrf,
+        },
+      },
+    ));
+
+    expect(response.status).toBe(400);
+    expect(response.headers.get("content-disposition")).toBeNull();
+    await expect(response.json()).resolves.toMatchObject({
+      error: { code: "AAIS_RESEARCH_REQUEST_INVALID" },
+      secrets: "redacted",
+    });
+  });
+
   it.each(["admin", "researcher"] as const)(
     "does not let a %s session run research retention without the dedicated bearer",
     async (role) => {
@@ -139,7 +168,7 @@ describe("AAIS research API fail-closed boundaries", () => {
         role,
         displayName: role,
       };
-      const session = createAaisSessionToken(actor);
+      const session = createAaisSessionToken(actor, new Date(), { authSource: "development" });
       const csrf = createAaisCsrfToken(actor.id);
       const { POST } = await import("@/app/api/research/retention/route");
 

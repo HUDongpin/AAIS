@@ -6,10 +6,13 @@ import type {
   Locale,
 } from "@/data/aais";
 import type { AaisGuideAttachment } from "@/lib/ai/aais-guide-attachments";
+import type { AaisFunctionScaffoldPlan } from "@/lib/ai/aais-guide-function-scaffold";
 import type { AaisGuideConversationMessage } from "@/lib/ai/orchestration/aais-learning-guide-graph";
 import {
   createDeterministicAaisAiRuntimeProfile,
   createManualAaisAiRuntimeProfile,
+  isAaisAiProviderEndpointAllowed,
+  normalizeAaisAiMaxRetries,
   readAaisAiRuntimeConfig,
   studentRuntimeDefaultMaxRetries,
   studentRuntimeDefaultTimeoutMs,
@@ -19,6 +22,7 @@ import {
   type AaisAiRuntimeProviderName,
 } from "@/lib/ai/aais-ai-runtime-config";
 import { getAaisAiEvalApproval } from "@/lib/server/aais-ai-eval-manifest";
+import { readAaisBoundedResponseJson } from "@/lib/server/aais-bounded-response";
 
 type AaisProviderWorkspaceState = {
   currentStep: string;
@@ -47,8 +51,10 @@ export type AaisModelRequest = {
   taskId: string;
   learnerInput: string;
   conversationHistory?: AaisGuideConversationMessage[];
+  scaffoldPlan?: AaisFunctionScaffoldPlan;
   workspaceState: AaisProviderWorkspaceState;
   fallbackText: string;
+  signal?: AbortSignal;
 };
 
 export type AaisModelRuntime = {
@@ -143,9 +149,14 @@ const redaction = {
 } as const;
 
 const guardrailPolicy = "aais-age-appropriate-output-v1" as const;
+export const AAIS_AI_PROVIDER_RESPONSE_MAX_BYTES = 256 * 1024;
 
 export function createConfiguredAaisModelProvider(): AaisModelProvider {
   const runtimeConfig = readAaisAiRuntimeConfig();
+  if (runtimeConfig.configurationStatus.primary === "invalid"
+    || runtimeConfig.configurationStatus.fallback === "invalid") {
+    return createDeterministicAaisProvider();
+  }
   if (runtimeConfig.primary && isLiveProviderApprovedForRuntime(runtimeConfig.primary.model)) {
     const fallbackApproved = runtimeConfig.fallback
       ? isLiveProviderApprovedForRuntime(runtimeConfig.fallback.model)
@@ -174,6 +185,7 @@ export function createDeterministicAaisProvider(
 ): AaisModelProvider {
   return {
     async generate(request) {
+      throwIfAaisRequestAborted(request);
       return {
         text: request.fallbackText,
         runtime: {
@@ -200,11 +212,13 @@ export function createOpenAiCompatibleAaisProvider(
   const runtimeProfile = input.runtimeProfile ?? createManualAaisAiRuntimeProfile(input);
   return {
     async generate(request) {
+      throwIfAaisRequestAborted(request);
       const result = await generateWithOpenAiCompatibleCandidate({
         ...input,
         providerRole: "primary",
         runtimeProfile,
       }, request);
+      throwIfAaisRequestAborted(request);
       if (result.ok) {
         return result;
       }
@@ -233,7 +247,9 @@ function createOpenAiCompatibleAaisProviderChain(
 ): AaisModelProvider {
   return {
     async generate(request) {
+      throwIfAaisRequestAborted(request);
       const primaryResult = await generateWithOpenAiCompatibleCandidate(input.primary, request);
+      throwIfAaisRequestAborted(request);
       if (primaryResult.ok) {
         return {
           text: primaryResult.text,
@@ -257,6 +273,7 @@ function createOpenAiCompatibleAaisProviderChain(
 
       if (input.fallback) {
         const fallbackResult = await generateWithOpenAiCompatibleCandidate(input.fallback, request);
+        throwIfAaisRequestAborted(request);
         if (fallbackResult.ok) {
           return {
             text: fallbackResult.text,
@@ -299,12 +316,17 @@ async function generateWithOpenAiCompatibleCandidate(
   input: OpenAiCompatibleProviderCandidate,
   request: AaisModelRequest,
 ): Promise<AaisProviderAttemptResult> {
-  const maxAttempts = Math.max(1, (input.maxRetries ?? studentRuntimeDefaultMaxRetries) + 1);
+  const boundedRetries = normalizeAaisAiMaxRetries(
+    input.maxRetries ?? studentRuntimeDefaultMaxRetries,
+  );
+  const maxAttempts = boundedRetries + 1;
   let failureReason: AaisProviderFailureReason = "provider-error";
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    throwIfAaisRequestAborted(request);
     try {
       const text = await callOpenAiCompatibleProvider(input, request);
+      throwIfAaisRequestAborted(request);
       const guardrail = evaluateAaisModelOutput(text, request);
       if (guardrail.status === "blocked") {
         return {
@@ -335,6 +357,7 @@ async function generateWithOpenAiCompatibleCandidate(
         },
       };
     } catch (error) {
+      throwIfAaisRequestAborted(request);
       failureReason = classifyProviderError(error);
       if (attempt === maxAttempts) {
         break;
@@ -388,8 +411,14 @@ async function callOpenAiCompatibleProvider(
   input: OpenAiCompatibleProviderInput,
   request: AaisModelRequest,
 ) {
+  throwIfAaisRequestAborted(request);
+  if (!isAaisAiProviderEndpointAllowed(input.endpoint)) {
+    throw createProviderError("provider-error");
+  }
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), input.timeoutMs ?? studentRuntimeDefaultTimeoutMs);
+  const abortFromRequest = () => controller.abort(request.signal?.reason);
+  request.signal?.addEventListener("abort", abortFromRequest, { once: true });
   try {
     const response = await (input.fetchImpl ?? fetch)(input.endpoint, {
       method: "POST",
@@ -422,6 +451,14 @@ async function callOpenAiCompatibleProvider(
               taskId: request.taskId,
               learnerInput: request.learnerInput,
               conversationHistory: request.conversationHistory ?? [],
+              availableVisualization: request.scaffoldPlan
+                ? {
+                    type: request.scaffoldPlan.visualization.type,
+                    expression: request.scaffoldPlan.visualization.expression,
+                    mode: request.scaffoldPlan.mode,
+                    placement: "immediately-below-reply",
+                  }
+                : null,
               workspaceState: {
                 currentStep: request.workspaceState.currentStep,
                 artifactCharacters: request.workspaceState.artifactText?.length ?? 0,
@@ -439,10 +476,15 @@ async function callOpenAiCompatibleProvider(
       }),
       signal: controller.signal,
     });
+    throwIfAaisRequestAborted(request);
     if (!response.ok) {
       throw createProviderError("http-status");
     }
-    const body = (await response.json()) as {
+    const body = (await readAaisBoundedResponseJson(
+      response,
+      AAIS_AI_PROVIDER_RESPONSE_MAX_BYTES,
+      "AAIS AI provider response is too large.",
+    )) as {
       choices?: Array<{
         finish_reason?: unknown;
         finishReason?: unknown;
@@ -452,6 +494,7 @@ async function callOpenAiCompatibleProvider(
         };
       }>;
     };
+    throwIfAaisRequestAborted(request);
     const choice = body.choices?.[0];
     const finishReason = choice?.finish_reason ?? choice?.finishReason ?? choice?.stop_reason;
     if (isTruncatedProviderFinishReason(finishReason)) {
@@ -464,7 +507,15 @@ async function callOpenAiCompatibleProvider(
     return content;
   } finally {
     clearTimeout(timeout);
+    request.signal?.removeEventListener("abort", abortFromRequest);
   }
+}
+
+function throwIfAaisRequestAborted(request: Pick<AaisModelRequest, "signal">) {
+  if (!request.signal?.aborted) {
+    return;
+  }
+  request.signal.throwIfAborted();
 }
 
 function toOpenAiCompatibleCandidate(
@@ -584,6 +635,12 @@ function createAgentSystemPrompt(request: AaisModelRequest) {
     request.voice?.replyContract ? `Response contract: ${request.voice.replyContract}` : null,
     request.conversationHistory?.length
       ? "Use the bounded conversationHistory to resolve references to earlier learner goals, difficulties, and language preferences. Do not ask the learner to repeat information already present there."
+      : null,
+    "Capability truth: Never promise to draw, generate, or display a graph or image later. Only say a visual is shown when availableVisualization is present in the current request.",
+    request.scaffoldPlan
+      ? request.scaffoldPlan.mode === "demonstrate"
+        ? "A verified function graph will be rendered immediately below this reply. Show the worked substitution now, treat the graph as a scaffold, and do not ask the learner to retry before seeing it."
+        : "A verified function graph will be rendered immediately below this reply. Treat it as an immediate scaffold and never make viewing it conditional on a correct calculation."
       : null,
     request.voice?.maxSentences
       ? `Hard limit: at most ${request.voice.maxSentences} sentences.`

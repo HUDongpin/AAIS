@@ -8,8 +8,11 @@ import {
   AaisResearchConfigurationError,
   requireAaisResearchLrsNamespace,
 } from "@/lib/server/aais-research-contract";
+import { readAaisBoundedResponseBytes } from "@/lib/server/aais-bounded-response";
 
 export const AAIS_RESEARCH_LRS_REQUEST_TIMEOUT_MS = 30_000;
+export const AAIS_RESEARCH_LRS_RESPONSE_BODY_MAX_BYTES = 64 * 1024;
+export const AAIS_RESEARCH_LRS_RECEIPT_MAX_BYTES = 64 * 1024;
 export const AAIS_RESEARCH_LRS_ABSENCE_RECEIPT_SCHEMA =
   "https://www.aais.site/xapi/receipts/absence/v1";
 
@@ -104,20 +107,7 @@ export function getAaisResearchLrsConfiguration(
       "AAIS research LRS credentials are not configured.",
     );
   }
-  let parsed: URL;
-  try {
-    parsed = new URL(endpoint);
-  } catch {
-    throw new AaisResearchConfigurationError("AAIS research LRS endpoint is invalid.");
-  }
-  if (parsed.protocol !== "https:" && parsed.hostname !== "localhost") {
-    throw new AaisResearchConfigurationError("AAIS research LRS endpoint must use HTTPS.");
-  }
-  if (parsed.username || parsed.password || parsed.search || parsed.hash) {
-    throw new AaisResearchConfigurationError(
-      "AAIS research LRS endpoint must not embed credentials, query parameters, or fragments.",
-    );
-  }
+  assertAaisResearchLrsEndpoint(endpoint, env);
   if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(storeId)) {
     throw new AaisResearchConfigurationError("AAIS research LRS store id is invalid.");
   }
@@ -279,13 +269,14 @@ export async function sendAaisResearchStatement(input: {
 }) {
   const configuration = input.configuration
     ?? getAaisResearchLrsConfiguration(input.env);
+  assertAaisResearchLrsEndpoint(configuration.endpoint, input.env ?? process.env);
   if (configuration.storeId !== input.payload.lrsStoreId) {
     throw new AaisResearchConfigurationError(
       "AAIS research LRS store id does not match the queued event.",
     );
   }
   const statement = buildAaisResearchXapiStatement(input.payload);
-  const response = await fetchAaisResearchLrs(
+  return fetchAaisResearchLrsStatus(
     input.fetchImpl ?? fetch,
     getStatementUrl(configuration.endpoint, statement.id),
     {
@@ -295,10 +286,6 @@ export async function sendAaisResearchStatement(input: {
     },
     normalizeRequestTimeout(input.timeoutMs),
   );
-  return {
-    ok: response.ok,
-    httpStatus: response.status,
-  };
 }
 
 export async function deleteAaisResearchStatement(input: {
@@ -311,12 +298,13 @@ export async function deleteAaisResearchStatement(input: {
 }) {
   const configuration = input.configuration
     ?? getAaisResearchLrsConfiguration(input.env);
+  assertAaisResearchLrsEndpoint(configuration.endpoint, input.env ?? process.env);
   if (configuration.storeId !== input.expectedStoreId) {
     throw new AaisResearchConfigurationError(
       "AAIS research LRS store id does not match the deletion request.",
     );
   }
-  const response = await fetchAaisResearchLrs(
+  const { response, receipt } = await fetchAaisResearchLrsReceipt(
     input.fetchImpl ?? fetch,
     getStatementUrl(configuration.endpoint, input.statementId),
     {
@@ -325,7 +313,6 @@ export async function deleteAaisResearchStatement(input: {
     },
     normalizeRequestTimeout(input.timeoutMs),
   );
-  const receipt = Buffer.from(await response.arrayBuffer());
   const receiptSha256 = createHash("sha256").update(receipt).digest("hex");
   return {
     ok: response.ok,
@@ -408,7 +395,7 @@ function isExactIsoTimestamp(value: string) {
   return Number.isFinite(parsed.getTime()) && parsed.toISOString() === value;
 }
 
-async function fetchAaisResearchLrs(
+async function fetchAaisResearchLrsStatus(
   fetchImpl: typeof fetch,
   url: string,
   init: RequestInit,
@@ -417,7 +404,131 @@ async function fetchAaisResearchLrs(
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    return await fetchImpl(url, { ...init, signal: controller.signal });
+    const response = await fetchImpl(url, { ...init, signal: controller.signal });
+    const status = {
+      ok: response.ok,
+      httpStatus: response.status,
+    };
+    await discardAaisResearchLrsResponseBody(response, controller.signal);
+    return status;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+async function discardAaisResearchLrsResponseBody(
+  response: Response,
+  signal: AbortSignal,
+) {
+  const body = response.body;
+  if (!body) {
+    return;
+  }
+
+  const abortOutcome = createAbortOutcome(signal);
+  const declaredLength = Number(response.headers.get("content-length"));
+  if (Number.isFinite(declaredLength)
+    && declaredLength > AAIS_RESEARCH_LRS_RESPONSE_BODY_MAX_BYTES) {
+    await cancelResponseBody(body, abortOutcome);
+    return;
+  }
+
+  const reader = body.getReader();
+  let byteLength = 0;
+  try {
+    while (true) {
+      const outcome = await Promise.race([
+        reader.read().then(
+          (value) => ({ type: "read" as const, value }),
+          () => ({ type: "read-error" as const }),
+        ),
+        abortOutcome,
+      ]);
+      if (outcome.type !== "read") {
+        await cancelResponseReader(reader, abortOutcome);
+        return;
+      }
+      if (outcome.value.done) {
+        return;
+      }
+      byteLength += outcome.value.value.byteLength;
+      if (byteLength > AAIS_RESEARCH_LRS_RESPONSE_BODY_MAX_BYTES) {
+        await cancelResponseReader(reader, abortOutcome);
+        return;
+      }
+    }
+  } finally {
+    try {
+      reader.releaseLock();
+    } catch {
+      // A hostile stream may keep a read pending even after abort/cancel. The
+      // request signal and cancellation attempt still bound our own wait.
+    }
+  }
+}
+
+function createAbortOutcome(signal: AbortSignal) {
+  return new Promise<{ type: "aborted" }>((resolve) => {
+    if (signal.aborted) {
+      resolve({ type: "aborted" });
+      return;
+    }
+    signal.addEventListener(
+      "abort",
+      () => resolve({ type: "aborted" }),
+      { once: true },
+    );
+  });
+}
+
+async function cancelResponseBody(
+  body: ReadableStream<Uint8Array>,
+  abortOutcome: Promise<{ type: "aborted" }>,
+) {
+  let cancellation: Promise<void>;
+  try {
+    cancellation = body.cancel();
+  } catch {
+    return;
+  }
+  await Promise.race([
+    cancellation.catch(() => undefined),
+    abortOutcome,
+  ]);
+}
+
+async function cancelResponseReader(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  abortOutcome: Promise<{ type: "aborted" }>,
+) {
+  let cancellation: Promise<void>;
+  try {
+    cancellation = reader.cancel();
+  } catch {
+    return;
+  }
+  await Promise.race([
+    cancellation.catch(() => undefined),
+    abortOutcome,
+  ]);
+}
+
+async function fetchAaisResearchLrsReceipt(
+  fetchImpl: typeof fetch,
+  url: string,
+  init: RequestInit,
+  timeoutMs: number,
+) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetchImpl(url, { ...init, signal: controller.signal });
+    const receipt = Buffer.from(await readAaisBoundedResponseBytes(
+      response,
+      AAIS_RESEARCH_LRS_RECEIPT_MAX_BYTES,
+      "AAIS research LRS deletion receipt is too large.",
+    ));
+    return { response, receipt };
   } finally {
     clearTimeout(timeoutId);
   }
@@ -559,4 +670,38 @@ function getStatementUrl(endpoint: string, statementId: string) {
   const url = new URL(base);
   url.searchParams.set("statementId", statementId);
   return url.toString();
+}
+
+function isLoopbackHostname(hostname: string) {
+  return hostname === "localhost"
+    || hostname === "127.0.0.1"
+    || hostname === "[::1]";
+}
+
+function assertAaisResearchLrsEndpoint(
+  endpoint: string,
+  env: Record<string, string | undefined>,
+) {
+  let parsed: URL;
+  try {
+    parsed = new URL(endpoint);
+  } catch {
+    throw new AaisResearchConfigurationError("AAIS research LRS endpoint is invalid.");
+  }
+  const production = (env.NODE_ENV ?? process.env.NODE_ENV) === "production"
+    || (env.VERCEL_ENV ?? process.env.VERCEL_ENV) === "production";
+  if (parsed.protocol !== "https:"
+    && (production || parsed.protocol !== "http:" || !isLoopbackHostname(parsed.hostname))) {
+    throw new AaisResearchConfigurationError("AAIS research LRS endpoint must use HTTPS.");
+  }
+  if (parsed.username
+    || parsed.password
+    || parsed.search
+    || parsed.hash
+    || endpoint.includes("?")
+    || endpoint.includes("#")) {
+    throw new AaisResearchConfigurationError(
+      "AAIS research LRS endpoint must not embed credentials, query parameters, or fragments.",
+    );
+  }
 }
