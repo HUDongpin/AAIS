@@ -16,6 +16,7 @@ describe("AAIS git secret guardrails", () => {
       "!.env.example",
       "output/",
       "All API Keys.docx",
+      "/*.docx",
     ]));
   });
 
@@ -34,6 +35,7 @@ describe("AAIS git secret guardrails", () => {
       ".vercel/",
       "output/",
       "All API Keys.docx",
+      "/*.docx",
     ]));
   });
 });

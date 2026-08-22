@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import {
   type AaisCohortAnalyticsFilters,
   getAaisLearningStore,
+  isAaisEducatorScopeAuthorizationError,
   isAaisLearningStorageConfigurationError,
   isAaisRecommendationOverrideTargetError,
   isAaisSessionWriteConflictError,
@@ -12,6 +13,7 @@ import {
   buildAaisLearnerRecommendations,
   isAaisRecommendationsEnabled,
   type AaisRecommendationOverrideDecision,
+  type AaisRecommendationPaginationInput,
 } from "@/lib/server/aais-recommendations";
 import { isAaisAuthError, requireAaisSessionActor } from "@/lib/server/aais-request-auth";
 import { isAaisCsrfError, requireAaisCsrf } from "@/lib/server/aais-csrf";
@@ -20,6 +22,12 @@ import {
   createAaisApiErrorResponse,
   isAaisApiRouteError,
 } from "@/lib/server/aais-api-error";
+import {
+  AaisRequestBodyError,
+  readAaisBoundedJson,
+} from "@/lib/server/aais-request-json";
+
+const maxRecommendationOverrideBodyBytes = 16 * 1024;
 
 type RecommendationOverrideBody = {
   recommendationId?: string;
@@ -41,45 +49,66 @@ export async function GET(request: Request) {
           role: actor.role,
         },
         secrets: "redacted",
+      }, {
+        headers: { "cache-control": "private, no-store" },
       });
     }
     const url = new URL(request.url);
     const filters = readCohortAnalyticsFilters(url.searchParams);
-    const analytics = await getAaisLearningStore().getCohortAnalytics(filters);
+    const pagination = readRecommendationPagination(url.searchParams);
+    const analytics = await getAaisLearningStore().getEducatorCohortAnalytics({
+      actorId: actor.id,
+      actorRole: actor.role,
+    }, filters);
     return NextResponse.json({
-      ...buildAaisLearnerRecommendations(analytics),
+      ...buildAaisLearnerRecommendations(analytics, { pagination }),
       actor: {
         role: actor.role,
       },
       secrets: "redacted",
+    }, {
+      headers: { "cache-control": "private, no-store" },
     });
   } catch (error) {
-    return createAaisApiErrorResponse(getErrorResponseInput(error));
+    return createAaisApiErrorResponse({
+      ...getErrorResponseInput(error),
+      extra: { secrets: "redacted" },
+    });
   }
 }
 
 export async function POST(request: Request) {
-  const body = (await request.json().catch(() => null)) as RecommendationOverrideBody;
   try {
     const actor = await requireEducatorActor(request);
     requireAaisCsrf(request, actor.id);
     if (!isAaisRecommendationsEnabled()) {
       throw new AaisRecommendationsDisabledError();
     }
+    const body = await readAaisBoundedJson(request, {
+      maxBytes: maxRecommendationOverrideBodyBytes,
+    }) as RecommendationOverrideBody;
     const override = await getAaisLearningStore().recordRecommendationOverride({
       actorId: actor.id,
       actorRole: actor.role,
-      learnerKey: requirePattern(body?.learnerKey, /^learner-[a-f0-9]{12}$/, "learnerKey"),
-      sessionKey: requirePattern(body?.sessionKey, /^session-[a-f0-9]{12}$/, "sessionKey"),
+      learnerKey: requirePattern(
+        body?.learnerKey,
+        /^(?:learner-[a-f0-9]{12}|learner-v2-[a-f0-9]{32})$/,
+        "learnerKey",
+      ),
+      sessionKey: requirePattern(
+        body?.sessionKey,
+        /^(?:session-[a-f0-9]{12}|session-v2-[a-f0-9]{32})$/,
+        "sessionKey",
+      ),
       recommendationId: requirePattern(
         body?.recommendationId,
         /^recommendation-[a-f0-9]{12}$/,
         "recommendationId",
       ),
       ruleId: requirePattern(body?.ruleId, /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/, "ruleId"),
-      targetTaskId: body?.targetTaskId
-        ? requirePattern(body.targetTaskId, /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/, "targetTaskId")
-        : null,
+      targetTaskId: body?.targetTaskId === undefined || body.targetTaskId === null
+        ? null
+        : requirePattern(body.targetTaskId, /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/, "targetTaskId"),
       decision: requireRecommendationDecision(body?.decision),
       note: typeof body?.note === "string" ? body.note : "",
     });
@@ -92,9 +121,14 @@ export async function POST(request: Request) {
         event: override.event.event,
       },
       secrets: "redacted",
+    }, {
+      headers: { "cache-control": "private, no-store" },
     });
   } catch (error) {
-    return createAaisApiErrorResponse(getErrorResponseInput(error));
+    return createAaisApiErrorResponse({
+      ...getErrorResponseInput(error),
+      extra: { secrets: "redacted" },
+    });
   }
 }
 
@@ -107,11 +141,11 @@ async function requireEducatorActor(request: Request) {
 }
 
 function readCohortAnalyticsFilters(params: URLSearchParams): AaisCohortAnalyticsFilters {
+  // Recommendations are actions against the learner's complete current state.
+  // Event/phase/task/agent filters may narrow analytics displays, but must not
+  // create a recommendation that cannot be reconstructed and authorized when
+  // the educator submits an override.
   return normalizeCohortAnalyticsFilters({
-    phase: readOptionalFilter(params, "phase") as AaisCohortAnalyticsFilters["phase"],
-    task: readOptionalFilter(params, "task"),
-    agent: readOptionalFilter(params, "agent") as AaisCohortAnalyticsFilters["agent"],
-    event: readOptionalFilter(params, "event") as AaisCohortAnalyticsFilters["event"],
     cohort: readOptionalFilter(params, "cohort"),
     role: readOptionalFilter(params, "role"),
     courseId: readOptionalFilter(params, "courseId") ?? readOptionalFilter(params, "course_id"),
@@ -121,6 +155,28 @@ function readCohortAnalyticsFilters(params: URLSearchParams): AaisCohortAnalytic
 function readOptionalFilter(params: URLSearchParams, key: string) {
   const value = params.get(key)?.trim();
   return value || undefined;
+}
+
+function readRecommendationPagination(params: URLSearchParams): AaisRecommendationPaginationInput {
+  return {
+    limit: readOptionalInteger(params, "limit"),
+    offset: readOptionalInteger(params, "offset"),
+  };
+}
+
+function readOptionalInteger(params: URLSearchParams, key: string) {
+  const raw = params.get(key)?.trim();
+  if (!raw) {
+    return undefined;
+  }
+  if (!/^\d+$/.test(raw)) {
+    throw new Error(`Invalid AAIS recommendation pagination ${key}.`);
+  }
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value)) {
+    throw new Error(`Invalid AAIS recommendation pagination ${key}.`);
+  }
+  return value;
 }
 
 function requirePattern(value: string | undefined | null, pattern: RegExp, label: string) {
@@ -158,6 +214,17 @@ class AaisRecommendationsDisabledError extends Error {
 }
 
 function getErrorResponseInput(error: unknown) {
+  if (error instanceof AaisRequestBodyError) {
+    return {
+      code: error.reason === "too_large"
+        ? "AAIS_RECOMMENDATION_BODY_TOO_LARGE"
+        : "AAIS_RECOMMENDATION_BODY_INVALID",
+      message: error.reason === "too_large"
+        ? "AAIS recommendation request body is too large."
+        : "AAIS recommendation request body is invalid.",
+      status: error.status,
+    };
+  }
   if (isAaisApiRouteError(error)) {
     return {
       code: error.code,
@@ -176,6 +243,13 @@ function getErrorResponseInput(error: unknown) {
     return {
       code: "AAIS_RECOMMENDATIONS_FORBIDDEN",
       message: "AAIS recommendations require educator authorization.",
+      status: 403,
+    };
+  }
+  if (isAaisEducatorScopeAuthorizationError(error)) {
+    return {
+      code: "AAIS_RECOMMENDATIONS_FORBIDDEN",
+      message: "AAIS recommendations require an active educator enrollment.",
       status: 403,
     };
   }
@@ -222,10 +296,18 @@ function getErrorResponseInput(error: unknown) {
       extra: { secrets: "redacted" },
     };
   }
+  if (error instanceof Error && error.message.startsWith("Invalid AAIS recommendation pagination ")) {
+    return {
+      code: "AAIS_RECOMMENDATION_PAGINATION_INVALID",
+      message: "AAIS recommendation pagination is invalid.",
+      status: 400,
+      extra: { secrets: "redacted" },
+    };
+  }
   return {
     code: "AAIS_RECOMMENDATIONS_REQUEST_FAILED",
     message: "AAIS recommendations request failed.",
-    status: 400,
+    status: 500,
     cause: error,
     route: "/api/learning/recommendations",
   };

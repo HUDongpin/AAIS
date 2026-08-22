@@ -104,6 +104,10 @@ describe("AAIS LRS persistent outbox flush route", () => {
       status: "sent",
       sent: 3,
       failed: 0,
+      deferred: 0,
+      batches: 1,
+      stoppedReason: "drained",
+      hasMore: false,
       secrets: "redacted",
       providerSecret: "lrs-secret-that-must-not-leak",
     });
@@ -121,6 +125,11 @@ describe("AAIS LRS persistent outbox flush route", () => {
     const body = await response.json();
 
     expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("private, no-store");
+    expect(route.dynamic).toBe("force-dynamic");
+    expect(route.revalidate).toBe(0);
+    expect(route.runtime).toBe("nodejs");
+    expect(route.maxDuration).toBe(120);
     expect(flushMock).toHaveBeenCalledWith({ limit: 25 });
     expect(body).toMatchObject({
       action: "flush",
@@ -131,6 +140,10 @@ describe("AAIS LRS persistent outbox flush route", () => {
         status: "sent",
         sent: 3,
         failed: 0,
+        deferred: 0,
+        batches: 1,
+        stoppedReason: "drained",
+        hasMore: false,
         secrets: "redacted",
       },
       secrets: "redacted",
@@ -178,6 +191,7 @@ describe("AAIS LRS persistent outbox flush route", () => {
     const body = await response.json();
 
     expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("private, no-store");
     expect(requeueMock).toHaveBeenCalledWith({ limit: 10 });
     expect(flushMock).not.toHaveBeenCalled();
     expect(body).toEqual({
@@ -221,6 +235,10 @@ describe("AAIS LRS persistent outbox flush route", () => {
       status: "partial",
       sent: 2,
       failed: 1,
+      deferred: 7,
+      batches: 4,
+      stoppedReason: "budget_exhausted",
+      hasMore: true,
       secrets: "redacted",
     });
     const route = await import("@/app/api/learning/lrs/outbox/flush/route");
@@ -235,9 +253,16 @@ describe("AAIS LRS persistent outbox flush route", () => {
     );
     const body = await response.json();
 
-    expect(response.status).toBe(200);
+    expect(response.status).toBe(502);
+    expect(response.headers.get("cache-control")).toBe("private, no-store");
     expect(flushMock).toHaveBeenCalledWith({ limit: 200 });
     expect(body.authorization.mode).toBe("bearer-token");
+    expect(body.outbox).toMatchObject({
+      deferred: 7,
+      batches: 4,
+      stoppedReason: "budget_exhausted",
+      hasMore: true,
+    });
     expect(JSON.stringify(body)).not.toContain(process.env.AAIS_LRS_OUTBOX_FLUSH_TOKEN);
     expect(monitoringMock).toHaveBeenCalledWith(expect.objectContaining({
       event: "aais.lrs_outbox.degraded",
@@ -259,7 +284,7 @@ describe("AAIS LRS persistent outbox flush route", () => {
     expect(auditEvents).toMatchObject([
       {
         event: "lrs_outbox_flush",
-        outcome: "success",
+        outcome: "failure",
         metadata: {
           action: "flush",
           authMode: "bearer-token",
@@ -272,6 +297,24 @@ describe("AAIS LRS persistent outbox flush route", () => {
       },
     ]);
     expect(JSON.stringify(auditEvents)).not.toContain(process.env.AAIS_LRS_OUTBOX_FLUSH_TOKEN);
+  });
+
+  it("does not accept a weak configured worker bearer", async () => {
+    process.env.AAIS_LRS_OUTBOX_FLUSH_TOKEN = "x";
+    const route = await import("@/app/api/learning/lrs/outbox/flush/route");
+
+    const response = await route.POST(new Request(
+      "http://localhost/api/learning/lrs/outbox/flush",
+      {
+        method: "POST",
+        headers: { authorization: "Bearer x" },
+      },
+    ));
+
+    expect(response.status).toBe(403);
+    expect(response.headers.get("cache-control")).toBe("private, no-store");
+    expect(flushMock).not.toHaveBeenCalled();
+    expect(requeueMock).not.toHaveBeenCalled();
   });
 
   it("accepts a configured bearer token for dead-letter requeue operations", async () => {
@@ -482,7 +525,7 @@ function createAuthedCookie(id: string, role: "student" | "teacher" | "admin") {
     id,
     role,
     displayName: id,
-  });
+  }, new Date(), { authSource: "development" });
   return `aais_session=${sessionToken}; ${getAaisCsrfCookieName()}=${csrfToken}`;
 }
 

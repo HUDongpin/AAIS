@@ -5,6 +5,7 @@ import type { AaisResearchConfiguration } from "@/lib/server/aais-research-contr
 import { getAaisResearchErrorResponseInput } from "@/lib/server/aais-research-api";
 import {
   AaisResearchEventConflictError,
+  AaisResearchEventLimitError,
   createAaisResearchStore,
   type AaisResearchDatabaseClient,
 } from "@/lib/server/aais-research-store";
@@ -80,6 +81,19 @@ describe("AAIS research security boundaries", () => {
     expect(response).toMatchObject({
       code: "AAIS_RESEARCH_EVENT_CONFLICT",
       status: 409,
+      extra: { secrets: "redacted" },
+    });
+  });
+
+  it("maps a visit event inventory overflow to a stable retry-limited response", () => {
+    const response = getAaisResearchErrorResponseInput(
+      new AaisResearchEventLimitError(),
+      "/api/research/events",
+    );
+
+    expect(response).toMatchObject({
+      code: "AAIS_RESEARCH_EVENT_LIMIT_REACHED",
+      status: 429,
       extra: { secrets: "redacted" },
     });
   });

@@ -5,6 +5,7 @@ import {
   type AaisEvent,
 } from "@/data/aais";
 import { requiresAaisResearchDataPlaneIsolation } from "@/lib/server/aais-research-contract";
+import { createAaisProductPseudonym } from "@/lib/server/aais-product-pseudonym";
 
 type AaisXapiVerb =
   | "initialized"
@@ -24,6 +25,7 @@ type LrsClientOptions = {
   config?: LrsConfig | null;
   fetchImpl?: typeof fetch;
   maxBatchSize?: number;
+  timeoutMs?: number;
 };
 
 type AaisLrsDeliveryQueueOptions = LrsClientOptions & {
@@ -54,7 +56,7 @@ type AaisLrsDeliveryQueueStatus = {
   secrets: "redacted";
 };
 
-type XapiStatement = {
+export type AaisXapiStatement = {
   id: string;
   actor: {
     objectType: "Agent";
@@ -131,15 +133,18 @@ const verbIdMap: Record<AaisXapiVerb, string> = {
 
 export function getLrsConfigurationStatus() {
   const disabledByResearchIsolation = requiresAaisResearchDataPlaneIsolation();
-  const config = disabledByResearchIsolation ? null : readLrsConfig();
+  const configurationStatus = disabledByResearchIsolation
+    ? "missing" as const
+    : inspectLrsConfiguration().status;
   return {
-    configured: Boolean(config),
+    configured: configurationStatus === "valid",
+    configurationStatus,
     requiredEnv: ["LRS_ENDPOINT", "LRS_USERNAME", "LRS_PASSWORD"],
     disabledByResearchIsolation,
   };
 }
 
-export function buildAaisXapiStatement(event: AaisEvent): XapiStatement {
+export function buildAaisXapiStatement(event: AaisEvent): AaisXapiStatement {
   const verb = requireMappedVerb(event.event);
   const eventDefinition = aaisEventDefinitions[event.event];
   const agentContract = getAgentContract(event.agent);
@@ -233,7 +238,9 @@ export async function sendAaisEventsToLrs(
       sent: 0,
     };
   }
-  const config = options.config ?? readLrsConfig();
+  const config = options.config
+    ? normalizeLrsConfig(options.config)
+    : readLrsConfig();
   if (!config) {
     return {
       status: "not_configured" as const,
@@ -247,14 +254,48 @@ export async function sendAaisEventsToLrs(
     };
   }
 
+  return sendAaisXapiStatementsToLrs(events.map(buildAaisXapiStatement), {
+    ...options,
+    config,
+  });
+}
+
+export async function sendAaisXapiStatementsToLrs(
+  statements: AaisXapiStatement[],
+  options: LrsClientOptions = {},
+) {
+  if (requiresAaisResearchDataPlaneIsolation()) {
+    return {
+      status: "not_configured" as const,
+      sent: 0,
+    };
+  }
+  const config = options.config
+    ? normalizeLrsConfig(options.config)
+    : readLrsConfig();
+  if (!config) {
+    return {
+      status: "not_configured" as const,
+      sent: 0,
+    };
+  }
+  if (!statements.length) {
+    return {
+      status: "skipped" as const,
+      sent: 0,
+    };
+  }
+
   let sent = 0;
   let lastHttpStatus: number | undefined;
-  for (const batch of chunkEvents(events, options.maxBatchSize ?? 50)) {
+  for (const batch of chunkEvents(statements, options.maxBatchSize ?? 50)) {
     const response = await (options.fetchImpl ?? fetch)(getStatementsUrl(config.endpoint), {
       method: "POST",
       headers: createLrsHeaders(config),
-      body: JSON.stringify(batch.map(buildAaisXapiStatement)),
+      body: JSON.stringify(batch),
+      signal: createLrsRequestSignal(options.timeoutMs),
     });
+    discardAaisLrsResponseBody(response);
     lastHttpStatus = response.status;
     if (!response.ok) {
       return {
@@ -409,7 +450,9 @@ export async function probeAaisLrsConnection(options: LrsClientOptions = {}) {
       configured: false,
     };
   }
-  const config = options.config ?? readLrsConfig();
+  const config = options.config
+    ? normalizeLrsConfig(options.config)
+    : readLrsConfig();
   if (!config) {
     return {
       status: "not_configured" as const,
@@ -424,7 +467,9 @@ export async function probeAaisLrsConnection(options: LrsClientOptions = {}) {
   const response = await (options.fetchImpl ?? fetch)(url, {
     method: "GET",
     headers: createLrsHeaders(config),
+    signal: createLrsRequestSignal(options.timeoutMs),
   });
+  discardAaisLrsResponseBody(response);
 
   return {
     status: response.ok ? "connected" as const : "error" as const,
@@ -458,13 +503,45 @@ export async function sendAaisLrsHealthStatement(
 }
 
 function readLrsConfig(): LrsConfig | null {
+  return inspectLrsConfiguration().config;
+}
+
+function inspectLrsConfiguration(): {
+  status: "valid" | "missing" | "invalid";
+  config: LrsConfig | null;
+} {
   if (requiresAaisResearchDataPlaneIsolation()) {
-    return null;
+    return { status: "missing", config: null };
   }
   const endpoint = process.env.LRS_ENDPOINT?.trim();
   const username = process.env.LRS_USERNAME?.trim();
   const password = process.env.LRS_PASSWORD?.trim();
-  if (!endpoint || !username || !password) {
+  if (!endpoint && !username && !password) {
+    return { status: "missing", config: null };
+  }
+  const config = normalizeLrsConfig({
+    endpoint: endpoint ?? "",
+    username: username ?? "",
+    password: password ?? "",
+  });
+  return config
+    ? { status: "valid", config }
+    : { status: "invalid", config: null };
+}
+
+function normalizeLrsConfig(config: LrsConfig): LrsConfig | null {
+  const endpoint = config.endpoint.trim();
+  const username = config.username.trim();
+  const password = config.password.trim();
+  if (
+    !endpoint
+    || endpoint.length > 2_048
+    || !username
+    || username.length > 1_024
+    || !password
+    || password.length > 4_096
+    || !isAaisLrsEndpointAllowed(endpoint)
+  ) {
     return null;
   }
   return {
@@ -474,12 +551,59 @@ function readLrsConfig(): LrsConfig | null {
   };
 }
 
+export function isAaisLrsEndpointAllowed(
+  endpoint: string,
+  env: Partial<Pick<NodeJS.ProcessEnv, "NODE_ENV" | "VERCEL_ENV">> = process.env,
+) {
+  let parsed: URL;
+  try {
+    parsed = new URL(endpoint);
+  } catch {
+    return false;
+  }
+  if (
+    parsed.username
+    || parsed.password
+    || parsed.search
+    || parsed.hash
+    || endpoint.includes("?")
+    || endpoint.includes("#")
+  ) {
+    return false;
+  }
+  if (parsed.protocol === "https:") {
+    return true;
+  }
+  const production = env.NODE_ENV === "production" || env.VERCEL_ENV === "production";
+  return !production
+    && parsed.protocol === "http:"
+    && isLoopbackHostname(parsed.hostname);
+}
+
+function isLoopbackHostname(hostname: string) {
+  return hostname === "localhost"
+    || hostname === "127.0.0.1"
+    || hostname === "[::1]";
+}
+
 function getStatementsUrl(endpoint: string) {
   const normalized = endpoint.trim().replace(/\/+$/, "");
   if (normalized.endsWith("/statements")) {
     return normalized;
   }
   return `${normalized}/statements`;
+}
+
+function createLrsRequestSignal(timeoutMs = 30_000) {
+  const safeTimeoutMs = Math.min(60_000, Math.max(1, Math.floor(timeoutMs)));
+  return AbortSignal.timeout(safeTimeoutMs);
+}
+
+function discardAaisLrsResponseBody(response: Response) {
+  if (!response.body) {
+    return;
+  }
+  void response.body.cancel().catch(() => undefined);
 }
 
 function createLrsHeaders(config: LrsConfig) {
@@ -508,7 +632,16 @@ function requireMappedVerb(eventName: string) {
 
 function createDeterministicStatementId(event: AaisEvent) {
   const digest = createHash("sha256")
-    .update(JSON.stringify([event.student_id, event.session_id, event.phase, event.task, event.agent, event.event, event.time]))
+    .update(JSON.stringify([
+      event.student_id,
+      event.session_id,
+      event.phase,
+      event.task,
+      event.agent,
+      event.event,
+      event.time,
+      event.detail,
+    ]))
     .digest("hex");
   return [
     digest.slice(0, 8),
@@ -524,19 +657,11 @@ function encodePath(value: string) {
 }
 
 function createPseudonymousLearnerId(studentId: string) {
-  const digest = createHash("sha256")
-    .update(`aais-learner:${studentId}`)
-    .digest("hex")
-    .slice(0, 16);
-  return `aais-learner-${digest}`;
+  return `aais-learner-v2-${createAaisProductPseudonym("lrs-learner", studentId)}`;
 }
 
 function createPseudonymousSessionId(sessionId: string) {
-  const digest = createHash("sha256")
-    .update(`aais-lrs-session:${sessionId}`)
-    .digest("hex")
-    .slice(0, 12);
-  return `session-${digest}`;
+  return `session-v2-${createAaisProductPseudonym("lrs-session", sessionId)}`;
 }
 
 function sanitizeLrsDetail(detail: Record<string, unknown>) {
@@ -568,8 +693,8 @@ function shouldRedactDetailValue(key: string, value: unknown) {
     && /prompt|question|answer|artifact|self.?report|password|secret|token|cookie|code/i.test(key);
 }
 
-function chunkEvents(events: AaisEvent[], size: number) {
-  const chunks: AaisEvent[][] = [];
+function chunkEvents<T>(events: T[], size: number) {
+  const chunks: T[][] = [];
   for (let index = 0; index < events.length; index += size) {
     chunks.push(events.slice(index, index + size));
   }

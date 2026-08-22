@@ -1,11 +1,10 @@
-import type { Dispatch, FormEvent, RefObject, SetStateAction } from "react";
+import { useRef, type Dispatch, type FormEvent, type RefObject, type SetStateAction } from "react";
 import { ArrowUp, FileText, Plus, X } from "@phosphor-icons/react";
 import { aaisGuideFileAccept } from "@/lib/client/aais-guide-file-reader";
 import {
   admitAaisResearchAction,
   createAaisResearchOperationId,
 } from "@/lib/client/aais-research-telemetry";
-import { getGuideQuickStarts } from "@/components/pages/learning/learning-page-constants";
 import { getLearningCopy } from "@/components/pages/learning/learning-copy";
 import {
   formatGuideAttachmentSize,
@@ -14,7 +13,6 @@ import {
 import type {
   GuideClientAttachment,
   GuideMessage,
-  GuideQuickStart,
 } from "@/components/pages/learning/learning-page-types";
 import type { Locale } from "@/data/aais";
 
@@ -32,7 +30,6 @@ export function GuidePanel({
   hasGuideSubmission,
   locale = "zh-CN",
   onRemoveAttachment,
-  onSubmitGuideQuestion,
   sendGuideMessage,
   setGuideDraft,
   setGuideError,
@@ -50,16 +47,12 @@ export function GuidePanel({
   hasGuideSubmission: boolean;
   locale?: Locale;
   onRemoveAttachment: (attachmentId: string) => void;
-  onSubmitGuideQuestion: (
-    question: string,
-    options?: { source: "quick_start"; quickStartId: GuideQuickStart["id"] },
-  ) => void;
   sendGuideMessage: (event: FormEvent<HTMLFormElement>) => void;
   setGuideDraft: Dispatch<SetStateAction<string>>;
   setGuideError: Dispatch<SetStateAction<string>>;
 }) {
   const copy = getLearningCopy(locale);
-  const quickStarts = getGuideQuickStarts(locale);
+  const guideTextInputRef = useRef<HTMLInputElement | null>(null);
   const guidePanelBusy = guideBusy || guideAttachmentBusy;
   const guideStatusText = guideBusy
     ? copy.guide.busy
@@ -75,7 +68,17 @@ export function GuidePanel({
       <div className="min-h-0 flex-1 overflow-y-auto px-5 py-6 sm:px-8">
         <div className="space-y-4" aria-live="polite">
           {guideMessages.map((message) => (
-            <GuideBubble key={message.id} locale={locale} message={message} />
+            <GuideBubble
+              key={message.id}
+              locale={locale}
+              message={message}
+              onSuggestedPrompt={(prompt) => {
+                setGuideDraft(prompt);
+                setGuideError("");
+                guideTextInputRef.current?.focus();
+              }}
+              suggestionsDisabled={guidePanelBusy}
+            />
           ))}
         </div>
       </div>
@@ -84,38 +87,12 @@ export function GuidePanel({
         onSubmit={sendGuideMessage}
         className="sticky bottom-0 z-10 shrink-0 border-t border-[#ececeb] bg-gradient-to-t from-[#fcfcfc] via-[#fcfcfc] to-[#fcfcfc]/90 px-5 py-3 sm:px-8"
       >
-        <div className="mb-3 flex flex-wrap gap-2" aria-label={copy.guide.quickStarts}>
-          {quickStarts.map((item) => (
-            <button
-              key={item.label}
-              type="button"
-              disabled={guidePanelBusy}
-              onClick={() => {
-                if (!admitAaisResearchAction({
-                  eventName: "guide_quick_start_selected",
-                  outcome: "success",
-                  detail: {
-                    operation_id: createAaisResearchOperationId("quick-start"),
-                    quick_start_id: item.id,
-                  },
-                })) {
-                  return;
-                }
-                onSubmitGuideQuestion(item.prompt, {
-                  source: "quick_start",
-                  quickStartId: item.id,
-                });
-              }}
-              className="min-h-9 rounded-full border border-[#d9dde7] bg-white px-3 text-[13px] font-semibold text-[#3d4656] shadow-[0_4px_14px_rgba(17,24,39,0.04)] outline-none transition hover:border-[#536de8] hover:text-[#324fd6] focus-visible:ring-2 focus-visible:ring-[#536de8] disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              {item.label}
-            </button>
-          ))}
-        </div>
         <div className="flex min-h-[72px] w-full items-center rounded-[28px] border border-[#d9dde7] bg-white px-5 shadow-[0_10px_32px_rgba(17,24,39,0.08)]">
           <input
             ref={guideFileInputRef}
             aria-label={copy.guide.chooseFiles}
+            aria-hidden="true"
+            tabIndex={-1}
             type="file"
             multiple
             accept={aaisGuideFileAccept}
@@ -149,6 +126,7 @@ export function GuidePanel({
             <Plus size={22} weight="bold" />
           </button>
           <input
+            ref={guideTextInputRef}
             aria-label={copy.guide.inputLabel}
             value={guideDraft}
             onChange={(event) => {

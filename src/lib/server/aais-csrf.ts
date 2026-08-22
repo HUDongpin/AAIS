@@ -1,9 +1,9 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
+import { requireAaisSessionSecret } from "@/lib/server/aais-session-secret";
 import { getAaisDisplayCookieOptions } from "@/lib/server/aais-session";
 
 const csrfCookieName = "aais_csrf";
 const csrfTtlSeconds = 60 * 60 * 8;
-const devSessionSecret = "aais-dev-session-secret-do-not-use-for-production";
 
 type CsrfPayload = {
   v: 1;
@@ -110,14 +110,7 @@ function signatureMatches(encodedPayload: string, signature: string) {
 }
 
 function getSigningSecret() {
-  const secret = process.env.AAIS_SESSION_SECRET?.trim();
-  if (secret) {
-    return secret;
-  }
-  if (process.env.NODE_ENV === "production" || process.env.VERCEL_ENV === "production") {
-    throw new Error("AAIS session secret is not configured.");
-  }
-  return devSessionSecret;
+  return requireAaisSessionSecret();
 }
 
 function requireSafeStudentId(value: string) {
@@ -138,5 +131,9 @@ function readCookie(cookieHeader: string | null, name: string) {
   if (!cookie) {
     return null;
   }
-  return decodeURIComponent(cookie.slice(name.length + 1));
+  try {
+    return decodeURIComponent(cookie.slice(name.length + 1));
+  } catch {
+    return null;
+  }
 }

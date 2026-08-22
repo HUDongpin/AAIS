@@ -61,6 +61,7 @@ describe("AAIS repo hygiene check", () => {
           ".env.example",
           "output/private-report.json",
           "All API Keys.docx",
+          "owner-private-notes.docx",
         ].join("\n"),
       }),
       fileExists: async (relativePath) =>
@@ -85,6 +86,7 @@ describe("AAIS repo hygiene check", () => {
       ".env.production.local",
       "output/private-report.json",
       "All API Keys.docx",
+      "owner-private-notes.docx",
     ]);
     expect(report.checks.localPrivateArtifacts.present).toEqual([
       ".env.production.local",
@@ -135,6 +137,9 @@ describe("AAIS repo hygiene check", () => {
     expect(isForbiddenSourcePath(".env.local")).toBe(true);
     expect(isForbiddenSourcePath("output/report.json")).toBe(true);
     expect(isForbiddenSourcePath("All API Keys.docx")).toBe(true);
+    expect(isForbiddenSourcePath("owner-private-notes.docx")).toBe(true);
+    expect(isForbiddenSourcePath("OWNER-PRIVATE-NOTES.DOCX")).toBe(true);
+    expect(isForbiddenSourcePath("technical-review/review.docx")).toBe(false);
   });
 });
 

@@ -4,6 +4,7 @@ export type AaisGuideTargetAgentId = (typeof aaisGuideTargetAgentIds)[number];
 
 const aaisGuideTargetHandleAliases: Record<string, AaisGuideTargetAgentId> = {
   小张: "A1",
+  "xiao zhang": "A1",
   导学智能体: "A1",
   教授: "A2",
   professor: "A2",
@@ -12,7 +13,7 @@ const aaisGuideTargetHandleAliases: Record<string, AaisGuideTargetAgentId> = {
 
 export function parseAaisGuideTargetAgentIds(text: string) {
   const targetIds: AaisGuideTargetAgentId[] = [];
-  const mentionPattern = /@(A\s*([12])(?!\d)|小张|教授|Professor|导学智能体|专家智能体)/gi;
+  const mentionPattern = /@(A\s*([12])(?!\d)|Xiao\s+Zhang\b|小张|教授|Professor\b|导学智能体|专家智能体)/gi;
   let match: RegExpExecArray | null;
 
   while ((match = mentionPattern.exec(text)) !== null) {
@@ -52,45 +53,10 @@ export function localizeAaisGuideTargetMentions(
     .replace(/@A\s*2\b/gi, a2Handle);
 }
 
-export function normalizeAaisGuideTargetAgentIds(
-  targetAgentIds?: readonly string[] | null,
-  fallbackText = "",
-) {
-  const explicitTargetIds = coerceTargetAgentIds(targetAgentIds);
-  if (explicitTargetIds.length) {
-    return explicitTargetIds;
-  }
-
-  const mentionedTargetIds = parseAaisGuideTargetAgentIds(fallbackText);
-  return mentionedTargetIds.length ? mentionedTargetIds : undefined;
-}
-
-export function resolveAaisGuideTargetAgentIds(targetAgentIds?: readonly string[] | null) {
-  const resolvedTargetIds = coerceTargetAgentIds(targetAgentIds);
-  return resolvedTargetIds.length ? resolvedTargetIds : [...aaisGuideTargetAgentIds];
-}
-
-function coerceTargetAgentIds(targetAgentIds?: readonly string[] | null) {
-  const coercedTargetIds: AaisGuideTargetAgentId[] = [];
-  if (!targetAgentIds?.length) {
-    return coercedTargetIds;
-  }
-
-  for (const targetAgentId of targetAgentIds) {
-    const normalizedTargetId = targetAgentId.toUpperCase().replace(/\s+/g, "");
-    if (
-      isAaisGuideTargetAgentId(normalizedTargetId) &&
-      !coercedTargetIds.includes(normalizedTargetId)
-    ) {
-      coercedTargetIds.push(normalizedTargetId);
-    }
-  }
-
-  return coercedTargetIds;
-}
-
-function isAaisGuideTargetAgentId(value: string): value is AaisGuideTargetAgentId {
-  return aaisGuideTargetAgentIds.includes(value as AaisGuideTargetAgentId);
+/** Select exactly one visible responder; A2 is opt-in through a supported @ mention. */
+export function selectAaisGuideReplyAgentIds(text: string): AaisGuideTargetAgentId[] {
+  const mentionedTargetIds = parseAaisGuideTargetAgentIds(text);
+  return [mentionedTargetIds.includes("A2") ? "A2" : "A1"];
 }
 
 function resolveAaisGuideTargetMention(match: RegExpExecArray) {
@@ -98,5 +64,5 @@ function resolveAaisGuideTargetMention(match: RegExpExecArray) {
     return `A${match[2]}` as AaisGuideTargetAgentId;
   }
 
-  return aaisGuideTargetHandleAliases[match[1].toLowerCase()];
+  return aaisGuideTargetHandleAliases[match[1].toLowerCase().replace(/\s+/g, " ")];
 }

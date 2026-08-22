@@ -577,6 +577,8 @@ integration("AAIS research admission integrity on real Postgres", () => {
           sent: 1,
           retried: 0,
           deadLetter: 0,
+          stoppedReason: "limit",
+          hasMore: true,
         },
         firstOutbox: expect.objectContaining({
           status: "sent",
@@ -609,6 +611,8 @@ integration("AAIS research admission integrity on real Postgres", () => {
         sent: 0,
         retried: 1,
         deadLetter: 0,
+        stoppedReason: "limit",
+        hasMore: true,
       });
       expect(fetchImpl).toHaveBeenCalledTimes(1);
       const rejected = await client.query(

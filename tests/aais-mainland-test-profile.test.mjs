@@ -208,6 +208,7 @@ describe("AAIS mainland CAAIS test profile generator", () => {
     const databasePassword = new URL(secrets.AAIS_RESEARCH_DATABASE_URL).password;
     const distinctSecrets = [
       secrets.AAIS_SESSION_SECRET,
+      secrets.AAIS_PRODUCT_PSEUDONYM_SECRET,
       secrets.AAIS_RESEARCH_IDENTITY_ENCRYPTION_KEY,
       secrets.AAIS_RESEARCH_IDENTITY_FINGERPRINT_KEY,
       ...expectedLrsStores.flatMap(([prefix]) => [
@@ -355,6 +356,7 @@ describe("AAIS mainland CAAIS test profile generator", () => {
     const sensitiveValues = [
       ...actors,
       secrets.AAIS_SESSION_SECRET,
+      secrets.AAIS_PRODUCT_PSEUDONYM_SECRET,
       secrets.AAIS_RESEARCH_IDENTITY_ENCRYPTION_KEY,
       secrets.AAIS_RESEARCH_IDENTITY_FINGERPRINT_KEY,
       secrets.AAIS_RESEARCH_DATABASE_URL,

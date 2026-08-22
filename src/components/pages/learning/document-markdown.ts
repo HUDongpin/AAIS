@@ -152,9 +152,15 @@ export async function saveJsonDocumentToLocal({
   fileName: string;
   data: unknown;
 }) {
-  const blob = new Blob([`${JSON.stringify(data, null, 2)}\n`], {
-    type: "application/json;charset=utf-8",
-  });
+  const saveDocument = await prepareJsonDocumentSaveToLocal({ fileName });
+  await saveDocument(data);
+}
+
+export async function prepareJsonDocumentSaveToLocal({
+  fileName,
+}: {
+  fileName: string;
+}) {
   const saveFilePicker =
     typeof window === "undefined"
       ? undefined
@@ -172,13 +178,16 @@ export async function saveJsonDocumentToLocal({
         },
       ],
     });
-    const writable = await fileHandle.createWritable();
-    await writable.write(blob);
-    await writable.close();
-    return;
+    return async (data: unknown) => {
+      const writable = await fileHandle.createWritable();
+      await writable.write(createJsonDocumentBlob(data));
+      await writable.close();
+    };
   }
 
-  downloadBlob(fileName, blob);
+  return async (data: unknown) => {
+    downloadBlob(fileName, createJsonDocumentBlob(data));
+  };
 }
 
 export function createLearningDocumentFileName(taskId: string) {
@@ -206,34 +215,76 @@ export function sanitizeEditorHtml(value: string) {
   const template = document.createElement("template");
   template.innerHTML = value;
   template.content.querySelectorAll("script, style").forEach((element) => element.remove());
-  template.content.querySelectorAll("*").forEach((element) => {
+  const elements = Array.from(template.content.querySelectorAll("*")).reverse();
+  elements.forEach((element) => {
+    const tagName = element.tagName.toLowerCase();
+    if (!safeEditorTags.has(tagName)) {
+      element.replaceWith(...Array.from(element.childNodes));
+      return;
+    }
     Array.from(element.attributes).forEach((attribute) => {
       const attributeName = attribute.name.toLowerCase();
-      if (attributeName.startsWith("on") || attributeName === "style") {
-        element.removeAttribute(attribute.name);
-        return;
-      }
-      if (
-        attributeName === "align"
-        && !["left", "center", "right"].includes(attribute.value.toLowerCase())
-      ) {
+      if (!isSafeEditorAttribute(tagName, attributeName, attribute.value)) {
         element.removeAttribute(attribute.name);
       }
     });
-    if (element.tagName.toLowerCase() === "img") {
-      const source = element.getAttribute("src")?.trim() ?? "";
-      if (!isSafeEditorImageSource(source)) {
-        element.removeAttribute("src");
-      }
-    }
   });
   return template.innerHTML;
 }
 
-function isSafeEditorImageSource(value: string) {
-  if (/^https:\/\//i.test(value)) {
-    return true;
+const safeEditorTags = new Set([
+  "b",
+  "blockquote",
+  "br",
+  "code",
+  "div",
+  "em",
+  "font",
+  "h1",
+  "h2",
+  "h3",
+  "h4",
+  "h5",
+  "h6",
+  "i",
+  "img",
+  "li",
+  "ol",
+  "p",
+  "pre",
+  "s",
+  "span",
+  "strike",
+  "strong",
+  "sub",
+  "sup",
+  "u",
+  "ul",
+]);
+
+function isSafeEditorAttribute(tagName: string, name: string, value: string) {
+  if (name === "align") {
+    return ["left", "center", "right"].includes(value.toLowerCase());
   }
+  if (name === "dir") {
+    return ["ltr", "rtl", "auto"].includes(value.toLowerCase());
+  }
+  if (tagName === "img") {
+    return (name === "src" && isSafeEditorImageSource(value.trim()))
+      || ((name === "alt" || name === "title") && value.length <= 500);
+  }
+  if (tagName === "font" && name === "face") {
+    return value.length <= 160
+      && /^[A-Za-z0-9 ,.'"-]+$/.test(value)
+      && !/url|expression/i.test(value);
+  }
+  if (tagName === "ol" && name === "start") {
+    return /^-?[0-9]{1,6}$/.test(value);
+  }
+  return false;
+}
+
+function isSafeEditorImageSource(value: string) {
   return /^data:image\/(?:png|jpe?g|gif|webp);base64,[a-z0-9+/=\s]+$/i.test(value);
 }
 
@@ -272,6 +323,12 @@ function downloadBlob(fileName: string, blob: Blob) {
   link.click();
   link.remove();
   URL.revokeObjectURL(url);
+}
+
+function createJsonDocumentBlob(data: unknown) {
+  return new Blob([`${JSON.stringify(data, null, 2)}\n`], {
+    type: "application/json;charset=utf-8",
+  });
 }
 
 function htmlToMarkdown(html: string) {

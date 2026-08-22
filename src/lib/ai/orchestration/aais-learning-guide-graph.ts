@@ -16,13 +16,22 @@ import {
 import {
   aaisGuideTargetAgentIds,
   localizeAaisGuideAgentReferences,
-  resolveAaisGuideTargetAgentIds,
+  selectAaisGuideReplyAgentIds,
   type AaisGuideTargetAgentId,
 } from "@/lib/ai/aais-guide-targets";
 import {
   normalizeAaisGuideAttachments,
   type AaisGuideAttachment,
 } from "@/lib/ai/aais-guide-attachments";
+import {
+  createAaisFunctionScaffoldPlan,
+  createAaisFunctionScaffoldResponse,
+  createAaisUnsupportedFunctionGraphResponse,
+  hasAaisGraphIntent,
+  isAaisFunctionGraphRequest,
+  type AaisFunctionScaffoldPlan,
+  type AaisGuideVisualization,
+} from "@/lib/ai/aais-guide-function-scaffold";
 
 type AaisWorkspaceState = {
   currentStep: string;
@@ -41,6 +50,7 @@ export type AaisGuideTurn = {
   label: string;
   content: string;
   actions: string[];
+  visualizations?: AaisGuideVisualization[];
 };
 
 type AaisGuideProviderRun = AaisModelRuntime & {
@@ -69,6 +79,7 @@ export type AaisGuideInput = {
   targetAgentIds?: AaisGuideTargetAgentId[];
   workspaceState: AaisWorkspaceState;
   threadId?: string;
+  scaffoldPlan?: AaisFunctionScaffoldPlan;
 };
 
 type AaisGuideState = AaisGuideInput & {
@@ -85,6 +96,7 @@ type AaisGuideAgentRun = {
 
 type AaisGuideOptions = {
   modelProvider?: AaisModelProvider;
+  signal?: AbortSignal;
 };
 
 const redaction = {
@@ -117,21 +129,38 @@ export async function runAaisLearningGuideGraph(
   input: AaisGuideInput,
   options: AaisGuideOptions = {},
 ) {
+  options.signal?.throwIfAborted();
   const conversationHistory = normalizeConversationHistory(input.conversationHistory);
   const responseLocale = resolveGuideResponseLocale(
     input.locale,
     input.learnerInput,
     conversationHistory,
   );
+  const scaffoldPlan = createAaisFunctionScaffoldPlan({
+    learnerInput: input.learnerInput,
+    conversationHistory,
+  });
+  const unsupportedGraphRequest = !scaffoldPlan && (
+    isAaisFunctionGraphRequest(input.learnerInput)
+    || (
+      hasAaisGraphIntent(input.learnerInput)
+      && conversationHistory
+        .filter((message) => message.kind === "user")
+        .slice(-6)
+        .some((message) => isAaisFunctionGraphRequest(message.text))
+    )
+  );
   const boundedInput: AaisGuideInput = {
     ...input,
     locale: responseLocale,
+    targetAgentIds: selectAaisGuideReplyAgentIds(input.learnerInput),
     ...(conversationHistory.length ? { conversationHistory } : { conversationHistory: undefined }),
     workspaceState: normalizeAaisGuideWorkspaceState(input.workspaceState),
+    ...(scaffoldPlan ? { scaffoldPlan } : { scaffoldPlan: undefined }),
   };
   const modelProvider = options.modelProvider ?? createConfiguredAaisModelProvider();
   const backgroundProvider = createDeterministicAaisProvider();
-  const targetAgentIds = resolveAaisGuideTargetAgentIds(boundedInput.targetAgentIds);
+  const targetAgentIds = boundedInput.targetAgentIds ?? ["A1"];
   const visibleAgentIds = topologicalOrder.filter((agentId): agentId is AaisGuideTargetAgentId =>
     targetAgentIds.includes(agentId as AaisGuideTargetAgentId),
   );
@@ -151,10 +180,17 @@ export async function runAaisLearningGuideGraph(
     ],
     modelProvider,
     backgroundProvider,
-  });
+  }, options.signal ? { signal: options.signal } : undefined);
+  options.signal?.throwIfAborted();
   const totalMs = Math.round(nowMs() - startedAt);
   const allRuns = sortAgentRuns(graphOutput.runs);
-  const turns = allRuns.flatMap((run) => run.turns);
+  const turns = applyAaisFunctionScaffold(
+    allRuns.flatMap((run) => run.turns),
+    boundedInput.scaffoldPlan,
+    unsupportedGraphRequest,
+    targetAgentIds,
+    boundedInput.locale,
+  );
   const providerRuns = allRuns.flatMap((run) => run.providerRuns);
   const agentTimings = allRuns.flatMap((run) => run.timings);
   const visibleTurns = turns.filter((turn) =>
@@ -211,10 +247,14 @@ export async function runAaisLearningGuideGraph(
 
 function createAaisLearningGuideLangGraph() {
   return new StateGraph(AaisGuideGraphState)
-    .addNode("A1", (state: AaisGuideGraphStateValue) => runAaisGuideAgentNode("A1", state))
-    .addNode("A2", (state: AaisGuideGraphStateValue) => runAaisGuideAgentNode("A2", state))
-    .addNode("A3", (state: AaisGuideGraphStateValue) => runAaisGuideAgentNode("A3", state))
-    .addNode("A4", (state: AaisGuideGraphStateValue) => runAaisGuideAgentNode("A4", state))
+    .addNode("A1", (state: AaisGuideGraphStateValue, runtime) =>
+      runAaisGuideAgentNode("A1", state, runtime.signal))
+    .addNode("A2", (state: AaisGuideGraphStateValue, runtime) =>
+      runAaisGuideAgentNode("A2", state, runtime.signal))
+    .addNode("A3", (state: AaisGuideGraphStateValue, runtime) =>
+      runAaisGuideAgentNode("A3", state, runtime.signal))
+    .addNode("A4", (state: AaisGuideGraphStateValue, runtime) =>
+      runAaisGuideAgentNode("A4", state, runtime.signal))
     .addConditionalEdges(START, (state: AaisGuideGraphStateValue) => state.activeAgentIds, {
       A1: "A1",
       A2: "A2",
@@ -233,7 +273,9 @@ function createAaisLearningGuideLangGraph() {
 async function runAaisGuideAgentNode(
   agentId: AaisAgentId,
   state: AaisGuideGraphStateValue,
+  signal?: AbortSignal,
 ) {
+  signal?.throwIfAborted();
   const modelProvider = backgroundAgentIds.includes(agentId)
     ? state.backgroundProvider
     : state.modelProvider;
@@ -245,6 +287,7 @@ async function runAaisGuideAgentNode(
         state.input,
         modelProvider,
         !backgroundAgentIds.includes(agentId),
+        signal,
       ),
     ],
   };
@@ -255,52 +298,63 @@ async function createAgentTurn(
   state: AaisGuideState,
   modelProvider: AaisModelProvider,
   visible: boolean,
+  signal?: AbortSignal,
 ) {
+  signal?.throwIfAborted();
   const startedAt = nowMs();
   const agent = aaisAgents.find((candidate) => candidate.id === agentId) ?? aaisAgents[0];
   const fallbackText = createAgentContent(agentId, state);
-  const response = await modelProvider.generate({
-    agentId,
-    label: agent.name[state.locale],
-    role: agent.role[state.locale],
-    mission: agent.mission[state.locale],
-    voice: agent.voice
-      ? {
-          persona: agent.voice.persona[state.locale],
-          tone: agent.voice.tone[state.locale],
-          replyContract: agent.voice.replyContract[state.locale],
-          maxSentences: agent.voice.maxSentences,
-          maxCharacters: agent.voice.maxCharacters?.[state.locale],
-          maxOutputTokens: agent.voice.maxOutputTokens,
-        }
-      : undefined,
-    caModules: agent.caModules,
-    caBackground: aaisCognitiveApprenticeshipBackground,
-    locale: state.locale,
-    phase: state.phase,
-    taskId: state.taskId,
-    learnerInput: state.learnerInput,
-    conversationHistory: state.conversationHistory,
-    workspaceState: state.workspaceState,
-    fallbackText,
-  }).catch(() => ({
-    text: fallbackText,
-    runtime: {
-      provider: "unavailable",
-      model: "fallback-template",
-      attempts: 1,
-      status: "fallback" as const,
-      guardrail: {
-        policy: "aais-age-appropriate-output-v1" as const,
-        status: "not-applicable" as const,
-        reasons: ["provider-unavailable"],
+  let response;
+  try {
+    response = await modelProvider.generate({
+      agentId,
+      label: agent.name[state.locale],
+      role: agent.role[state.locale],
+      mission: agent.mission[state.locale],
+      voice: agent.voice
+        ? {
+            persona: agent.voice.persona[state.locale],
+            tone: agent.voice.tone[state.locale],
+            replyContract: agent.voice.replyContract[state.locale],
+            maxSentences: agent.voice.maxSentences,
+            maxCharacters: agent.voice.maxCharacters?.[state.locale],
+            maxOutputTokens: agent.voice.maxOutputTokens,
+          }
+        : undefined,
+      caModules: agent.caModules,
+      caBackground: aaisCognitiveApprenticeshipBackground,
+      locale: state.locale,
+      phase: state.phase,
+      taskId: state.taskId,
+      learnerInput: state.learnerInput,
+      conversationHistory: state.conversationHistory,
+      workspaceState: state.workspaceState,
+      scaffoldPlan: state.scaffoldPlan,
+      fallbackText,
+      signal,
+    });
+  } catch {
+    signal?.throwIfAborted();
+    response = {
+      text: fallbackText,
+      runtime: {
+        provider: "unavailable",
+        model: "fallback-template",
+        attempts: 1,
+        status: "fallback" as const,
+        guardrail: {
+          policy: "aais-age-appropriate-output-v1" as const,
+          status: "not-applicable" as const,
+          reasons: ["provider-unavailable"],
+        },
+        redaction: {
+          secrets: "omitted" as const,
+          prompt: "summarized" as const,
+        },
       },
-      redaction: {
-        secrets: "omitted" as const,
-        prompt: "summarized" as const,
-      },
-    },
-  }));
+    };
+  }
+  signal?.throwIfAborted();
   const elapsedMs = Math.round(nowMs() - startedAt);
   const learnerVisibleText = visible
     ? localizeAaisGuideAgentReferences(response.text, state.locale)
@@ -511,6 +565,38 @@ function createAgentActions(agentId: AaisAgentId, phase: AaisPhase) {
     return ["monitor", "signal-a1"];
   }
   return ["articulate", "reflect", "compare"];
+}
+
+function applyAaisFunctionScaffold(
+  turns: AaisGuideTurn[],
+  plan: AaisFunctionScaffoldPlan | undefined,
+  unsupportedGraphRequest: boolean,
+  targetAgentIds: AaisGuideTargetAgentId[],
+  locale: Locale,
+) {
+  if (!plan && !unsupportedGraphRequest) {
+    return turns;
+  }
+  const targetAgentId = targetAgentIds[0];
+  let applied = false;
+  return turns.map((turn) => {
+    if (applied || turn.agentId !== targetAgentId) {
+      return turn;
+    }
+    applied = true;
+    return {
+      ...turn,
+      content: plan
+        ? createAaisFunctionScaffoldResponse(plan, locale)
+        : createAaisUnsupportedFunctionGraphResponse(locale),
+      actions: [...new Set([
+        ...turn.actions,
+        ...(plan ? ["show-function-graph"] : ["function-graph-unavailable"]),
+        ...(plan?.mode === "demonstrate" ? ["worked-example"] : []),
+      ])],
+      ...(plan ? { visualizations: [plan.visualization] } : { visualizations: undefined }),
+    };
+  });
 }
 
 function formatMessage(locale: Locale, turns: AaisGuideTurn[]) {

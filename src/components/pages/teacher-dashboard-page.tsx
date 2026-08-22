@@ -41,10 +41,65 @@ import {
   type CohortFilterState,
 } from "@/components/pages/teacher-dashboard/teacher-dashboard-support";
 
+type CohortRecommendationsLoadResult = {
+  availability: "available" | "paused" | "unavailable";
+  error: string;
+  recommendations: AaisLearnerRecommendation[];
+};
+
+async function loadCohortRecommendations(
+  url: string,
+): Promise<CohortRecommendationsLoadResult> {
+  try {
+    const response = await fetch(url);
+    const body = (await response.json().catch(() => null)) as AaisRecommendationsResponse | null;
+    if (!response.ok) {
+      return {
+        availability: "unavailable",
+        error: getAaisApiErrorMessage(
+          body,
+          response.status === 403
+            ? "当前账户无权读取推荐跟进。"
+            : "推荐跟进暂时不可用，请稍后刷新重试。",
+        ),
+        recommendations: [],
+      };
+    }
+    if (!body || !Array.isArray(body.recommendations)) {
+      return {
+        availability: "unavailable",
+        error: "推荐跟进响应无效，请稍后刷新重试。",
+        recommendations: [],
+      };
+    }
+    if (body.policy?.enabled === false) {
+      return {
+        availability: "paused",
+        error: "",
+        recommendations: [],
+      };
+    }
+    return {
+      availability: "available",
+      error: "",
+      recommendations: body.recommendations,
+    };
+  } catch {
+    return {
+      availability: "unavailable",
+      error: "推荐跟进暂时不可用，请检查网络后刷新重试。",
+      recommendations: [],
+    };
+  }
+}
+
 export function TeacherDashboardPage() {
   const [analytics, setAnalytics] = useState<AaisCohortAnalytics | null>(null);
   const [recommendations, setRecommendations] = useState<AaisLearnerRecommendation[]>([]);
-  const [recommendationsEnabled, setRecommendationsEnabled] = useState(true);
+  const [recommendationsAvailability, setRecommendationsAvailability] = useState<
+    "loading" | "available" | "paused" | "unavailable"
+  >("loading");
+  const [recommendationsError, setRecommendationsError] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
   const [filters, setFilters] = useState<CohortFilterState>(defaultFilters);
@@ -66,35 +121,36 @@ export function TeacherDashboardPage() {
 
     async function loadCohortAnalytics() {
       setLoading(true);
+      setRecommendationsAvailability("loading");
+      setRecommendationsError("");
       try {
-        const [response, recommendationsResponse] = await Promise.all([
+        const [response, recommendationsResult] = await Promise.all([
           fetch(analyticsUrl),
-          fetch(recommendationsUrl),
+          loadCohortRecommendations(recommendationsUrl),
         ]);
-        const body = (await response.json()) as AaisCohortAnalyticsResponse;
-        if (!response.ok || !body.analytics) {
+        const body = (await response.json().catch(() => null)) as AaisCohortAnalyticsResponse | null;
+        if (!response.ok || !body?.analytics) {
           throw new Error(response.status === 403
             ? "教师或管理员登录后可查看 cohort dashboard。"
             : getAaisApiErrorMessage(body, "AAIS cohort analytics request failed."));
         }
-        const recommendationsBody = recommendationsResponse.ok
-          ? (await recommendationsResponse.json()) as AaisRecommendationsResponse
-          : null;
-        const nextRecommendationsEnabled = recommendationsBody?.policy?.enabled !== false;
         if (!cancelled) {
           setAnalytics(selectSafeCohortAnalytics(body.analytics));
-          setRecommendations(nextRecommendationsEnabled
-            ? selectSafeRecommendations(recommendationsBody?.recommendations ?? [])
-            : []
+          setRecommendations(
+            recommendationsResult.availability === "available"
+              ? selectSafeRecommendations(recommendationsResult.recommendations)
+              : [],
           );
-          setRecommendationsEnabled(nextRecommendationsEnabled);
+          setRecommendationsAvailability(recommendationsResult.availability);
+          setRecommendationsError(recommendationsResult.error);
           setError("");
         }
       } catch (caught) {
         if (!cancelled) {
           setAnalytics(null);
           setRecommendations([]);
-          setRecommendationsEnabled(true);
+          setRecommendationsAvailability("unavailable");
+          setRecommendationsError("");
           setError(caught instanceof Error
             ? caught.message
             : "AAIS cohort analytics request failed.");
@@ -455,11 +511,33 @@ export function TeacherDashboardPage() {
               <div className="flex items-center justify-between gap-3">
                 <h2 className="text-lg font-black text-[#171b35]">推荐跟进</h2>
                 <span className="text-xs font-bold text-[#68708a]">
-                  {recommendationsEnabled ? `${recommendations.length} 条` : "已暂停"}
+                  {recommendationsAvailability === "available"
+                    ? `${recommendations.length} 条`
+                    : recommendationsAvailability === "paused"
+                      ? "已暂停"
+                      : recommendationsAvailability === "unavailable"
+                        ? "不可用"
+                        : "加载中"}
                 </span>
               </div>
               <div className="mt-4 grid gap-3">
-                {!recommendationsEnabled ? (
+                {recommendationsAvailability === "loading" ? (
+                  <p className="text-sm font-semibold leading-6 text-[#68708a]">
+                    正在加载规则推荐...
+                  </p>
+                ) : recommendationsAvailability === "unavailable" ? (
+                  recommendationsError ? (
+                    <p
+                      className="rounded-lg border border-[#f0b7c9] bg-[#fff1f5] px-3 py-2 text-sm font-semibold leading-6 text-[#a12f56]"
+                      role="alert"
+                      aria-label="推荐跟进不可用"
+                      aria-live="assertive"
+                      aria-atomic="true"
+                    >
+                      {recommendationsError}
+                    </p>
+                  ) : null
+                ) : recommendationsAvailability === "paused" ? (
                   <p className="text-sm font-semibold leading-6 text-[#68708a]">
                     规则推荐已暂停。
                   </p>

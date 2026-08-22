@@ -2,6 +2,7 @@ import { expect, test } from "@playwright/test";
 import {
   authenticateAaisE2eActor,
   loginWithAaisE2eStudent,
+  stubLocalAaisCohortExport,
 } from "./aais-e2e-helpers";
 
 test("student account cannot open the teacher dashboard", async ({ page }) => {
@@ -20,6 +21,7 @@ test("teacher smoke account can open cohort dashboard and export controls", asyn
     role: "teacher",
     displayName: "Teacher E2E",
   });
+  await stubLocalAaisCohortExport(page);
 
   await page.goto("/dashboard");
 

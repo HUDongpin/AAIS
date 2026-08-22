@@ -2,29 +2,31 @@ import { describe, expect, it } from "vitest";
 import {
   localizeAaisGuideAgentReferences,
   localizeAaisGuideTargetMentions,
-  normalizeAaisGuideTargetAgentIds,
+  selectAaisGuideReplyAgentIds,
 } from "@/lib/ai/aais-guide-targets";
 
 describe("AAIS guide target parsing", () => {
-  it("maps the named visible-agent handles to the matching guide target ids", () => {
-    expect(normalizeAaisGuideTargetAgentIds(undefined, "@教授 请示范一次元认知思考。")).toEqual([
-      "A2",
-    ]);
-    expect(normalizeAaisGuideTargetAgentIds(undefined, "@小张 请帮我拆下一步。")).toEqual([
-      "A1",
-    ]);
+  it("routes ordinary text and bare expert names to A1 only", () => {
+    expect(selectAaisGuideReplyAgentIds("请帮我拆解下一步。")).toEqual(["A1"]);
+    expect(selectAaisGuideReplyAgentIds("教授，请帮我示范一次。")).toEqual(["A1"]);
+    expect(selectAaisGuideReplyAgentIds("Professor, please show me an example.")).toEqual(["A1"]);
+    expect(selectAaisGuideReplyAgentIds("@Xiao Zhangman is not an agent handle.")).toEqual(["A1"]);
   });
 
-  it("keeps legacy role handles as compatible aliases", () => {
-    expect(normalizeAaisGuideTargetAgentIds(undefined, "@Professor 请示范一次元认知思考。")).toEqual([
-      "A2",
-    ]);
-    expect(normalizeAaisGuideTargetAgentIds(undefined, "@专家智能体 请示范一次元认知思考。")).toEqual([
-      "A2",
-    ]);
-    expect(normalizeAaisGuideTargetAgentIds(undefined, "@导学智能体 请帮我拆下一步。")).toEqual([
-      "A1",
-    ]);
+  it("routes valid Professor mentions to A2 only", () => {
+    expect(selectAaisGuideReplyAgentIds("@教授 请示范一次元认知思考。")).toEqual(["A2"]);
+    expect(selectAaisGuideReplyAgentIds("@Professor Please model your reasoning.")).toEqual(["A2"]);
+    expect(selectAaisGuideReplyAgentIds("@A2 请示范一次元认知思考。")).toEqual(["A2"]);
+    expect(selectAaisGuideReplyAgentIds("@A 2 请示范一次元认知思考。")).toEqual(["A2"]);
+    expect(selectAaisGuideReplyAgentIds("@专家智能体 请示范一次元认知思考。")).toEqual(["A2"]);
+  });
+
+  it("keeps guide aliases on A1 and gives A2 precedence in mixed mentions", () => {
+    expect(selectAaisGuideReplyAgentIds("@小张 请帮我拆下一步。")).toEqual(["A1"]);
+    expect(selectAaisGuideReplyAgentIds("@Xiao   Zhang help me plan the next step.")).toEqual(["A1"]);
+    expect(selectAaisGuideReplyAgentIds("@导学智能体 请帮我拆下一步。")).toEqual(["A1"]);
+    expect(selectAaisGuideReplyAgentIds("@小张 先规划，再请 @教授 示范。")).toEqual(["A2"]);
+    expect(selectAaisGuideReplyAgentIds("@Professor model it, then @A1 help me practice.")).toEqual(["A2"]);
   });
 
   it("replaces internal visible-agent ids with learner-facing names", () => {

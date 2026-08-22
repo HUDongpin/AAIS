@@ -1,6 +1,7 @@
-import type { KeyboardEvent, PointerEvent as ReactPointerEvent } from "react";
+import type { FocusEvent, KeyboardEvent, PointerEvent as ReactPointerEvent } from "react";
 import {
   contentPanelResizeStep,
+  defaultTaskId,
   maxContentPanelWidth,
   minContentPanelWidth,
 } from "@/components/pages/learning/learning-page-constants";
@@ -15,6 +16,7 @@ import {
 import { DocumentEditor } from "@/components/pages/learning/document-editor";
 import { getLearningCopy } from "@/components/pages/learning/learning-copy";
 import type {
+  AaisClientTaskRecord,
   ContentItemId,
   ContentTab,
   SavedLearningDocument,
@@ -114,6 +116,7 @@ export function ContentResizeSeparator({
 
 export function ContentSidePanel({
   activeContentId,
+  activeTaskId = defaultTaskId,
   activeTab,
   artifactSaveBusy,
   artifactSaveError,
@@ -123,19 +126,28 @@ export function ContentSidePanel({
   documentDownloadError,
   documentDownloadStatus,
   documentTitle,
+  documentArchiveBusy = false,
+  documentNavigationLocked = false,
   flushPendingArtifactSave,
   historyDocuments,
   locale = "zh-CN",
   onDocumentTitleChange,
   onDownloadDocument,
   onBackContent,
+  onCompleteTask = () => undefined,
   onOpenContent,
   onOpenDocument,
   onRecordArtifact,
   onSaveAndCloseDocument,
+  onSaveAndClosePointerDown = () => undefined,
+  onSelectTask = () => undefined,
   selectContentTab,
+  taskActionBusy = false,
+  taskActionError = "",
+  tasks = [],
 }: {
   activeContentId: ContentItemId | null;
+  activeTaskId?: string;
   activeTab: ContentTab;
   artifactSaveBusy: boolean;
   artifactSaveError: string;
@@ -145,17 +157,25 @@ export function ContentSidePanel({
   documentDownloadError: string;
   documentDownloadStatus: string;
   documentTitle: string;
+  documentArchiveBusy?: boolean;
+  documentNavigationLocked?: boolean;
   flushPendingArtifactSave: () => void;
   historyDocuments: SavedLearningDocument[];
   locale?: Locale;
   onDocumentTitleChange: (value: string) => void;
   onDownloadDocument: () => void;
   onBackContent: () => void;
+  onCompleteTask?: (taskId: string) => void;
   onOpenContent: (id: ContentItemId) => void;
   onOpenDocument: (document: SavedLearningDocument) => void;
   onRecordArtifact: (value: string) => void;
   onSaveAndCloseDocument: () => void;
+  onSaveAndClosePointerDown?: () => void;
+  onSelectTask?: (taskId: string) => void;
   selectContentTab: (nextTab: ContentTab) => void;
+  taskActionBusy?: boolean;
+  taskActionError?: string;
+  tasks?: AaisClientTaskRecord[];
 }) {
   const copy = getLearningCopy(locale);
   const activeContent =
@@ -168,30 +188,37 @@ export function ContentSidePanel({
     <aside
       className="flex min-h-[620px] flex-col bg-[#fcfcfc] lg:min-h-0 lg:overflow-hidden"
       aria-label={copy.content.panel}
-      aria-busy={documentBusy}
+      aria-busy={documentBusy || taskActionBusy}
     >
-      <div className="flex h-14 shrink-0 items-stretch border-b border-[#d7d7d7] bg-[#fcfcfc]">
-        <TabButton active={activeTab === "display"} onClick={() => selectContentTab("display")}>
+      <div className="grid h-auto shrink-0 grid-cols-2 items-stretch border-b border-[#d7d7d7] bg-[#fcfcfc] lg:flex lg:h-14">
+        <TabButton
+          active={activeTab === "display"}
+          ariaDisabled={activeTab === "editor" && documentNavigationLocked}
+          disabled={documentArchiveBusy || (activeTab === "editor" && artifactSaveBusy)}
+          onClick={() => selectContentTab("display")}
+        >
           {copy.content.displayTab}
         </TabButton>
-        <TabButton active={activeTab === "editor"} onClick={() => selectContentTab("editor")}>
+        <TabButton active={activeTab === "editor"} disabled={documentArchiveBusy} onClick={() => selectContentTab("editor")}>
           {copy.content.editorTab}
         </TabButton>
         {activeTab === "editor" ? (
           <>
             <button
               type="button"
+              data-document-archive-action="true"
+              onPointerDown={onSaveAndClosePointerDown}
               onClick={onSaveAndCloseDocument}
-              disabled={artifactSaveBusy}
-              className="inline-flex h-14 min-w-[104px] shrink-0 items-center justify-center whitespace-nowrap px-3 text-[14px] font-semibold text-[#536de8] outline-none transition hover:bg-white focus-visible:ring-2 focus-visible:ring-[#536de8] disabled:cursor-not-allowed disabled:opacity-70"
+              disabled={artifactSaveBusy || documentArchiveBusy}
+              className="inline-flex h-14 min-w-0 items-center justify-center whitespace-nowrap border-t border-[#d7d7d7] px-2 text-[14px] font-semibold text-[#536de8] outline-none transition hover:bg-white focus-visible:ring-2 focus-visible:ring-[#536de8] disabled:cursor-not-allowed disabled:opacity-70 lg:min-w-[104px] lg:shrink-0 lg:border-t-0 lg:px-3"
             >
               {copy.content.saveAndClose}
             </button>
             <button
               type="button"
               onClick={onDownloadDocument}
-              disabled={documentDownloadBusy}
-              className="ml-auto inline-flex h-14 min-w-[104px] shrink-0 items-center justify-center whitespace-nowrap px-3 text-[14px] font-semibold text-[#536de8] outline-none transition hover:bg-white focus-visible:ring-2 focus-visible:ring-[#536de8] disabled:cursor-not-allowed disabled:opacity-70"
+              disabled={documentDownloadBusy || documentArchiveBusy}
+              className="inline-flex h-14 min-w-0 items-center justify-center whitespace-nowrap border-t border-l border-[#d7d7d7] px-2 text-[14px] font-semibold text-[#536de8] outline-none transition hover:bg-white focus-visible:ring-2 focus-visible:ring-[#536de8] disabled:cursor-not-allowed disabled:opacity-70 lg:ml-auto lg:min-w-[104px] lg:shrink-0 lg:border-t-0 lg:border-l-0 lg:px-3"
             >
               {documentDownloadBusy ? copy.content.downloading : copy.content.download}
             </button>
@@ -220,23 +247,43 @@ export function ContentSidePanel({
         </p>
       ) : null}
 
-      <div className="min-h-[580px] lg:min-h-0 lg:flex-1 lg:overflow-y-auto">
+      <div
+        className={[
+          "min-h-[580px] lg:min-h-0 lg:flex-1",
+          activeTab === "editor"
+            ? "lg:flex lg:overflow-hidden"
+            : "lg:overflow-y-auto",
+        ].join(" ")}
+      >
         {activeTab === "display" ? (
           <ContentDisplay
             activeContent={activeContent}
+            activeTaskId={activeTaskId}
             historyDocuments={historyDocuments}
             locale={locale}
+            navigationLocked={documentNavigationLocked}
             onBack={onBackContent}
+            onCompleteTask={onCompleteTask}
             onOpen={onOpenContent}
             onOpenDocument={onOpenDocument}
+            onSelectTask={onSelectTask}
+            taskActionBusy={taskActionBusy}
+            taskActionError={taskActionError}
+            tasks={tasks}
           />
         ) : (
           <DocumentEditor
             artifactText={artifactText}
             documentTitle={documentTitle}
+            disabled={documentArchiveBusy}
             locale={locale}
             onArtifactChange={onRecordArtifact}
-            onArtifactBlur={flushPendingArtifactSave}
+            onArtifactBlur={(event: FocusEvent<HTMLDivElement>) => {
+              const nextTarget = event.relatedTarget as HTMLElement | null;
+              if (!nextTarget?.dataset.documentArchiveAction) {
+                flushPendingArtifactSave();
+              }
+            }}
             onDocumentTitleChange={onDocumentTitleChange}
           />
         )}
@@ -247,23 +294,31 @@ export function ContentSidePanel({
 
 function TabButton({
   active,
+  ariaDisabled = false,
   children,
+  disabled,
   onClick,
 }: {
   active: boolean;
+  ariaDisabled?: boolean;
   children: string;
+  disabled: boolean;
   onClick: () => void;
 }) {
   return (
     <button
       type="button"
+      disabled={disabled}
+      aria-disabled={ariaDisabled || undefined}
       onClick={onClick}
       aria-pressed={active}
       className={[
-        "relative h-14 min-w-[148px] shrink-0 whitespace-nowrap border-r border-[#d7d7d7] px-6 text-center text-[20px] font-black leading-[56px] tracking-normal outline-none transition focus-visible:ring-2 focus-visible:ring-[#536de8]",
+        "relative h-14 min-w-0 whitespace-nowrap border-r border-[#d7d7d7] px-2 text-center text-[17px] font-black leading-[56px] tracking-normal outline-none transition focus-visible:ring-2 focus-visible:ring-[#536de8] lg:min-w-[148px] lg:shrink-0 lg:px-6 lg:text-[20px]",
         active
           ? "bg-[#f0f0ef] text-[#10131a] shadow-[inset_0_-3px_0_#536de8]"
-          : "bg-white text-[#16181d] hover:bg-[#f8f8f7]",
+          : ariaDisabled
+            ? "cursor-wait bg-white text-[#6b7280]"
+            : "bg-white text-[#16181d] hover:bg-[#f8f8f7]",
       ].join(" ")}
     >
       {children}

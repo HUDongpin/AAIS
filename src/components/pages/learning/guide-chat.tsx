@@ -13,6 +13,8 @@ import {
   getLearningCopy,
 } from "@/components/pages/learning/learning-copy";
 import { SafeMarkdownText } from "@/components/pages/learning/guide-safe-markdown";
+import { FunctionGraph } from "@/components/pages/learning/function-graph";
+import { normalizeAaisGuideVisualizations } from "@/lib/ai/aais-guide-function-scaffold";
 import type {
   GuideClientAttachment,
   GuideMessage,
@@ -68,9 +70,13 @@ export function formatGuideAttachmentSize(sizeBytes: number) {
 export function GuideBubble({
   locale = "zh-CN",
   message,
+  onSuggestedPrompt,
+  suggestionsDisabled = false,
 }: {
   locale?: Locale;
   message: GuideMessage;
+  onSuggestedPrompt?: (prompt: string) => void;
+  suggestionsDisabled?: boolean;
 }) {
   const copy = getLearningCopy(locale);
   const assistant = message.kind === "assistant";
@@ -87,20 +93,26 @@ export function GuideBubble({
           </p>
         ) : null}
         {visibleTurns.map((turn) => (
-          <AgentTurnBubble key={`${message.id}-${turn.agentId}`} locale={locale} turn={turn} />
+          <AgentTurnBubble
+            key={`${message.id}-${turn.agentId}`}
+            locale={locale}
+            onSuggestedPrompt={onSuggestedPrompt}
+            suggestionsDisabled={suggestionsDisabled}
+            turn={turn}
+          />
         ))}
       </div>
     );
   }
 
   return (
-    <div className={assistant ? "flex items-start gap-3" : "flex justify-end"}>
+    <div className={assistant ? "flex min-w-0 items-start gap-3" : "flex min-w-0 justify-end"}>
       {assistant ? (
         <AgentAvatar agentId="A1" label={getGuideAgentLabel(locale, "A1")} locale={locale} />
       ) : null}
       <div
         className={[
-          "rounded-[18px] px-5 py-4 text-[17px] leading-8 shadow-[0_6px_18px_rgba(17,24,39,0.05)]",
+          "min-w-0 rounded-[18px] px-5 py-4 text-[17px] leading-8 shadow-[0_6px_18px_rgba(17,24,39,0.05)]",
           assistant
             ? "max-w-[760px] border border-[#e3e6ef] bg-white text-[#30343b]"
             : "max-w-[640px] bg-[#536de8] text-white",
@@ -192,14 +204,25 @@ function formatGuideAttachmentType(
   return locale === "en-US" ? "Plain text" : "纯文本";
 }
 
-function AgentTurnBubble({ locale, turn }: { locale: Locale; turn: GuideTurn }) {
+function AgentTurnBubble({
+  locale,
+  onSuggestedPrompt,
+  suggestionsDisabled,
+  turn,
+}: {
+  locale: Locale;
+  onSuggestedPrompt?: (prompt: string) => void;
+  suggestionsDisabled: boolean;
+  turn: GuideTurn;
+}) {
   const presentation = getAgentPresentation(turn, locale);
+  const visualizations = normalizeAaisGuideVisualizations(turn.visualizations);
   return (
-    <div className="flex items-start gap-3">
+    <div className="flex min-w-0 items-start gap-3">
       <AgentAvatar agentId={turn.agentId} label={presentation.label} locale={locale} />
       <article
         className={[
-          "max-w-[760px] rounded-[18px] px-5 py-4 text-[17px] leading-8 text-[#30343b] shadow-[0_6px_18px_rgba(17,24,39,0.05)]",
+          "min-w-0 max-w-[760px] flex-1 rounded-[18px] px-5 py-4 text-[17px] leading-8 text-[#30343b] shadow-[0_6px_18px_rgba(17,24,39,0.05)]",
           presentation.bubbleClassName,
         ].join(" ")}
       >
@@ -207,6 +230,15 @@ function AgentTurnBubble({ locale, turn }: { locale: Locale; turn: GuideTurn }) 
           {presentation.label}
         </p>
         <SafeMarkdownText text={localizeAaisGuideAgentReferences(turn.content, locale)} />
+        {visualizations.map((visualization) => (
+          <FunctionGraph
+            disabled={suggestionsDisabled}
+            key={visualization.id}
+            locale={locale}
+            onSuggestedPrompt={onSuggestedPrompt}
+            visualization={visualization}
+          />
+        ))}
       </article>
     </div>
   );

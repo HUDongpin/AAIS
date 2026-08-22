@@ -6,6 +6,7 @@
 .worktrees/
 node_modules/
 All API Keys.docx
+/*.docx
 .vercel
 .env
 .env.*

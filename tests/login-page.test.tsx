@@ -1,8 +1,11 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { stat } from "node:fs/promises";
+import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   dynamic as loginRouteDynamic,
   metadata as loginRouteMetadata,
+  default as LoginRoutePage,
 } from "@/app/login/page";
 import { LoginPage } from "@/components/pages/login-page";
 import {
@@ -14,12 +17,23 @@ const replace = vi.fn();
 const telemetryMocks = vi.hoisted(() => ({
   clear: vi.fn(),
 }));
+const headersMocks = vi.hoisted(() => ({
+  locale: undefined as string | undefined,
+}));
 
 vi.mock("next/navigation", () => ({
   useRouter: () => ({
     replace,
   }),
   useSearchParams: () => new URLSearchParams(window.location.search),
+}));
+
+vi.mock("next/headers", () => ({
+  cookies: vi.fn(async () => ({
+    get: (name: string) => name === "aais_locale" && headersMocks.locale
+      ? { value: headersMocks.locale }
+      : undefined,
+  })),
 }));
 
 vi.mock("next/image", () => ({
@@ -56,11 +70,26 @@ describe("login design CSP compatibility", () => {
     expect(container.querySelector("[style]")).toBeNull();
     expect(container.querySelectorAll("img")).toHaveLength(loginDeckCards.length);
   });
+
+  it("keeps the login illustration payload bounded and eagerly loads only the lead card", async () => {
+    const { container } = render(<LoginDesignDeck cards={loginDeckCards} />);
+    const sources = loginDeckCards.map((card) => card.assetSrc);
+    const sizes = await Promise.all(sources.map(async (source) => {
+      const file = await stat(path.join(process.cwd(), "public", source.replace(/^\//, "")));
+      return file.size;
+    }));
+
+    expect(sources.every((source) => source.endsWith(".webp"))).toBe(true);
+    expect(sizes.reduce((total, size) => total + size, 0)).toBeLessThanOrEqual(600 * 1024);
+    expect(container.querySelectorAll('img[loading="eager"]')).toHaveLength(1);
+    expect(container.querySelectorAll('img[loading="lazy"]')).toHaveLength(1);
+  });
 });
 
 afterEach(() => {
   replace.mockReset();
   telemetryMocks.clear.mockReset();
+  headersMocks.locale = undefined;
   vi.unstubAllGlobals();
   window.localStorage.clear();
   window.sessionStorage.clear();
@@ -94,6 +123,15 @@ describe("AAIS LoginPage", () => {
       title: "CAAIS",
       description: "Cognitive Apprenticeship AI System",
     });
+  });
+
+  it("marks the login controls ready only after client hydration", async () => {
+    const { container } = render(<LoginPage />);
+
+    await waitFor(() => {
+      expect((container.firstElementChild as HTMLElement).dataset.clientReady).toBe("true");
+    });
+    expect(screen.getByRole("button", { name: "立即登录" })).toHaveProperty("disabled", false);
   });
 
   it("switches the login controls between Chinese and English and records the choice", () => {
@@ -133,6 +171,26 @@ describe("AAIS LoginPage", () => {
     expect((container.firstElementChild as HTMLElement).lang).toBe("en-US");
   });
 
+  it("hydrates from the server locale cookie before local storage and lets the URL win", async () => {
+    headersMocks.locale = "en-US";
+    window.localStorage.setItem("aais_login_locale", "zh-CN");
+
+    const { unmount } = render(await LoginRoutePage());
+
+    expect(screen.getByRole("heading", { name: "Welcome to CAAIS" })).toBeTruthy();
+    expect(screen.getAllByRole("link", { name: "Terms of Use" }).every(
+      (link) => link.getAttribute("href") === "/terms?lang=en-US",
+    )).toBe(true);
+    expect(screen.getAllByRole("link", { name: "Privacy Policy" }).every(
+      (link) => link.getAttribute("href") === "/privacy?lang=en-US",
+    )).toBe(true);
+
+    unmount();
+    window.history.replaceState({}, "", "/login?lang=zh-CN");
+    render(await LoginRoutePage());
+    expect(screen.getByRole("heading", { name: "欢迎来到 CAAIS" })).toBeTruthy();
+  });
+
   it("exposes account login and forgot password as working accessible mode controls", async () => {
     render(<LoginPage />);
 
@@ -161,6 +219,24 @@ describe("AAIS LoginPage", () => {
     expect(accountLogin.getAttribute("aria-pressed")).toBe("true");
     expect(forgotPassword.getAttribute("aria-pressed")).toBe("false");
     await waitFor(() => expect(document.activeElement).toBe(screen.getByLabelText("账号")));
+  });
+
+  it("rejects an invalid password-reset email without contacting the server", () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<LoginPage />);
+
+    fireEvent.click(screen.getByRole("button", { name: "忘记密码？" }));
+    fireEvent.change(screen.getByLabelText("账号邮箱"), {
+      target: {
+        value: "invalid-email",
+      },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "发送重置邮件" }));
+
+    expect(screen.getByRole("alert").textContent).toBe("请输入有效的账号邮箱。");
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("temporarily hides the enterprise SSO entry", () => {
@@ -221,6 +297,59 @@ describe("AAIS LoginPage", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it("localizes login API failures instead of exposing server English", async () => {
+    const fetchMock = vi.fn(async () => Response.json({
+      error: {
+        code: "AAIS_LOGIN_RATE_LIMITED",
+        message: "Too many login attempts from the upstream auth service.",
+      },
+    }, { status: 429 }));
+    vi.stubGlobal("fetch", fetchMock);
+    render(<LoginPage />);
+
+    fireEvent.change(screen.getByLabelText("账号"), {
+      target: { value: "Phoebe" },
+    });
+    fireEvent.change(screen.getByLabelText("密码"), {
+      target: { value: "wrong-password" },
+    });
+    fireEvent.click(screen.getByRole("checkbox", { name: /用户协议和隐私政策/ }));
+    fireEvent.click(screen.getByRole("button", { name: "立即登录" }));
+
+    await waitFor(() => {
+      expect(screen.getByRole("alert").textContent).toBe("请求过于频繁，请稍后再试。");
+    });
+    expect(screen.queryByText(/upstream auth service/i)).toBeNull();
+  });
+
+  it("localizes invalid password-link responses in English", async () => {
+    window.history.pushState({}, "", "/login#reset_token=aais_reset_test-token-value-1234567890");
+    const fetchMock = vi.fn(async () => Response.json({
+      error: {
+        code: "AAIS_PASSWORD_TOKEN_INVALID",
+        message: "AAIS password token invalid.",
+      },
+    }, { status: 400 }));
+    vi.stubGlobal("fetch", fetchMock);
+    render(<LoginPage initialLocale="en-US" />);
+
+    await screen.findByLabelText("New password");
+    fireEvent.change(screen.getByLabelText("New password"), {
+      target: { value: "new-password-123" },
+    });
+    fireEvent.change(screen.getByLabelText("Confirm password"), {
+      target: { value: "new-password-123" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save password" }));
+
+    await waitFor(() => {
+      expect(screen.getByRole("alert").textContent).toBe(
+        "This password link is invalid or has expired. Request a new one.",
+      );
+    });
+    expect(screen.queryByText("AAIS password token invalid.")).toBeNull();
+  });
+
   it("marks the login form busy and disables submit while authentication is pending", async () => {
     const authResponse = createDeferred<Response>();
     const fetchMock = vi.fn(async () => authResponse.promise);
@@ -261,6 +390,98 @@ describe("AAIS LoginPage", () => {
     expect(telemetryMocks.clear).toHaveBeenCalledTimes(1);
   });
 
+  it.each([
+    {
+      name: "204 response",
+      createResponse: () => new Response(null, { status: 204 }),
+    },
+    {
+      name: "empty 200 response",
+      createResponse: () => new Response(null, { status: 200 }),
+    },
+    {
+      name: "empty object",
+      createResponse: () => Response.json({}),
+    },
+    {
+      name: "invalid actor id",
+      createResponse: () => Response.json({
+        redirectTarget: "/learning",
+        appSession: {
+          actor: {
+            id: "invalid actor id",
+            role: "student",
+            displayName: "Phoebe",
+          },
+        },
+      }),
+    },
+    {
+      name: "blank actor display name",
+      createResponse: () => Response.json({
+        redirectTarget: "/learning",
+        appSession: {
+          actor: {
+            id: "Phoebe",
+            role: "student",
+            displayName: "   ",
+          },
+        },
+      }),
+    },
+    {
+      name: "unsupported actor role",
+      createResponse: () => Response.json({
+        redirectTarget: "/learning",
+        appSession: {
+          actor: {
+            id: "Phoebe",
+            role: "owner",
+            displayName: "Phoebe",
+          },
+        },
+      }),
+    },
+    {
+      name: "unsafe redirect target",
+      createResponse: () => Response.json({
+        redirectTarget: "/\\evil.example/path",
+        appSession: {
+          actor: {
+            id: "Phoebe",
+            role: "student",
+            displayName: "Phoebe",
+          },
+        },
+      }),
+    },
+  ])("fails closed on a malformed successful login ACK: $name", async ({ createResponse }) => {
+    const storedVisit = JSON.stringify({ visitId: "visit-preserved" });
+    const storedQueue = JSON.stringify([{ clientEventId: "event-preserved" }]);
+    window.localStorage.setItem("aais_research_visit_v1", storedVisit);
+    window.localStorage.setItem("aais_research_event_queue_v1", storedQueue);
+    const fetchMock = vi.fn(async () => createResponse());
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<LoginPage />);
+    fireEvent.change(screen.getByLabelText("账号"), {
+      target: { value: "Phoebe" },
+    });
+    fireEvent.change(screen.getByLabelText("密码"), {
+      target: { value: "12345" },
+    });
+    fireEvent.click(screen.getByRole("checkbox", { name: /用户协议和隐私政策/ }));
+    fireEvent.click(screen.getByRole("button", { name: "立即登录" }));
+
+    await waitFor(() => {
+      expect(screen.getByRole("alert").textContent).toBe("登录服务暂时不可用，请稍后再试。");
+    });
+    expect(telemetryMocks.clear).not.toHaveBeenCalled();
+    expect(replace).not.toHaveBeenCalled();
+    expect(window.localStorage.getItem("aais_research_visit_v1")).toBe(storedVisit);
+    expect(window.localStorage.getItem("aais_research_event_queue_v1")).toBe(storedQueue);
+  });
+
   it("prevents duplicate invite password saves while the request is pending", async () => {
     window.history.pushState({}, "", "/login?invite_token=aais_invite_test-token-value-1234567890");
     const passwordResponse = createDeferred<Response>();
@@ -268,6 +489,9 @@ describe("AAIS LoginPage", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     render(<LoginPage />);
+
+    await screen.findByLabelText("新密码");
+    expect(window.location.href).not.toContain("invite_token");
 
     fireEvent.change(screen.getByLabelText("新密码"), {
       target: {
@@ -290,15 +514,92 @@ describe("AAIS LoginPage", () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
 
-    passwordResponse.resolve(Response.json({
-      user: {
-        id: "user-teacher",
-        role: "teacher",
-        status: "active",
-      },
-    }));
+    passwordResponse.resolve(Response.json(createValidSetPasswordAcknowledgement()));
 
     await waitFor(() => expect(screen.queryByText("密码已更新，请使用新密码登录。")).not.toBeNull());
+  });
+
+  it.each([
+    {
+      name: "204 response",
+      createResponse: () => new Response(null, { status: 204 }),
+    },
+    {
+      name: "empty 200 response",
+      createResponse: () => new Response(null, { status: 200 }),
+    },
+    {
+      name: "empty object",
+      createResponse: () => Response.json({}),
+    },
+    {
+      name: "incomplete user",
+      createResponse: () => Response.json({
+        user: {
+          id: "user-teacher",
+          role: "teacher",
+          status: "active",
+        },
+        secrets: "redacted",
+      }),
+    },
+    {
+      name: "malformed user",
+      createResponse: () => Response.json({
+        ...createValidSetPasswordAcknowledgement(),
+        user: {
+          ...createValidSetPasswordAcknowledgement().user,
+          id: "invalid user id",
+        },
+      }),
+    },
+    {
+      name: "missing redaction acknowledgement",
+      createResponse: () => Response.json({
+        ...createValidSetPasswordAcknowledgement(),
+        secrets: "available",
+      }),
+    },
+  ])("keeps the password token flow retryable after a malformed 2xx set-password ACK: $name", async ({
+    createResponse,
+  }) => {
+    const token = "aais_invite_test-token-value-1234567890";
+    window.history.pushState({}, "", `/login#invite_token=${token}`);
+    let requestCount = 0;
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      requestCount += 1;
+      if (requestCount === 1) {
+        return createResponse();
+      }
+      expect(JSON.parse(String(init?.body))).toMatchObject({
+        action: "set-password",
+        token,
+        password: "new-password-123",
+      });
+      return Response.json(createValidSetPasswordAcknowledgement());
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<LoginPage />);
+    const passwordInput = await screen.findByLabelText("新密码") as HTMLInputElement;
+    const confirmationInput = screen.getByLabelText("确认密码") as HTMLInputElement;
+    fireEvent.change(passwordInput, { target: { value: "new-password-123" } });
+    fireEvent.change(confirmationInput, { target: { value: "new-password-123" } });
+    fireEvent.click(screen.getByRole("button", { name: "保存密码" }));
+
+    await waitFor(() => {
+      expect(screen.getByRole("alert").textContent).toBe("登录服务暂时不可用，请稍后再试。");
+    });
+    expect(passwordInput.value).toBe("new-password-123");
+    expect(confirmationInput.value).toBe("new-password-123");
+    expect(screen.queryByText("密码已更新，请使用新密码登录。")).toBeNull();
+    expect(replace).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "保存密码" })).not.toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "保存密码" }));
+    await waitFor(() => expect(screen.queryByText("密码已更新，请使用新密码登录。")).not.toBeNull());
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(replace).toHaveBeenCalledWith("/login");
   });
 
   it("prevents duplicate password reset requests while delivery is pending", async () => {
@@ -397,11 +698,12 @@ describe("AAIS LoginPage", () => {
     fireEvent.click(screen.getByRole("button", { name: "立即登录" }));
 
     await waitFor(() => expect(replace).toHaveBeenCalledWith("/learning"));
-    expect(window.localStorage.getItem("aais_student_id")).toBe("Phoebe");
+    expect(window.localStorage.getItem("aais_student_id")).toBeNull();
+    expect(window.localStorage.getItem("aais_display_name")).toBeNull();
   });
 
   it("sets a database-backed account password from an invite token", async () => {
-    window.history.pushState({}, "", "/login?invite_token=aais_invite_test-token-value-1234567890");
+    window.history.pushState({}, "", "/login#invite_token=aais_invite_test-token-value-1234567890");
     const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
       expect(_input).toBe("/api/auth/password");
       expect(JSON.parse(String(init?.body))).toMatchObject({
@@ -409,20 +711,14 @@ describe("AAIS LoginPage", () => {
         token: "aais_invite_test-token-value-1234567890",
         password: "new-password-123",
       });
-      return Response.json({
-        user: {
-          id: "user-teacher",
-          email: "teacher@example.test",
-          displayName: "Teacher",
-          role: "teacher",
-          status: "active",
-        },
-        secrets: "redacted",
-      });
+      return Response.json(createValidSetPasswordAcknowledgement());
     });
     vi.stubGlobal("fetch", fetchMock);
 
     render(<LoginPage />);
+
+    await screen.findByLabelText("新密码");
+    expect(window.location.href).not.toContain("invite_token");
 
     fireEvent.change(screen.getByLabelText("新密码"), {
       target: {
@@ -466,7 +762,7 @@ describe("AAIS LoginPage", () => {
     fireEvent.click(screen.getByRole("button", { name: "忘记密码？" }));
     fireEvent.change(screen.getByLabelText("账号邮箱"), {
       target: {
-        value: "teacher@example.test",
+        value: "  teacher@example.test  ",
       },
     });
     fireEvent.click(screen.getByRole("button", { name: "发送重置邮件" }));
@@ -487,5 +783,21 @@ function createDeferred<T>() {
     promise,
     reject,
     resolve,
+  };
+}
+
+function createValidSetPasswordAcknowledgement() {
+  return {
+    user: {
+      id: "user-teacher",
+      email: "teacher@example.test",
+      displayName: "Teacher",
+      role: "teacher",
+      status: "active",
+      createdAt: "2026-07-09T00:00:00.000Z",
+      updatedAt: "2026-07-09T00:00:00.000Z",
+      lastLoginAt: null,
+    },
+    secrets: "redacted",
   };
 }
