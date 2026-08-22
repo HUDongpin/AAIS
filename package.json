@@ -13,7 +13,7 @@
     "lint": "eslint",
     "test": "vitest run",
     "e2e": "playwright test",
-    "type-check": "tsc --noEmit",
+    "type-check": "next typegen && tsc --noEmit",
     "ci": "npm run lint && npm run type-check && npm test && npm run build",
     "db:migrate": "node -- scripts/run-postgres-migrations.mjs",
     "db:migrate:research": "node -- scripts/run-postgres-migrations.mjs --research",
