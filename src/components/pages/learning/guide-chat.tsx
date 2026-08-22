@@ -138,6 +138,32 @@ export function GuideBubble({
   );
 }
 
+export function GuideThinkingBubble({
+  locale = "zh-CN",
+}: {
+  locale?: Locale;
+}) {
+  const copy = getLearningCopy(locale);
+  const label = getGuideAgentLabel(locale, "A2");
+
+  return (
+    <div
+      className="aais-guide-thinking-bubble flex min-w-0 items-start gap-3"
+      data-guide-thinking-agent="A2"
+    >
+      <AgentAvatar agentId="A2" label={label} locale={locale} />
+      <div className="flex w-fit min-w-0 max-w-[260px] flex-wrap items-center gap-x-2 gap-y-1 rounded-[18px] border border-[#dedaff] bg-[#fbfaff] px-4 py-3 text-sm font-medium leading-6 text-[#59657a] shadow-[0_6px_18px_rgba(17,24,39,0.05)]">
+        <span>{copy.guide.professorThinking}</span>
+        <span aria-hidden="true" className="inline-flex shrink-0 items-center gap-1.5">
+          <span className="aais-guide-thinking-dot size-1.5 rounded-full bg-[#536de8]" />
+          <span className="aais-guide-thinking-dot size-1.5 rounded-full bg-[#536de8]" />
+          <span className="aais-guide-thinking-dot size-1.5 rounded-full bg-[#536de8]" />
+        </span>
+      </div>
+    </div>
+  );
+}
+
 function GuideMessageAttachmentCards({
   attachments,
   locale,

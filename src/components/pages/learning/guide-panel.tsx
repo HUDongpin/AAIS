@@ -7,6 +7,7 @@ import {
   type SetStateAction,
 } from "react";
 import { ArrowUp, FileText, Plus, X } from "@phosphor-icons/react";
+import type { AaisGuideTargetAgentId } from "@/lib/ai/aais-guide-targets";
 import { aaisGuideFileAccept } from "@/lib/client/aais-guide-file-reader";
 import {
   admitAaisResearchAction,
@@ -16,6 +17,7 @@ import { getLearningCopy } from "@/components/pages/learning/learning-copy";
 import {
   formatGuideAttachmentSize,
   GuideBubble,
+  GuideThinkingBubble,
 } from "@/components/pages/learning/guide-chat";
 import type {
   GuideClientAttachment,
@@ -37,6 +39,7 @@ export function GuidePanel({
   hasGuideSubmission,
   locale = "zh-CN",
   onRemoveAttachment,
+  pendingGuideAgentId = null,
   sendGuideMessage,
   setGuideDraft,
   setGuideError,
@@ -54,6 +57,7 @@ export function GuidePanel({
   hasGuideSubmission: boolean;
   locale?: Locale;
   onRemoveAttachment: (attachmentId: string) => void;
+  pendingGuideAgentId?: AaisGuideTargetAgentId | null;
   sendGuideMessage: (event: FormEvent<HTMLFormElement>) => void;
   setGuideDraft: Dispatch<SetStateAction<string>>;
   setGuideError: Dispatch<SetStateAction<string>>;
@@ -99,18 +103,18 @@ export function GuidePanel({
   }, [latestAgentMessageRevision, latestUserMessageId]);
 
   return (
-    <section
-      className="flex min-h-[620px] min-w-0 flex-col bg-[#fcfcfc] lg:min-h-0"
-      aria-busy={guidePanelBusy}
-    >
+    <section className="flex min-h-[620px] min-w-0 flex-col bg-[#fcfcfc] lg:min-h-0">
       <div className="min-h-0 flex-1 overflow-y-auto px-5 py-6 sm:px-8">
         <div className="space-y-4" aria-live="polite">
           {guideMessages.map((message) => {
-            if (
-              message.kind === "assistant"
+            const isBlankAssistantMessage = message.kind === "assistant"
               && !message.text.trim()
-              && !message.turns?.length
-            ) {
+              && !message.turns?.length;
+            const showProfessorThinking = isBlankAssistantMessage
+              && guideBusy
+              && pendingGuideAgentId === "A2"
+              && message.id === latestAgentMessage?.id;
+            if (isBlankAssistantMessage && !showProfessorThinking) {
               return null;
             }
             const isLatestUserMessage = message.id === latestUserMessageId;
@@ -123,16 +127,20 @@ export function GuidePanel({
                 ref={isLatestUserMessage ? latestUserMessageRef : undefined}
                 className={isLatestUserMessage ? "scroll-mb-4" : undefined}
               >
-                <GuideBubble
-                  locale={locale}
-                  message={message}
-                  onSuggestedPrompt={(prompt) => {
-                    setGuideDraft(prompt);
-                    setGuideError("");
-                    guideTextInputRef.current?.focus();
-                  }}
-                  suggestionsDisabled={guidePanelBusy}
-                />
+                {showProfessorThinking ? (
+                  <GuideThinkingBubble locale={locale} />
+                ) : (
+                  <GuideBubble
+                    locale={locale}
+                    message={message}
+                    onSuggestedPrompt={(prompt) => {
+                      setGuideDraft(prompt);
+                      setGuideError("");
+                      guideTextInputRef.current?.focus();
+                    }}
+                    suggestionsDisabled={guidePanelBusy}
+                  />
+                )}
                 {isLatestAgentMessage ? (
                   <span
                     aria-hidden="true"
@@ -151,7 +159,10 @@ export function GuidePanel({
         onSubmit={sendGuideMessage}
         className="sticky bottom-0 z-10 shrink-0 border-t border-[#ececeb] bg-gradient-to-t from-[#fcfcfc] via-[#fcfcfc] to-[#fcfcfc]/90 px-5 py-3 sm:px-8"
       >
-        <div className="flex min-h-[72px] w-full items-center rounded-[28px] border border-[#d9dde7] bg-white px-5 shadow-[0_10px_32px_rgba(17,24,39,0.08)]">
+        <div
+          aria-busy={guidePanelBusy}
+          className="flex min-h-[72px] w-full items-center rounded-[28px] border border-[#d9dde7] bg-white px-5 shadow-[0_10px_32px_rgba(17,24,39,0.08)]"
+        >
           <input
             ref={guideFileInputRef}
             aria-label={copy.guide.chooseFiles}
@@ -192,6 +203,7 @@ export function GuidePanel({
           <input
             ref={guideTextInputRef}
             aria-label={copy.guide.inputLabel}
+            disabled={guidePanelBusy}
             value={guideDraft}
             onChange={(event) => {
               setGuideDraft(event.target.value);

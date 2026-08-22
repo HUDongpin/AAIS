@@ -21,6 +21,7 @@ export type LearningCopy = {
   };
   guide: {
     busy: string;
+    professorThinking: string;
     readingFiles: string;
     quickStarts: string;
     chooseFiles: string;
@@ -155,6 +156,7 @@ export const learningCopyByLocale: Record<Locale, LearningCopy> = {
     },
     guide: {
       busy: "智能导学处理中...",
+      professorThinking: "教授正在思考",
       readingFiles: "文件正在读取...",
       quickStarts: "元认知快速开始",
       chooseFiles: "选择上传文件",
@@ -323,6 +325,7 @@ export const learningCopyByLocale: Record<Locale, LearningCopy> = {
     },
     guide: {
       busy: "AI guide is thinking...",
+      professorThinking: "Professor is thinking",
       readingFiles: "Reading files...",
       quickStarts: "Metacognitive quick starts",
       chooseFiles: "Choose files to upload",

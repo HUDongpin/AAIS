@@ -4,7 +4,10 @@ import {
   normalizeAaisGuideAttachments,
   type AaisGuideAttachment,
 } from "@/lib/ai/aais-guide-attachments";
-import { selectAaisGuideReplyAgentIds } from "@/lib/ai/aais-guide-targets";
+import {
+  selectAaisGuideReplyAgentIds,
+  type AaisGuideTargetAgentId,
+} from "@/lib/ai/aais-guide-targets";
 import { readAaisGuideFileAttachment } from "@/lib/client/aais-guide-file-reader";
 import {
   admitAaisResearchAction,
@@ -29,8 +32,11 @@ import { fetchGuideRequest, getAaisCsrfHeader, clientNowMs } from "@/components/
 import type {
   GuideClientAttachment,
   GuideMessage,
-  GuideQuickStart,
 } from "@/components/pages/learning/learning-page-types";
+import type {
+  GuideSubmissionOptions,
+  UseLearningGuideInput,
+} from "@/components/pages/learning/learning-guide-types";
 import {
   isGuideEventStreamResponse,
   isUsableGuideBody,
@@ -43,20 +49,6 @@ import {
   applyGuideResponseToMessages,
   applyGuideStreamProgressToMessages,
 } from "@/components/pages/learning/guide-message-updates";
-import type { Locale } from "@/data/aais";
-type UseLearningGuideInput = {
-  activeTaskId: string;
-  artifactText: string;
-  displayName: string;
-  waitForLearnerDataGeneration: () => number | Promise<number>;
-  locale: Locale;
-  persistedGuideMessages?: GuideMessage[];
-  studentId: string;
-};
-type GuideSubmissionOptions = {
-  source?: "typed" | "quick_start";
-  quickStartId?: GuideQuickStart["id"];
-};
 export function useLearningGuide({
   activeTaskId,
   artifactText,
@@ -72,6 +64,8 @@ export function useLearningGuide({
     createInitialGuideMessages(displayName, locale)
   );
   const [guideBusy, setGuideBusy] = useState(false);
+  const [pendingGuideAgentId, setPendingGuideAgentId] =
+    useState<AaisGuideTargetAgentId | null>(null);
   const [guideError, setGuideError] = useState("");
   const [guideAttachmentBusy, setGuideAttachmentBusy] = useState(false);
   const [guideAttachmentError, setGuideAttachmentError] = useState("");
@@ -160,6 +154,7 @@ export function useLearningGuide({
     }
 
     const targetAgentIds = selectAaisGuideReplyAgentIds(question);
+    setPendingGuideAgentId(targetAgentIds[0] ?? null);
     const userId = createGuideMessageId("user");
     const assistantId = createGuideMessageId("assistant");
     setGuideMessages((current) => [
@@ -285,6 +280,7 @@ export function useLearningGuide({
         },
       });
     } finally {
+      setPendingGuideAgentId(null);
       setGuideBusy(false);
     }
   }
@@ -469,6 +465,7 @@ export function useLearningGuide({
     setGuideDraft("");
     setGuideMessages(createInitialGuideMessages(displayName, locale));
     setGuideBusy(false);
+    setPendingGuideAgentId(null);
     setGuideError("");
     setGuideAttachmentBusy(false);
     setGuideAttachmentError("");
@@ -489,6 +486,7 @@ export function useLearningGuide({
     guideFileInputRef,
     guideMessages,
     hasGuideSubmission,
+    pendingGuideAgentId,
     removeGuideAttachment,
     resetGuideState,
     sendGuideMessage,
