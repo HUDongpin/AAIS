@@ -75,8 +75,8 @@ type AaisGuideRequestBody = {
   };
 };
 
-const defaultDailyGuideLimit = 40;
-const maxDailyGuideLimit = 200;
+const defaultDailyGuideLimit = 1_000;
+const maxDailyGuideLimit = 1_000;
 const maxGuideLearnerInputCharacters = 20_000;
 const maxGuideWorkspaceArtifactCharacters = 2 * 1024 * 1024;
 const maxGuideWorkspaceStepCharacters = 128;

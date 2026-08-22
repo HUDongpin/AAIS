@@ -1,7 +1,6 @@
 import { getVisibleGuideTurns } from "@/components/pages/learning/guide-chat";
 import {
   getGuideStreamDoneText,
-  getGuideStreamProgressText,
   type GuideResponseBody,
   type GuideStreamProgress,
 } from "@/components/pages/learning/guide-stream";
@@ -14,7 +13,7 @@ export function applyGuideResponseToMessages(
   body: GuideResponseBody,
   locale: Locale,
 ): GuideMessage[] {
-  const structuredTurns = getVisibleGuideTurns(body.turns);
+  const structuredTurns = getRenderableGuideTurns(body.turns);
   return messages.map((message) =>
     message.id === assistantId
       ? {
@@ -37,14 +36,13 @@ export function applyGuideStreamProgressToMessages(
   messages: GuideMessage[],
   assistantId: string,
   input: GuideStreamProgress,
-  locale: Locale,
 ): GuideMessage[] {
-  const visibleTurns = getVisibleGuideTurns(input.turns);
+  const visibleTurns = getRenderableGuideTurns(input.turns);
   return messages.map((message) =>
     message.id === assistantId
       ? {
           ...message,
-          text: visibleTurns.length ? input.text : getGuideStreamProgressText(locale),
+          text: visibleTurns.length ? input.text : "",
           ...(visibleTurns.length ? { turns: [...visibleTurns] } : { turns: undefined }),
           runtime: {
             fallback: input.fallback,
@@ -54,5 +52,11 @@ export function applyGuideStreamProgressToMessages(
           },
         }
       : message,
+  );
+}
+
+function getRenderableGuideTurns(turns?: GuideResponseBody["turns"]) {
+  return getVisibleGuideTurns(turns).filter((turn) =>
+    !turn.actions.includes("progress"),
   );
 }

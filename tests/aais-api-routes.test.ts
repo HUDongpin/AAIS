@@ -1646,6 +1646,51 @@ describe("AAIS learning API routes", () => {
     expect(JSON.stringify(input.conversationHistory)).not.toContain("question-0-");
   });
 
+  it.each([
+    ["", 1_000, 999],
+    ["1001", 1_000, 999],
+  ])(
+    "uses the 1,000-request daily default and clamps a configured value of %s",
+    async (configuredLimit, expectedLimit, expectedRemaining) => {
+      vi.stubEnv("AAIS_AI_DAILY_GUIDE_LIMIT", configuredLimit);
+      const graphMock = vi.fn(async () => createMockGuideGraphResult());
+      vi.doMock("@/lib/ai/orchestration/aais-learning-guide-graph", () => ({
+        runAaisLearningGuideGraph: graphMock,
+      }));
+      vi.resetModules();
+      const guideRoute = await import("@/app/api/learning/ai-guide/route");
+      const studentId = `daily-guide-limit-${configuredLimit || "default"}`;
+      const csrf = createAaisCsrfToken(studentId);
+      const cookie = createAuthedCookie(studentId, "student", csrf);
+      await initializeLearnerSession(studentId, cookie, csrf);
+
+      const response = await guideRoute.POST(new Request(
+        "http://localhost/api/learning/ai-guide",
+        {
+          method: "POST",
+          headers: {
+            cookie,
+            "x-aais-csrf": csrf,
+          },
+          body: JSON.stringify({
+            dataGeneration: 1,
+            taskId: "training_task_1",
+            learnerInput: "验证每日智能导学额度。",
+          }),
+        },
+      ));
+
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toMatchObject({
+        budget: {
+          limit: expectedLimit,
+          used: 1,
+          remaining: expectedRemaining,
+        },
+      });
+    },
+  );
+
   it("enforces a per-student daily guide request budget", async () => {
     vi.stubEnv("AAIS_AI_DAILY_GUIDE_LIMIT", "1");
     const info = vi.spyOn(console, "info").mockImplementation(() => undefined);

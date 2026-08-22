@@ -35,9 +35,9 @@ export type LearningCopy = {
     avatar: (agentId: string, label: string) => string;
     attachmentUnavailable: string;
     inputRequired: string;
-    requestAccepted: string;
     requestUnavailable: string;
     requestErrorAlert: string;
+    dailyBudgetExceeded: (limit: number | null, resetTime: string | null) => string;
     attachmentLimit: (maxFiles: number) => string;
     fileReadFailed: string;
     agentLabels: Record<string, string>;
@@ -169,9 +169,15 @@ export const learningCopyByLocale: Record<Locale, LearningCopy> = {
       avatar: (_agentId, label) => `${label}大学教育风格头像`,
       attachmentUnavailable: "上传文件不可用。",
       inputRequired: "请输入你的想法后再发送。",
-      requestAccepted: "CAAIS 已收到，多智能体链路正在处理。",
       requestUnavailable: "智能服务暂时不可用，已保留你的问题。请稍后重试。",
       requestErrorAlert: "智能服务暂时不可用，已保留你的问题。",
+      dailyBudgetExceeded: (limit, resetTime) => {
+        const limitText = limit === null ? "" : `（每日 ${limit} 次）`;
+        const resetText = resetTime === null
+          ? "请在额度重置后再试。"
+          : `额度将于 ${resetTime} 重置，请届时再试。`;
+        return `今天的智能导学额度已用完${limitText}。${resetText}`;
+      },
       attachmentLimit: (maxFiles) => `一次最多上传 ${maxFiles} 个文件。`,
       fileReadFailed: "文件未能读取。",
       agentLabels: {
@@ -331,9 +337,15 @@ export const learningCopyByLocale: Record<Locale, LearningCopy> = {
       avatar: (_agentId, label) => `${label} university-education avatar`,
       attachmentUnavailable: "The selected file cannot be uploaded.",
       inputRequired: "Enter your thoughts before sending.",
-      requestAccepted: "CAAIS received your request; the multi-agent flow is working on it.",
       requestUnavailable: "The AI service is temporarily unavailable. Your question has been kept; please try again shortly.",
       requestErrorAlert: "The AI service is temporarily unavailable.",
+      dailyBudgetExceeded: (limit, resetTime) => {
+        const limitText = limit === null ? "" : ` (${limit} requests per day)`;
+        const resetText = resetTime === null
+          ? "Please try again after the allowance resets."
+          : `It resets at ${resetTime}; please try again then.`;
+        return `Today's AI guide allowance is used up${limitText}. ${resetText}`;
+      },
       attachmentLimit: (maxFiles) => `You can upload up to ${maxFiles} files at once.`,
       fileReadFailed: "The file could not be read.",
       agentLabels: {

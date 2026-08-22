@@ -17,6 +17,9 @@ import {
 import { createInitialGuideMessages, getGuideAttachmentOnlyPrompt } from "@/components/pages/learning/learning-page-constants";
 import { getLearningCopy } from "@/components/pages/learning/learning-copy";
 import {
+  getGuideDailyBudgetFailurePresentation,
+} from "@/components/pages/learning/guide-error-presentation";
+import {
   addReadAttachmentMetadataToGuideMessage,
   getControlledGuideAttachmentMimeType,
   useHydratePersistedGuideMessages,
@@ -169,7 +172,7 @@ export function useLearningGuide({
       {
         id: assistantId,
         kind: "assistant",
-        text: copy.guide.requestAccepted,
+        text: "",
       },
     ]);
     setGuideDraft("");
@@ -249,12 +252,13 @@ export function useLearningGuide({
         },
       });
     } catch (error) {
+      const budgetFailure = getGuideDailyBudgetFailurePresentation(error, copy, locale);
       setGuideMessages((current) =>
         current.map((message) =>
           message.id === assistantId
             ? {
                 ...message,
-                text: copy.guide.requestUnavailable,
+                text: budgetFailure?.message ?? copy.guide.requestUnavailable,
                 turns: undefined,
                 runtime: undefined,
                 trace: undefined,
@@ -262,7 +266,7 @@ export function useLearningGuide({
             : message,
         ),
       );
-      setGuideError(copy.guide.requestErrorAlert);
+      setGuideError(budgetFailure ? "" : copy.guide.requestErrorAlert);
       recordAaisResearchEvent({
         eventName: "ai_guide_submit",
         outcome: isAaisResearchDisconnectError(error) ? "disconnected" : "failure",
@@ -270,7 +274,7 @@ export function useLearningGuide({
         latencyMs: clientNowMs() - startedAt,
         detail: {
           ...baseEventDetail,
-          error_kind: classifyAaisResearchClientError(error),
+          error_kind: budgetFailure?.errorKind ?? classifyAaisResearchClientError(error),
           target_agent_count: targetAgentIds.length,
           ...(attemptNumber > 1
             ? {
@@ -301,7 +305,7 @@ export function useLearningGuide({
         return await readGuideStreamResponse(
           streamResponse,
           (progress) => setGuideMessages((current) =>
-            applyGuideStreamProgressToMessages(current, assistantId, progress, locale),
+            applyGuideStreamProgressToMessages(current, assistantId, progress),
           ),
           undefined,
           locale,

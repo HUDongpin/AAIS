@@ -27,7 +27,30 @@ export type GuideResponseBody = {
     code?: string;
     message?: string;
   };
+  budget?: {
+    limit?: number;
+    used?: number;
+    remaining?: number;
+    resetsAt?: string;
+  };
 };
+
+export type GuideDailyBudgetExceededDetails = {
+  limit: number | null;
+  resetsAt: string | null;
+};
+
+export class AaisGuideRequestError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly code: string | null,
+    readonly budget: GuideResponseBody["budget"],
+  ) {
+    super(message);
+    this.name = "AaisGuideRequestError";
+  }
+}
 
 export type GuideStreamProgress = {
   text: string;
@@ -233,8 +256,37 @@ export async function readGuideJsonBody(response: Response): Promise<GuideRespon
 
 export function validateGuideResponse(response: Response, body: GuideResponseBody) {
   if (!response.ok || !isUsableGuideBody(body)) {
-    throw new Error(getAaisApiErrorMessage(body, "AAIS guide failed"));
+    throw new AaisGuideRequestError(
+      getAaisApiErrorMessage(body, "AAIS guide failed"),
+      response.status,
+      readGuideErrorCode(body),
+      body.budget,
+    );
   }
+}
+
+export function getGuideDailyBudgetExceededDetails(
+  error: unknown,
+): GuideDailyBudgetExceededDetails | null {
+  if (
+    !(error instanceof AaisGuideRequestError)
+    || error.status !== 429
+    || error.code !== "AAIS_GUIDE_DAILY_BUDGET_EXCEEDED"
+  ) {
+    return null;
+  }
+
+  const limit = typeof error.budget?.limit === "number"
+    && Number.isFinite(error.budget.limit)
+    && error.budget.limit > 0
+    ? Math.floor(error.budget.limit)
+    : null;
+  const resetsAt = typeof error.budget?.resetsAt === "string"
+    && !Number.isNaN(Date.parse(error.budget.resetsAt))
+    ? error.budget.resetsAt
+    : null;
+
+  return { limit, resetsAt };
 }
 
 export function isUsableGuideBody(body: GuideResponseBody) {
@@ -243,6 +295,14 @@ export function isUsableGuideBody(body: GuideResponseBody) {
 
 export function isGuideEventStreamResponse(response: Response) {
   return response.headers.get("content-type")?.includes("text/event-stream") === true;
+}
+
+function readGuideErrorCode(body: GuideResponseBody) {
+  return typeof body.error === "object"
+    && body.error !== null
+    && typeof body.error.code === "string"
+    ? body.error.code
+    : null;
 }
 
 function upsertGuideStreamTurn(

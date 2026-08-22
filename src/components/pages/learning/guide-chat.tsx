@@ -84,6 +84,9 @@ export function GuideBubble({
     ? localizeAaisGuideAgentReferences(message.text, locale)
     : localizeAaisGuideTargetMentions(message.text, locale);
   const visibleTurns = getVisibleGuideTurns(message.turns);
+  if (assistant && !visibleTurns.length && !visibleMessageText.trim()) {
+    return null;
+  }
   if (assistant && visibleTurns.length) {
     return (
       <div className="space-y-3">

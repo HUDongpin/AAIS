@@ -1,4 +1,11 @@
-import { useRef, type Dispatch, type FormEvent, type RefObject, type SetStateAction } from "react";
+import {
+  useLayoutEffect,
+  useRef,
+  type Dispatch,
+  type FormEvent,
+  type RefObject,
+  type SetStateAction,
+} from "react";
 import { ArrowUp, FileText, Plus, X } from "@phosphor-icons/react";
 import { aaisGuideFileAccept } from "@/lib/client/aais-guide-file-reader";
 import {
@@ -53,12 +60,43 @@ export function GuidePanel({
 }) {
   const copy = getLearningCopy(locale);
   const guideTextInputRef = useRef<HTMLInputElement | null>(null);
+  const latestUserMessageId = getLatestUserMessageId(guideMessages);
+  const latestAgentMessage = getLatestAgentMessage(guideMessages);
+  const latestAgentMessageRevision = getAgentMessageRevision(latestAgentMessage);
+  const previousLatestUserMessageIdRef = useRef(latestUserMessageId);
+  const previousLatestAgentMessageRevisionRef = useRef(latestAgentMessageRevision);
+  const latestUserMessageRef = useRef<HTMLDivElement | null>(null);
+  const latestAgentMessageEndRef = useRef<HTMLSpanElement | null>(null);
   const guidePanelBusy = guideBusy || guideAttachmentBusy;
-  const guideStatusText = guideBusy
-    ? copy.guide.busy
-    : guideAttachmentBusy
-      ? copy.guide.readingFiles
-      : "";
+  const guideStatusText = guideAttachmentBusy ? copy.guide.readingFiles : "";
+
+  useLayoutEffect(() => {
+    const previousLatestUserMessageId = previousLatestUserMessageIdRef.current;
+    const previousLatestAgentMessageRevision = previousLatestAgentMessageRevisionRef.current;
+    const userMessageChanged = Boolean(
+      latestUserMessageId && latestUserMessageId !== previousLatestUserMessageId,
+    );
+    const agentMessageChanged = Boolean(
+      latestAgentMessageRevision
+      && latestAgentMessageRevision !== previousLatestAgentMessageRevision,
+    );
+    previousLatestUserMessageIdRef.current = latestUserMessageId;
+    previousLatestAgentMessageRevisionRef.current = latestAgentMessageRevision;
+
+    if (userMessageChanged) {
+      latestUserMessageRef.current?.scrollIntoView?.({
+        block: "nearest",
+        inline: "nearest",
+      });
+      return;
+    }
+    if (agentMessageChanged) {
+      latestAgentMessageEndRef.current?.scrollIntoView?.({
+        block: "end",
+        inline: "nearest",
+      });
+    }
+  }, [latestAgentMessageRevision, latestUserMessageId]);
 
   return (
     <section
@@ -67,19 +105,45 @@ export function GuidePanel({
     >
       <div className="min-h-0 flex-1 overflow-y-auto px-5 py-6 sm:px-8">
         <div className="space-y-4" aria-live="polite">
-          {guideMessages.map((message) => (
-            <GuideBubble
-              key={message.id}
-              locale={locale}
-              message={message}
-              onSuggestedPrompt={(prompt) => {
-                setGuideDraft(prompt);
-                setGuideError("");
-                guideTextInputRef.current?.focus();
-              }}
-              suggestionsDisabled={guidePanelBusy}
-            />
-          ))}
+          {guideMessages.map((message) => {
+            if (
+              message.kind === "assistant"
+              && !message.text.trim()
+              && !message.turns?.length
+            ) {
+              return null;
+            }
+            const isLatestUserMessage = message.id === latestUserMessageId;
+            const isLatestAgentMessage = message.id === latestAgentMessage?.id;
+            return (
+              <div
+                data-guide-message-id={message.id}
+                data-guide-message-kind={message.kind}
+                key={message.id}
+                ref={isLatestUserMessage ? latestUserMessageRef : undefined}
+                className={isLatestUserMessage ? "scroll-mb-4" : undefined}
+              >
+                <GuideBubble
+                  locale={locale}
+                  message={message}
+                  onSuggestedPrompt={(prompt) => {
+                    setGuideDraft(prompt);
+                    setGuideError("");
+                    guideTextInputRef.current?.focus();
+                  }}
+                  suggestionsDisabled={guidePanelBusy}
+                />
+                {isLatestAgentMessage ? (
+                  <span
+                    aria-hidden="true"
+                    className="block h-px scroll-mb-4"
+                    data-guide-message-end={message.id}
+                    ref={latestAgentMessageEndRef}
+                  />
+                ) : null}
+              </div>
+            );
+          })}
         </div>
       </div>
 
@@ -218,4 +282,28 @@ export function GuidePanel({
       </form>
     </section>
   );
+}
+
+function getLatestUserMessageId(messages: GuideMessage[]) {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (messages[index]?.kind === "user") {
+      return messages[index].id;
+    }
+  }
+  return null;
+}
+
+function getLatestAgentMessage(messages: GuideMessage[]) {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (messages[index]?.kind === "assistant") {
+      return messages[index];
+    }
+  }
+  return null;
+}
+
+function getAgentMessageRevision(message: GuideMessage | null) {
+  return message && (message.text.trim() || message.turns?.length)
+    ? JSON.stringify(message)
+    : null;
 }

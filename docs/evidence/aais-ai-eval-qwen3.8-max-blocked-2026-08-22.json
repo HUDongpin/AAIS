@@ -1,0 +1,154 @@
+{
+  "schemaVersion": 1,
+  "evidenceId": "aais-qwen3.8-max-revision-block-20260822-v4",
+  "observedAt": "2026-08-21T16:25:40.923Z",
+  "status": "blocked",
+  "source": {
+    "gitCommitSha": "306057dc410a4f0ee06356026f1d5e21acf0f411",
+    "branch": "codex/aais-learning-system-release"
+  },
+  "provider": {
+    "provider": "qwen",
+    "runtimeRole": "required-primary",
+    "endpointFingerprint": "acef5ad22e85eeb4054b30648f7d50012e47b22ef6381614477548d7d42238d7",
+    "requestedModel": "qwen3.8-max",
+    "observedModel": "qwen3.8-max",
+    "observedModelMatch": true,
+    "observedRevisionSha256": null
+  },
+  "formalEvaluationAttempt": {
+    "evalVersion": "aais-qwen3.8-max-20260822-formal-v2",
+    "evaluator": "scripts/run-aais-ai-formal-eval.ts",
+    "evaluatorSha256": "2db623919d08733bae50df8d1ab98b028d01ca7491a47afcbd1fb9a252b77244",
+    "requiredCoverage": {
+      "agents": [
+        "A1",
+        "A2",
+        "A3",
+        "A4"
+      ],
+      "locales": [
+        "zh-CN",
+        "en-US"
+      ],
+      "plannedSampleCount": 8
+    },
+    "result": "blocked",
+    "errorCode": "AAIS_AI_FORMAL_EVAL_REVISION_MISSING",
+    "providerResponseContractReached": true,
+    "rawSystemFingerprint": "omitted",
+    "reportedSystemFingerprintState": "absent",
+    "unsignedManifestCreated": false,
+    "formalManifestCreated": false,
+    "formalManifestSha256": null,
+    "formalManifestSignatureCreated": false,
+    "temporaryOutputRemoved": true
+  },
+  "authenticatedModelDescriptorObservation": {
+    "endpointPath": "/compatible-mode/v1/models/qwen3.8-max",
+    "httpStatus": 200,
+    "observedModel": "qwen3.8-max",
+    "object": "model",
+    "created": 1786097320,
+    "createdIso": "2026-08-07T10:08:40.000Z",
+    "ownedBy": "system",
+    "responseKeys": [
+      "created",
+      "extra_info",
+      "id",
+      "object",
+      "owned_by"
+    ],
+    "extraInfoKeys": [
+      "default_envs"
+    ],
+    "revision": null,
+    "version": null,
+    "snapshot": null,
+    "systemFingerprintPresent": false,
+    "etag": null,
+    "lastModified": null,
+    "sanitizedObservationSha256": "4e6a68bb7ba4afe48fb61fde16c873fa784e6c0a16f0024e09468f6cf15d4669",
+    "observation": "The authenticated descriptor identifies the current model alias but exposes no immutable revision, version, snapshot, fingerprint, ETag, or Last-Modified value. The created timestamp is catalog object metadata, not an observed inference revision."
+  },
+  "authenticatedCompletionObservation": {
+    "endpointPath": "/compatible-mode/v1/chat/completions",
+    "httpStatus": 200,
+    "requestedModel": "qwen3.8-max",
+    "observedModel": "qwen3.8-max",
+    "topLevelResponseKeys": [
+      "choices",
+      "created",
+      "id",
+      "model",
+      "object",
+      "usage"
+    ],
+    "systemFingerprintState": "absent",
+    "revisionLikeResponseHeaderNames": [],
+    "choiceKeys": [
+      "finish_reason",
+      "index",
+      "message"
+    ],
+    "messageKeys": [
+      "content",
+      "role"
+    ],
+    "usageKeys": [
+      "completion_tokens",
+      "prompt_tokens",
+      "prompt_tokens_details",
+      "total_tokens"
+    ],
+    "sanitizedObservationSha256": "74bfc9938c2dc761547cae0e9ea80f36795b8f2c38b0570c2eac6507224309e8",
+    "observation": "The successful live response reports the exact model alias but no system_fingerprint and no revision-like response header. Request id and response created time are per-request metadata and are not revision evidence."
+  },
+  "sourceContract": {
+    "agentPromptContractSha256": {
+      "A1": "ddb4290317cdf5ec064bd28f7dd71741172826a4bcf597b6f25ea9290f98c814",
+      "A2": "ad9a043604ca5d2646ca65c895b57d96ae60c1cd32fa8aadc35ce0b5e46f743f",
+      "A3": "068241da2f4a8752b2da9a896dd88b3171cf8e7f524f373cb015467a149cd6f8",
+      "A4": "0faa13d149f3b5031afad99c0e4b0186133712e6d23af7426dd7209320200ce1"
+    },
+    "caBackgroundSha256": "455e227cff03afe3f8d5c5657ef5465e3ca3c4913309c050a5680ed5bb2c090b",
+    "guardrailSha256": "4edee29ff2c1f8f0758b9f1fd4e2a30c5aec23a3ef9f047a6a0cd74c6e852080",
+    "providerBoundarySha256": "ec45ebed891a2d9355358fb332841a70280300f368969aef3ba2ded33fbc5904",
+    "sourceContractModuleSha256": "a1b0be7783e1947c4d5da71f06d958064a0b934efc25786b41922fded57abb4a",
+    "releaseVerifierSha256": "ffde701fdde8d0ef8bed35836d0d2864685d2e95b9a986d4e28300d5808086d9"
+  },
+  "officialProviderSources": {
+    "modelCatalog": {
+      "url": "https://help.aliyun.com/zh/model-studio/models",
+      "observation": "Alibaba Cloud documents qwen3.8-max as the current model ID in supported regions, without an immutable snapshot identifier."
+    },
+    "textModelCatalog": {
+      "url": "https://help.aliyun.com/zh/model-studio/text-generation-model",
+      "observation": "The catalog provides snapshot links for earlier Qwen families but does not publish a qwen3.8-max snapshot model ID."
+    },
+    "releaseCatalog": {
+      "url": "https://help.aliyun.com/zh/model-studio/newly-released-models",
+      "observation": "The published release chronology identifies qwen3.8-max but does not bind a successful inference to an immutable revision."
+    },
+    "compatibleChatCompletions": {
+      "url": "https://help.aliyun.com/zh/model-studio/qwen-api-via-openai-chat-completions",
+      "observation": "The compatible API documents the model alias; the observed successful response contained no revision field or system_fingerprint."
+    }
+  },
+  "releaseDecision": {
+    "primaryEvidenceStatus": "pending",
+    "productionApprovalAllowed": false,
+    "reason": "The required exact observed inference revision is unavailable. Model alias, catalog created timestamp, provider launch date, request identifier, response timestamp, or a locally invented digest cannot substitute for a response-bound immutable revision.",
+    "requiredResolution": "Alibaba Cloud must expose a stable immutable revision value for qwen3.8-max, or AAIS must select an explicitly approved model endpoint with an exact observable revision and repeat the independent formal evaluation and signing flow."
+  },
+  "redaction": {
+    "apiKeys": "omitted",
+    "accountIdentifiers": "omitted",
+    "prompts": "omitted",
+    "outputs": "omitted",
+    "rawProviderResponses": "omitted",
+    "requestIdentifiers": "omitted",
+    "rawProviderHeaders": "omitted",
+    "secrets": "omitted"
+  }
+}

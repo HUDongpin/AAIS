@@ -1434,7 +1434,7 @@ describe("AAIS LearningPage", () => {
     expect(a2Avatar.querySelector('[data-avatar-part="expert-spark"]')).toBeNull();
   });
 
-  it("shows streamed guide progress before the final agent answer", async () => {
+  it("keeps processing-only stream events hidden until the final agent answer", async () => {
     setCsrfCookie();
     const encoder = new TextEncoder();
     let streamController: ReadableStreamDefaultController<Uint8Array> | null = null;
@@ -1481,7 +1481,12 @@ describe("AAIS LearningPage", () => {
 
     submitGuidePrompt("请帮我明确这个学习任务的目标，并拆成下一步。");
 
-    expect(await screen.findByText("小张正在处理你的问题...")).toBeTruthy();
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(screen.queryByText("小张正在处理你的问题...")).toBeNull();
+    expect(screen.queryByText("CAAIS 已收到，多智能体链路正在处理。")).toBeNull();
 
     await act(async () => {
       streamController?.enqueue(encoder.encode(
@@ -1928,7 +1933,7 @@ describe("AAIS LearningPage", () => {
     expect(screen.queryByText("教授")).toBeNull();
   });
 
-  it("shows the CAAIS pending acknowledgement while the guide request is running", async () => {
+  it("keeps the pending guide acknowledgement out of the learner transcript", async () => {
     setCsrfCookie();
     const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
@@ -1956,8 +1961,9 @@ describe("AAIS LearningPage", () => {
 
     submitGuidePrompt("我卡住了，想要一个支架提示。");
 
-    expect(screen.getByText("CAAIS 已收到，多智能体链路正在处理。")).toBeTruthy();
+    expect(screen.queryByText("CAAIS 已收到，多智能体链路正在处理。")).toBeNull();
     expect(screen.queryByText("AAIS 已收到，多智能体链路正在处理。")).toBeNull();
+    expect(screen.getByText("我卡住了，想要一个支架提示。")).toBeTruthy();
   });
 
   it("replaces a stalled guide request with an unavailable message and unlocks input", async () => {
@@ -1993,7 +1999,7 @@ describe("AAIS LearningPage", () => {
     render(<LearningPage />);
 
     submitGuidePrompt("我卡住了，想要一个支架提示。");
-    expect(screen.getByText("CAAIS 已收到，多智能体链路正在处理。")).toBeTruthy();
+    expect(screen.queryByText("CAAIS 已收到，多智能体链路正在处理。")).toBeNull();
 
     await act(async () => {
       vi.advanceTimersByTime(30_001);
@@ -2004,6 +2010,54 @@ describe("AAIS LearningPage", () => {
     expect(screen.queryByText("CAAIS 已收到，多智能体链路正在处理。")).toBeNull();
     expect(screen.getByText("智能服务暂时不可用，已保留你的问题。请稍后重试。")).toBeTruthy();
     expect((screen.getByRole("button", { name: "发送" }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("shows the exact daily allowance and reset time for a guide-budget 429", async () => {
+    setCsrfCookie();
+    const resetAt = "2026-08-23T00:00:00.000Z";
+    const expectedResetTime = new Intl.DateTimeFormat("zh-CN", {
+      dateStyle: "medium",
+      timeStyle: "short",
+    }).format(new Date(resetAt));
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.startsWith("/api/learning/session") && (!init || init.method === "GET")) {
+        return Response.json({ session: createClientSessionFixture("") });
+      }
+      if (url === "/api/learning/ai-guide" && init?.method === "POST") {
+        return Response.json({
+          error: {
+            code: "AAIS_GUIDE_DAILY_BUDGET_EXCEEDED",
+            message: "AAIS daily guide request budget has been reached.",
+          },
+          budget: {
+            limit: 1_000,
+            used: 1_000,
+            remaining: 0,
+            resetsAt: resetAt,
+          },
+        }, { status: 429 });
+      }
+      return Response.json({ ok: true });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<LearningPage />);
+    submitGuidePrompt("你好");
+
+    const quotaMessage = await screen.findByText(
+      `今天的智能导学额度已用完（每日 1000 次）。额度将于 ${expectedResetTime} 重置，请届时再试。`,
+    );
+    expect(quotaMessage).toBeTruthy();
+    expect(screen.getByText("你好")).toBeTruthy();
+    expect(screen.queryByText("智能服务暂时不可用，已保留你的问题。请稍后重试。")).toBeNull();
+    expect(screen.queryByText("智能服务暂时不可用，已保留你的问题。")).toBeNull();
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect((screen.getByRole("button", { name: "发送" }) as HTMLButtonElement).disabled).toBe(false);
+    expect(getLastResearchEvent("ai_guide_submit")).toMatchObject({
+      outcome: "failure",
+      detail: expect.objectContaining({ error_kind: "daily_budget_exceeded" }),
+    });
   });
 
   it("aborts the upstream fetch when an acknowledged guide stream stalls", async () => {
@@ -2461,10 +2515,6 @@ describe("AAIS LearningPage", () => {
     render(<LearningPage />);
 
     submitGuidePrompt("我卡住了，想要一个支架提示。");
-
-    const pendingAssistantLabel = screen.getByText("AI 助教");
-    expect(pendingAssistantLabel.className).toContain("text-sm");
-    expect(pendingAssistantLabel.className).not.toContain("text-[11px]");
 
     const learnerBubble = screen.getByText("我卡住了，想要一个支架提示。").closest("div");
     expect(learnerBubble?.className).toContain("text-[17px]");
