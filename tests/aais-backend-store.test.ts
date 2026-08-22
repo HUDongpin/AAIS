@@ -1039,6 +1039,16 @@ describe("AAIS backend learning store", () => {
         label: "导学智能体",
         content: "研究 AI 分步回答原文",
         actions: ["研究 AI 建议原文"],
+        visualizations: [{
+          id: "quadratic-research",
+          type: "quadratic-function",
+          expression: "y = 2x² + 3x + 4",
+          coefficients: { a: 2, b: 3, c: 4 },
+          domain: { xMin: -5, xMax: 4 },
+          vertex: { x: -0.75, y: 2.875 },
+          axisX: -0.75,
+          yIntercept: 4,
+        }],
       }],
       orchestration: {
         graphId: "learning-ai-guide",
@@ -1067,7 +1077,7 @@ describe("AAIS backend learning store", () => {
     expect(reloaded.historyDocuments).toEqual([]);
     expect(reloaded.guideMessages.every((message) => message.text === "")).toBe(true);
     expect(reloaded.guideMessages.flatMap((message) => message.turns ?? []).every((turn) =>
-      turn.content === "" && turn.actions.length === 0
+      turn.content === "" && turn.actions.length === 0 && !turn.visualizations
     )).toBe(true);
     expect(reloaded.events.map((event) => JSON.stringify(event))).toEqual(eventFacts);
     expect(reloaded.tasks.map((task) => [task.taskId, task.status])).toEqual(taskStatuses);
@@ -1078,6 +1088,7 @@ describe("AAIS backend learning store", () => {
     expect(JSON.stringify(reloaded)).not.toContain("研究 AI 提问原文");
     expect(JSON.stringify(reloaded)).not.toContain("研究 AI 回答原文");
     expect(JSON.stringify(reloaded)).not.toContain("研究原始文件名.docx");
+    expect(JSON.stringify(reloaded)).not.toContain("quadratic-research");
   });
 
   it("persists first and mirrors learning events to LRS through the async delivery queue", async () => {

@@ -817,6 +817,9 @@ function createGuideStreamResponse(input: {
           send("agent_delta", {
             agentId: turn.agentId,
             content: turn.content,
+            ...(turn.visualizations?.length
+              ? { visualizations: turn.visualizations }
+              : {}),
           });
           send("agent_done", {
             agentId: turn.agentId,

@@ -536,4 +536,79 @@ describe("AAIS LangGraph learning guide", () => {
     expect(generate).toHaveBeenCalledTimes(1);
     expect(generate.mock.calls[0]?.[0].signal?.aborted).toBe(true);
   });
+
+  it("shows a verified function graph immediately instead of gating it on calculation", async () => {
+    const generate = vi.fn(async (request: AaisModelRequest) => ({
+      text: `${request.agentId}：你先算出顶点横坐标，我再帮你画图。`,
+      runtime: {
+        provider: "test-provider",
+        model: "fixture-model",
+        attempts: 1,
+        status: "ok" as const,
+        guardrail: {
+          policy: "aais-age-appropriate-output-v1" as const,
+          status: "passed" as const,
+          reasons: [],
+        },
+        redaction: {
+          secrets: "omitted" as const,
+          prompt: "summarized" as const,
+        },
+      },
+    }));
+
+    const result = await runAaisLearningGuideGraph({
+      locale: "zh-CN",
+      studentId: "S-function-graph",
+      phase: "training",
+      taskId: "training_task_1",
+      learnerInput: "给我看 y = 2x² + 3x + 4 的图像",
+      workspaceState: { currentStep: "guide" },
+    }, {
+      modelProvider: { generate },
+    });
+
+    expect(generate.mock.calls[0]?.[0].scaffoldPlan).toMatchObject({
+      mode: "visualize",
+      visualization: {
+        expression: "y = 2x² + 3x + 4",
+        vertex: { x: -0.75, y: 2.875 },
+      },
+    });
+    expect(result.visibleTurns[0]).toMatchObject({
+      agentId: "A1",
+      content: expect.stringContaining("计算不是看图的前置条件"),
+      actions: expect.arrayContaining(["show-function-graph"]),
+      visualizations: [expect.objectContaining({
+        type: "quadratic-function",
+        vertex: { x: -0.75, y: 2.875 },
+      })],
+    });
+    expect(result.visibleTurns[0]?.content).not.toContain("先算");
+  });
+
+  it("replaces a repeated calculation gate with a worked example and the graph", async () => {
+    const result = await runAaisLearningGuideGraph({
+      locale: "zh-CN",
+      studentId: "S-function-recovery",
+      phase: "training",
+      taskId: "training_task_1",
+      learnerInput: "y = 20?",
+      conversationHistory: [
+        { kind: "user", text: "我想看 y=2x^2+3x+4 的函数图像" },
+        { kind: "assistant", text: "再试一次，把 x=-3/4 代入后 y 等于多少？" },
+      ],
+      workspaceState: { currentStep: "guide" },
+    }, {
+      modelProvider: createDeterministicAaisProvider(),
+    });
+
+    expect(result.visibleTurns[0]).toMatchObject({
+      content: expect.stringContaining("我来示范"),
+      actions: expect.arrayContaining(["show-function-graph", "worked-example"]),
+    });
+    expect(result.visibleTurns[0]?.content).toContain("23/8");
+    expect(result.visibleTurns[0]?.content).not.toContain("再试一次");
+    expect(result.visibleTurns[0]?.visualizations).toHaveLength(1);
+  });
 });

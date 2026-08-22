@@ -163,6 +163,58 @@ describe("learning page components", () => {
     expect(sendGuideMessage).toHaveBeenCalledTimes(1);
   });
 
+  it("moves a function-graph learning choice into the composer and focuses it", () => {
+    const setGuideDraft = vi.fn();
+    const setGuideError = vi.fn();
+    render(
+      <GuidePanel
+        addGuideFiles={vi.fn()}
+        backendError=""
+        guideAttachmentBusy={false}
+        guideAttachmentError=""
+        guideAttachments={[]}
+        guideBusy={false}
+        guideDraft=""
+        guideError=""
+        guideFileInputRef={createRef<HTMLInputElement>()}
+        guideMessages={[{
+          id: "assistant-graph",
+          kind: "assistant",
+          text: "done",
+          turns: [{
+            agentId: "A1",
+            label: "小张",
+            content: "当然，先看图。",
+            actions: ["show-function-graph"],
+            visualizations: [{
+              id: "quadratic-2-3-4",
+              type: "quadratic-function",
+              expression: "y = 2x² + 3x + 4",
+              coefficients: { a: 2, b: 3, c: 4 },
+              domain: { xMin: -5, xMax: 4 },
+              vertex: { x: -0.75, y: 2.875 },
+              axisX: -0.75,
+              yIntercept: 4,
+            }],
+          }],
+        }]}
+        hasGuideSubmission={false}
+        onRemoveAttachment={vi.fn()}
+        sendGuideMessage={vi.fn()}
+        setGuideDraft={setGuideDraft}
+        setGuideError={setGuideError}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "示范代入" }));
+
+    expect(setGuideDraft).toHaveBeenCalledWith(
+      "请示范把 x = -3/4 代入 y = 2x² + 3x + 4。",
+    );
+    expect(setGuideError).toHaveBeenCalledWith("");
+    expect(document.activeElement).toBe(screen.getByLabelText("向智能导学输入你的想法"));
+  });
+
   it("announces AI guide busy and error states to assistive technology", () => {
     render(
       <GuidePanel

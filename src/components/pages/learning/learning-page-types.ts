@@ -2,6 +2,7 @@ import type {
   AaisGuideAttachment,
   AaisGuideAttachmentMetadata,
 } from "@/lib/ai/aais-guide-attachments";
+import type { AaisGuideVisualization } from "@/lib/ai/aais-guide-function-scaffold";
 
 export type ContentTab = "display" | "editor";
 export type ContentItemId = "platform" | "theory" | "history";
@@ -31,6 +32,7 @@ export type GuideTurn = {
   label: string;
   content: string;
   actions: string[];
+  visualizations?: AaisGuideVisualization[];
 };
 
 export type GuideQuickStart = {
