@@ -3,6 +3,8 @@ import { withSentryConfig } from "@sentry/nextjs";
 export { createAaisContentSecurityPolicy } from "./src/lib/server/aais-csp";
 
 const nextConfig: NextConfig = {
+  // Preserve the project-owned agents.md instead of letting Next dev rewrite it.
+  agentRules: false,
   turbopack: {
     root: process.cwd(),
   },
