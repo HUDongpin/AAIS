@@ -37,12 +37,12 @@ describe("AAIS CI workflow", () => {
     const npmrc = existsSync(".npmrc") ? readFileSync(".npmrc", "utf8") : "";
 
     expect(ci).toContain("uses: actions/checkout@v7");
-    expect(ci).toContain("uses: actions/setup-node@v6");
+    expect(ci).toContain("uses: actions/setup-node@v7");
     expect(ci).toContain("node-version: 24");
     expect(ci).not.toContain("node-version: 20");
     expect(preview).toContain("uses: actions/github-script@v9");
     expect(preview).toContain("uses: actions/checkout@v7");
-    expect(preview).toContain("uses: actions/setup-node@v6");
+    expect(preview).toContain("uses: actions/setup-node@v7");
     expect(preview).toContain("node-version: 24");
     expect(preview).not.toContain("node-version: 20");
     expect(packageJson.engines?.node).toBe("24.x");
