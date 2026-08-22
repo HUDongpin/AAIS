@@ -2,7 +2,6 @@
 .aais-data/
 .aais-e2e-data/
 .next/
-next-env.d.ts
 .playwright-cli/
 .worktrees/
 node_modules/
