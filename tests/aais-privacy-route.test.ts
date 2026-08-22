@@ -26,21 +26,15 @@ describe("AAIS learner privacy route", () => {
   it("exports and deletes only the authenticated learner data", async () => {
     const sessionRoute = await import("@/app/api/learning/session/route");
     const privacyRoute = await import("@/app/api/learning/privacy/route");
-    const s001Cookie = createAuthedCookie("S001");
-    const phoebeCookie = createAuthedCookie("Phoebe");
+    const s001Headers = createAuthedHeaders("S001");
+    const phoebeHeaders = createAuthedHeaders("Phoebe");
 
-    for (const [studentId, cookie] of [
-      ["S001", s001Cookie],
-      ["Phoebe", phoebeCookie],
-    ] as const) {
+    for (const headers of [s001Headers, phoebeHeaders]) {
       const response = await sessionRoute.POST(new Request(
         "http://localhost/api/learning/session",
         {
           method: "POST",
-          headers: {
-            cookie,
-            "x-aais-csrf": createAaisCsrfToken(studentId),
-          },
+          headers,
         },
       ));
       expect(response.status).toBe(200);
@@ -49,10 +43,7 @@ describe("AAIS learner privacy route", () => {
     await sessionRoute.PATCH(
       new Request("http://localhost/api/learning/session", {
         method: "PATCH",
-        headers: {
-          cookie: s001Cookie,
-          "x-aais-csrf": createAaisCsrfToken("S001"),
-        },
+        headers: s001Headers,
         body: JSON.stringify({
           dataGeneration: 1,
           action: "save-artifact",
@@ -66,10 +57,7 @@ describe("AAIS learner privacy route", () => {
     await sessionRoute.PATCH(
       new Request("http://localhost/api/learning/session", {
         method: "PATCH",
-        headers: {
-          cookie: phoebeCookie,
-          "x-aais-csrf": createAaisCsrfToken("Phoebe"),
-        },
+        headers: phoebeHeaders,
         body: JSON.stringify({
           dataGeneration: 1,
           action: "save-artifact",
@@ -84,7 +72,7 @@ describe("AAIS learner privacy route", () => {
     const exportResponse = await privacyRoute.GET(
       new Request("http://localhost/api/learning/privacy", {
         headers: {
-          cookie: s001Cookie,
+          cookie: s001Headers.cookie,
         },
       }),
     );
@@ -111,7 +99,7 @@ describe("AAIS learner privacy route", () => {
       new Request("http://localhost/api/learning/privacy", {
         method: "DELETE",
         headers: {
-          cookie: s001Cookie,
+          cookie: s001Headers.cookie,
         },
       }),
     );
@@ -126,10 +114,7 @@ describe("AAIS learner privacy route", () => {
     const missingGenerationResponse = await privacyRoute.DELETE(
       new Request("http://localhost/api/learning/privacy", {
         method: "DELETE",
-        headers: {
-          cookie: s001Cookie,
-          "x-aais-csrf": createAaisCsrfToken("S001"),
-        },
+        headers: s001Headers,
         body: JSON.stringify({}),
       }),
     );
@@ -141,10 +126,7 @@ describe("AAIS learner privacy route", () => {
     const deleteResponse = await privacyRoute.DELETE(
       new Request("http://localhost/api/learning/privacy", {
         method: "DELETE",
-        headers: {
-          cookie: s001Cookie,
-          "x-aais-csrf": createAaisCsrfToken("S001"),
-        },
+        headers: s001Headers,
         body: JSON.stringify({ dataGeneration: 1 }),
       }),
     );
@@ -170,7 +152,7 @@ describe("AAIS learner privacy route", () => {
     const afterDeleteResponse = await privacyRoute.GET(
       new Request("http://localhost/api/learning/privacy", {
         headers: {
-          cookie: s001Cookie,
+          cookie: s001Headers.cookie,
         },
       }),
     );
@@ -181,7 +163,7 @@ describe("AAIS learner privacy route", () => {
     const phoebeExportResponse = await privacyRoute.GET(
       new Request("http://localhost/api/learning/privacy", {
         headers: {
-          cookie: phoebeCookie,
+          cookie: phoebeHeaders.cookie,
         },
       }),
     );
@@ -228,10 +210,7 @@ describe("AAIS learner privacy route", () => {
       const response = await privacyRoute.DELETE(
         new Request("http://localhost/api/learning/privacy", {
           method: "DELETE",
-          headers: {
-            cookie: createAuthedCookie("S001"),
-            "x-aais-csrf": createAaisCsrfToken("S001"),
-          },
+          headers: createAuthedHeaders("S001"),
           body: JSON.stringify({ dataGeneration: 1 }),
         }),
       );
@@ -247,12 +226,15 @@ describe("AAIS learner privacy route", () => {
   );
 });
 
-function createAuthedCookie(id: string, role: "student" | "teacher" | "admin" = "student") {
+function createAuthedHeaders(id: string, role: "student" | "teacher" | "admin" = "student") {
   const csrfToken = createAaisCsrfToken(id);
   const sessionToken = createAaisSessionToken({
     id,
     role,
     displayName: id,
   }, new Date(), { authSource: "development" });
-  return `aais_session=${sessionToken}; ${getAaisCsrfCookieName()}=${csrfToken}`;
+  return {
+    cookie: `aais_session=${sessionToken}; ${getAaisCsrfCookieName()}=${csrfToken}`,
+    "x-aais-csrf": csrfToken,
+  };
 }
