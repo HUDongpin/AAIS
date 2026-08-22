@@ -1,5 +1,13 @@
-import { useRef, type Dispatch, type FormEvent, type RefObject, type SetStateAction } from "react";
+import {
+  useLayoutEffect,
+  useRef,
+  type Dispatch,
+  type FormEvent,
+  type RefObject,
+  type SetStateAction,
+} from "react";
 import { ArrowUp, FileText, Plus, X } from "@phosphor-icons/react";
+import type { AaisGuideTargetAgentId } from "@/lib/ai/aais-guide-targets";
 import { aaisGuideFileAccept } from "@/lib/client/aais-guide-file-reader";
 import {
   admitAaisResearchAction,
@@ -9,6 +17,7 @@ import { getLearningCopy } from "@/components/pages/learning/learning-copy";
 import {
   formatGuideAttachmentSize,
   GuideBubble,
+  GuideThinkingBubble,
 } from "@/components/pages/learning/guide-chat";
 import type {
   GuideClientAttachment,
@@ -30,6 +39,7 @@ export function GuidePanel({
   hasGuideSubmission,
   locale = "zh-CN",
   onRemoveAttachment,
+  pendingGuideAgentId = null,
   sendGuideMessage,
   setGuideDraft,
   setGuideError,
@@ -47,39 +57,101 @@ export function GuidePanel({
   hasGuideSubmission: boolean;
   locale?: Locale;
   onRemoveAttachment: (attachmentId: string) => void;
+  pendingGuideAgentId?: AaisGuideTargetAgentId | null;
   sendGuideMessage: (event: FormEvent<HTMLFormElement>) => void;
   setGuideDraft: Dispatch<SetStateAction<string>>;
   setGuideError: Dispatch<SetStateAction<string>>;
 }) {
   const copy = getLearningCopy(locale);
   const guideTextInputRef = useRef<HTMLInputElement | null>(null);
+  const latestUserMessageId = getLatestUserMessageId(guideMessages);
+  const latestAgentMessage = getLatestAgentMessage(guideMessages);
+  const latestAgentMessageRevision = getAgentMessageRevision(latestAgentMessage);
+  const previousLatestUserMessageIdRef = useRef(latestUserMessageId);
+  const previousLatestAgentMessageRevisionRef = useRef(latestAgentMessageRevision);
+  const latestUserMessageRef = useRef<HTMLDivElement | null>(null);
+  const latestAgentMessageEndRef = useRef<HTMLSpanElement | null>(null);
   const guidePanelBusy = guideBusy || guideAttachmentBusy;
-  const guideStatusText = guideBusy
-    ? copy.guide.busy
-    : guideAttachmentBusy
-      ? copy.guide.readingFiles
-      : "";
+  const guideStatusText = guideAttachmentBusy ? copy.guide.readingFiles : "";
+
+  useLayoutEffect(() => {
+    const previousLatestUserMessageId = previousLatestUserMessageIdRef.current;
+    const previousLatestAgentMessageRevision = previousLatestAgentMessageRevisionRef.current;
+    const userMessageChanged = Boolean(
+      latestUserMessageId && latestUserMessageId !== previousLatestUserMessageId,
+    );
+    const agentMessageChanged = Boolean(
+      latestAgentMessageRevision
+      && latestAgentMessageRevision !== previousLatestAgentMessageRevision,
+    );
+    previousLatestUserMessageIdRef.current = latestUserMessageId;
+    previousLatestAgentMessageRevisionRef.current = latestAgentMessageRevision;
+
+    if (userMessageChanged) {
+      latestUserMessageRef.current?.scrollIntoView?.({
+        block: "nearest",
+        inline: "nearest",
+      });
+      return;
+    }
+    if (agentMessageChanged) {
+      latestAgentMessageEndRef.current?.scrollIntoView?.({
+        block: "end",
+        inline: "nearest",
+      });
+    }
+  }, [latestAgentMessageRevision, latestUserMessageId]);
 
   return (
-    <section
-      className="flex min-h-[620px] min-w-0 flex-col bg-[#fcfcfc] lg:min-h-0"
-      aria-busy={guidePanelBusy}
-    >
+    <section className="flex min-h-[620px] min-w-0 flex-col bg-[#fcfcfc] lg:min-h-0">
       <div className="min-h-0 flex-1 overflow-y-auto px-5 py-6 sm:px-8">
         <div className="space-y-4" aria-live="polite">
-          {guideMessages.map((message) => (
-            <GuideBubble
-              key={message.id}
-              locale={locale}
-              message={message}
-              onSuggestedPrompt={(prompt) => {
-                setGuideDraft(prompt);
-                setGuideError("");
-                guideTextInputRef.current?.focus();
-              }}
-              suggestionsDisabled={guidePanelBusy}
-            />
-          ))}
+          {guideMessages.map((message) => {
+            const isBlankAssistantMessage = message.kind === "assistant"
+              && !message.text.trim()
+              && !message.turns?.length;
+            const showProfessorThinking = isBlankAssistantMessage
+              && guideBusy
+              && pendingGuideAgentId === "A2"
+              && message.id === latestAgentMessage?.id;
+            if (isBlankAssistantMessage && !showProfessorThinking) {
+              return null;
+            }
+            const isLatestUserMessage = message.id === latestUserMessageId;
+            const isLatestAgentMessage = message.id === latestAgentMessage?.id;
+            return (
+              <div
+                data-guide-message-id={message.id}
+                data-guide-message-kind={message.kind}
+                key={message.id}
+                ref={isLatestUserMessage ? latestUserMessageRef : undefined}
+                className={isLatestUserMessage ? "scroll-mb-4" : undefined}
+              >
+                {showProfessorThinking ? (
+                  <GuideThinkingBubble locale={locale} />
+                ) : (
+                  <GuideBubble
+                    locale={locale}
+                    message={message}
+                    onSuggestedPrompt={(prompt) => {
+                      setGuideDraft(prompt);
+                      setGuideError("");
+                      guideTextInputRef.current?.focus();
+                    }}
+                    suggestionsDisabled={guidePanelBusy}
+                  />
+                )}
+                {isLatestAgentMessage ? (
+                  <span
+                    aria-hidden="true"
+                    className="block h-px scroll-mb-4"
+                    data-guide-message-end={message.id}
+                    ref={latestAgentMessageEndRef}
+                  />
+                ) : null}
+              </div>
+            );
+          })}
         </div>
       </div>
 
@@ -87,7 +159,10 @@ export function GuidePanel({
         onSubmit={sendGuideMessage}
         className="sticky bottom-0 z-10 shrink-0 border-t border-[#ececeb] bg-gradient-to-t from-[#fcfcfc] via-[#fcfcfc] to-[#fcfcfc]/90 px-5 py-3 sm:px-8"
       >
-        <div className="flex min-h-[72px] w-full items-center rounded-[28px] border border-[#d9dde7] bg-white px-5 shadow-[0_10px_32px_rgba(17,24,39,0.08)]">
+        <div
+          aria-busy={guidePanelBusy}
+          className="flex min-h-[72px] w-full items-center rounded-[28px] border border-[#d9dde7] bg-white px-5 shadow-[0_10px_32px_rgba(17,24,39,0.08)]"
+        >
           <input
             ref={guideFileInputRef}
             aria-label={copy.guide.chooseFiles}
@@ -128,6 +203,7 @@ export function GuidePanel({
           <input
             ref={guideTextInputRef}
             aria-label={copy.guide.inputLabel}
+            disabled={guidePanelBusy}
             value={guideDraft}
             onChange={(event) => {
               setGuideDraft(event.target.value);
@@ -218,4 +294,28 @@ export function GuidePanel({
       </form>
     </section>
   );
+}
+
+function getLatestUserMessageId(messages: GuideMessage[]) {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (messages[index]?.kind === "user") {
+      return messages[index].id;
+    }
+  }
+  return null;
+}
+
+function getLatestAgentMessage(messages: GuideMessage[]) {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (messages[index]?.kind === "assistant") {
+      return messages[index];
+    }
+  }
+  return null;
+}
+
+function getAgentMessageRevision(message: GuideMessage | null) {
+  return message && (message.text.trim() || message.turns?.length)
+    ? JSON.stringify(message)
+    : null;
 }

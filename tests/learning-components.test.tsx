@@ -13,6 +13,176 @@ import type {
 } from "@/components/pages/learning/learning-page-types";
 
 describe("learning page components", () => {
+  it("scrolls a newly appended user message into the visible transcript", () => {
+    const scrollIntoView = vi.fn();
+    const originalScrollIntoView = HTMLElement.prototype.scrollIntoView;
+    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+      configurable: true,
+      value: scrollIntoView,
+    });
+
+    const renderGuidePanel = (guideMessages: React.ComponentProps<typeof GuidePanel>["guideMessages"]) => (
+      <GuidePanel
+        addGuideFiles={vi.fn()}
+        backendError=""
+        guideAttachmentBusy={false}
+        guideAttachmentError=""
+        guideAttachments={[]}
+        guideBusy={false}
+        guideDraft=""
+        guideError=""
+        guideFileInputRef={createRef<HTMLInputElement>()}
+        guideMessages={guideMessages}
+        hasGuideSubmission={false}
+        onRemoveAttachment={vi.fn()}
+        sendGuideMessage={vi.fn()}
+        setGuideDraft={vi.fn()}
+        setGuideError={vi.fn()}
+      />
+    );
+
+    try {
+      const assistantMessage = {
+        id: "assistant-1",
+        kind: "assistant" as const,
+        text: "先说说你的想法。",
+      };
+      const { rerender } = render(renderGuidePanel([assistantMessage]));
+
+      rerender(renderGuidePanel([
+        assistantMessage,
+        {
+          id: "user-2",
+          kind: "user",
+          text: "不知道",
+        },
+        {
+          id: "assistant-3",
+          kind: "assistant",
+          text: "正在思考...",
+        },
+      ]));
+
+      const userMessage = screen.getByText("不知道").closest("[data-guide-message-id]");
+      expect(scrollIntoView).toHaveBeenCalledTimes(1);
+      expect(scrollIntoView.mock.contexts[0]).toBe(userMessage);
+      expect(scrollIntoView).toHaveBeenCalledWith({
+        block: "nearest",
+        inline: "nearest",
+      });
+    } finally {
+      if (originalScrollIntoView) {
+        Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+          configurable: true,
+          value: originalScrollIntoView,
+        });
+      } else {
+        delete (HTMLElement.prototype as Partial<HTMLElement>).scrollIntoView;
+      }
+    }
+  });
+
+  it.each([
+    {
+      agentId: "A1",
+      agentLabel: "小张",
+      content: "咱们继续练抛物线，x=1时y变大了，曲线是更陡还是更平？",
+    },
+    {
+      agentId: "A2",
+      agentLabel: "教授",
+      content: "请比较系数变化前后的图像，再说明你的判断。",
+    },
+  ])("keeps $agentLabel's newly rendered and growing reply visible", ({
+    agentId,
+    agentLabel,
+    content,
+  }) => {
+    const scrollIntoView = vi.fn();
+    const originalScrollIntoView = HTMLElement.prototype.scrollIntoView;
+    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+      configurable: true,
+      value: scrollIntoView,
+    });
+
+    const renderGuidePanel = (agentContent?: string) => (
+      <GuidePanel
+        addGuideFiles={vi.fn()}
+        backendError=""
+        guideAttachmentBusy={false}
+        guideAttachmentError=""
+        guideAttachments={[]}
+        guideBusy={Boolean(agentContent)}
+        guideDraft=""
+        guideError=""
+        guideFileInputRef={createRef<HTMLInputElement>()}
+        guideMessages={[
+          {
+            id: "assistant-1",
+            kind: "assistant",
+            text: "先说说你的想法。",
+          },
+          {
+            id: "user-2",
+            kind: "user",
+            text: "你好",
+          },
+          ...(agentContent
+            ? [{
+                id: "assistant-3",
+                kind: "assistant" as const,
+                text: "回复生成中",
+                turns: [{
+                  agentId,
+                  label: agentLabel,
+                  content: agentContent,
+                  actions: [],
+                }],
+              }]
+            : []),
+        ]}
+        hasGuideSubmission={false}
+        onRemoveAttachment={vi.fn()}
+        sendGuideMessage={vi.fn()}
+        setGuideDraft={vi.fn()}
+        setGuideError={vi.fn()}
+      />
+    );
+
+    try {
+      const { rerender } = render(renderGuidePanel());
+
+      rerender(renderGuidePanel(content));
+
+      const messageEnd = document.querySelector('[data-guide-message-end="assistant-3"]');
+      expect(scrollIntoView).toHaveBeenCalledTimes(1);
+      expect(scrollIntoView.mock.contexts[0]).toBe(messageEnd);
+      expect(scrollIntoView).toHaveBeenLastCalledWith({
+        block: "end",
+        inline: "nearest",
+      });
+
+      scrollIntoView.mockClear();
+      rerender(renderGuidePanel(`${content} 请说说理由。`));
+
+      expect(scrollIntoView).toHaveBeenCalledTimes(1);
+      expect(scrollIntoView.mock.contexts[0]).toBe(messageEnd);
+      expect(scrollIntoView).toHaveBeenLastCalledWith({
+        block: "end",
+        inline: "nearest",
+      });
+    } finally {
+      if (originalScrollIntoView) {
+        Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+          configurable: true,
+          value: originalScrollIntoView,
+        });
+      } else {
+        delete (HTMLElement.prototype as Partial<HTMLElement>).scrollIntoView;
+      }
+    }
+  });
+
   it("renders a persistent, accessible attachment receipt inside a user message", () => {
     render(
       <GuidePanel
@@ -215,7 +385,7 @@ describe("learning page components", () => {
     expect(document.activeElement).toBe(screen.getByLabelText("向智能导学输入你的想法"));
   });
 
-  it("announces AI guide busy and error states to assistive technology", () => {
+  it("keeps AI guide busy controls and errors without the redundant visible status", () => {
     render(
       <GuidePanel
         addGuideFiles={vi.fn()}
@@ -244,11 +414,12 @@ describe("learning page components", () => {
       />,
     );
 
-    const status = screen.getByRole("status");
-    expect(status.textContent).toBe("智能导学处理中...");
-    expect(status.getAttribute("aria-live")).toBe("polite");
-    expect(status.getAttribute("aria-atomic")).toBe("true");
-    expect(status.closest("section")?.getAttribute("aria-busy")).toBe("true");
+    expect(screen.queryByText("智能导学处理中...")).toBeNull();
+    expect(screen.queryByRole("status")).toBeNull();
+    const guideInput = screen.getByLabelText("向智能导学输入你的想法") as HTMLInputElement;
+    expect(guideInput.closest('[aria-busy="true"]')).toBeTruthy();
+    expect(guideInput.closest("section")?.hasAttribute("aria-busy")).toBe(false);
+    expect(guideInput.disabled).toBe(true);
     expect(screen.getAllByRole("alert").map((alert) => alert.textContent)).toEqual([
       "文件未能读取。",
       "智能服务暂时不可用。",
@@ -258,6 +429,58 @@ describe("learning page components", () => {
     expect((screen.getByRole("button", { name: "上传文件" }) as HTMLButtonElement).disabled).toBe(true);
     expect((screen.getByRole("button", { name: "发送" }) as HTMLButtonElement).disabled).toBe(true);
     expect((screen.getByRole("button", { name: "移除 notes.pdf" }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("shows the transient thinking bubble only for the latest blank A2 reply", () => {
+    const renderGuidePanel = (
+      pendingGuideAgentId: "A1" | "A2" | null,
+      guideBusy: boolean,
+    ) => (
+      <GuidePanel
+        addGuideFiles={vi.fn()}
+        backendError=""
+        guideAttachmentBusy={false}
+        guideAttachmentError=""
+        guideAttachments={[]}
+        guideBusy={guideBusy}
+        guideDraft=""
+        guideError=""
+        guideFileInputRef={createRef<HTMLInputElement>()}
+        guideMessages={[
+          {
+            id: "user-professor",
+            kind: "user",
+            text: "@教授 请检查下一步",
+          },
+          {
+            id: "assistant-professor",
+            kind: "assistant",
+            text: "",
+          },
+        ]}
+        hasGuideSubmission={false}
+        onRemoveAttachment={vi.fn()}
+        pendingGuideAgentId={pendingGuideAgentId}
+        sendGuideMessage={vi.fn()}
+        setGuideDraft={vi.fn()}
+        setGuideError={vi.fn()}
+      />
+    );
+    const { rerender } = render(renderGuidePanel("A2", true));
+
+    const statusText = screen.getByText("教授正在思考");
+    const pendingMessage = statusText.closest('[data-guide-message-id="assistant-professor"]');
+    expect(pendingMessage).toBeTruthy();
+    expect(statusText.closest('[aria-live="polite"]')).toBeTruthy();
+    expect(screen.getByRole("img", { name: "教授大学教育风格头像" })).toBeTruthy();
+    expect(document.querySelectorAll('[data-guide-thinking-agent="A2"]')).toHaveLength(1);
+    expect(screen.queryByText("智能导学处理中...")).toBeNull();
+
+    rerender(renderGuidePanel("A1", true));
+    expect(screen.queryByText("教授正在思考")).toBeNull();
+
+    rerender(renderGuidePanel("A2", false));
+    expect(screen.queryByText("教授正在思考")).toBeNull();
   });
 
   it("announces guide attachment reading and blocks composer actions while files load", () => {
@@ -285,7 +508,10 @@ describe("learning page components", () => {
     expect(status.textContent).toBe("文件正在读取...");
     expect(status.getAttribute("aria-live")).toBe("polite");
     expect(status.getAttribute("aria-atomic")).toBe("true");
-    expect(status.closest("section")?.getAttribute("aria-busy")).toBe("true");
+    const guideInput = screen.getByLabelText("向智能导学输入你的想法") as HTMLInputElement;
+    expect(guideInput.closest('[aria-busy="true"]')).toBeTruthy();
+    expect(status.closest("section")?.hasAttribute("aria-busy")).toBe(false);
+    expect(guideInput.disabled).toBe(true);
     expect((screen.getByRole("button", { name: "上传文件" }) as HTMLButtonElement).disabled).toBe(true);
     expect((screen.getByRole("button", { name: "发送" }) as HTMLButtonElement).disabled).toBe(true);
     expect(screen.queryByRole("button", { name: "明确学习目标" })).toBeNull();

@@ -109,6 +109,45 @@ body {
   overflow-wrap: anywhere;
 }
 
+/* Tailwind normalizes heading typography to the surrounding text. Restore a
+   clear, editor-only hierarchy while keeping large document font sizes bounded. */
+.aais-document-editor :where(h1, h2, h3) {
+  display: block;
+  color: inherit;
+}
+
+.aais-document-editor h1 {
+  margin-block: 0.9em 0.45em;
+  font-size: clamp(1.75rem, 1.75em, 2.75rem);
+  font-weight: 700;
+  line-height: 1.2;
+  letter-spacing: -0.02em;
+}
+
+.aais-document-editor h2 {
+  margin-block: 0.8em 0.4em;
+  font-size: clamp(1.4rem, 1.45em, 2.25rem);
+  font-weight: 700;
+  line-height: 1.25;
+  letter-spacing: -0.015em;
+}
+
+.aais-document-editor h3 {
+  margin-block: 0.7em 0.35em;
+  font-size: clamp(1.15rem, 1.2em, 1.75rem);
+  font-weight: 650;
+  line-height: 1.3;
+  letter-spacing: -0.01em;
+}
+
+.aais-document-editor :where(h1, h2, h3):first-child {
+  margin-block-start: 0;
+}
+
+.aais-document-editor :where(h1, h2, h3):last-child {
+  margin-block-end: 0;
+}
+
 /* Tailwind's reset removes native list markers. Restore them only inside the
    rich editor, including simple nested levels created by Tab or pasted HTML. */
 .aais-document-editor :where(ul, ol) {
@@ -218,6 +257,47 @@ textarea {
   color: var(--foreground);
 }
 
+@keyframes aais-guide-thinking-enter {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes aais-guide-thinking-dot {
+  0%,
+  100% {
+    opacity: 0.35;
+    transform: translateY(0);
+  }
+
+  50% {
+    opacity: 1;
+    transform: translateY(-2px);
+  }
+}
+
+.aais-guide-thinking-bubble {
+  animation: aais-guide-thinking-enter 180ms ease-out both;
+}
+
+.aais-guide-thinking-dot {
+  animation: aais-guide-thinking-dot 1.05s ease-in-out infinite;
+}
+
+.aais-guide-thinking-dot:nth-child(2) {
+  animation-delay: 140ms;
+}
+
+.aais-guide-thinking-dot:nth-child(3) {
+  animation-delay: 280ms;
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
@@ -226,5 +306,12 @@ textarea {
     transition-duration: 0.01ms !important;
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
+  }
+
+  .aais-guide-thinking-bubble,
+  .aais-guide-thinking-dot {
+    animation: none !important;
+    opacity: 1 !important;
+    transform: none !important;
   }
 }

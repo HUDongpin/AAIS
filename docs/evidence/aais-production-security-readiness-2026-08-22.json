@@ -1,0 +1,190 @@
+{
+  "schemaVersion": 1,
+  "evidenceId": "aais-production-security-readiness-20260822-v1",
+  "observedAt": "2026-08-21T16:37:09.000Z",
+  "status": "blocked",
+  "source": {
+    "gitCommitSha": "306057dc410a4f0ee06356026f1d5e21acf0f411",
+    "branch": "codex/aais-learning-system-release",
+    "pullRequest": 57,
+    "pullRequestDraft": true,
+    "ciVerifyConclusion": "success",
+    "vercelPreviewConclusion": "success",
+    "exactShaPreview": {
+      "deploymentId": "dpl_5PfHGKtjQxrgrBWJPK6X3kqn95r3",
+      "immutableUrl": "https://aais-hd8swupow-peter-dongpin-hu-s-projects.vercel.app",
+      "environment": "Preview",
+      "status": "Ready",
+      "fullGitCommitSha": "306057dc410a4f0ee06356026f1d5e21acf0f411",
+      "branch": "codex/aais-learning-system-release",
+      "stagedProductionRequirementSatisfied": false,
+      "configGenerationVerified": false,
+      "protectedReadinessVerified": false,
+      "readinessTransportObservation": "connection-closed-or-timeout-without-release-bearers"
+    }
+  },
+  "scope": {
+    "vercelProject": "aais",
+    "vercelEnvironment": "production",
+    "githubEnvironment": "production-ai-release",
+    "productionDatabaseTouched": false,
+    "unrelatedProjectsMutated": false,
+    "credentialValuesRecorded": false
+  },
+  "vercelSecurity": {
+    "sensitiveEnvironmentVariablePolicy": {
+      "status": "enabled",
+      "passes": true
+    },
+    "ipAddressVisibility": {
+      "vercelDashboard": "hidden",
+      "logDrains": "hidden",
+      "passes": true
+    },
+    "deploymentProtection": {
+      "standardProtection": "enabled",
+      "releaseBypassCreated": true,
+      "releaseBypassNote": "AAIS Production release verification",
+      "releaseBypassValueSha256": "1060a934dd70556663a929f447aa8ec4e289ea38231304d48c5dc45c38b75930",
+      "releaseBypassValueRecorded": false
+    }
+  },
+  "credentialStores": {
+    "githubProtectedEnvironment": {
+      "secretCountObserved": 18,
+      "requiredReviewEnvironment": "production-ai-release",
+      "releaseVerifierSecretsPresent": {
+        "readinessBearer": true,
+        "liveProbeBearer": true,
+        "deploymentProtectionBypass": true,
+        "auditSigningKeyId": true,
+        "auditSigningPrivateKey": true,
+        "vercelTeamId": true,
+        "vercelProjectId": true,
+        "learnerSessionCookie": false,
+        "learnerCsrfToken": false,
+        "syntheticActorFingerprint": false,
+        "vercelApiToken": false
+      }
+    },
+    "vercelProduction": {
+      "sensitivePolicyEnforced": true,
+      "runtimeSecretNamesObserved": [
+        "AAIS_AI_API_KEY",
+        "AAIS_AI_FALLBACK_API_KEY",
+        "AAIS_DATABASE_URL",
+        "AAIS_SESSION_SECRET",
+        "AAIS_PRODUCT_PSEUDONYM_SECRET",
+        "CRON_SECRET",
+        "AAIS_AUTH_EMAIL_OUTBOX_FLUSH_TOKEN",
+        "AAIS_LRS_OUTBOX_FLUSH_TOKEN",
+        "AAIS_READINESS_BEARER_TOKEN",
+        "AAIS_AI_LIVE_PROBE_BEARER_TOKEN"
+      ],
+      "runtimeSecretValuesReadableAfterSave": false,
+      "runtimeSecretValuesRecorded": false
+    }
+  },
+  "neonTarget": {
+    "resourceName": "aais-ai-release-staging-20260821",
+    "vercelStoreId": "store_fXwj4HTkNYOt7C0m",
+    "neonProjectId": "bitter-boat-08517020",
+    "neonBranchId": "br-plain-salad-b3a6u3tj",
+    "region": "aws-ap-southeast-1",
+    "productionEnvironmentConnected": false,
+    "productionDatabaseTouched": false,
+    "credentialRotatedAfterDisplayExposure": true,
+    "currentConnectionStringSha256": "8bece369d7b7b5e352ea9bffe9c566cb98237e6bb8147caab7b508f03db06839",
+    "connectionStringRecorded": false,
+    "migration0028Evidence": "docs/evidence/aais-neon-staging-2026-08-21.json",
+    "localTcpReverification": {
+      "status": "blocked",
+      "reason": "connection-timeout",
+      "credentialRejectionObserved": false
+    }
+  },
+  "providerAndDeliveryChecks": {
+    "qwen": {
+      "credentialSourcesAgree": true,
+      "exactObservedRevisionAvailable": false,
+      "formalManifestStatus": "blocked",
+      "currentBlockedEvidence": "docs/evidence/aais-ai-eval-qwen3.8-max-blocked-2026-08-22.json",
+      "currentBlockedEvidenceSha256": "cab92fd9bc2832131e2461126871ff362c98591deaf9893d990be066ca05294a"
+    },
+    "deepseek": {
+      "formalManifestStatus": "signed",
+      "ownerApprovalStatus": "owner-approved-with-explicit-risk-acceptance",
+      "bilateralDpaObserved": false
+    },
+    "resend": {
+      "credentialApiCheckHttpStatus": 401,
+      "credentialUsable": false,
+      "verifiedSendingDomainObserved": false,
+      "authDeliveryStatus": "blocked",
+      "githubOauthAuthorizationPending": true,
+      "productionRuntimeObservation": {
+        "route": "/api/auth/email-outbox/flush",
+        "httpStatus": 503,
+        "recurrence": "approximately-every-five-minutes",
+        "rawResponseRecorded": false
+      }
+    }
+  },
+  "observability": {
+    "vercelTeamPlan": "Pro",
+    "vercelObservabilityPlusStatus": "included",
+    "vercelStructuredLogRetentionDays": 30,
+    "vercelLogQueryWindowMaximumDays": 14,
+    "requiredRetentionDays": 30,
+    "vercelRetentionPasses": true,
+    "vercelConsoleEvidence": {
+      "billingObservation": "Observability Plus - Included",
+      "aaisLogsOperational": true,
+      "aaisObservabilityOperational": true,
+      "maximumQueryRangeObserved": "Last 2 weeks",
+      "observation": "The 14-day value is the maximum consecutive query window, not the retention period."
+    },
+    "officialRetentionSource": "https://vercel.com/docs/logs/runtime",
+    "structuredLogPrivacyObservation": {
+      "status": "partial-pass",
+      "sampledRoute": "/api/learning/lrs/outbox/flush",
+      "structuredAuditMetadataRedacted": true,
+      "learnerIdentityObserved": false,
+      "promptOrModelOutputObserved": false,
+      "credentialObserved": false,
+      "scopeLimitation": "This console observation is not the required Sentry privacy canary."
+    },
+    "sentry": {
+      "requiredRegion": "DE",
+      "ownerApprovedDpaVersion": "5.1.0",
+      "electronicallyAccepted": false,
+      "organizationObserved": false,
+      "projectObserved": false,
+      "dsnConfigured": false,
+      "retentionDaysVerified": false,
+      "accessControlVerified": false,
+      "alertRulesVerified": false,
+      "privacyCanaryStatus": "not-run",
+      "githubOauthAuthorizationPending": true
+    }
+  },
+  "releaseDecision": {
+    "passes": false,
+    "blockingReasons": [
+      "Qwen qwen3.8-max does not expose the required exact observed revision.",
+      "Resend rejected the locally approved API key with HTTP 401, so Production auth delivery is not configured.",
+      "Sentry GitHub OAuth access is not authorized; DE region, DPA acceptance, DSN, retention, access control, alerts, and privacy canary remain unverified.",
+      "The protected GitHub Environment is still missing the learner session cookie, learner CSRF token, synthetic actor fingerprint, and Vercel API token.",
+      "No immutable staged Production deployment, protected readiness pass, live probes, learner canaries, or external signed audit receipt exists yet."
+    ]
+  },
+  "redaction": {
+    "providerCredentials": "omitted",
+    "databaseConnectionString": "omitted",
+    "cookiesAndCsrfTokens": "omitted",
+    "environmentVariableValues": "omitted",
+    "accountIdentifiers": "omitted",
+    "ipAddresses": "omitted",
+    "secrets": "omitted"
+  }
+}

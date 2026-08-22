@@ -414,7 +414,7 @@ AAIS keeps the guide usable without a live provider: deterministic fallback repl
 
 Runtime controls:
 
-- `AAIS_AI_DAILY_GUIDE_LIMIT` caps guide requests per student per day; default is 40 and the route returns 429 when the cap is reached.
+- `AAIS_AI_DAILY_GUIDE_LIMIT` caps guide requests per student per day; the default and maximum are 1,000, lower positive values may be configured, and the route returns 429 when the cap is reached.
 - `AAIS_AI_MAX_RETRIES` defaults to 1, so live provider calls get at most one retry before fallback.
 - Live provider responses are capped at 600 output tokens in the provider request.
 - Production live AI still requires `AAIS_AI_EVAL_APPROVED=true` and `AAIS_AI_EVAL_VERSION` to avoid unapproved provider behavior.

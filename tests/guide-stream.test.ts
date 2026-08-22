@@ -1,7 +1,61 @@
 import { describe, expect, it, vi } from "vitest";
-import { readGuideStreamResponse } from "@/components/pages/learning/guide-stream";
+import {
+  getGuideDailyBudgetExceededDetails,
+  readGuideStreamResponse,
+  validateGuideResponse,
+} from "@/components/pages/learning/guide-stream";
 
 describe("guide stream visualization transport", () => {
+  it("preserves daily-budget metadata from a 429 guide response", () => {
+    const response = Response.json({}, { status: 429 });
+    const body = {
+      error: {
+        code: "AAIS_GUIDE_DAILY_BUDGET_EXCEEDED",
+        message: "AAIS daily guide request budget has been reached.",
+      },
+      budget: {
+        limit: 1_000,
+        used: 1_000,
+        remaining: 0,
+        resetsAt: "2026-08-23T00:00:00.000Z",
+      },
+    };
+
+    let requestError: unknown;
+    try {
+      validateGuideResponse(response, body);
+    } catch (error) {
+      requestError = error;
+    }
+
+    expect(getGuideDailyBudgetExceededDetails(requestError)).toEqual({
+      limit: 1_000,
+      resetsAt: "2026-08-23T00:00:00.000Z",
+    });
+  });
+
+  it("does not classify an unrelated 429 as the daily guide budget", () => {
+    const response = Response.json({}, { status: 429 });
+
+    expect(() => validateGuideResponse(response, {
+      error: {
+        code: "AAIS_RATE_LIMITED",
+        message: "Try again later.",
+      },
+    })).toThrow("Try again later.");
+
+    try {
+      validateGuideResponse(response, {
+        error: {
+          code: "AAIS_RATE_LIMITED",
+          message: "Try again later.",
+        },
+      });
+    } catch (error) {
+      expect(getGuideDailyBudgetExceededDetails(error)).toBeNull();
+    }
+  });
+
   it("keeps a validated function graph attached to its streamed agent turn", async () => {
     const encoder = new TextEncoder();
     const visualization = {

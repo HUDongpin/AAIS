@@ -155,8 +155,7 @@ function LearningWorkbenchState({
     guideDraft,
     guideError,
     guideFileInputRef,
-    guideMessages,
-    hasGuideSubmission,
+    guideMessages, hasGuideSubmission, pendingGuideAgentId,
     removeGuideAttachment,
     resetGuideState,
     sendGuideMessage,
@@ -444,6 +443,7 @@ function LearningWorkbenchState({
             hasGuideSubmission={hasGuideSubmission}
             locale={locale}
             onRemoveAttachment={removeGuideAttachment}
+            pendingGuideAgentId={pendingGuideAgentId}
             sendGuideMessage={sendGuideMessage}
             setGuideDraft={setGuideDraft}
             setGuideError={setGuideError}

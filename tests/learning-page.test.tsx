@@ -6,6 +6,7 @@ import {
   type LearningPageActor,
   type LearningPageResearchBoundary,
 } from "@/components/pages/learning-page";
+import { useLearningGuide } from "@/components/pages/learning/use-learning-guide";
 import type {
   AaisResearchLogoutContext,
   AaisResearchTelemetryBoundaryState,
@@ -30,6 +31,30 @@ function LearningPage({
   research?: LearningPageResearchBoundary;
 }) {
   return <LearningPageComponent actor={actor} locale={locale} research={research} />;
+}
+
+function LearningGuideResetHarness() {
+  const guide = useLearningGuide({
+    activeTaskId: "training_task_1",
+    artifactText: "",
+    displayName: "Bobie",
+    locale: "zh-CN",
+    studentId: "S001",
+    waitForLearnerDataGeneration: () => 1,
+  });
+
+  return (
+    <div>
+      <output data-testid="pending-guide-agent">{guide.pendingGuideAgentId ?? "none"}</output>
+      <output data-testid="guide-error">{guide.guideError}</output>
+      <button type="button" onClick={() => { void guide.submitGuideQuestion("@教授 请检查下一步"); }}>
+        Start Professor request
+      </button>
+      <button type="button" onClick={guide.resetGuideState}>
+        Reset guide
+      </button>
+    </div>
+  );
 }
 
 const routerMocks = vi.hoisted(() => ({
@@ -128,6 +153,23 @@ describe("AAIS LearningPage", () => {
     expect(globalCss).toMatch(/\.aais-document-editor img\s*\{[\s\S]*?max-width:\s*100%;/);
     expect(globalCss).toMatch(/\.aais-document-editor img\s*\{[\s\S]*?user-select:\s*none;/);
     expect(globalCss).toMatch(/\.aais-document-editor u\s*\{[\s\S]*?text-decoration-thickness:\s*1px;/);
+  });
+
+  it("keeps the Professor indicator motion subtle and static under reduced motion", () => {
+    const globalCss = readFileSync("src/app/globals.css", "utf8");
+
+    expect(globalCss).toMatch(
+      /@keyframes aais-guide-thinking-enter[\s\S]*?opacity:\s*0;[\s\S]*?translateY\(4px\)[\s\S]*?opacity:\s*1;[\s\S]*?translateY\(0\)/,
+    );
+    expect(globalCss).toMatch(
+      /\.aais-guide-thinking-bubble\s*\{[\s\S]*?180ms ease-out/,
+    );
+    expect(globalCss).toMatch(
+      /\.aais-guide-thinking-dot\s*\{[\s\S]*?1\.05s ease-in-out infinite/,
+    );
+    expect(globalCss).toMatch(
+      /@media \(prefers-reduced-motion: reduce\)[\s\S]*?\.aais-guide-thinking-bubble,[\s\S]*?\.aais-guide-thinking-dot[\s\S]*?animation:\s*none !important;[\s\S]*?opacity:\s*1 !important;/,
+    );
   });
 
   it("renders the simplified CAAIS learning shell with the content display menu", () => {
@@ -1434,7 +1476,7 @@ describe("AAIS LearningPage", () => {
     expect(a2Avatar.querySelector('[data-avatar-part="expert-spark"]')).toBeNull();
   });
 
-  it("shows streamed guide progress before the final agent answer", async () => {
+  it("keeps processing-only stream events hidden until the final agent answer", async () => {
     setCsrfCookie();
     const encoder = new TextEncoder();
     let streamController: ReadableStreamDefaultController<Uint8Array> | null = null;
@@ -1481,7 +1523,12 @@ describe("AAIS LearningPage", () => {
 
     submitGuidePrompt("请帮我明确这个学习任务的目标，并拆成下一步。");
 
-    expect(await screen.findByText("小张正在处理你的问题...")).toBeTruthy();
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(screen.queryByText("小张正在处理你的问题...")).toBeNull();
+    expect(screen.queryByText("CAAIS 已收到，多智能体链路正在处理。")).toBeNull();
 
     await act(async () => {
       streamController?.enqueue(encoder.encode(
@@ -1498,6 +1545,81 @@ describe("AAIS LearningPage", () => {
 
     expect(await screen.findByText("小张已给出分步支架。")).toBeTruthy();
     expect(screen.getByText("离线支架模式")).toBeTruthy();
+  });
+
+  it("keeps one Professor thinking bubble through hidden SSE progress and replaces it in place", async () => {
+    setCsrfCookie();
+    const encoder = new TextEncoder();
+    let streamController: ReadableStreamDefaultController<Uint8Array> | null = null;
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        streamController = controller;
+        controller.enqueue(encoder.encode(
+          'event: ack\ndata: {"status":"accepted","graphId":"learning-ai-guide"}\n\n',
+        ));
+        controller.enqueue(encoder.encode(
+          'event: agent_start\ndata: {"agentId":"A2"}\n\n',
+        ));
+        controller.enqueue(encoder.encode(
+          'event: heartbeat\ndata: {"status":"alive"}\n\n',
+        ));
+      },
+    });
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.startsWith("/api/learning/session") && (!init || init.method === "GET")) {
+        return Response.json({
+          session: {
+            dataGeneration: 1,
+            studentId: "S001",
+            activeStage: "training",
+            activeTaskId: "training_task_1",
+            tasks: [],
+            guideMessages: [],
+            events: [],
+          },
+        });
+      }
+      if (url === "/api/learning/ai-guide" && init?.method === "POST") {
+        return new Response(stream, {
+          status: 200,
+          headers: {
+            "content-type": "text/event-stream;charset=utf-8",
+          },
+        });
+      }
+      return Response.json({ ok: true });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<LearningPage />);
+    submitGuidePrompt("@Professor 请检查我的下一步。");
+
+    const thinkingText = await screen.findByText("教授正在思考");
+    const pendingMessage = thinkingText.closest("[data-guide-message-id]");
+    const pendingMessageId = pendingMessage?.getAttribute("data-guide-message-id");
+    expect(pendingMessageId).toBeTruthy();
+    expect(document.querySelectorAll('[data-guide-thinking-agent="A2"]')).toHaveLength(1);
+    expect(screen.getByRole("img", { name: "教授大学教育风格头像" })).toBeTruthy();
+    expect(screen.queryByText("教授正在处理你的问题...")).toBeNull();
+    expect(screen.queryByText("CAAIS 已收到，多智能体链路正在处理。")).toBeNull();
+    expect((screen.getByLabelText("向智能导学输入你的想法") as HTMLInputElement).disabled).toBe(true);
+
+    await act(async () => {
+      streamController?.enqueue(encoder.encode(
+        'event: agent_delta\ndata: {"agentId":"A2","content":"教授已完成下一步检查。"}\n\n',
+      ));
+      streamController?.enqueue(encoder.encode(
+        'event: done\ndata: {"status":"completed"}\n\n',
+      ));
+      streamController?.close();
+    });
+
+    const finalText = await screen.findByText("教授已完成下一步检查。");
+    expect(screen.queryByText("教授正在思考")).toBeNull();
+    expect(finalText.closest("[data-guide-message-id]")?.getAttribute("data-guide-message-id"))
+      .toBe(pendingMessageId);
+    expect((screen.getByLabelText("向智能导学输入你的想法") as HTMLInputElement).disabled).toBe(false);
   });
 
   it("does not open the file picker when admission is rejected and exposes no quick starts", () => {
@@ -1928,7 +2050,50 @@ describe("AAIS LearningPage", () => {
     expect(screen.queryByText("教授")).toBeNull();
   });
 
-  it("shows the CAAIS pending acknowledgement while the guide request is running", async () => {
+  it.each([
+    "教授 请帮我看看下一步",
+    "Professor please help with the next step",
+  ])("keeps bare Professor wording on A1 without showing the A2 indicator: %s", async (prompt) => {
+    setCsrfCookie();
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.startsWith("/api/learning/session") && (!init || init.method === "GET")) {
+        return Promise.resolve(Response.json({
+          session: {
+            dataGeneration: 1,
+            studentId: "S001",
+            activeStage: "training",
+            activeTaskId: "training_task_1",
+            tasks: [],
+            guideMessages: [],
+            events: [],
+          },
+        }));
+      }
+      if (url === "/api/learning/ai-guide" && init?.method === "POST") {
+        return new Promise<Response>(() => undefined);
+      }
+      return Promise.resolve(Response.json({ ok: true }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<LearningPage />);
+    submitGuidePrompt(prompt);
+
+    await waitFor(() => {
+      const guideCall = fetchMock.mock.calls.find(([input, init]) =>
+        String(input) === "/api/learning/ai-guide" && init?.method === "POST"
+      );
+      expect(JSON.parse(String(guideCall?.[1]?.body))).toMatchObject({
+        learnerInput: prompt,
+        targetAgentIds: ["A1"],
+      });
+    });
+    expect(screen.queryByText("教授正在思考")).toBeNull();
+    expect(document.querySelector('[data-guide-thinking-agent="A2"]')).toBeNull();
+  });
+
+  it("keeps the pending guide acknowledgement out of the learner transcript", async () => {
     setCsrfCookie();
     const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
@@ -1956,8 +2121,67 @@ describe("AAIS LearningPage", () => {
 
     submitGuidePrompt("我卡住了，想要一个支架提示。");
 
-    expect(screen.getByText("CAAIS 已收到，多智能体链路正在处理。")).toBeTruthy();
+    expect(screen.queryByText("CAAIS 已收到，多智能体链路正在处理。")).toBeNull();
     expect(screen.queryByText("AAIS 已收到，多智能体链路正在处理。")).toBeNull();
+    expect(screen.queryByText("教授正在思考")).toBeNull();
+    expect(screen.getByText("我卡住了，想要一个支架提示。")).toBeTruthy();
+  });
+
+  it("clears the transient Professor target when the guide workspace resets", async () => {
+    setCsrfCookie();
+    let guideSignal: AbortSignal | undefined;
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) !== "/api/learning/ai-guide" || init?.method !== "POST") {
+        return Promise.resolve(Response.json({ ok: true }));
+      }
+      guideSignal = init.signal as AbortSignal;
+      return new Promise<Response>((_resolve, reject) => {
+        guideSignal?.addEventListener("abort", () => {
+          reject(Object.assign(new Error("guide request aborted"), { name: "AbortError" }));
+        });
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<LearningGuideResetHarness />);
+    fireEvent.click(screen.getByRole("button", { name: "Start Professor request" }));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("pending-guide-agent").textContent).toBe("A2");
+    });
+    expect(guideSignal?.aborted).toBe(false);
+
+    fireEvent.click(screen.getByRole("button", { name: "Reset guide" }));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("pending-guide-agent").textContent).toBe("none");
+    });
+    expect(guideSignal?.aborted).toBe(true);
+  });
+
+  it("clears the transient Professor target when the request fails", async () => {
+    setCsrfCookie();
+    const guideResponse = createDeferred<Response>();
+    vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === "/api/learning/ai-guide" && init?.method === "POST") {
+        return guideResponse.promise;
+      }
+      return Promise.resolve(Response.json({ ok: true }));
+    }));
+
+    render(<LearningGuideResetHarness />);
+    fireEvent.click(screen.getByRole("button", { name: "Start Professor request" }));
+    await waitFor(() => {
+      expect(screen.getByTestId("pending-guide-agent").textContent).toBe("A2");
+    });
+
+    guideResponse.reject(new Error("provider unavailable"));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("pending-guide-agent").textContent).toBe("none");
+      expect(screen.getByTestId("guide-error").textContent)
+        .toBe("智能服务暂时不可用，已保留你的问题。");
+    });
   });
 
   it("replaces a stalled guide request with an unavailable message and unlocks input", async () => {
@@ -1992,8 +2216,9 @@ describe("AAIS LearningPage", () => {
 
     render(<LearningPage />);
 
-    submitGuidePrompt("我卡住了，想要一个支架提示。");
-    expect(screen.getByText("CAAIS 已收到，多智能体链路正在处理。")).toBeTruthy();
+    submitGuidePrompt("@教授 请检查下一步。");
+    expect(screen.getByText("教授正在思考")).toBeTruthy();
+    expect(screen.queryByText("CAAIS 已收到，多智能体链路正在处理。")).toBeNull();
 
     await act(async () => {
       vi.advanceTimersByTime(30_001);
@@ -2002,8 +2227,57 @@ describe("AAIS LearningPage", () => {
     });
 
     expect(screen.queryByText("CAAIS 已收到，多智能体链路正在处理。")).toBeNull();
+    expect(screen.queryByText("教授正在思考")).toBeNull();
     expect(screen.getByText("智能服务暂时不可用，已保留你的问题。请稍后重试。")).toBeTruthy();
     expect((screen.getByRole("button", { name: "发送" }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("shows the exact daily allowance and reset time for a guide-budget 429", async () => {
+    setCsrfCookie();
+    const resetAt = "2026-08-23T00:00:00.000Z";
+    const expectedResetTime = new Intl.DateTimeFormat("zh-CN", {
+      dateStyle: "medium",
+      timeStyle: "short",
+    }).format(new Date(resetAt));
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.startsWith("/api/learning/session") && (!init || init.method === "GET")) {
+        return Response.json({ session: createClientSessionFixture("") });
+      }
+      if (url === "/api/learning/ai-guide" && init?.method === "POST") {
+        return Response.json({
+          error: {
+            code: "AAIS_GUIDE_DAILY_BUDGET_EXCEEDED",
+            message: "AAIS daily guide request budget has been reached.",
+          },
+          budget: {
+            limit: 1_000,
+            used: 1_000,
+            remaining: 0,
+            resetsAt: resetAt,
+          },
+        }, { status: 429 });
+      }
+      return Response.json({ ok: true });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<LearningPage />);
+    submitGuidePrompt("你好");
+
+    const quotaMessage = await screen.findByText(
+      `今天的智能导学额度已用完（每日 1000 次）。额度将于 ${expectedResetTime} 重置，请届时再试。`,
+    );
+    expect(quotaMessage).toBeTruthy();
+    expect(screen.getByText("你好")).toBeTruthy();
+    expect(screen.queryByText("智能服务暂时不可用，已保留你的问题。请稍后重试。")).toBeNull();
+    expect(screen.queryByText("智能服务暂时不可用，已保留你的问题。")).toBeNull();
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect((screen.getByRole("button", { name: "发送" }) as HTMLButtonElement).disabled).toBe(false);
+    expect(getLastResearchEvent("ai_guide_submit")).toMatchObject({
+      outcome: "failure",
+      detail: expect.objectContaining({ error_kind: "daily_budget_exceeded" }),
+    });
   });
 
   it("aborts the upstream fetch when an acknowledged guide stream stalls", async () => {
@@ -2238,7 +2512,10 @@ describe("AAIS LearningPage", () => {
     expect(status.textContent).toBe("文件正在读取...");
     expect(status.getAttribute("aria-live")).toBe("polite");
     expect(status.getAttribute("aria-atomic")).toBe("true");
-    expect(status.closest("section")?.getAttribute("aria-busy")).toBe("true");
+    const guideInput = screen.getByLabelText("向智能导学输入你的想法") as HTMLInputElement;
+    expect(guideInput.closest('[aria-busy="true"]')).toBeTruthy();
+    expect(status.closest("section")?.hasAttribute("aria-busy")).toBe(false);
+    expect(guideInput.disabled).toBe(true);
     expect((screen.getByRole("button", { name: "上传文件" }) as HTMLButtonElement).disabled).toBe(true);
     expect((screen.getByRole("button", { name: "发送" }) as HTMLButtonElement).disabled).toBe(true);
 
@@ -2247,6 +2524,7 @@ describe("AAIS LearningPage", () => {
 
     expect(await screen.findByText("delayed.md")).toBeTruthy();
     expect(screen.queryByText("文件正在读取...")).toBeNull();
+    expect(guideInput.disabled).toBe(false);
     expect((screen.getByRole("button", { name: "上传文件" }) as HTMLButtonElement).disabled).toBe(false);
     expect((screen.getByRole("button", { name: "发送" }) as HTMLButtonElement).disabled).toBe(false);
     const attachmentAttempt = telemetryMocks.admit.mock.calls
@@ -2461,10 +2739,6 @@ describe("AAIS LearningPage", () => {
     render(<LearningPage />);
 
     submitGuidePrompt("我卡住了，想要一个支架提示。");
-
-    const pendingAssistantLabel = screen.getByText("AI 助教");
-    expect(pendingAssistantLabel.className).toContain("text-sm");
-    expect(pendingAssistantLabel.className).not.toContain("text-[11px]");
 
     const learnerBubble = screen.getByText("我卡住了，想要一个支架提示。").closest("div");
     expect(learnerBubble?.className).toContain("text-[17px]");

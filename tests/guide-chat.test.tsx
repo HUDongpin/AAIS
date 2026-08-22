@@ -1,6 +1,33 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import { GuideBubble } from "@/components/pages/learning/guide-chat";
+import {
+  GuideBubble,
+  GuideThinkingBubble,
+} from "@/components/pages/learning/guide-chat";
+
+describe("GuideThinkingBubble", () => {
+  it.each([
+    ["zh-CN" as const, "教授正在思考", "教授大学教育风格头像"],
+    ["en-US" as const, "Professor is thinking", "Professor university-education avatar"],
+  ])("renders one accessible %s Professor status with decorative dots hidden", (
+    locale,
+    statusText,
+    avatarLabel,
+  ) => {
+    const { container } = render(<GuideThinkingBubble locale={locale} />);
+
+    expect(screen.getByText(statusText)).toBeTruthy();
+    expect(screen.getByRole("img", { name: avatarLabel })).toBeTruthy();
+    const indicator = container.querySelector('[data-guide-thinking-agent="A2"]');
+    const dots = indicator?.querySelectorAll(".aais-guide-thinking-dot");
+    const decorativeDotGroup = dots?.[0]?.parentElement;
+
+    expect(indicator?.className).toContain("aais-guide-thinking-bubble");
+    expect(dots).toHaveLength(3);
+    expect(decorativeDotGroup?.getAttribute("aria-hidden")).toBe("true");
+    expect(indicator?.textContent).toBe(statusText);
+  });
+});
 
 describe("GuideBubble safe rich-text output", () => {
   it("renders provider markdown headings instead of leaking heading markers", () => {
