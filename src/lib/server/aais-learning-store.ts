@@ -36,6 +36,10 @@ import {
   normalizeAaisGuideAttachmentMetadata,
   type AaisGuideAttachmentMetadata,
 } from "@/lib/ai/aais-guide-attachments";
+import {
+  normalizeAaisGuideVisualizations,
+  type AaisGuideVisualization,
+} from "@/lib/ai/aais-guide-function-scaffold";
 import { createAaisProductPseudonym } from "@/lib/server/aais-product-pseudonym";
 import { requiresAaisDurableStorage } from "@/lib/server/aais-runtime";
 
@@ -381,6 +385,7 @@ export type AaisGuideTurnRecord = {
   label: string;
   content: string;
   actions: string[];
+  visualizations?: AaisGuideVisualization[];
 };
 
 export type AaisHistoryDocumentRecord = {
@@ -6822,7 +6827,20 @@ function normalizeGuideCapacityReservations(
 function normalizeGuideMessageRecord(
   message: AaisGuideMessageRecord,
 ): AaisGuideMessageRecord {
-  const messageWithoutAttachments = { ...message };
+  const messageWithoutAttachments = {
+    ...message,
+    ...(message.turns
+      ? {
+          turns: message.turns.map((turn) => {
+            const visualizations = normalizeAaisGuideVisualizations(turn.visualizations);
+            return {
+              ...turn,
+              ...(visualizations.length ? { visualizations } : { visualizations: undefined }),
+            };
+          }),
+        }
+      : {}),
+  };
   delete messageWithoutAttachments.attachments;
   if (message.kind !== "user") {
     return messageWithoutAttachments;
@@ -6858,11 +6876,15 @@ function redactRestrictedResearchRawText(
       return {
         ...messageWithoutAttachments,
         text: "",
-        turns: message.turns?.map((turn) => ({
-          ...turn,
-          content: "",
-          actions: [],
-        })),
+        turns: message.turns?.map((turn) => {
+          const redactedTurn = { ...turn };
+          delete redactedTurn.visualizations;
+          return {
+            ...redactedTurn,
+            content: "",
+            actions: [],
+          };
+        }),
       };
     }),
   });

@@ -6,6 +6,7 @@ import type {
   Locale,
 } from "@/data/aais";
 import type { AaisGuideAttachment } from "@/lib/ai/aais-guide-attachments";
+import type { AaisFunctionScaffoldPlan } from "@/lib/ai/aais-guide-function-scaffold";
 import type { AaisGuideConversationMessage } from "@/lib/ai/orchestration/aais-learning-guide-graph";
 import {
   createDeterministicAaisAiRuntimeProfile,
@@ -50,6 +51,7 @@ export type AaisModelRequest = {
   taskId: string;
   learnerInput: string;
   conversationHistory?: AaisGuideConversationMessage[];
+  scaffoldPlan?: AaisFunctionScaffoldPlan;
   workspaceState: AaisProviderWorkspaceState;
   fallbackText: string;
   signal?: AbortSignal;
@@ -449,6 +451,14 @@ async function callOpenAiCompatibleProvider(
               taskId: request.taskId,
               learnerInput: request.learnerInput,
               conversationHistory: request.conversationHistory ?? [],
+              availableVisualization: request.scaffoldPlan
+                ? {
+                    type: request.scaffoldPlan.visualization.type,
+                    expression: request.scaffoldPlan.visualization.expression,
+                    mode: request.scaffoldPlan.mode,
+                    placement: "immediately-below-reply",
+                  }
+                : null,
               workspaceState: {
                 currentStep: request.workspaceState.currentStep,
                 artifactCharacters: request.workspaceState.artifactText?.length ?? 0,
@@ -625,6 +635,12 @@ function createAgentSystemPrompt(request: AaisModelRequest) {
     request.voice?.replyContract ? `Response contract: ${request.voice.replyContract}` : null,
     request.conversationHistory?.length
       ? "Use the bounded conversationHistory to resolve references to earlier learner goals, difficulties, and language preferences. Do not ask the learner to repeat information already present there."
+      : null,
+    "Capability truth: Never promise to draw, generate, or display a graph or image later. Only say a visual is shown when availableVisualization is present in the current request.",
+    request.scaffoldPlan
+      ? request.scaffoldPlan.mode === "demonstrate"
+        ? "A verified function graph will be rendered immediately below this reply. Show the worked substitution now, treat the graph as a scaffold, and do not ask the learner to retry before seeing it."
+        : "A verified function graph will be rendered immediately below this reply. Treat it as an immediate scaffold and never make viewing it conditional on a correct calculation."
       : null,
     request.voice?.maxSentences
       ? `Hard limit: at most ${request.voice.maxSentences} sentences.`

@@ -9,6 +9,7 @@ import {
   studentRuntimeMaxRetries,
 } from "@/lib/ai/aais-ai-runtime-config";
 import { aaisCognitiveApprenticeshipBackground } from "@/data/aais";
+import { createAaisFunctionScaffoldPlan } from "@/lib/ai/aais-guide-function-scaffold";
 import { getAaisAiEvalApproval } from "@/lib/server/aais-ai-eval-manifest";
 
 afterEach(() => {
@@ -1120,6 +1121,49 @@ describe("AAIS governed AI provider", () => {
           "agent-response-too-many-sentences",
         ]),
       },
+    });
+  });
+
+  it("tells the live model that a function graph is an immediate scaffold, not a reward", async () => {
+    const fetchMock = vi.fn<typeof fetch>(async () =>
+      Response.json({
+        choices: [{ message: { content: "图像已经显示在下面。" } }],
+      }),
+    );
+    const provider = createOpenAiCompatibleAaisProvider({
+      endpoint: "https://ai.example.test/v1/chat/completions",
+      apiKey: "secret-api-key",
+      model: "enterprise-model",
+      fetchImpl: fetchMock,
+      timeoutMs: 1000,
+      maxRetries: 0,
+    });
+    const scaffoldPlan = createAaisFunctionScaffoldPlan({
+      learnerInput: "给我看 y=2x^2+3x+4 的图像",
+    });
+
+    await provider.generate({
+      agentId: "A1",
+      label: "小张",
+      locale: "zh-CN",
+      phase: "training",
+      taskId: "training_task_1",
+      learnerInput: "给我看 y=2x^2+3x+4 的图像",
+      scaffoldPlan: scaffoldPlan!,
+      workspaceState: { currentStep: "guide" },
+      fallbackText: "图像已经显示在下面。",
+    });
+
+    const payload = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
+    const systemPrompt = payload.messages[0].content as string;
+    const userContext = JSON.parse(payload.messages[1].content);
+    expect(systemPrompt).toContain("never make viewing it conditional on a correct calculation");
+    expect(systemPrompt).toContain("Never promise to draw, generate, or display a graph or image later");
+    expect(userContext.availableVisualization).toEqual({
+      type: "quadratic-function",
+      expression: "y = 2x² + 3x + 4",
+      mode: "visualize",
+      placement: "immediately-below-reply",
     });
   });
 });

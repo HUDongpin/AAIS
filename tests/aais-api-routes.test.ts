@@ -1997,6 +1997,63 @@ describe("AAIS learning API routes", () => {
     expect(sessionBody.session.guideMessages[1].text).not.toContain("小张");
   });
 
+  it("returns and persists the verified function graph scaffold in JSON mode", async () => {
+    vi.stubEnv("AAIS_AI_PROVIDER", "");
+    vi.stubEnv("AAIS_AI_ENDPOINT", "");
+    vi.stubEnv("AAIS_AI_API_KEY", "");
+    vi.stubEnv("AAIS_AI_MODEL", "");
+    vi.stubEnv("AAIS_AI_FALLBACK_ENDPOINT", "");
+    vi.stubEnv("AAIS_AI_FALLBACK_API_KEY", "");
+    vi.stubEnv("AAIS_AI_FALLBACK_MODEL", "");
+    vi.resetModules();
+    const guideRoute = await import("@/app/api/learning/ai-guide/route");
+    const sessionRoute = await import("@/app/api/learning/session/route");
+    const cookie = createAuthedCookie("S001");
+    const csrf = createAaisCsrfToken("S001");
+    await initializeLearnerSession("S001", cookie, csrf);
+
+    const response = await guideRoute.POST(
+      new Request("http://localhost/api/learning/ai-guide", {
+        method: "POST",
+        headers: {
+          cookie,
+          "x-aais-csrf": csrf,
+        },
+        body: JSON.stringify({
+          dataGeneration: 1,
+          phase: "training",
+          taskId: "training_task_1",
+          learnerInput: "给我看 y = 2x² + 3x + 4 的图像",
+          workspaceState: { currentStep: "guide" },
+        }),
+      }),
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.turns[0]).toMatchObject({
+      agentId: "A1",
+      content: expect.stringContaining("计算不是看图的前置条件"),
+      visualizations: [{
+        type: "quadratic-function",
+        expression: "y = 2x² + 3x + 4",
+        vertex: { x: -0.75, y: 2.875 },
+      }],
+    });
+
+    const sessionResponse = await sessionRoute.GET(
+      new Request("http://localhost/api/learning/session", {
+        headers: { cookie },
+      }),
+    );
+    const sessionBody = await sessionResponse.json();
+    expect(sessionBody.session.guideMessages[1].turns[0].visualizations[0]).toMatchObject({
+      type: "quadratic-function",
+      coefficients: { a: 2, b: 3, c: 4 },
+      vertex: { x: -0.75, y: 2.875 },
+    });
+  });
+
   it("returns a timed provider fallback for targeted guide aborts without calling hidden agents live", async () => {
     vi.stubEnv("AAIS_AI_PROVIDER", "openai-compatible");
     vi.stubEnv("AAIS_AI_ENDPOINT", "https://ai.example.test/v1/chat/completions");

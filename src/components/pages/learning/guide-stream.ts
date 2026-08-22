@@ -4,6 +4,7 @@ import {
   getGuideAgentLabel,
 } from "@/components/pages/learning/learning-copy";
 import type { GuideTurn } from "@/components/pages/learning/learning-page-types";
+import { normalizeAaisGuideVisualizations } from "@/lib/ai/aais-guide-function-scaffold";
 import type { Locale } from "@/data/aais";
 
 export type GuideResponseBody = {
@@ -126,6 +127,7 @@ export async function readGuideStreamResponse(
         agentId,
         content,
         actions: ["respond"],
+        visualizations: normalizeAaisGuideVisualizations(streamEvent.data.visualizations),
       }, locale);
       emitProgress(getGuideStreamDoneText(locale));
       return;
@@ -249,6 +251,7 @@ function upsertGuideStreamTurn(
     agentId: string;
     content: string;
     actions: string[];
+    visualizations?: GuideTurn["visualizations"];
   },
   locale: Locale,
 ) {
@@ -257,6 +260,7 @@ function upsertGuideStreamTurn(
     label: readGuideStreamAgentLabel(input.agentId, locale),
     content: input.content,
     actions: input.actions,
+    ...(input.visualizations?.length ? { visualizations: input.visualizations } : {}),
   };
   const index = turns.findIndex((turn) => turn.agentId === input.agentId);
   if (index >= 0) {

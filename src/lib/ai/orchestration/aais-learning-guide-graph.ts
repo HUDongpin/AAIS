@@ -23,6 +23,15 @@ import {
   normalizeAaisGuideAttachments,
   type AaisGuideAttachment,
 } from "@/lib/ai/aais-guide-attachments";
+import {
+  createAaisFunctionScaffoldPlan,
+  createAaisFunctionScaffoldResponse,
+  createAaisUnsupportedFunctionGraphResponse,
+  hasAaisGraphIntent,
+  isAaisFunctionGraphRequest,
+  type AaisFunctionScaffoldPlan,
+  type AaisGuideVisualization,
+} from "@/lib/ai/aais-guide-function-scaffold";
 
 type AaisWorkspaceState = {
   currentStep: string;
@@ -41,6 +50,7 @@ export type AaisGuideTurn = {
   label: string;
   content: string;
   actions: string[];
+  visualizations?: AaisGuideVisualization[];
 };
 
 type AaisGuideProviderRun = AaisModelRuntime & {
@@ -69,6 +79,7 @@ export type AaisGuideInput = {
   targetAgentIds?: AaisGuideTargetAgentId[];
   workspaceState: AaisWorkspaceState;
   threadId?: string;
+  scaffoldPlan?: AaisFunctionScaffoldPlan;
 };
 
 type AaisGuideState = AaisGuideInput & {
@@ -125,12 +136,27 @@ export async function runAaisLearningGuideGraph(
     input.learnerInput,
     conversationHistory,
   );
+  const scaffoldPlan = createAaisFunctionScaffoldPlan({
+    learnerInput: input.learnerInput,
+    conversationHistory,
+  });
+  const unsupportedGraphRequest = !scaffoldPlan && (
+    isAaisFunctionGraphRequest(input.learnerInput)
+    || (
+      hasAaisGraphIntent(input.learnerInput)
+      && conversationHistory
+        .filter((message) => message.kind === "user")
+        .slice(-6)
+        .some((message) => isAaisFunctionGraphRequest(message.text))
+    )
+  );
   const boundedInput: AaisGuideInput = {
     ...input,
     locale: responseLocale,
     targetAgentIds: selectAaisGuideReplyAgentIds(input.learnerInput),
     ...(conversationHistory.length ? { conversationHistory } : { conversationHistory: undefined }),
     workspaceState: normalizeAaisGuideWorkspaceState(input.workspaceState),
+    ...(scaffoldPlan ? { scaffoldPlan } : { scaffoldPlan: undefined }),
   };
   const modelProvider = options.modelProvider ?? createConfiguredAaisModelProvider();
   const backgroundProvider = createDeterministicAaisProvider();
@@ -158,7 +184,13 @@ export async function runAaisLearningGuideGraph(
   options.signal?.throwIfAborted();
   const totalMs = Math.round(nowMs() - startedAt);
   const allRuns = sortAgentRuns(graphOutput.runs);
-  const turns = allRuns.flatMap((run) => run.turns);
+  const turns = applyAaisFunctionScaffold(
+    allRuns.flatMap((run) => run.turns),
+    boundedInput.scaffoldPlan,
+    unsupportedGraphRequest,
+    targetAgentIds,
+    boundedInput.locale,
+  );
   const providerRuns = allRuns.flatMap((run) => run.providerRuns);
   const agentTimings = allRuns.flatMap((run) => run.timings);
   const visibleTurns = turns.filter((turn) =>
@@ -297,6 +329,7 @@ async function createAgentTurn(
       learnerInput: state.learnerInput,
       conversationHistory: state.conversationHistory,
       workspaceState: state.workspaceState,
+      scaffoldPlan: state.scaffoldPlan,
       fallbackText,
       signal,
     });
@@ -532,6 +565,38 @@ function createAgentActions(agentId: AaisAgentId, phase: AaisPhase) {
     return ["monitor", "signal-a1"];
   }
   return ["articulate", "reflect", "compare"];
+}
+
+function applyAaisFunctionScaffold(
+  turns: AaisGuideTurn[],
+  plan: AaisFunctionScaffoldPlan | undefined,
+  unsupportedGraphRequest: boolean,
+  targetAgentIds: AaisGuideTargetAgentId[],
+  locale: Locale,
+) {
+  if (!plan && !unsupportedGraphRequest) {
+    return turns;
+  }
+  const targetAgentId = targetAgentIds[0];
+  let applied = false;
+  return turns.map((turn) => {
+    if (applied || turn.agentId !== targetAgentId) {
+      return turn;
+    }
+    applied = true;
+    return {
+      ...turn,
+      content: plan
+        ? createAaisFunctionScaffoldResponse(plan, locale)
+        : createAaisUnsupportedFunctionGraphResponse(locale),
+      actions: [...new Set([
+        ...turn.actions,
+        ...(plan ? ["show-function-graph"] : ["function-graph-unavailable"]),
+        ...(plan?.mode === "demonstrate" ? ["worked-example"] : []),
+      ])],
+      ...(plan ? { visualizations: [plan.visualization] } : { visualizations: undefined }),
+    };
+  });
 }
 
 function formatMessage(locale: Locale, turns: AaisGuideTurn[]) {
