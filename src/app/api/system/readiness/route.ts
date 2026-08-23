@@ -2,6 +2,7 @@ import { timingSafeEqual } from "node:crypto";
 import { NextResponse } from "next/server";
 import { createAaisApiErrorResponse } from "@/lib/server/aais-api-error";
 import { getAaisReadinessReport } from "@/lib/server/aais-readiness";
+import { recordAaisReadinessOutcome } from "@/lib/server/aais-readiness-observability";
 import { requireAaisSessionActor } from "@/lib/server/aais-request-auth";
 import { isAaisStrongOpaqueSecret } from "@/lib/server/aais-opaque-secret";
 
@@ -78,7 +79,16 @@ async function getPublicReadinessStatus() {
   }
   if (!publicReadinessInFlight) {
     publicReadinessInFlight = getReadinessReportWithinDeadline()
-      .then((report) => report.status)
+      .then((report) => {
+        recordAaisReadinessOutcome({
+          status: report.status,
+          readinessMode: report.readinessMode === "enterprise" ? "enterprise" : "traffic",
+          issues: Array.isArray(report.issues) ? report.issues : [],
+          warnings: Array.isArray(report.warnings) ? report.warnings : [],
+          releaseGitCommitShortSha: report.release?.deployment?.gitCommit?.shortSha ?? null,
+        });
+        return report.status;
+      })
       .catch(() => "not_ready" as const)
       .then((status) => {
         publicReadinessCache = {
