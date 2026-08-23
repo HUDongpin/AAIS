@@ -32,6 +32,8 @@
     "verify:postgres-restore": "node -- scripts/verify-postgres-restore.mjs",
     "hygiene:check": "node -- scripts/check-repo-hygiene.mjs",
     "smoke:prod": "node -- scripts/smoke-prod.mjs",
+    "release:evaluate-ai": "tsx scripts/run-aais-ai-formal-eval.ts",
+    "release:sign-ai-manifest": "node -- scripts/sign-aais-ai-eval-manifest.mjs",
     "load:staging": "node -- scripts/run-staging-load-sanity.mjs"
   },
   "dependencies": {
@@ -65,6 +67,7 @@
     "eslint-config-next": "16.3.0",
     "jsdom": "^29.1.1",
     "tailwindcss": "^4",
+    "tsx": "4.23.12",
     "typescript": "^5",
     "vitest": "^4.1.11"
   },

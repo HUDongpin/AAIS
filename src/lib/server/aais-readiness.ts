@@ -301,12 +301,29 @@ export async function getAaisReadinessReport(now = new Date()): Promise<AaisRead
     required: production && aiProvider === "openai-compatible",
     provider: aiProvider,
     model: aiModel,
+    runtime: aiRuntimeConfig.primary
+      ? {
+          endpoint: aiRuntimeConfig.primary.endpoint,
+          thinkingMode: aiRuntimeConfig.primary.profile.thinkingMode,
+          maxTokens: aiRuntimeConfig.primary.maxTokens,
+          maxRetries: aiRuntimeConfig.primary.maxRetries,
+        }
+      : null,
   });
   const aiFallbackEvalApproval = aiFallbackModel
     ? getAaisAiEvalApproval({
         required: production && aiProvider === "openai-compatible",
         provider: aiProvider,
         model: aiFallbackModel,
+        providerRole: "fallback",
+        runtime: aiRuntimeConfig.fallback
+          ? {
+              endpoint: aiRuntimeConfig.fallback.endpoint,
+              thinkingMode: aiRuntimeConfig.fallback.profile.thinkingMode,
+              maxTokens: aiRuntimeConfig.fallback.maxTokens,
+              maxRetries: aiRuntimeConfig.fallback.maxRetries,
+            }
+          : null,
       })
     : null;
   const aiEvalVersion = aiEvalApproval.evalVersion;

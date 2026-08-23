@@ -7,6 +7,13 @@ import type {
 } from "@/data/aais";
 import type { AaisGuideAttachment } from "@/lib/ai/aais-guide-attachments";
 import type { AaisFunctionScaffoldPlan } from "@/lib/ai/aais-guide-function-scaffold";
+import {
+  aaisAiGuardrailPolicy,
+  createAaisAgentProviderMessages,
+  evaluateAaisModelOutput,
+  getAaisAiObservedSnapshotSha256,
+  isAaisImmutableQwenSnapshotModel,
+} from "@/lib/ai/aais-ai-source-contract";
 import type { AaisGuideConversationMessage } from "@/lib/ai/orchestration/aais-learning-guide-graph";
 import {
   createDeterministicAaisAiRuntimeProfile,
@@ -71,6 +78,11 @@ export type AaisModelRuntime = {
     secrets: "omitted";
     prompt: "summarized";
   };
+  observation?: {
+    model: "matched";
+    kind: "exact-provider-model-id";
+    snapshotSha256: string;
+  };
   providerChain?: {
     selected: "primary" | "fallback" | "deterministic";
     fallbackUsed: boolean;
@@ -91,7 +103,7 @@ export type AaisModelProvider = {
   generate(request: AaisModelRequest): Promise<AaisModelResponse>;
 };
 
-type OpenAiCompatibleProviderInput = {
+export type OpenAiCompatibleProviderInput = {
   endpoint: string;
   apiKey: string;
   model: string;
@@ -102,6 +114,7 @@ type OpenAiCompatibleProviderInput = {
   maxRetries?: number;
   maxTokens?: number;
   runtimeProfile?: AaisAiRuntimeProfile;
+  requireObservedModel?: boolean;
 };
 
 type OpenAiCompatibleProviderCandidate = OpenAiCompatibleProviderInput & {
@@ -119,6 +132,8 @@ type AaisProviderFailureReason =
   | "connect-timeout"
   | "empty-response"
   | "http-status"
+  | "model-mismatch"
+  | "model-missing"
   | "truncated-response"
   | "provider-error";
 
@@ -148,7 +163,7 @@ const redaction = {
   prompt: "summarized",
 } as const;
 
-const guardrailPolicy = "aais-age-appropriate-output-v1" as const;
+const guardrailPolicy = aaisAiGuardrailPolicy;
 export const AAIS_AI_PROVIDER_RESPONSE_MAX_BYTES = 256 * 1024;
 
 export function createConfiguredAaisModelProvider(): AaisModelProvider {
@@ -157,9 +172,9 @@ export function createConfiguredAaisModelProvider(): AaisModelProvider {
     || runtimeConfig.configurationStatus.fallback === "invalid") {
     return createDeterministicAaisProvider();
   }
-  if (runtimeConfig.primary && isLiveProviderApprovedForRuntime(runtimeConfig.primary.model)) {
+  if (runtimeConfig.primary && isLiveProviderApprovedForRuntime(runtimeConfig.primary)) {
     const fallbackApproved = runtimeConfig.fallback
-      ? isLiveProviderApprovedForRuntime(runtimeConfig.fallback.model)
+      ? isLiveProviderApprovedForRuntime(runtimeConfig.fallback)
       : false;
     const runtimeProfile = runtimeConfig.fallback && !fallbackApproved
       ? {
@@ -325,9 +340,9 @@ async function generateWithOpenAiCompatibleCandidate(
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     throwIfAaisRequestAborted(request);
     try {
-      const text = await callOpenAiCompatibleProvider(input, request);
+      const providerResponse = await callOpenAiCompatibleProvider(input, request);
       throwIfAaisRequestAborted(request);
-      const guardrail = evaluateAaisModelOutput(text, request);
+      const guardrail = evaluateAaisModelOutput(providerResponse.text, request);
       if (guardrail.status === "blocked") {
         return {
           ok: true,
@@ -339,13 +354,14 @@ async function generateWithOpenAiCompatibleCandidate(
             status: "fallback",
             guardrail,
             redaction,
+            observation: providerResponse.observation,
             runtimeProfile: input.runtimeProfile,
           },
         };
       }
       return {
         ok: true,
-        text,
+        text: providerResponse.text,
         runtime: {
           provider: "openai-compatible",
           model: input.model,
@@ -353,6 +369,7 @@ async function generateWithOpenAiCompatibleCandidate(
           status: "ok",
           guardrail,
           redaction,
+          observation: providerResponse.observation,
           runtimeProfile: input.runtimeProfile,
         },
       };
@@ -431,48 +448,7 @@ async function callOpenAiCompatibleProvider(
         temperature: 0.2,
         max_tokens: resolveAgentMaxOutputTokens(input.maxTokens, request),
         ...createThinkingModePayload(input),
-        messages: [
-          {
-            role: "system",
-            content: createAgentSystemPrompt(request),
-          },
-          {
-            role: "user",
-            content: JSON.stringify({
-              agentId: request.agentId,
-              label: request.label,
-              role: request.role,
-              mission: request.mission,
-              voice: request.voice,
-              caModules: request.caModules,
-              caBackground: request.caBackground,
-              locale: request.locale,
-              phase: request.phase,
-              taskId: request.taskId,
-              learnerInput: request.learnerInput,
-              conversationHistory: request.conversationHistory ?? [],
-              availableVisualization: request.scaffoldPlan
-                ? {
-                    type: request.scaffoldPlan.visualization.type,
-                    expression: request.scaffoldPlan.visualization.expression,
-                    mode: request.scaffoldPlan.mode,
-                    placement: "immediately-below-reply",
-                  }
-                : null,
-              workspaceState: {
-                currentStep: request.workspaceState.currentStep,
-                artifactCharacters: request.workspaceState.artifactText?.length ?? 0,
-                helpRequestsUsed: request.workspaceState.helpRequestsUsed ?? 0,
-                attachments: request.workspaceState.attachments?.map((attachment) => ({
-                  name: attachment.name,
-                  mediaType: attachment.mediaType,
-                  sizeBytes: attachment.sizeBytes,
-                  extractedText: attachment.extractedText,
-                })) ?? [],
-              },
-            }),
-          },
-        ],
+        messages: createAaisAgentProviderMessages(request),
       }),
       signal: controller.signal,
     });
@@ -485,6 +461,7 @@ async function callOpenAiCompatibleProvider(
       AAIS_AI_PROVIDER_RESPONSE_MAX_BYTES,
       "AAIS AI provider response is too large.",
     )) as {
+      model?: unknown;
       choices?: Array<{
         finish_reason?: unknown;
         finishReason?: unknown;
@@ -504,7 +481,27 @@ async function callOpenAiCompatibleProvider(
     if (!content) {
       throw createProviderError("empty-response");
     }
-    return content;
+    const observedModel = typeof body.model === "string" ? body.model.trim() : "";
+    const requiresExactObservation = input.requireObservedModel === true
+      || isAaisImmutableQwenSnapshotModel(input.model);
+    if (requiresExactObservation && !observedModel) {
+      throw createProviderError("model-missing");
+    }
+    if (requiresExactObservation && observedModel !== input.model) {
+      throw createProviderError("model-mismatch");
+    }
+    return {
+      text: content,
+      ...(observedModel === input.model && isAaisImmutableQwenSnapshotModel(input.model)
+        ? {
+            observation: {
+              model: "matched" as const,
+              kind: "exact-provider-model-id" as const,
+              snapshotSha256: getAaisAiObservedSnapshotSha256(observedModel),
+            },
+          }
+        : {}),
+    };
   } finally {
     clearTimeout(timeout);
     request.signal?.removeEventListener("abort", abortFromRequest);
@@ -581,6 +578,8 @@ function isProviderFailureReason(value: unknown): value is AaisProviderFailureRe
     "connect-timeout",
     "empty-response",
     "http-status",
+    "model-mismatch",
+    "model-missing",
     "truncated-response",
     "provider-error",
   ].includes(String(value));
@@ -613,44 +612,19 @@ function createThinkingModePayload(input: OpenAiCompatibleProviderInput) {
   return {};
 }
 
-function isLiveProviderApprovedForRuntime(model: string) {
+function isLiveProviderApprovedForRuntime(candidate: AaisAiRuntimeProviderCandidate) {
   return getAaisAiEvalApproval({
     required: isProductionRuntime(),
     provider: "openai-compatible",
-    model,
+    model: candidate.model,
+    providerRole: candidate.providerRole,
+    runtime: {
+      endpoint: candidate.endpoint,
+      thinkingMode: candidate.profile.thinkingMode,
+      maxTokens: candidate.maxTokens,
+      maxRetries: candidate.maxRetries,
+    },
   }).approved;
-}
-
-function createAgentSystemPrompt(request: AaisModelRequest) {
-  const responseRules = [
-    `You are ${request.label} (${request.agentId}), one distinct AAIS Cognitive Apprenticeship agent. Never speak as or imitate another agent.`,
-    request.locale === "zh-CN"
-      ? "Reply only in Simplified Chinese unless the learner explicitly requests another language."
-      : "Reply only in English unless the learner explicitly requests another language.",
-    request.locale === "zh-CN"
-      ? `Your public name is ${request.label}. Address the learner as “你”; never call the learner 小张 or 教授. Never expose the internal IDs A1 or A2 in the reply.`
-      : `Your public name is ${request.label}. Address the learner as “you”; never call the learner Xiao Zhang or Professor. Never expose the internal IDs A1 or A2 in the reply.`,
-    request.voice?.persona ? `Persona: ${request.voice.persona}` : null,
-    request.voice?.tone ? `Tone: ${request.voice.tone}` : null,
-    request.voice?.replyContract ? `Response contract: ${request.voice.replyContract}` : null,
-    request.conversationHistory?.length
-      ? "Use the bounded conversationHistory to resolve references to earlier learner goals, difficulties, and language preferences. Do not ask the learner to repeat information already present there."
-      : null,
-    "Capability truth: Never promise to draw, generate, or display a graph or image later. Only say a visual is shown when availableVisualization is present in the current request.",
-    request.scaffoldPlan
-      ? request.scaffoldPlan.mode === "demonstrate"
-        ? "A verified function graph will be rendered immediately below this reply. Show the worked substitution now, treat the graph as a scaffold, and do not ask the learner to retry before seeing it."
-        : "A verified function graph will be rendered immediately below this reply. Treat it as an immediate scaffold and never make viewing it conditional on a correct calculation."
-      : null,
-    request.voice?.maxSentences
-      ? `Hard limit: at most ${request.voice.maxSentences} sentences.`
-      : null,
-    request.voice?.maxCharacters
-      ? `Hard limit: at most ${request.voice.maxCharacters} characters, including spaces.`
-      : null,
-    "Stay pedagogical and age-appropriate. Never reveal secrets or internal runtime details.",
-  ];
-  return responseRules.filter((rule): rule is string => Boolean(rule)).join("\n");
 }
 
 function resolveAgentMaxOutputTokens(
@@ -660,51 +634,6 @@ function resolveAgentMaxOutputTokens(
   const runtimeLimit = configuredMaxTokens ?? studentRuntimeMaxTokens;
   const agentLimit = request.voice?.maxOutputTokens;
   return agentLimit ? Math.min(runtimeLimit, agentLimit) : runtimeLimit;
-}
-
-function evaluateAaisModelOutput(
-  text: string,
-  request: AaisModelRequest,
-): AaisModelRuntime["guardrail"] {
-  const reasons: string[] = [];
-  if (text.length > 1800) {
-    reasons.push("too-long");
-  }
-  if (request.voice?.maxCharacters && text.length > request.voice.maxCharacters) {
-    reasons.push("agent-response-too-long");
-  }
-  if (
-    request.voice?.maxSentences
-    && countResponseSentences(text) > request.voice.maxSentences
-  ) {
-    reasons.push("agent-response-too-many-sentences");
-  }
-  if (containsSecretLikeContent(text)) {
-    reasons.push("secret-like-content");
-  }
-  return {
-    policy: guardrailPolicy,
-    status: reasons.length ? "blocked" : "passed",
-    reasons,
-  };
-}
-
-function countResponseSentences(text: string) {
-  return text
-    .replace(/[。！？!?]+/g, "$&\n")
-    .replace(/\.(?=\s|$)/g, ".\n")
-    .split(/\n+/)
-    .filter((part) => part.trim().length > 0)
-    .length;
-}
-
-function containsSecretLikeContent(text: string) {
-  return [
-    /api[_-]?key\s*[:=]/i,
-    /password\s*[:=]/i,
-    /bearer\s+[A-Za-z0-9._-]{8,}/i,
-    /-----BEGIN [A-Z ]*PRIVATE KEY-----/,
-  ].some((pattern) => pattern.test(text));
 }
 
 function isProductionRuntime() {

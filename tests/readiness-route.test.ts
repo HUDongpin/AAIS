@@ -8,6 +8,8 @@ import {
   getAaisSessionCookieName,
 } from "@/lib/server/aais-session";
 import { createPasswordRecord } from "@/lib/server/aais-trial-accounts";
+import qwen37SnapshotEvalManifest from "@/data/aais-ai-eval-qwen3.7-max-2026-06-08.json";
+import qwen37SnapshotSigningReceipt from "../docs/evidence/aais-ai-eval-qwen3.7-max-2026-06-08-signing-receipt-2026-08-23.json";
 
 let databaseProbeMode:
   | "ok"
@@ -387,7 +389,18 @@ const enterpriseEnv = [
   "AAIS_AI_FALLBACK_THINKING_MODE",
   "AAIS_AI_EVAL_APPROVED",
   "AAIS_AI_EVAL_VERSION",
+  "AAIS_AI_EVAL_MANIFEST_JSON",
   "AAIS_AI_EVAL_MANIFEST_PATH",
+  "AAIS_AI_EVAL_MANIFEST_SHA256",
+  "AAIS_AI_EVAL_SIGNING_KEY_ID",
+  "AAIS_AI_EVAL_VERIFYING_KEY_SPKI",
+  "AAIS_AI_FALLBACK_EVAL_APPROVED",
+  "AAIS_AI_FALLBACK_EVAL_VERSION",
+  "AAIS_AI_FALLBACK_EVAL_MANIFEST_JSON",
+  "AAIS_AI_FALLBACK_EVAL_MANIFEST_PATH",
+  "AAIS_AI_FALLBACK_EVAL_MANIFEST_SHA256",
+  "AAIS_AI_FALLBACK_EVAL_SIGNING_KEY_ID",
+  "AAIS_AI_FALLBACK_EVAL_VERIFYING_KEY_SPKI",
   "DASHSCOPE_API_KEY",
   "DASHSCOPE_MODEL",
   "QWEN_API_KEY",
@@ -502,6 +515,17 @@ function passingAiEvalManifest(overrides: Record<string, unknown> = {}) {
     },
     ...overrides,
   };
+}
+
+function approveQwenSnapshotEvaluation() {
+  vi.stubEnv("AAIS_AI_EVAL_APPROVED", "true");
+  vi.stubEnv("AAIS_AI_EVAL_VERSION", qwen37SnapshotEvalManifest.evalVersion);
+  vi.stubEnv("AAIS_AI_EVAL_MANIFEST_SHA256", qwen37SnapshotSigningReceipt.manifestSha256);
+  vi.stubEnv("AAIS_AI_EVAL_SIGNING_KEY_ID", qwen37SnapshotSigningReceipt.attestation.keyId);
+  vi.stubEnv(
+    "AAIS_AI_EVAL_VERIFYING_KEY_SPKI",
+    qwen37SnapshotSigningReceipt.attestation.verifyingKeySpki,
+  );
 }
 
 function passingAiEvalAgentCoverage(overrides: Record<string, unknown> = {}) {
@@ -2038,7 +2062,7 @@ describe("AAIS readiness route", () => {
     expect(JSON.stringify(body)).not.toContain("database-secret");
   });
 
-  it("uses bundled Qwen evaluation evidence when the configured manifest belongs to an older model", async () => {
+  it("uses signed bundled evaluation evidence for the exact Qwen snapshot", async () => {
     vi.stubEnv("AAIS_SESSION_SECRET", "session-secret-that-must-not-leak");
     vi.stubEnv("AAIS_TRIAL_ACCOUNTS_JSON", trialAccountConfig);
     vi.stubEnv("DATABASE_URL", "postgres://aais:database-secret@ep-prod.us-east-1.aws.neon.tech/aais");
@@ -2046,10 +2070,9 @@ describe("AAIS readiness route", () => {
     vi.stubEnv("AAIS_READINESS_MODE", "traffic");
     vi.stubEnv("AAIS_AI_PROVIDER", "qwen");
     vi.stubEnv("DASHSCOPE_API_KEY", "dashscope-secret-that-must-not-leak");
-    vi.stubEnv("AAIS_AI_MODEL", "qwen3.7-max");
-    vi.stubEnv("AAIS_AI_EVAL_APPROVED", "true");
-    vi.stubEnv("AAIS_AI_EVAL_VERSION", "eval-2026-07-19-qwen3.7-max-v1");
-    vi.stubEnv("AAIS_AI_EVAL_MANIFEST_JSON", JSON.stringify(passingAiEvalManifest()));
+    vi.stubEnv("AAIS_AI_MODEL", "qwen3.7-max-2026-06-08");
+    vi.stubEnv("AAIS_AI_MAX_RETRIES", "0");
+    approveQwenSnapshotEvaluation();
     const { GET } = await import("@/app/api/system/readiness/route");
 
     const response = await GET(createAuthorizedReadinessRequest());
@@ -2063,10 +2086,10 @@ describe("AAIS readiness route", () => {
         ai: {
           status: "ok",
           provider: "openai-compatible",
-          evalVersion: "eval-2026-07-19-qwen3.7-max-v1",
+          evalVersion: qwen37SnapshotEvalManifest.evalVersion,
           evalManifest: "verified",
           evalSource: "bundled",
-          modelFingerprint: modelFingerprint("qwen3.7-max"),
+          modelFingerprint: modelFingerprint("qwen3.7-max-2026-06-08"),
         },
       },
       issues: [],
@@ -2145,7 +2168,7 @@ describe("AAIS readiness route", () => {
       status: "blocked",
       provider: "openai-compatible",
       evalVersion: "eval-2026-07-19-qwen3.7-max-v1",
-      evalManifest: "mismatch",
+      evalManifest: "invalid",
       evalSource: null,
       modelFingerprint: modelFingerprint("qwen3.7-max"),
     });
@@ -2164,9 +2187,9 @@ describe("AAIS readiness route", () => {
     vi.stubEnv("AAIS_READINESS_MODE", "traffic");
     vi.stubEnv("AAIS_AI_PROVIDER", "qwen");
     vi.stubEnv("DASHSCOPE_API_KEY", "dashscope-secret-that-must-not-leak");
-    vi.stubEnv("AAIS_AI_MODEL", "qwen3.7-max");
-    vi.stubEnv("AAIS_AI_EVAL_APPROVED", "true");
-    vi.stubEnv("AAIS_AI_EVAL_VERSION", "eval-2026-07-19-qwen3.7-max-v1");
+    vi.stubEnv("AAIS_AI_MODEL", "qwen3.7-max-2026-06-08");
+    vi.stubEnv("AAIS_AI_MAX_RETRIES", "0");
+    approveQwenSnapshotEvaluation();
     vi.stubEnv("AAIS_AI_FALLBACK_ENDPOINT", "https://fallback.example.test/v1/chat/completions");
     vi.stubEnv("AAIS_AI_FALLBACK_API_KEY", "fallback-secret-that-must-not-leak");
     vi.stubEnv("AAIS_AI_FALLBACK_MODEL", "unevaluated-model");
@@ -2179,10 +2202,10 @@ describe("AAIS readiness route", () => {
     expect(body.checks.ai).toMatchObject({
       status: "blocked",
       provider: "openai-compatible",
-      evalVersion: "eval-2026-07-19-qwen3.7-max-v1",
+      evalVersion: qwen37SnapshotEvalManifest.evalVersion,
       evalManifest: "verified",
       evalSource: "bundled",
-      modelFingerprint: modelFingerprint("qwen3.7-max"),
+      modelFingerprint: modelFingerprint("qwen3.7-max-2026-06-08"),
     });
     expect(body.issues).toEqual(expect.arrayContaining([
       "AAIS_AI_FALLBACK_EVAL_MANIFEST",

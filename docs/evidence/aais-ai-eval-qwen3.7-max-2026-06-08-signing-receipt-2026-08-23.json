@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 2,
+  "contractVersion": "aais-ai-eval-manifest-signing-receipt-v2",
+  "evalVersion": "aais-qwen37-snapshot-20260823-v1",
+  "provider": "openai-compatible",
+  "providerFamily": "qwen",
+  "model": "qwen3.7-max-2026-06-08",
+  "observedSnapshotSha256": "e785f7c77c99af8759663ecf6c4c5689eaff94495bf6ea34323d9d50470ea34c",
+  "passedAt": "2026-08-23T02:51:46.408Z",
+  "expiresAt": "2027-08-23T02:51:46.408Z",
+  "manifestSha256": "443b2c2f5dca98782194be7ffce9e4507a8e02a3783ed6827fbe64cd2d78da96",
+  "attestation": {
+    "algorithm": "ed25519",
+    "keyId": "aais-qwen37-snapshot-20260823-ed25519-v1",
+    "signatureSha256": "74a7bda3a4dfabc358b89f7c0274c33b522d598722cd452e8a6e90cdf912ecdf",
+    "verifyingKeySpki": "MCowBQYDK2VwAyEAI/Zn+lZHmPmW/tsPXDuEDAheNhgwCqkLMgY8xDQxsJg=",
+    "verifyingKeySpkiSha256": "9b220e02b4948d81f6634e90056f1ec1170017b49f3fd8751a2cc9ffbeab4d10",
+    "signatureVerified": true
+  },
+  "redaction": {
+    "privateKey": "omitted",
+    "prompts": "omitted",
+    "outputs": "omitted",
+    "secrets": "omitted",
+    "rawObservedModel": "omitted"
+  }
+}
