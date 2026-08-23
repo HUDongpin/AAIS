@@ -125,13 +125,18 @@ describe("AAIS LoginPage", () => {
     });
   });
 
-  it("marks the login controls ready only after client hydration", async () => {
+  it("keeps sign-in consent-gated after client hydration", async () => {
     const { container } = render(<LoginPage />);
 
     await waitFor(() => {
       expect((container.firstElementChild as HTMLElement).dataset.clientReady).toBe("true");
     });
-    expect(screen.getByRole("button", { name: "立即登录" })).toHaveProperty("disabled", false);
+    const submitButton = screen.getByRole("button", { name: "立即登录" }) as HTMLButtonElement;
+    expect(submitButton.disabled).toBe(true);
+
+    fireEvent.click(screen.getByRole("checkbox", { name: /用户协议和隐私政策/ }));
+
+    expect(submitButton.disabled).toBe(false);
   });
 
   it("switches the login controls between Chinese and English and records the choice", () => {
@@ -268,6 +273,7 @@ describe("AAIS LoginPage", () => {
   it("announces login validation errors to assistive technology", () => {
     render(<LoginPage />);
 
+    fireEvent.click(screen.getByRole("checkbox", { name: /用户协议和隐私政策/ }));
     fireEvent.click(screen.getByRole("button", { name: "立即登录" }));
 
     const alert = screen.getByRole("alert");
@@ -291,10 +297,17 @@ describe("AAIS LoginPage", () => {
         value: "12345",
       },
     });
-    fireEvent.click(screen.getByRole("button", { name: "立即登录" }));
+    const submitButton = screen.getByRole("button", { name: "立即登录" }) as HTMLButtonElement;
+    expect(submitButton.disabled).toBe(true);
+    expect(submitButton.className).toContain("disabled:bg-[#a8b8d0]");
+
+    fireEvent.submit(submitButton.closest("form") as HTMLFormElement);
 
     expect(screen.getByRole("alert").textContent).toBe("请先确认用户协议、隐私政策和必要的监护人同意。");
     expect(fetchMock).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("checkbox", { name: /用户协议和隐私政策/ }));
+    expect(submitButton.disabled).toBe(false);
   });
 
   it("localizes login API failures instead of exposing server English", async () => {

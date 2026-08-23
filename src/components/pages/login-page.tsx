@@ -679,8 +679,8 @@ export function LoginPage({
 
                 <button
                   type="submit"
-                  disabled={!clientReady || submitting}
-                  className="inline-flex h-14 w-full items-center justify-center rounded-xl bg-[#1f6feb] px-6 text-base font-bold text-white shadow-[0_14px_34px_rgba(31,111,235,0.25)] outline-none transition hover:bg-[#1557c0] active:translate-y-px focus-visible:ring-4 focus-visible:ring-[#1f6feb]/25 disabled:cursor-not-allowed disabled:opacity-70"
+                  disabled={!clientReady || submitting || !consentAccepted}
+                  className="inline-flex h-14 w-full items-center justify-center rounded-xl bg-[#1f6feb] px-6 text-base font-bold text-white shadow-[0_14px_34px_rgba(31,111,235,0.25)] outline-none transition hover:bg-[#1557c0] active:translate-y-px focus-visible:ring-4 focus-visible:ring-[#1f6feb]/25 disabled:cursor-not-allowed disabled:bg-[#a8b8d0] disabled:shadow-none disabled:hover:bg-[#a8b8d0] disabled:active:translate-y-0"
                 >
                   {submitting ? copy.signingIn : copy.submit}
                 </button>

@@ -5,6 +5,23 @@ import { config as middlewareConfig, middleware } from "@/../middleware";
 import nextConfig, { createAaisContentSecurityPolicy } from "@/../next.config";
 
 describe("AAIS Next security headers", () => {
+  it("permanently redirects the apex host to the canonical www origin", async () => {
+    expect(nextConfig.redirects).toBeTypeOf("function");
+    const rules = await nextConfig.redirects?.();
+
+    expect(rules).toContainEqual({
+      source: "/:path*",
+      has: [
+        {
+          type: "host",
+          value: "aais.site",
+        },
+      ],
+      destination: "https://www.aais.site/:path*",
+      permanent: true,
+    });
+  });
+
   it("applies enterprise security headers to every route", async () => {
     expect(nextConfig.headers).toBeTypeOf("function");
     const rules = await nextConfig.headers?.();
