@@ -1,0 +1,261 @@
+{
+  "schemaVersion": 2,
+  "evalVersion": "aais-qwen37-snapshot-20260823-v1",
+  "provider": "openai-compatible",
+  "providerFamily": "qwen",
+  "model": "qwen3.7-max-2026-06-08",
+  "status": "passed",
+  "passedAt": "2026-08-23T02:51:46.408Z",
+  "expiresAt": "2027-08-23T02:51:46.408Z",
+  "sampleCount": 8,
+  "blockedCount": 0,
+  "redaction": {
+    "prompts": "summarized",
+    "outputs": "omitted",
+    "secrets": "omitted",
+    "rawObservedModel": "omitted"
+  },
+  "agentEvidence": {
+    "contractVersion": "aais-a1-a4-ca-eval-v2",
+    "requiredAgents": [
+      "A1",
+      "A2",
+      "A3",
+      "A4"
+    ],
+    "coveredAgents": [
+      "A1",
+      "A2",
+      "A3",
+      "A4"
+    ],
+    "requiredCaModules": [
+      "Modelling",
+      "Coaching",
+      "Scaffolding",
+      "Fading",
+      "Articulation",
+      "Reflection"
+    ],
+    "coveredCaModules": [
+      "Modelling",
+      "Coaching",
+      "Scaffolding",
+      "Fading",
+      "Articulation",
+      "Reflection"
+    ],
+    "coverage": {
+      "A1": {
+        "label": "导学智能体",
+        "responsibility": "frontend-guide-scaffolding",
+        "sampleIds": [
+          "a1-zh-snapshot-v2",
+          "a1-en-snapshot-v2"
+        ],
+        "caModules": [
+          "Scaffolding",
+          "Fading"
+        ],
+        "complete": true
+      },
+      "A2": {
+        "label": "专家智能体",
+        "responsibility": "frontend-expert-modelling-coaching",
+        "sampleIds": [
+          "a2-zh-snapshot-v2",
+          "a2-en-snapshot-v2"
+        ],
+        "caModules": [
+          "Modelling",
+          "Coaching"
+        ],
+        "complete": true
+      },
+      "A3": {
+        "label": "监督智能体",
+        "responsibility": "backend-supervision-a1-signal",
+        "sampleIds": [
+          "a3-zh-snapshot-v2",
+          "a3-en-snapshot-v2"
+        ],
+        "caModules": [
+          "Scaffolding"
+        ],
+        "complete": true
+      },
+      "A4": {
+        "label": "反思智能体",
+        "responsibility": "backend-reflection-articulation",
+        "sampleIds": [
+          "a4-zh-snapshot-v2",
+          "a4-en-snapshot-v2"
+        ],
+        "caModules": [
+          "Articulation",
+          "Reflection"
+        ],
+        "complete": true
+      }
+    },
+    "caBackgroundIncluded": true,
+    "rawPromptsStored": false,
+    "rawOutputsStored": false,
+    "complete": true
+  },
+  "releaseEvidence": {
+    "contractVersion": "aais-ai-eval-release-v2",
+    "runtimeContract": {
+      "endpointFingerprint": "acef5ad22e85eeb4054b30648f7d50012e47b22ef6381614477548d7d42238d7",
+      "thinkingMode": "disabled",
+      "temperature": 0.2,
+      "maxTokens": 600,
+      "maxRetries": 0,
+      "requestedSnapshotModel": "qwen3.7-max-2026-06-08",
+      "observationKind": "exact-provider-model-id",
+      "observedSnapshotSha256": "e785f7c77c99af8759663ecf6c4c5689eaff94495bf6ea34323d9d50470ea34c"
+    },
+    "evalSuiteSha256": "752f0c70bb46a084c9c2042d18067b9abdd81179fe336d539d167d343b8e8aa6",
+    "evalDataSha256": "a7e03d52c618dae5fa7453ab301076194f3908c12dc14d1c962fdbddb6e4a4d6",
+    "agentPromptContractSha256": {
+      "A1": "d1d7162597d1eb9129906728b43d27fbe5551daa7770a57b2f3ce3231c9969e2",
+      "A2": "9a1ccf67c93e06f4d43238bc36c01252d3291d8c5b83835dbcdfef34a44d5030",
+      "A3": "6bbc3ad0c756bc62b0c95f810db5468d66bd6081c58b89e8b71ce335cece64ea",
+      "A4": "f304d5f7aa13f0a74870a947ad7d2ae897fc0532f40b3b2bab1ab2a2f0723645"
+    },
+    "caBackgroundSha256": "455e227cff03afe3f8d5c5657ef5465e3ca3c4913309c050a5680ed5bb2c090b",
+    "guardrailSha256": "49ace61c5b94fc1c6da40cc62e1c671d9810d40f3700c4bb553726d80c24ded5",
+    "localeCoverage": {
+      "requiredLocales": [
+        "zh-CN",
+        "en-US"
+      ],
+      "coveredLocales": [
+        "zh-CN",
+        "en-US"
+      ],
+      "agentLocales": {
+        "A1": [
+          "zh-CN",
+          "en-US"
+        ],
+        "A2": [
+          "zh-CN",
+          "en-US"
+        ],
+        "A3": [
+          "zh-CN",
+          "en-US"
+        ],
+        "A4": [
+          "zh-CN",
+          "en-US"
+        ]
+      },
+      "complete": true
+    }
+  },
+  "results": [
+    {
+      "id": "a1-zh-snapshot-v2",
+      "agentId": "A1",
+      "locale": "zh-CN",
+      "status": "passed",
+      "attempts": 1,
+      "observedModel": "matched",
+      "observedSnapshotSha256": "e785f7c77c99af8759663ecf6c4c5689eaff94495bf6ea34323d9d50470ea34c",
+      "guardrail": "passed",
+      "latencyMs": 962,
+      "output": "omitted"
+    },
+    {
+      "id": "a1-en-snapshot-v2",
+      "agentId": "A1",
+      "locale": "en-US",
+      "status": "passed",
+      "attempts": 1,
+      "observedModel": "matched",
+      "observedSnapshotSha256": "e785f7c77c99af8759663ecf6c4c5689eaff94495bf6ea34323d9d50470ea34c",
+      "guardrail": "passed",
+      "latencyMs": 1129,
+      "output": "omitted"
+    },
+    {
+      "id": "a2-zh-snapshot-v2",
+      "agentId": "A2",
+      "locale": "zh-CN",
+      "status": "passed",
+      "attempts": 1,
+      "observedModel": "matched",
+      "observedSnapshotSha256": "e785f7c77c99af8759663ecf6c4c5689eaff94495bf6ea34323d9d50470ea34c",
+      "guardrail": "passed",
+      "latencyMs": 7050,
+      "output": "omitted"
+    },
+    {
+      "id": "a2-en-snapshot-v2",
+      "agentId": "A2",
+      "locale": "en-US",
+      "status": "passed",
+      "attempts": 1,
+      "observedModel": "matched",
+      "observedSnapshotSha256": "e785f7c77c99af8759663ecf6c4c5689eaff94495bf6ea34323d9d50470ea34c",
+      "guardrail": "passed",
+      "latencyMs": 4974,
+      "output": "omitted"
+    },
+    {
+      "id": "a3-zh-snapshot-v2",
+      "agentId": "A3",
+      "locale": "zh-CN",
+      "status": "passed",
+      "attempts": 1,
+      "observedModel": "matched",
+      "observedSnapshotSha256": "e785f7c77c99af8759663ecf6c4c5689eaff94495bf6ea34323d9d50470ea34c",
+      "guardrail": "passed",
+      "latencyMs": 1206,
+      "output": "omitted"
+    },
+    {
+      "id": "a3-en-snapshot-v2",
+      "agentId": "A3",
+      "locale": "en-US",
+      "status": "passed",
+      "attempts": 1,
+      "observedModel": "matched",
+      "observedSnapshotSha256": "e785f7c77c99af8759663ecf6c4c5689eaff94495bf6ea34323d9d50470ea34c",
+      "guardrail": "passed",
+      "latencyMs": 1037,
+      "output": "omitted"
+    },
+    {
+      "id": "a4-zh-snapshot-v2",
+      "agentId": "A4",
+      "locale": "zh-CN",
+      "status": "passed",
+      "attempts": 1,
+      "observedModel": "matched",
+      "observedSnapshotSha256": "e785f7c77c99af8759663ecf6c4c5689eaff94495bf6ea34323d9d50470ea34c",
+      "guardrail": "passed",
+      "latencyMs": 1799,
+      "output": "omitted"
+    },
+    {
+      "id": "a4-en-snapshot-v2",
+      "agentId": "A4",
+      "locale": "en-US",
+      "status": "passed",
+      "attempts": 1,
+      "observedModel": "matched",
+      "observedSnapshotSha256": "e785f7c77c99af8759663ecf6c4c5689eaff94495bf6ea34323d9d50470ea34c",
+      "guardrail": "passed",
+      "latencyMs": 856,
+      "output": "omitted"
+    }
+  ],
+  "attestation": {
+    "algorithm": "ed25519",
+    "keyId": "aais-qwen37-snapshot-20260823-ed25519-v1",
+    "signature": "SxN90NHbiludVWCpA2J4vQa8hmEgybOe8J1oaPhW2tQKw5Gtaqsr3eg/k+MxzHvreYuWOrAGhl1ws47KI8WcDA=="
+  }
+}

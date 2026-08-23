@@ -146,11 +146,14 @@ function collectBrowserErrors(page: Page) {
   page.on("console", (message) => {
     if (message.type() === "error") {
       const sourceURL = message.location().url;
+      if (isVercelPreviewToolbarURL(sourceURL)) {
+        return;
+      }
       errors.push(sourceURL ? `${message.text()} @ ${sourceURL}` : message.text());
     }
   });
   page.on("response", (response) => {
-    if (response.status() >= 400) {
+    if (response.status() >= 400 && !isVercelPreviewToolbarURL(response.url())) {
       errors.push(`HTTP ${response.status()} ${response.url()}`);
     }
   });
@@ -158,6 +161,14 @@ function collectBrowserErrors(page: Page) {
     errors.push(error.message);
   });
   return errors;
+}
+
+function isVercelPreviewToolbarURL(value: string) {
+  try {
+    return new URL(value).origin === "https://vercel.live";
+  } catch {
+    return false;
+  }
 }
 
 async function hasNextErrorOverlay(page: Page) {

@@ -33,6 +33,8 @@ git diff --check
 
 `npm run hygiene:check` is redacted: it checks remotes, dirty state, staged private paths, and local private artifacts such as `.env*`, `output/`, and `All API Keys.docx` without reading secret values.
 
+Production Qwen uses a dated immutable snapshot and a signed, source-bound A1-A4 bilingual evaluation. The operator workflow is `npm run release:evaluate-ai` followed by `npm run release:sign-ai-manifest`; exact arguments, trust variables, redaction rules, and expiry behavior are documented in [OPERATIONS.md](./OPERATIONS.md#ai-guide-runtime).
+
 ## Deploy
 
 AAIS should deploy from reviewed Git changes through Vercel, not from a laptop-only release path.

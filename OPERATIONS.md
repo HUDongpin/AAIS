@@ -415,6 +415,17 @@ AAIS keeps the guide usable without a live provider: deterministic fallback repl
 Runtime controls:
 
 - `AAIS_AI_DAILY_GUIDE_LIMIT` caps guide requests per student per day; the default and maximum are 1,000, lower positive values may be configured, and the route returns 429 when the cap is reached.
-- `AAIS_AI_MAX_RETRIES` defaults to 1, so live provider calls get at most one retry before fallback.
+- `AAIS_AI_MAX_RETRIES` defaults to 1 for ordinary development. The signed Production snapshot contract is evaluated and deployed with `AAIS_AI_MAX_RETRIES=0`; changing it invalidates approval.
 - Live provider responses are capped at 600 output tokens in the provider request.
-- Production live AI still requires `AAIS_AI_EVAL_APPROVED=true` and `AAIS_AI_EVAL_VERSION` to avoid unapproved provider behavior.
+- Production Qwen uses the immutable `qwen3.7-max-2026-06-08` snapshot. Rolling aliases are intentionally not approval-eligible.
+- Production live AI requires `AAIS_AI_EVAL_APPROVED=true`, the exact `AAIS_AI_EVAL_VERSION`, `AAIS_AI_EVAL_MANIFEST_SHA256`, `AAIS_AI_EVAL_SIGNING_KEY_ID`, and `AAIS_AI_EVAL_VERIFYING_KEY_SPKI`. The bundled manifest must verify against all five values and the current endpoint/runtime/source contracts.
+- Every snapshot response must return a `model` field that exactly equals the requested snapshot. A missing or different value is treated as provider failure and the learner sees the existing explicit offline support state.
+
+Formal snapshot evaluation and signing:
+
+1. Run `npm run release:evaluate-ai -- --env-file .env.local --model <dated-snapshot> --endpoint https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions --eval-version <version> --output tmp/<unsigned>.json`. It sends eight synthetic A1-A4/zh-CN/en-US samples and stores no raw prompts, outputs, or secrets.
+2. Review the redacted manifest, then sign it with `npm run release:sign-ai-manifest`. The Ed25519 private key must be supplied through a mode-0600 ignored file or a secret environment variable and must never be committed; only the signed manifest and redacted public receipt enter source control.
+3. Configure the exact model, zero retries, eval version, manifest digest, signing key id, and receipt public SPKI in Preview first. A changed prompt, CA background, guardrail, endpoint, model, retry count, signature, key, or expired evidence blocks live inference.
+4. Merge only after CI and Preview A1/A2 probes pass. Production remains Git-connected; do not use a laptop `vercel --prod` deployment.
+
+The 2026-08-23 snapshot evidence expires on 2027-08-23. Re-evaluate and rotate the signed manifest before that time; expiration deliberately returns Production to explicit offline support instead of silently accepting stale evidence.

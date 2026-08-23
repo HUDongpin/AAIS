@@ -11,6 +11,19 @@ import {
 import { aaisCognitiveApprenticeshipBackground } from "@/data/aais";
 import { createAaisFunctionScaffoldPlan } from "@/lib/ai/aais-guide-function-scaffold";
 import { getAaisAiEvalApproval } from "@/lib/server/aais-ai-eval-manifest";
+import qwen37SnapshotEvalManifest from "@/data/aais-ai-eval-qwen3.7-max-2026-06-08.json";
+import qwen37SnapshotSigningReceipt from "../docs/evidence/aais-ai-eval-qwen3.7-max-2026-06-08-signing-receipt-2026-08-23.json";
+
+function approveQwenSnapshotEvaluation() {
+  vi.stubEnv("AAIS_AI_EVAL_APPROVED", "true");
+  vi.stubEnv("AAIS_AI_EVAL_VERSION", qwen37SnapshotEvalManifest.evalVersion);
+  vi.stubEnv("AAIS_AI_EVAL_MANIFEST_SHA256", qwen37SnapshotSigningReceipt.manifestSha256);
+  vi.stubEnv("AAIS_AI_EVAL_SIGNING_KEY_ID", qwen37SnapshotSigningReceipt.attestation.keyId);
+  vi.stubEnv(
+    "AAIS_AI_EVAL_VERIFYING_KEY_SPKI",
+    qwen37SnapshotSigningReceipt.attestation.verifyingKeySpki,
+  );
+}
 
 afterEach(() => {
   vi.unstubAllEnvs();
@@ -568,6 +581,7 @@ describe("AAIS governed AI provider", () => {
     vi.stubEnv("DASHSCOPE_API_KEY", "dashscope-secret-key");
     const fetchMock = vi.fn<typeof fetch>(async () =>
       Response.json({
+        model: "qwen3.7-max-2026-06-08",
         choices: [
           {
             message: {
@@ -599,7 +613,7 @@ describe("AAIS governed AI provider", () => {
       "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
     );
     const payload = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
-    expect(payload.model).toBe("qwen3.8-max");
+    expect(payload.model).toBe("qwen3.7-max-2026-06-08");
     expect(payload.enable_thinking).toBe(false);
     expect(payload).not.toHaveProperty("thinking");
     expect(fetchMock.mock.calls[0]?.[1]?.headers).toMatchObject({
@@ -607,8 +621,12 @@ describe("AAIS governed AI provider", () => {
     });
     expect(result.runtime).toMatchObject({
       provider: "openai-compatible",
-      model: "qwen3.8-max",
+      model: "qwen3.7-max-2026-06-08",
       status: "ok",
+      observation: {
+        model: "matched",
+        kind: "exact-provider-model-id",
+      },
       runtimeProfile: {
         mode: "live",
         primary: {
@@ -625,6 +643,56 @@ describe("AAIS governed AI provider", () => {
       },
     });
     expect(JSON.stringify(result)).not.toContain("dashscope-secret-key");
+  });
+
+  it.each([
+    {
+      label: "missing",
+      body: {},
+      reason: "model-missing",
+    },
+    {
+      label: "mismatched",
+      body: { model: "qwen3.7-max" },
+      reason: "model-mismatch",
+    },
+  ])("fails closed when the provider snapshot model is $label", async ({ body, reason }) => {
+    const fetchMock = vi.fn<typeof fetch>(async () =>
+      Response.json({
+        ...body,
+        choices: [{ message: { content: "untrusted response" } }],
+      }),
+    );
+    const provider = createOpenAiCompatibleAaisProvider({
+      endpoint: "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
+      apiKey: "secret-api-key",
+      model: "qwen3.7-max-2026-06-08",
+      provider: "qwen",
+      thinkingMode: "disabled",
+      fetchImpl: fetchMock,
+      timeoutMs: 1_000,
+      maxRetries: 0,
+    });
+
+    const result = await provider.generate({
+      agentId: "A1",
+      label: "小张",
+      locale: "zh-CN",
+      phase: "training",
+      taskId: "training_task_1",
+      learnerInput: "请给我下一步。",
+      workspaceState: { currentStep: "guide" },
+      fallbackText: "本地 fallback",
+    });
+
+    expect(result).toMatchObject({
+      text: "本地 fallback",
+      runtime: {
+        status: "fallback",
+        guardrail: { reasons: [reason] },
+      },
+    });
+    expect(JSON.stringify(result)).not.toContain("untrusted response");
   });
 
   it("keeps production on deterministic fallback until model evaluation is approved", async () => {
@@ -744,15 +812,16 @@ describe("AAIS governed AI provider", () => {
     });
   });
 
-  it("enables production Qwen only when the configured version matches bundled evaluation evidence", async () => {
+  it("enables the exact production Qwen snapshot only with signed bundled evaluation evidence", async () => {
     vi.stubEnv("NODE_ENV", "production");
     vi.stubEnv("AAIS_AI_PROVIDER", "qwen");
     vi.stubEnv("DASHSCOPE_API_KEY", "dashscope-secret-key");
-    vi.stubEnv("AAIS_AI_MODEL", "qwen3.7-max");
-    vi.stubEnv("AAIS_AI_EVAL_APPROVED", "true");
-    vi.stubEnv("AAIS_AI_EVAL_VERSION", "eval-2026-07-19-qwen3.7-max-v1");
+    vi.stubEnv("AAIS_AI_MODEL", "qwen3.7-max-2026-06-08");
+    vi.stubEnv("AAIS_AI_MAX_RETRIES", "0");
+    approveQwenSnapshotEvaluation();
     const fetchMock = vi.fn<typeof fetch>(async () =>
       Response.json({
+        model: "qwen3.7-max-2026-06-08",
         choices: [
           {
             message: {
@@ -781,8 +850,12 @@ describe("AAIS governed AI provider", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(result.runtime).toMatchObject({
       provider: "openai-compatible",
-      model: "qwen3.7-max",
+      model: "qwen3.7-max-2026-06-08",
       status: "ok",
+      observation: {
+        model: "matched",
+        kind: "exact-provider-model-id",
+      },
     });
   });
 
@@ -790,9 +863,9 @@ describe("AAIS governed AI provider", () => {
     vi.stubEnv("NODE_ENV", "production");
     vi.stubEnv("AAIS_AI_PROVIDER", "qwen");
     vi.stubEnv("DASHSCOPE_API_KEY", "dashscope-secret-key");
-    vi.stubEnv("AAIS_AI_MODEL", "qwen3.7-max");
-    vi.stubEnv("AAIS_AI_EVAL_APPROVED", "true");
-    vi.stubEnv("AAIS_AI_EVAL_VERSION", "eval-2026-07-19-qwen3.7-max-v1");
+    vi.stubEnv("AAIS_AI_MODEL", "qwen3.7-max-2026-06-08");
+    vi.stubEnv("AAIS_AI_MAX_RETRIES", "0");
+    approveQwenSnapshotEvaluation();
     vi.stubEnv("AAIS_AI_FALLBACK_ENDPOINT", "https://fallback.example.test/v1/chat/completions");
     vi.stubEnv("AAIS_AI_FALLBACK_API_KEY", "fallback-secret-key");
     vi.stubEnv("AAIS_AI_FALLBACK_MODEL", "unevaluated-model");
@@ -815,14 +888,14 @@ describe("AAIS governed AI provider", () => {
       fallbackText: "本地 fallback",
     });
 
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(fetchMock.mock.calls.every(([url]) =>
       String(url).includes("dashscope.aliyuncs.com"))).toBe(true);
     expect(result).toMatchObject({
       text: "本地 fallback",
       runtime: {
         provider: "openai-compatible",
-        model: "qwen3.7-max",
+        model: "qwen3.7-max-2026-06-08",
         status: "fallback",
         runtimeProfile: {
           fallback: null,
