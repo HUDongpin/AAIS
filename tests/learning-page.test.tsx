@@ -1781,7 +1781,7 @@ describe("AAIS LearningPage", () => {
     expect(screen.getByText("已完成 1/4 个任务")).toBeTruthy();
   });
 
-  it("keeps stale backend guide messages out of the simplified MVP shell", async () => {
+  it("keeps incomplete stale backend guide messages out of the learner transcript", async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url.startsWith("/api/learning/session") && (!init || init.method === "GET")) {
@@ -1811,6 +1811,64 @@ describe("AAIS LearningPage", () => {
 
     expect(await screen.findByText(/你好，Bobie/)).toBeTruthy();
     expect(screen.queryByText("旧导学消息不应该出现在简化首页")).toBeNull();
+  });
+
+  it("restores completed text-only guide exchanges while hiding backend and progress turns", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).startsWith("/api/learning/session") && (!init || init.method === "GET")) {
+        return Response.json({
+          session: {
+            ...createClientSessionFixture(""),
+            guideMessages: [
+              {
+                id: "persisted-user-text",
+                kind: "user",
+                text: "@Professor 请检查我的下一步",
+              },
+              {
+                id: "persisted-assistant-text",
+                kind: "assistant",
+                text: "已完成结构化回复。",
+                turns: [
+                  {
+                    agentId: "A2",
+                    label: "Professor",
+                    content: "先核对当前证据，再决定下一步。",
+                    actions: ["respond"],
+                  },
+                  {
+                    agentId: "A2",
+                    label: "Professor",
+                    content: "Professor is still processing",
+                    actions: ["progress"],
+                  },
+                  {
+                    agentId: "A3",
+                    label: "监督智能体",
+                    content: "后台监督信息不应显示",
+                    actions: ["supervise"],
+                  },
+                ],
+                orchestration: {
+                  graphId: "learning-ai-guide",
+                  topologicalOrder: ["A2", "A3"],
+                },
+              },
+            ],
+          },
+        });
+      }
+      return Response.json({ ok: true });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<LearningPage />);
+
+    expect(await screen.findByText("@Professor 请检查我的下一步")).toBeTruthy();
+    expect(screen.getByText("先核对当前证据，再决定下一步。")).toBeTruthy();
+    expect(screen.getByRole("img", { name: "教授大学教育风格头像" })).toBeTruthy();
+    expect(screen.queryByText("Professor is still processing")).toBeNull();
+    expect(screen.queryByText("后台监督信息不应显示")).toBeNull();
   });
 
   it("restores persisted attachment receipts after the learning page reloads", async () => {

@@ -13,7 +13,7 @@ import type {
 } from "@/components/pages/learning/learning-page-types";
 import { hydrateHistoryDocuments } from "@/components/pages/learning/document-markdown";
 import type { SavedLearningDocument } from "@/components/pages/learning/learning-page-types";
-import { getPersistedAttachmentGuideMessages } from "@/components/pages/learning/guide-message-persistence";
+import { getPersistedGuideMessages } from "@/components/pages/learning/guide-message-persistence";
 import {
   admitAaisResearchAction,
   captureAaisResearchActorGeneration,
@@ -112,7 +112,7 @@ export function useLearningWorkspaceSession(
       setHistoryDocuments(hydrateHistoryDocuments(session.historyDocuments));
     }
     if (!preserveGuideMessages) {
-      setPersistedGuideMessages(getPersistedAttachmentGuideMessages(session.guideMessages));
+      setPersistedGuideMessages(getPersistedGuideMessages(session.guideMessages));
     }
     lastSavedArtifactLengthRef.current = selectedTask?.artifactText?.length ?? 0;
   }
