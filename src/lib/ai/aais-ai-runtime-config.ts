@@ -148,8 +148,9 @@ export function getAaisAiRuntimeConfigurationStatus(
   const fallbackEndpoint = env.AAIS_AI_FALLBACK_ENDPOINT?.trim();
   const fallbackApiKey = env.AAIS_AI_FALLBACK_API_KEY?.trim();
   const fallbackModel = env.AAIS_AI_FALLBACK_MODEL?.trim();
+  const fallbackExplicitlyDisabled = env.AAIS_AI_FALLBACK_ENABLED?.trim().toLowerCase() === "false";
   const fallbackFieldsPresent = Boolean(fallbackEndpoint || fallbackApiKey || fallbackModel);
-  const fallback = !fallbackFieldsPresent
+  const fallback = fallbackExplicitlyDisabled || !fallbackFieldsPresent
     ? "missing" as const
     : fallbackEndpoint
       && fallbackApiKey

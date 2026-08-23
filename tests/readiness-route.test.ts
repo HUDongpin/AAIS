@@ -381,6 +381,7 @@ const enterpriseEnv = [
   "AAIS_AI_TIMEOUT_MS",
   "AAIS_AI_MAX_RETRIES",
   "AAIS_AI_THINKING_MODE",
+  "AAIS_AI_FALLBACK_ENABLED",
   "AAIS_AI_FALLBACK_ENDPOINT",
   "AAIS_AI_FALLBACK_API_KEY",
   "AAIS_AI_FALLBACK_MODEL",
@@ -2211,6 +2212,42 @@ describe("AAIS readiness route", () => {
       "AAIS_AI_FALLBACK_EVAL_MANIFEST",
     ]));
     expect(JSON.stringify(body)).not.toContain("fallback-secret-that-must-not-leak");
+  });
+
+  it("does not require fallback evaluation evidence when stored fallback settings are explicitly disabled", async () => {
+    vi.stubEnv("AAIS_SESSION_SECRET", "session-secret-that-must-not-leak");
+    vi.stubEnv("AAIS_TRIAL_ACCOUNTS_JSON", trialAccountConfig);
+    vi.stubEnv("DATABASE_URL", "postgres://aais:database-secret@ep-prod.us-east-1.aws.neon.tech/aais");
+    vi.stubEnv("CRON_SECRET", "cron-secret-that-must-not-leak-2026");
+    vi.stubEnv("AAIS_READINESS_MODE", "traffic");
+    vi.stubEnv("AAIS_AI_PROVIDER", "qwen");
+    vi.stubEnv("DASHSCOPE_API_KEY", "dashscope-secret-that-must-not-leak");
+    vi.stubEnv("AAIS_AI_MODEL", "qwen3.7-max-2026-06-08");
+    vi.stubEnv("AAIS_AI_MAX_RETRIES", "0");
+    approveQwenSnapshotEvaluation();
+    vi.stubEnv("AAIS_AI_FALLBACK_ENABLED", "false");
+    vi.stubEnv("AAIS_AI_FALLBACK_ENDPOINT", "https://fallback.example.test/v1/chat/completions");
+    vi.stubEnv("AAIS_AI_FALLBACK_API_KEY", "stored-fallback-secret-that-must-not-leak");
+    vi.stubEnv("AAIS_AI_FALLBACK_MODEL", "unevaluated-stored-model");
+    const { GET } = await import("@/app/api/system/readiness/route");
+
+    const response = await GET(createAuthorizedReadinessRequest());
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body).toMatchObject({
+      status: "ready",
+      checks: {
+        ai: {
+          status: "ok",
+          evalManifest: "verified",
+          modelFingerprint: modelFingerprint("qwen3.7-max-2026-06-08"),
+        },
+      },
+      issues: [],
+    });
+    expect(JSON.stringify(body)).not.toContain("stored-fallback-secret-that-must-not-leak");
+    expect(JSON.stringify(body)).not.toContain("unevaluated-stored-model");
   });
 
   it("accepts OIDC issuer discovery when explicit provider endpoints are not set", async () => {

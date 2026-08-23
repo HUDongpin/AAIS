@@ -131,6 +131,28 @@ describe("AAIS governed AI provider", () => {
     expect(fractionalManual.primary?.maxRetries).toBe(2);
   });
 
+  it("keeps stored fallback settings dormant when the fallback is explicitly disabled", () => {
+    const configured = readAaisAiRuntimeConfig({
+      ...process.env,
+      AAIS_AI_PROVIDER: "openai-compatible",
+      AAIS_AI_ENDPOINT: "https://ai.example.test/v1/chat/completions",
+      AAIS_AI_API_KEY: "primary-secret-key",
+      AAIS_AI_MODEL: "primary-model",
+      AAIS_AI_FALLBACK_ENABLED: "false",
+      AAIS_AI_FALLBACK_ENDPOINT: "https://fallback.example.test/v1/chat/completions",
+      AAIS_AI_FALLBACK_API_KEY: "stored-fallback-secret-key",
+      AAIS_AI_FALLBACK_MODEL: "stored-fallback-model",
+    });
+
+    expect(configured.configurationStatus).toEqual({
+      primary: "valid",
+      fallback: "missing",
+    });
+    expect(configured.fallback).toBeNull();
+    expect(configured.profile.fallback).toBeNull();
+    expect(JSON.stringify(configured.profile)).not.toContain("stored-fallback-model");
+  });
+
   it("defensively caps direct provider retry inputs at the same finite upper bound", async () => {
     const fetchMock = vi.fn<typeof fetch>(async () =>
       new Response("temporary failure", { status: 503 }),
