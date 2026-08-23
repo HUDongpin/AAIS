@@ -141,6 +141,74 @@ test("the English Professor indicator fits a 375px viewport and becomes static w
   expect(browserErrors).toEqual([]);
 });
 
+test("completed guide history survives reload without exposing hidden processing turns", async ({ page }) => {
+  const browserErrors = collectBrowserErrors(page);
+  await stubLearningSession(page, {
+    guideMessages: [
+      {
+        id: "persisted-user-professor",
+        kind: "user",
+        text: "@Professor 请检查我的下一步",
+      },
+      {
+        id: "persisted-assistant-professor",
+        kind: "assistant",
+        text: "已完成结构化回复。",
+        turns: [
+          {
+            agentId: "A2",
+            label: "Professor",
+            content: "先核对当前证据，再决定下一步。",
+            actions: ["respond"],
+          },
+          {
+            agentId: "A2",
+            label: "Professor",
+            content: "Professor is still processing",
+            actions: ["progress"],
+          },
+          {
+            agentId: "A3",
+            label: "监督智能体",
+            content: "后台监督信息不应显示",
+            actions: ["supervise"],
+          },
+        ],
+        orchestration: {
+          graphId: "learning-ai-guide",
+          topologicalOrder: ["A2", "A3"],
+        },
+      },
+    ],
+  });
+
+  await authenticateAaisE2eActor(page, {
+    id: "S001",
+    role: "student",
+    displayName: "Bobie",
+  });
+  await page.goto("/learning");
+  await waitForAaisLearningClientReady(page);
+
+  const question = page.getByText("@Professor 请检查我的下一步", { exact: true });
+  const answer = page.getByText("先核对当前证据，再决定下一步。", { exact: true });
+  await expect(question).toHaveCount(1);
+  await expect(answer).toHaveCount(1);
+  await expect(page.getByRole("img", { name: "教授大学教育风格头像" })).toBeVisible();
+
+  await page.reload();
+  await waitForAaisLearningClientReady(page);
+
+  await expect(question).toHaveCount(1);
+  await expect(answer).toHaveCount(1);
+  await expect(page.getByText("Professor is still processing", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("后台监督信息不应显示", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("教授正在思考", { exact: true })).toHaveCount(0);
+  await expect(page.getByLabel("向智能导学输入你的想法")).toBeEnabled();
+  expect(await hasNextErrorOverlay(page)).toBe(false);
+  expect(browserErrors).toEqual([]);
+});
+
 function collectBrowserErrors(page: Page) {
   const errors: string[] = [];
   page.on("console", (message) => {
@@ -179,7 +247,9 @@ async function hasNextErrorOverlay(page: Page) {
   );
 }
 
-async function stubLearningSession(page: Page) {
+async function stubLearningSession(page: Page, input: {
+  guideMessages?: unknown[];
+} = {}) {
   await page.route("**/api/learning/session", async (route) => {
     if (route.request().method() !== "GET") {
       await route.fallback();
@@ -195,7 +265,7 @@ async function stubLearningSession(page: Page) {
           activeStage: "training",
           activeTaskId: "training_task_1",
           tasks: [],
-          guideMessages: [],
+          guideMessages: input.guideMessages ?? [],
           events: [],
         },
       }),

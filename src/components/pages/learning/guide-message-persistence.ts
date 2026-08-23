@@ -7,6 +7,7 @@ import type {
   AaisClientSession,
   GuideMessage,
 } from "@/components/pages/learning/learning-page-types";
+import { visibleGuideAgentIds } from "@/components/pages/learning/learning-page-constants";
 
 export function useHydratePersistedGuideMessages(
   persistedGuideMessages: GuideMessage[],
@@ -41,37 +42,55 @@ export function addReadAttachmentMetadataToGuideMessage(
   );
 }
 
-export function getPersistedAttachmentGuideMessages(
+export function getPersistedGuideMessages(
   guideMessages: AaisClientSession["guideMessages"] | undefined,
 ): GuideMessage[] {
   const messages = guideMessages ?? [];
   const restored: GuideMessage[] = [];
   for (let index = 0; index < messages.length; index += 1) {
-    const message = messages[index];
-    if (message?.kind !== "user" || !message.attachments?.length) {
+    const user = messages[index];
+    const assistant = messages[index + 1];
+    if (user?.kind !== "user" || assistant?.kind !== "assistant") {
       continue;
     }
-    restored.push({
-      id: message.id,
-      kind: "user",
-      text: message.text,
-      attachments: message.attachments,
-    });
-    const assistant = messages[index + 1];
-    if (assistant?.kind === "assistant") {
-      restored.push({
-        id: assistant.id,
-        kind: "assistant",
-        text: assistant.text,
-        turns: assistant.turns,
-        trace: assistant.orchestration
-          ? {
-              graphId: assistant.orchestration.graphId,
-              topologicalOrder: assistant.orchestration.topologicalOrder,
-            }
-          : undefined,
-      });
+
+    const visibleTurns = assistant.turns?.filter((turn) =>
+      visibleGuideAgentIds.includes(
+        turn.agentId as (typeof visibleGuideAgentIds)[number],
+      ) && !turn.actions.includes("progress")
+    );
+    const hadStructuredTurns = Boolean(assistant.turns?.length);
+    const hasRenderableReply = visibleTurns?.length
+      || (!hadStructuredTurns && assistant.text.trim());
+    const hasRenderableQuestion = user.text.trim() || user.attachments?.length;
+    if (!hasRenderableQuestion || !hasRenderableReply) {
+      index += 1;
+      continue;
     }
+
+    restored.push({
+      id: user.id,
+      kind: "user",
+      text: user.text,
+      ...(user.attachments?.length ? { attachments: user.attachments } : {}),
+    });
+    restored.push({
+      id: assistant.id,
+      kind: "assistant",
+      text: assistant.text,
+      ...(visibleTurns?.length ? { turns: visibleTurns } : {}),
+      trace: assistant.orchestration
+        ? {
+            graphId: assistant.orchestration.graphId,
+            topologicalOrder: assistant.orchestration.topologicalOrder?.filter((agentId) =>
+              visibleGuideAgentIds.includes(
+                agentId as (typeof visibleGuideAgentIds)[number],
+              )
+            ),
+          }
+        : undefined,
+    });
+    index += 1;
   }
   return restored;
 }
