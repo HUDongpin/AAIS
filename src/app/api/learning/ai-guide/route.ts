@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { NextResponse } from "next/server";
 import { guideStreamHeartbeatIntervalMs } from "@/components/pages/learning/learning-page-constants";
 import {
@@ -12,10 +12,17 @@ import {
 import {
   AaisLearnerDataGenerationConflictError,
   getAaisLearningStore,
+  isAaisGuideMutationInProgressError,
   isAaisLearnerDataGenerationConflictError,
+  isAaisLearnerMutationError,
   isAaisLearnerSessionLimitError,
   isAaisLearningStorageConfigurationError,
   isAaisSessionWriteConflictError,
+  type AaisGuideInteractionMode,
+  type AaisGuideMutationReceipt,
+  type AaisGuideMutationRuntimeSummary,
+  type AaisCompletedGuideMutationReplay,
+  type AaisPersistedGuideExchange,
 } from "@/lib/server/aais-learning-store";
 import { isAaisCsrfError, requireAaisCsrf } from "@/lib/server/aais-csrf";
 import { isAaisAuthError, requireAaisSessionActor } from "@/lib/server/aais-request-auth";
@@ -54,6 +61,13 @@ import {
   AaisResearchVisitNotFoundError,
 } from "@/lib/server/aais-research-store";
 import type { AaisPhase, Locale } from "@/data/aais";
+import {
+  classifyAaisLearnerInput,
+  isAaisRevisionPolicyActionable,
+  pilotClosedTaskIds,
+  selectActionableAaisSupervisionSignals,
+  type AaisLearningMilestoneId,
+} from "@/lib/server/aais-learning-loop";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -66,6 +80,7 @@ type AaisGuideRequestBody = {
   phase?: AaisPhase;
   taskId?: string;
   learnerInput: string;
+  mutationId?: string;
   targetAgentIds?: string[];
   workspaceState?: {
     currentStep?: string;
@@ -108,6 +123,21 @@ export async function POST(request: Request) {
     const body = requireGuideRequestBody(await readAaisBoundedJson(request, {
       maxBytes: maxGuideRequestBodyBytes,
     }));
+    const inputClassification = classifyAaisLearnerInput(body.learnerInput);
+    if (!inputClassification.recognizable) {
+      throw new AaisApiRouteError({
+        code: "AAIS_GUIDE_INPUT_UNRECOGNIZABLE",
+        message: "AAIS guide input is blank or cannot be recognized. Please enter a clear learning request.",
+        status: 400,
+      });
+    }
+    if (inputClassification.explicitHelpRequested && !body.mutationId) {
+      throw new AaisApiRouteError({
+        code: "AAIS_GUIDE_MUTATION_ID_REQUIRED",
+        message: "A stable mutationId is required for scaffolded guide requests.",
+        status: 409,
+      });
+    }
     const targetAgentIds = selectAaisGuideReplyAgentIds(body.learnerInput);
     const attachments = normalizeGuideAttachments(body.workspaceState?.attachments);
     const attachmentMetadata = attachments.map(toAaisGuideAttachmentMetadata);
@@ -132,8 +162,10 @@ export async function POST(request: Request) {
     let guideBudgetCommitted = false;
     let guideBudgetDispatched = false;
     let guideCapacityReserved = false;
+    let guideMutationReceipt: AaisGuideMutationReceipt | null = null;
+    let guideMutationCompleted = false;
     try {
-      const session = await store.readSession(studentId);
+      let session = await store.readSession(studentId);
       if (!session) {
         throw new AaisApiRouteError({
           code: "AAIS_LEARNER_SESSION_NOT_FOUND",
@@ -145,11 +177,60 @@ export async function POST(request: Request) {
         throw new AaisLearnerDataGenerationConflictError();
       }
       guideRunDeadline.signal.throwIfAborted();
-      const task = requireGuideTask(session, body.taskId);
+      let task = requireGuideTask(session, body.taskId);
+      const locale = body.locale === "en-US" ? "en-US" : "zh-CN";
+      const interactionMode: AaisGuideInteractionMode =
+        task.pilotEvidence.aiUseMode === "ai-free"
+          ? "deterministic-local"
+          : "ai-provider";
+      if (body.mutationId) {
+        const claim = await store.claimGuideMutation({
+          studentId,
+          mutationId: body.mutationId,
+          payloadHash: createCanonicalGuideMutationPayloadHash({
+            attachments,
+            dataGeneration: body.dataGeneration,
+            interactionMode,
+            learnerInput: body.learnerInput,
+            locale,
+            phase: task.phase,
+            targetAgentIds,
+            taskId: task.taskId,
+          }),
+          dataGeneration: body.dataGeneration,
+        });
+        if (claim.status === "completed") {
+          return isGuideStreamRequest(request)
+            ? createCompletedGuideReplayStreamResponse(claim.replay)
+            : NextResponse.json(createCompletedGuideReplayJsonBody(claim.replay), {
+                headers: {
+                  "cache-control": "private, no-store",
+                },
+              });
+        }
+        guideMutationReceipt = claim.receipt;
+        session = claim.session;
+        task = requireGuideTask(session, task.taskId);
+      }
+      if (inputClassification.explicitHelpRequested) {
+        const scaffold = await store.requestScaffold(
+          studentId,
+          task.taskId,
+          undefined,
+          body.dataGeneration,
+          {
+            mutationId: deriveGuideScaffoldMutationId(body.mutationId!),
+            sourceText: body.learnerInput,
+          },
+        );
+        session = scaffold.session;
+        task = requireGuideTask(session, task.taskId);
+      }
       guideBudgetReservation = await reserveDailyGuideBudget(
         studentId,
         body.dataGeneration,
         store,
+        interactionMode,
       );
       const budget = guideBudgetReservation.budget;
       guideRunDeadline.signal.throwIfAborted();
@@ -159,23 +240,55 @@ export async function POST(request: Request) {
         dataGeneration: body.dataGeneration,
       });
       guideCapacityReserved = true;
+      const taskGuideMessages = session.guideMessages.filter((message) =>
+        message.taskId === task.taskId && message.phase === task.phase
+      );
+      const actionableSupervisionSignals = selectActionableAaisSupervisionSignals({
+        taskId: task.taskId,
+        artifactText: task.artifactText,
+        pilotEvidence: task.pilotEvidence,
+        supervisionSignals: task.supervisionSignals,
+        guideMessages: taskGuideMessages,
+        events: session.events,
+      });
+      const revisionPolicyActionable = isAaisRevisionPolicyActionable({
+        taskId: task.taskId,
+        pilotEvidence: task.pilotEvidence,
+        guideMessages: taskGuideMessages,
+        events: session.events,
+      });
       const input: AaisGuideInput = {
-        locale: body.locale === "en-US" ? "en-US" : "zh-CN",
+        locale,
         studentId,
         phase: task.phase,
         taskId: task.taskId,
         learnerInput: body.learnerInput,
         conversationHistory: buildBoundedGuideConversationHistory(
-          session.guideMessages.filter((message) =>
-            message.taskId === task.taskId
-            && message.phase === task.phase
-          ),
+          taskGuideMessages,
         ),
         targetAgentIds,
         workspaceState: {
-          currentStep: body.workspaceState?.currentStep ?? "smart-guide",
-          artifactText: body.workspaceState?.artifactText,
-          helpRequestsUsed: body.workspaceState?.helpRequestsUsed,
+          currentStep: task.activeMilestone ?? body.workspaceState?.currentStep ?? "smart-guide",
+          artifactText: task.artifactText,
+          helpRequestsUsed: task.scaffoldRequests,
+          aiUseMode: task.pilotEvidence.aiUseMode,
+          outputEvaluation: revisionPolicyActionable
+            ? "revision_required"
+            : task.pilotEvidence.outputEvaluation === "revision_required"
+              ? "pending"
+              : task.pilotEvidence.outputEvaluation,
+          scaffoldLevel: task.scaffoldState.currentLevel,
+          scaffoldIntensity: task.scaffoldState.intensity,
+          scaffoldFading: task.scaffoldState.fading,
+          directAnswerRequested: inputClassification.directAnswerRequested,
+          taskMode: mapMilestoneToTaskMode(task.activeMilestone),
+          supervisionSignals: actionableSupervisionSignals.slice(-10).map((signal) => ({
+            id: signal.id,
+            type: signal.type,
+            basis: signal.basis,
+            evidence: signal.evidence,
+            recommendedAction: signal.recommendedAction,
+          })),
           ...(attachments.length ? { attachments } : {}),
         },
       };
@@ -190,49 +303,70 @@ export async function POST(request: Request) {
           rawTextWriteLease,
           runDeadline: guideRunDeadline,
           reservationId: guideBudgetReservation.reservationId,
+          interactionMode,
+          metered: guideBudgetReservation.metered,
           dataGeneration: body.dataGeneration,
+          guideMutationReceipt,
         });
         guideRunDeadline = null;
         rawTextWriteLease = null;
         guideCapacityReserved = false;
         guideBudgetReservation = null;
+        guideMutationReceipt = null;
         return response;
       }
 
       guideRunDeadline.signal.throwIfAborted();
-      await dispatchGuideBudgetReservation({
-        store,
-        studentId,
-        reservation: guideBudgetReservation,
-      });
-      guideBudgetDispatched = true;
+      if (guideBudgetReservation.metered) {
+        await dispatchGuideBudgetReservation({
+          store,
+          studentId,
+          reservation: guideBudgetReservation,
+        });
+        guideBudgetDispatched = true;
+      }
       const result = await runGuideGraphWithSignal(input, guideRunDeadline.signal);
       guideRunDeadline.signal.throwIfAborted();
-      await store.appendGuideExchange({
+      const persistedExchange = await store.appendGuideExchange({
         studentId,
         phase: task.phase,
         taskId: task.taskId,
         question: body.learnerInput,
         answer: result.messageText,
+        interactionMode,
         ...(attachmentMetadata.length ? { attachments: attachmentMetadata } : {}),
         turns: result.visibleTurns,
         orchestration: createPersistedGuideOrchestration(result),
-        budgetReservationId: guideBudgetReservation.reservationId,
+        ...(guideMutationReceipt
+          ? {
+              guideMutation: {
+                receipt: guideMutationReceipt,
+                runtime: createGuideMutationRuntimeSummary(result),
+                budget,
+              },
+            }
+          : {}),
+        ...(guideBudgetReservation.metered
+          ? { budgetReservationId: guideBudgetReservation.reservationId }
+          : {}),
         capacityReservationId: guideBudgetReservation.reservationId,
         dataGeneration: body.dataGeneration,
       });
-      guideBudgetCommitted = true;
       guideCapacityReserved = false;
-      recordGuideBudgetAudit({
-        studentId,
-        event: "ai.guide.budget.used",
-        outcome: "success",
-        budget,
-      });
+      guideMutationCompleted = guideMutationReceipt !== null;
+      if (guideBudgetReservation.metered) {
+        guideBudgetCommitted = true;
+        recordGuideBudgetAudit({
+          studentId,
+          event: "ai.guide.budget.used",
+          outcome: "success",
+          budget,
+        });
+      }
 
       return NextResponse.json(
         {
-          ...createGuideJsonBody(result),
+          ...createGuideJsonBody(result, persistedExchange.exchange),
           budget,
         },
         {
@@ -249,11 +383,22 @@ export async function POST(request: Request) {
           reservation: guideBudgetReservation,
         });
       }
-      if (guideBudgetReservation && !guideBudgetCommitted && !guideBudgetDispatched) {
+      if (
+        guideBudgetReservation?.metered
+        && !guideBudgetCommitted
+        && !guideBudgetDispatched
+      ) {
         await releaseGuideBudgetReservation({
           store,
           studentId,
           reservation: guideBudgetReservation,
+        });
+      }
+      if (guideMutationReceipt && !guideMutationCompleted) {
+        await store.releaseGuideMutation({
+          studentId,
+          receipt: guideMutationReceipt,
+          dataGeneration: body.dataGeneration,
         });
       }
       await rawTextWriteLease?.release();
@@ -292,6 +437,7 @@ function requireGuideRequestBody(value: unknown): AaisGuideRequestBody {
   const locale = requireGuideOptionalEnum(value.locale, "locale", ["zh-CN", "en-US"]);
   const phase = requireGuideOptionalEnum(value.phase, "phase", ["training", "practice"]);
   const studentId = requireGuideOptionalSafeId(value.studentId, "studentId");
+  const mutationId = requireGuideOptionalSafeId(value.mutationId, "mutationId");
   const taskId = requireGuideOptionalSafeId(value.taskId, "taskId");
   const targetAgentIds = requireGuideTargetAgentIds(value.targetAgentIds);
   const workspaceState = requireGuideWorkspaceState(value.workspaceState);
@@ -302,10 +448,46 @@ function requireGuideRequestBody(value: unknown): AaisGuideRequestBody {
     ...(locale ? { locale } : {}),
     ...(phase ? { phase } : {}),
     ...(studentId ? { studentId } : {}),
+    ...(mutationId ? { mutationId } : {}),
     ...(taskId ? { taskId } : {}),
     ...(targetAgentIds ? { targetAgentIds } : {}),
     ...(workspaceState ? { workspaceState } : {}),
   };
+}
+
+function deriveGuideScaffoldMutationId(mutationId: string) {
+  return `guide-scaffold-${createHash("sha256").update(mutationId).digest("hex").slice(0, 32)}`;
+}
+
+function createCanonicalGuideMutationPayloadHash(input: {
+  attachments: ReturnType<typeof normalizeAaisGuideAttachments>;
+  dataGeneration: number;
+  interactionMode: AaisGuideInteractionMode;
+  learnerInput: string;
+  locale: Locale;
+  phase: AaisPhase;
+  targetAgentIds: string[];
+  taskId: string;
+}) {
+  const attachmentDigests = input.attachments.map((attachment) => ({
+    name: attachment.name,
+    mediaType: attachment.mediaType,
+    sizeBytes: attachment.sizeBytes,
+    extractedTextHash: createHash("sha256")
+      .update(attachment.extractedText)
+      .digest("hex"),
+  }));
+  return createHash("sha256").update(JSON.stringify({
+    version: 1,
+    dataGeneration: input.dataGeneration,
+    taskId: input.taskId,
+    phase: input.phase,
+    locale: input.locale,
+    interactionMode: input.interactionMode,
+    learnerInput: input.learnerInput,
+    targetAgentIds: input.targetAgentIds,
+    attachments: attachmentDigests,
+  })).digest("hex");
 }
 
 function requireGuideDataGeneration(value: unknown) {
@@ -462,6 +644,13 @@ function requireGuideTask(
       status: 400,
     });
   }
+  if (pilotClosedTaskIds.has(task.taskId)) {
+    throw new AaisApiRouteError({
+      code: "AAIS_TASK_PILOT_CLOSED",
+      message: "AAIS task is closed for the current pilot.",
+      status: 409,
+    });
+  }
   if (task.status === "locked") {
     throw new AaisApiRouteError({
       code: "AAIS_TASK_LOCKED",
@@ -470,6 +659,19 @@ function requireGuideTask(
     });
   }
   return task;
+}
+
+function mapMilestoneToTaskMode(milestoneId: AaisLearningMilestoneId) {
+  if (milestoneId === "modeling") {
+    return "modeling" as const;
+  }
+  if (milestoneId === "exploration") {
+    return "exploration" as const;
+  }
+  if (milestoneId === "articulation" || milestoneId === "reflection") {
+    return "reflection" as const;
+  }
+  return "coaching" as const;
 }
 
 function buildBoundedGuideConversationHistory(
@@ -528,6 +730,23 @@ function getErrorResponseInput(error: unknown) {
       code: "AAIS_CSRF_REQUIRED",
       message: "AAIS CSRF token is required.",
       status: 403,
+    };
+  }
+  if (isAaisGuideMutationInProgressError(error)) {
+    return {
+      code: "AAIS_GUIDE_MUTATION_IN_PROGRESS",
+      message: "This guide request is already in progress. Retry with the same mutationId.",
+      status: 503,
+      headers: {
+        "retry-after": String(error.retryAfterSeconds),
+      },
+    };
+  }
+  if (isAaisLearnerMutationError(error) && error.reason === "mutation_replay_conflict") {
+    return {
+      code: "AAIS_MUTATION_ID_CONFLICT",
+      message: "AAIS mutation id is already bound to different content.",
+      status: 409,
     };
   }
   if (
@@ -594,12 +813,16 @@ function getErrorResponseInput(error: unknown) {
   };
 }
 
-function createGuideJsonBody(result: Awaited<ReturnType<typeof runAaisLearningGuideGraph>>) {
-  const visibleTimings = getVisibleGuideTimings(result);
+function createGuideJsonBody(
+  result: Awaited<ReturnType<typeof runAaisLearningGuideGraph>>,
+  exchange: AaisPersistedGuideExchange,
+) {
+  const runtime = createGuideMutationRuntimeSummary(result);
   return {
     message: {
       text: result.messageText,
     },
+    exchange,
     turns: result.visibleTurns,
     orchestration: {
       graph: {
@@ -607,18 +830,82 @@ function createGuideJsonBody(result: Awaited<ReturnType<typeof runAaisLearningGu
         topologicalOrder: createVisibleGuideTopologicalOrder(result),
       },
       runtime: {
-        engine: result.runtime.engine,
-        status: result.runtime.status,
+        engine: runtime.engine,
+        status: runtime.status,
         timings: {
-          visibleMs: visibleTimings.length
-            ? Math.max(...visibleTimings.map((timing) => timing.elapsedMs))
-            : 0,
-          attempts: visibleTimings.reduce((total, timing) => total + timing.attempts, 0),
-          fallback: visibleTimings.some((timing) => timing.fallback),
-          timeoutReason: visibleTimings.find((timing) => timing.timeoutReason)?.timeoutReason ?? null,
+          visibleMs: runtime.visibleMs,
+          attempts: runtime.attempts,
+          fallback: runtime.fallback,
+          timeoutReason: runtime.timeoutReason,
         },
       },
     },
+  };
+}
+
+function createCompletedGuideReplayJsonBody(replay: AaisCompletedGuideMutationReplay) {
+  return {
+    message: { text: replay.messageText },
+    exchange: replay.exchange,
+    turns: replay.turns,
+    orchestration: {
+      graph: {
+        graphId: replay.orchestration.graphId,
+        topologicalOrder: replay.orchestration.topologicalOrder,
+      },
+      runtime: {
+        engine: replay.runtime.engine,
+        status: replay.runtime.status,
+        timings: {
+          visibleMs: replay.runtime.visibleMs,
+          attempts: replay.runtime.attempts,
+          fallback: replay.runtime.fallback,
+          timeoutReason: replay.runtime.timeoutReason,
+        },
+      },
+    },
+    budget: replay.budget,
+  };
+}
+
+function createGuideMutationRuntimeSummary(
+  result: Awaited<ReturnType<typeof runAaisLearningGuideGraph>>,
+): AaisGuideMutationRuntimeSummary {
+  const visibleTimings = getVisibleGuideTimings(result);
+  const elapsedValues = visibleTimings
+    .map((timing) => Number(timing.elapsedMs))
+    .filter((elapsed) => Number.isFinite(elapsed) && elapsed >= 0);
+  const attempts = visibleTimings.reduce((total, timing) => {
+    const value = Number(timing.attempts);
+    return total + (Number.isSafeInteger(value) && value >= 0 ? value : 0);
+  }, 0);
+  const timeoutReason = visibleTimings.find((timing) =>
+    typeof timing.timeoutReason === "string" && timing.timeoutReason
+  )?.timeoutReason;
+  const agentStatuses: AaisGuideMutationRuntimeSummary["agentStatuses"] = [];
+  for (const turn of result.visibleTurns) {
+    if ((turn.agentId === "A1" || turn.agentId === "A2") && !agentStatuses.some((entry) =>
+      entry.agentId === turn.agentId
+    )) {
+      agentStatuses.push({
+        agentId: turn.agentId,
+        status: visibleTimings.find((timing) => timing.agentId === turn.agentId)?.status
+          ?? "completed",
+      });
+    }
+  }
+  return {
+    engine: typeof result.runtime.engine === "string" && result.runtime.engine
+      ? result.runtime.engine
+      : "aais-guide-runtime",
+    status: typeof result.runtime.status === "string" && result.runtime.status
+      ? result.runtime.status
+      : "completed",
+    visibleMs: elapsedValues.length ? Math.max(...elapsedValues) : 0,
+    attempts,
+    fallback: visibleTimings.some((timing) => timing.fallback === true),
+    timeoutReason: typeof timeoutReason === "string" ? timeoutReason : null,
+    agentStatuses,
   };
 }
 
@@ -727,6 +1014,50 @@ async function runGuideGraphWithSignal(
   }
 }
 
+function createCompletedGuideReplayStreamResponse(
+  replay: AaisCompletedGuideMutationReplay,
+) {
+  const events: string[] = [];
+  const send = (event: string, data: Record<string, unknown>) => {
+    events.push(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+  };
+  send("ack", {
+    status: "accepted",
+    graphId: replay.orchestration.graphId,
+    budget: replay.budget,
+  });
+  for (const turn of replay.turns) {
+    send("agent_start", { agentId: turn.agentId });
+    send("agent_delta", {
+      agentId: turn.agentId,
+      content: turn.content,
+      ...(turn.visualizations?.length ? { visualizations: turn.visualizations } : {}),
+    });
+    send("agent_done", {
+      agentId: turn.agentId,
+      status: replay.runtime.agentStatuses.find((status) =>
+        status.agentId === turn.agentId
+      )?.status ?? "completed",
+    });
+  }
+  if (replay.runtime.fallback) {
+    send("fallback", { timeoutReason: replay.runtime.timeoutReason });
+  }
+  send("done", {
+    status: "completed",
+    exchange: replay.exchange,
+  });
+  return new Response(events.join(""), {
+    status: 200,
+    headers: {
+      "content-type": "text/event-stream;charset=utf-8",
+      "cache-control": "private, no-store",
+      connection: "keep-alive",
+      "x-accel-buffering": "no",
+    },
+  });
+}
+
 function createGuideStreamResponse(input: {
   input: Parameters<typeof runAaisLearningGuideGraph>[0];
   store: ReturnType<typeof getAaisLearningStore>;
@@ -736,7 +1067,10 @@ function createGuideStreamResponse(input: {
   rawTextWriteLease: AaisResearchRawTextWriteLease | null;
   runDeadline: AaisGuideRunDeadline;
   reservationId: string;
+  interactionMode: AaisGuideInteractionMode;
+  metered: boolean;
   dataGeneration: number;
+  guideMutationReceipt: AaisGuideMutationReceipt | null;
 }) {
   const encoder = new TextEncoder();
   const runDeadline = input.runDeadline;
@@ -746,6 +1080,7 @@ function createGuideStreamResponse(input: {
     let budgetCommitted = false;
     let budgetDispatched = false;
     let capacityConsumed = false;
+    let guideMutationCompleted = false;
     const enqueue = (payload: string) => {
       if (downstreamCancelled || runDeadline.signal.aborted) {
         return false;
@@ -768,16 +1103,19 @@ function createGuideStreamResponse(input: {
     try {
         runDeadline.signal.throwIfAborted();
         const targetAgentIds = selectAaisGuideReplyAgentIds(input.input.learnerInput);
-        await dispatchGuideBudgetReservation({
-          store: input.store,
-          studentId: input.input.studentId,
-          reservation: {
-            reservationId: input.reservationId,
-            budget: input.budget,
-            dataGeneration: input.dataGeneration,
-          },
-        });
-        budgetDispatched = true;
+        if (input.metered) {
+          await dispatchGuideBudgetReservation({
+            store: input.store,
+            studentId: input.input.studentId,
+            reservation: {
+              reservationId: input.reservationId,
+              budget: input.budget,
+              dataGeneration: input.dataGeneration,
+              metered: true,
+            },
+          });
+          budgetDispatched = true;
+        }
         send("ack", {
           status: "accepted",
           graphId: "learning-ai-guide",
@@ -789,29 +1127,42 @@ function createGuideStreamResponse(input: {
 
         const result = await runGuideGraphWithSignal(input.input, runDeadline.signal);
         runDeadline.signal.throwIfAborted();
-        await input.store.appendGuideExchange({
+        const persistedExchange = await input.store.appendGuideExchange({
           studentId: input.input.studentId,
           phase: input.input.phase,
           taskId: input.input.taskId,
           question: input.question,
           answer: result.messageText,
+          interactionMode: input.interactionMode,
           ...(input.attachmentMetadata.length
             ? { attachments: input.attachmentMetadata }
             : {}),
           turns: result.visibleTurns,
           orchestration: createPersistedGuideOrchestration(result),
-          budgetReservationId: input.reservationId,
+          ...(input.guideMutationReceipt
+            ? {
+                guideMutation: {
+                  receipt: input.guideMutationReceipt,
+                  runtime: createGuideMutationRuntimeSummary(result),
+                  budget: input.budget,
+                },
+              }
+            : {}),
+          ...(input.metered ? { budgetReservationId: input.reservationId } : {}),
           capacityReservationId: input.reservationId,
           dataGeneration: input.dataGeneration,
         });
-        budgetCommitted = true;
         capacityConsumed = true;
-        recordGuideBudgetAudit({
-          studentId: input.input.studentId,
-          event: "ai.guide.budget.used",
-          outcome: "success",
-          budget: input.budget,
-        });
+        guideMutationCompleted = input.guideMutationReceipt !== null;
+        if (input.metered) {
+          budgetCommitted = true;
+          recordGuideBudgetAudit({
+            studentId: input.input.studentId,
+            event: "ai.guide.budget.used",
+            outcome: "success",
+            budget: input.budget,
+          });
+        }
 
         for (const turn of result.visibleTurns) {
           send("agent_delta", {
@@ -832,7 +1183,10 @@ function createGuideStreamResponse(input: {
             timeoutReason: visibleTimings.find((timing) => timing.timeoutReason)?.timeoutReason ?? null,
           });
         }
-        send("done", { status: "completed" });
+        send("done", {
+          status: "completed",
+          exchange: persistedExchange.exchange,
+        });
       } catch {
         if (!runDeadline.signal.aborted && !downstreamCancelled) {
           send("error", {
@@ -852,10 +1206,11 @@ function createGuideStreamResponse(input: {
               reservationId: input.reservationId,
               budget: input.budget,
               dataGeneration: input.dataGeneration,
+              metered: input.metered,
             },
           });
         }
-        if (!budgetCommitted && !budgetDispatched) {
+        if (input.metered && !budgetCommitted && !budgetDispatched) {
           await releaseGuideBudgetReservation({
             store: input.store,
             studentId: input.input.studentId,
@@ -863,8 +1218,21 @@ function createGuideStreamResponse(input: {
               reservationId: input.reservationId,
               budget: input.budget,
               dataGeneration: input.dataGeneration,
+              metered: true,
             },
           });
+        }
+        if (input.guideMutationReceipt && !guideMutationCompleted) {
+          try {
+            await input.store.releaseGuideMutation({
+              studentId: input.input.studentId,
+              receipt: input.guideMutationReceipt,
+              dataGeneration: input.dataGeneration,
+            });
+          } catch {
+            // The bounded lease still allows a same-payload retry after a
+            // process-level cleanup failure.
+          }
         }
         try {
           await input.rawTextWriteLease?.release();
@@ -917,6 +1285,7 @@ type AaisGuideBudgetReservation = {
   reservationId: string;
   budget: AaisGuideDailyBudget;
   dataGeneration: number;
+  metered: boolean;
 };
 
 class AaisGuideDailyBudgetError extends Error {
@@ -930,8 +1299,23 @@ async function reserveDailyGuideBudget(
   studentId: string,
   dataGeneration: number,
   store: ReturnType<typeof getAaisLearningStore>,
+  interactionMode: AaisGuideInteractionMode,
 ): Promise<AaisGuideBudgetReservation> {
   const limit = readDailyGuideLimit();
+  if (interactionMode === "deterministic-local") {
+    const usage = await store.getDailyGuideUsage(studentId);
+    return {
+      reservationId: randomUUID(),
+      budget: {
+        limit,
+        used: usage.used,
+        remaining: Math.max(0, limit - usage.used),
+        resetsAt: usage.end,
+      },
+      dataGeneration,
+      metered: false,
+    };
+  }
   const reservationId = randomUUID();
   const reservation = await store.reserveDailyGuideRequest({
     reservationId,
@@ -961,6 +1345,7 @@ async function reserveDailyGuideBudget(
     reservationId: reservation.reservationId,
     budget,
     dataGeneration,
+    metered: true,
   };
 }
 

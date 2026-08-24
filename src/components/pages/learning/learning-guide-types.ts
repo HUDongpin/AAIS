@@ -6,8 +6,10 @@ import type { Locale } from "@/data/aais";
 
 export type UseLearningGuideInput = {
   activeTaskId: string;
+  activeTaskPhase?: "training" | "practice";
   artifactText: string;
   displayName: string;
+  isGuideSubmissionBlocked?: () => boolean;
   waitForLearnerDataGeneration: () => number | Promise<number>;
   locale: Locale;
   persistedGuideMessages?: GuideMessage[];

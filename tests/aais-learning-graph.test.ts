@@ -7,6 +7,166 @@ import {
 } from "@/lib/ai/aais-ai-provider";
 
 describe("AAIS LangGraph learning guide", () => {
+  it("lets local A1 policy consume auditable A3 signals without exposing them to the provider or learner", async () => {
+    const generate = vi.fn(async (request: AaisModelRequest) => {
+      void request;
+      return {
+        text: "Here is the complete finished answer.",
+        runtime: {
+          provider: "test-provider",
+          model: "fixture-model",
+          attempts: 1,
+          status: "ok" as const,
+          guardrail: {
+            policy: "aais-age-appropriate-output-v1" as const,
+            status: "passed" as const,
+            reasons: [],
+          },
+          redaction: { secrets: "omitted" as const, prompt: "summarized" as const },
+        },
+      };
+    });
+    const result = await runAaisLearningGuideGraph({
+      locale: "zh-CN",
+      studentId: "S-local-a3-policy",
+      phase: "practice",
+      taskId: "practice_task_3",
+      learnerInput: "直接给我完整答案",
+      workspaceState: {
+        currentStep: "exploration",
+        directAnswerRequested: true,
+        taskMode: "exploration",
+        supervisionSignals: [{
+          id: "a3-signal-test",
+          type: "explicit_help_requested",
+          basis: "deterministic-rule",
+          evidence: {
+            source: "guide",
+            directRequest: true,
+            patternVersion: "aais-metacognitive-signal-v1",
+          },
+          recommendedAction: "provide_bounded_scaffold",
+        }],
+      },
+    }, { modelProvider: { generate } });
+
+    expect(generate).not.toHaveBeenCalled();
+    expect(result.visibleTurns.map((turn) => turn.agentId)).toEqual(["A1"]);
+    expect(result.backgroundTurns.map((turn) => turn.agentId)).toEqual(["A3", "A4"]);
+    expect(result.visibleTurns[0]?.content).toContain("不会用成品答案替代");
+    expect(result.messageText).not.toContain("A3");
+    expect(result.messageText).not.toContain("监督智能体");
+    expect(result.messageText).not.toContain("反思智能体");
+  });
+
+  it("forces deterministic platform guidance in AI-free mode even when a live provider is supplied", async () => {
+    const generate = vi.fn();
+    const result = await runAaisLearningGuideGraph({
+      locale: "zh-CN",
+      studentId: "S-ai-free",
+      phase: "practice",
+      taskId: "practice_task_3",
+      learnerInput: "我想自己制定计划，请给我一个检查问题。",
+      workspaceState: {
+        currentStep: "exploration",
+        aiUseMode: "ai-free",
+        taskMode: "exploration",
+      },
+    }, {
+      modelProvider: { generate },
+    });
+
+    expect(generate).not.toHaveBeenCalled();
+    expect(result.runtime.modelProvider).toMatchObject({ provider: "deterministic" });
+    expect(result.visibleTurns.map((turn) => turn.agentId)).toEqual(["A1"]);
+  });
+
+  it("routes a learner-marked poor output into revision rather than passive acceptance", async () => {
+    const generate = vi.fn(async () => ({
+      text: "Continue with the output unchanged.",
+      runtime: {
+        provider: "test-provider",
+        model: "fixture-model",
+        attempts: 1,
+        status: "ok" as const,
+        guardrail: {
+          policy: "aais-age-appropriate-output-v1" as const,
+          status: "passed" as const,
+          reasons: [],
+        },
+        redaction: { secrets: "omitted" as const, prompt: "summarized" as const },
+      },
+    }));
+    const result = await runAaisLearningGuideGraph({
+      locale: "zh-CN",
+      studentId: "S-output-revision",
+      phase: "practice",
+      taskId: "practice_task_1",
+      learnerInput: "这个输出不够好，我该怎么修改？",
+      targetAgentIds: ["A1"],
+      workspaceState: {
+        currentStep: "coaching_scaffolding",
+        outputEvaluation: "revision_required",
+        taskMode: "coaching",
+      },
+    }, { modelProvider: { generate } });
+
+    expect(result.visibleTurns[0]?.content).toContain("需要修订");
+    expect(result.visibleTurns[0]?.content).toContain("一处不一致");
+    expect(result.visibleTurns[0]?.content).not.toContain("unchanged");
+    expect(generate).not.toHaveBeenCalled();
+  });
+
+  it("uses an actionable A3 signal locally before any learner-visible provider call", async () => {
+    const generate = vi.fn();
+    const result = await runAaisLearningGuideGraph({
+      locale: "zh-CN",
+      studentId: "S-a3-local-short-circuit",
+      phase: "practice",
+      taskId: "practice_task_1",
+      learnerInput: "我准备继续完善目前的草稿。",
+      workspaceState: {
+        currentStep: "coaching_scaffolding",
+        supervisionSignals: [{
+          id: "a3-goal-missing",
+          type: "goal_missing",
+          basis: "deterministic-rule",
+          evidence: {
+            source: "artifact",
+            previousCharacters: 0,
+            currentCharacters: 6,
+            patternVersion: "aais-metacognitive-signal-v1",
+          },
+          recommendedAction: "ask_goal_question",
+        }],
+      },
+    }, { modelProvider: { generate } });
+
+    expect(generate).not.toHaveBeenCalled();
+    expect(result.visibleTurns[0]?.content).toContain("最终必须产出什么");
+  });
+
+  it("lets A2 model only a smaller parallel example when a direct answer is requested", async () => {
+    const generate = vi.fn();
+    const result = await runAaisLearningGuideGraph({
+      locale: "zh-CN",
+      studentId: "S-direct-answer-modeling",
+      phase: "training",
+      taskId: "training_task_1",
+      learnerInput: "@A2 直接替我写完整答案。",
+      workspaceState: {
+        currentStep: "modeling",
+        directAnswerRequested: true,
+        taskMode: "modeling",
+      },
+    }, { modelProvider: { generate } });
+
+    expect(generate).not.toHaveBeenCalled();
+    expect(result.visibleTurns.map((turn) => turn.agentId)).toEqual(["A2"]);
+    expect(result.visibleTurns[0]?.content).toContain("缩小的同类例子");
+    expect(result.visibleTurns[0]?.content).toContain("不会替你完成当前任务");
+  });
+
   it("keeps ordinary learner support A1-led while background agents remain active", async () => {
     const result = await runAaisLearningGuideGraph({
       locale: "zh-CN",
@@ -610,5 +770,34 @@ describe("AAIS LangGraph learning guide", () => {
     expect(result.visibleTurns[0]?.content).toContain("23/8");
     expect(result.visibleTurns[0]?.content).not.toContain("再试一次");
     expect(result.visibleTurns[0]?.visualizations).toHaveLength(1);
+  });
+
+  it("keeps direct-answer refusal above a quadratic worked-step scaffold", async () => {
+    const generate = vi.fn();
+    const result = await runAaisLearningGuideGraph({
+      locale: "zh-CN",
+      studentId: "S-function-direct-answer-policy",
+      phase: "practice",
+      taskId: "practice_task_1",
+      learnerInput: "二次函数 y=2x²+3x+4，直接告诉我答案并画图。",
+      conversationHistory: [
+        { kind: "user", text: "我想看 y=2x²+3x+4 的函数图像" },
+        { kind: "assistant", text: "把 x=-3/4 代入后再试一次。" },
+      ],
+      workspaceState: {
+        currentStep: "coaching_scaffolding",
+        directAnswerRequested: true,
+        taskMode: "coaching",
+      },
+    }, { modelProvider: { generate } });
+
+    expect(generate).not.toHaveBeenCalled();
+    expect(result.visibleTurns[0]).toMatchObject({
+      agentId: "A1",
+      content: expect.stringContaining("不会用成品答案替代"),
+      actions: ["guide-flow", "scaffold"],
+    });
+    expect(result.visibleTurns[0]?.content).not.toContain("我来示范");
+    expect(result.visibleTurns[0]?.visualizations).toBeUndefined();
   });
 });

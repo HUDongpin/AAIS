@@ -9,8 +9,17 @@ import {
   isAaisLearnerTextRevisionConflictError,
   isAaisLearningStorageConfigurationError,
   isAaisSessionWriteConflictError,
+  isAaisTaskCompletionEvidenceError,
   type AaisHistoryDocumentRecord,
 } from "@/lib/server/aais-learning-store";
+import {
+  aaisLearningMilestoneIds,
+  aaisMilestoneEvidenceKinds,
+  isAaisOutputEvaluation,
+  isAaisReflectionOutcome,
+  normalizeAaisLearningMilestoneId,
+  type AaisTaskPilotEvidence,
+} from "@/lib/server/aais-learning-loop";
 import { isAaisCsrfError, requireAaisCsrf } from "@/lib/server/aais-csrf";
 import {
   isAaisAuthError,
@@ -49,24 +58,36 @@ type AaisSessionRequestBody = {
   selfReport?: string;
   accepted?: boolean;
   reason?: string;
+  evidenceKind?: string;
+  endIncomplete?: boolean;
+  pilotEvidence?: Partial<AaisTaskPilotEvidence>;
   activeDocumentId?: string | null;
   documentTitle?: string;
   document?: AaisHistoryDocumentRecord | null;
   dataGeneration?: number;
   expectedArtifactRevision?: number;
   expectedSelfReportRevision?: number;
+  expectedPilotEvidenceRevision?: number;
 };
 
 const maxSessionRequestBodyBytes = 16 * 1024 * 1024;
 const maxArtifactCharacters = 2 * 1024 * 1024;
 const maxTextCharacters = 20_000;
 const maxDocumentTitleCharacters = 200;
-const selectableStageIds = new Set(["assessment", "comparison", "guide", "reflection"]);
+const selectableStageIds = new Set([
+  "assessment",
+  "comparison",
+  "guide",
+  "reflection",
+  ...aaisLearningMilestoneIds,
+]);
 const sessionActions = new Set([
   "archive-artifact",
   "complete-task",
   "record-ai-acceptance",
+  "record-stage-evidence",
   "save-artifact",
+  "save-pilot-evidence",
   "save-self-report",
   "select-stage",
   "select-task",
@@ -131,6 +152,7 @@ export async function PATCH(request: Request) {
           studentId,
           requireStageId(body.stageId),
           dataGeneration,
+          { mutationId: readRequiredId(body.mutationId, "mutationId") },
         );
         return jsonSession(session, actor.role);
       }
@@ -139,6 +161,7 @@ export async function PATCH(request: Request) {
           studentId,
           requireSessionTaskId(body.taskId),
           dataGeneration,
+          { mutationId: readRequiredId(body.mutationId, "mutationId") },
         );
         return jsonSession(session, actor.role);
       }
@@ -147,6 +170,21 @@ export async function PATCH(request: Request) {
           studentId,
           requireSessionTaskId(body.taskId),
           dataGeneration,
+          {
+            endIncomplete: body.endIncomplete === true,
+            mutationId: readRequiredId(body.mutationId, "mutationId"),
+          },
+        );
+        return jsonSession(session, actor.role);
+      }
+      if (action === "record-stage-evidence") {
+        const session = await store.recordStageEvidence(
+          studentId,
+          requireSessionTaskId(body.taskId),
+          requireStageId(body.stageId),
+          requireStageEvidenceKind(body.stageId, body.evidenceKind),
+          dataGeneration,
+          { mutationId: readRequiredId(body.mutationId, "mutationId") },
         );
         return jsonSession(session, actor.role);
       }
@@ -212,6 +250,22 @@ export async function PATCH(request: Request) {
         );
         return jsonSession(session, actor.role);
       }
+      if (action === "save-pilot-evidence") {
+        const session = await store.savePilotEvidence(
+          studentId,
+          requireSessionTaskId(body.taskId),
+          readPilotEvidencePatch(body.pilotEvidence),
+          {
+            dataGeneration,
+            expectedPilotEvidenceRevision: requireExpectedTextRevision(
+              body.expectedPilotEvidenceRevision,
+              "expectedPilotEvidenceRevision",
+            ),
+            mutationId: readRequiredId(body.mutationId, "mutationId"),
+          },
+        );
+        return jsonSession(session, actor.role);
+      }
       if (action === "record-ai-acceptance") {
         if (typeof body.accepted !== "boolean") {
           throwInvalidSessionField("accepted");
@@ -224,6 +278,11 @@ export async function PATCH(request: Request) {
             messageId: readOptionalId(body.messageId, "messageId"),
             reason: readOptionalText(body.reason, "reason", maxTextCharacters),
             dataGeneration,
+            expectedPilotEvidenceRevision: requireExpectedTextRevision(
+              body.expectedPilotEvidenceRevision,
+              "expectedPilotEvidenceRevision",
+            ),
+            mutationId: readRequiredId(body.mutationId, "mutationId"),
           },
         );
         return jsonSession(session, actor.role);
@@ -286,10 +345,22 @@ function requireSessionAction(value: unknown) {
 function validateSessionActionInput(action: string, body: AaisSessionRequestBody) {
   if (action === "select-stage") {
     requireStageId(body.stageId);
+    readRequiredId(body.mutationId, "mutationId");
     return;
   }
   if (action === "select-task" || action === "complete-task") {
     requireSessionTaskId(body.taskId);
+    readRequiredId(body.mutationId, "mutationId");
+    if (body.endIncomplete !== undefined && typeof body.endIncomplete !== "boolean") {
+      throwInvalidSessionField("endIncomplete");
+    }
+    return;
+  }
+  if (action === "record-stage-evidence") {
+    requireSessionTaskId(body.taskId);
+    requireStageId(body.stageId);
+    requireStageEvidenceKind(body.stageId, body.evidenceKind);
+    readRequiredId(body.mutationId, "mutationId");
     return;
   }
   if (action === "save-artifact") {
@@ -323,6 +394,16 @@ function validateSessionActionInput(action: string, body: AaisSessionRequestBody
     requireExpectedTextRevision(body.expectedSelfReportRevision, "expectedSelfReportRevision");
     return;
   }
+  if (action === "save-pilot-evidence") {
+    requireSessionTaskId(body.taskId);
+    readPilotEvidencePatch(body.pilotEvidence);
+    readRequiredId(body.mutationId, "mutationId");
+    requireExpectedTextRevision(
+      body.expectedPilotEvidenceRevision,
+      "expectedPilotEvidenceRevision",
+    );
+    return;
+  }
   if (action === "record-ai-acceptance") {
     requireSessionTaskId(body.taskId);
     if (typeof body.accepted !== "boolean") {
@@ -330,6 +411,11 @@ function validateSessionActionInput(action: string, body: AaisSessionRequestBody
     }
     readOptionalId(body.messageId, "messageId");
     readOptionalText(body.reason, "reason", maxTextCharacters);
+    readRequiredId(body.mutationId, "mutationId");
+    requireExpectedTextRevision(
+      body.expectedPilotEvidenceRevision,
+      "expectedPilotEvidenceRevision",
+    );
   }
 }
 
@@ -343,6 +429,85 @@ function requireStageId(value: unknown) {
     });
   }
   return stageId;
+}
+
+function requireStageEvidenceKind(stageIdValue: unknown, value: unknown) {
+  const stageId = normalizeAaisLearningMilestoneId(stageIdValue);
+  if (!stageId || typeof value !== "string") {
+    throwInvalidSessionField("evidenceKind");
+  }
+  if (!aaisMilestoneEvidenceKinds[stageId].includes(value as never)) {
+    throwInvalidSessionField("evidenceKind");
+  }
+  return value;
+}
+
+function readPilotEvidencePatch(value: unknown): Partial<AaisTaskPilotEvidence> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throwInvalidSessionField("pilotEvidence");
+  }
+  const source = value as Record<string, unknown>;
+  const textFields = [
+    "diagnosisText",
+    "revisedPromptText",
+    "outputEvaluationText",
+    "planningText",
+    "monitoringText",
+    "evaluationText",
+    "articulationText",
+    "articulationDeclineReason",
+    "reflectionText",
+    "reflectionDeclineReason",
+    "expertComparisonText",
+  ] as const;
+  const allowedFields = new Set<string>([
+    ...textFields,
+    "outputEvaluation",
+    "articulationOutcome",
+    "reflectionOutcome",
+    "summaryAcknowledged",
+    "aiUseMode",
+  ]);
+  if (!Object.keys(source).length || Object.keys(source).some((field) => !allowedFields.has(field))) {
+    throwInvalidSessionField("pilotEvidence");
+  }
+  const result: Partial<AaisTaskPilotEvidence> = {};
+  for (const field of textFields) {
+    if (source[field] !== undefined) {
+      result[field] = readOptionalText(source[field], `pilotEvidence.${field}`, maxTextCharacters) ?? "";
+    }
+  }
+  if (source.outputEvaluation !== undefined) {
+    if (!isAaisOutputEvaluation(source.outputEvaluation)) {
+      throwInvalidSessionField("pilotEvidence.outputEvaluation");
+    }
+    result.outputEvaluation = source.outputEvaluation;
+  }
+  if (source.reflectionOutcome !== undefined) {
+    if (!isAaisReflectionOutcome(source.reflectionOutcome)) {
+      throwInvalidSessionField("pilotEvidence.reflectionOutcome");
+    }
+    result.reflectionOutcome = source.reflectionOutcome;
+  }
+  if (source.articulationOutcome !== undefined) {
+    if (!isAaisReflectionOutcome(source.articulationOutcome)) {
+      throwInvalidSessionField("pilotEvidence.articulationOutcome");
+    }
+    result.articulationOutcome = source.articulationOutcome;
+  }
+  if (source.summaryAcknowledged !== undefined) {
+    if (typeof source.summaryAcknowledged !== "boolean") {
+      throwInvalidSessionField("pilotEvidence.summaryAcknowledged");
+    }
+    result.summaryAcknowledged = source.summaryAcknowledged;
+  }
+  if (source.aiUseMode !== undefined) {
+    if (source.aiUseMode !== "ai-supported" && source.aiUseMode !== "ai-free") {
+      throwInvalidSessionField("pilotEvidence.aiUseMode");
+    }
+    result.aiUseMode = source.aiUseMode;
+  }
+  return result;
 }
 
 function requireString(value: unknown, label: string) {
@@ -528,11 +693,17 @@ function getErrorResponseInput(error: unknown) {
           message: "AAIS artifact changed after this edit started. Reload before saving again.",
           status: 409,
         }
-      : {
+      : error.field === "self_report"
+        ? {
           code: "AAIS_SELF_REPORT_REVISION_CONFLICT",
           message: "AAIS self-report changed after this edit started. Reload before saving again.",
           status: 409,
-        };
+        }
+        : {
+            code: "AAIS_PILOT_EVIDENCE_REVISION_CONFLICT",
+            message: "AAIS pilot evidence changed after this edit started. Reload before saving again.",
+            status: 409,
+          };
   }
   if (isAaisLearnerDataGenerationConflictError(error)) {
     return {
@@ -574,6 +745,19 @@ function getErrorResponseInput(error: unknown) {
       status: 400,
     };
   }
+  if (isAaisTaskCompletionEvidenceError(error)) {
+    return {
+      code: "AAIS_TASK_COMPLETION_EVIDENCE_MISSING",
+      message: "AAIS task completion evidence is incomplete.",
+      status: 409,
+      extra: {
+        details: {
+          taskId: error.taskId,
+          completionMissing: error.completionMissing,
+        },
+      },
+    };
+  }
   if (isAaisLearnerMutationError(error)) {
     return getLearnerMutationErrorInput(error.reason);
   }
@@ -610,9 +794,12 @@ function getLearnerMutationErrorInput(
     history_too_large: ["AAIS_HISTORY_TOO_LARGE", "AAIS document history is too large.", 413],
     history_task_mismatch: ["AAIS_HISTORY_TASK_MISMATCH", "AAIS history document does not belong to this task.", 409],
     mutation_replay_conflict: ["AAIS_MUTATION_ID_CONFLICT", "AAIS mutation id is already bound to different content.", 409],
+    pilot_evidence_invalid: ["AAIS_PILOT_EVIDENCE_INVALID", "AAIS pilot evidence is invalid.", 400],
     scaffold_practice_only: ["AAIS_SCAFFOLD_PRACTICE_ONLY", "AAIS scaffolding is available only for practice tasks.", 400],
     scaffold_tool_invalid: ["AAIS_SCAFFOLD_TOOL_INVALID", "AAIS scaffold tool is invalid.", 400],
+    stage_evidence_invalid: ["AAIS_STAGE_EVIDENCE_INVALID", "AAIS stage completion evidence is invalid.", 400],
     stage_invalid: ["AAIS_STAGE_INVALID", "AAIS stage is invalid.", 400],
+    task_pilot_closed: ["AAIS_TASK_PILOT_CLOSED", "AAIS task is closed for the current pilot.", 409],
     task_locked: ["AAIS_TASK_LOCKED", "AAIS task is locked.", 400],
     task_not_active: ["AAIS_TASK_NOT_ACTIVE", "AAIS task is not active.", 409],
     task_unknown: ["AAIS_TASK_UNKNOWN", "AAIS task was not found.", 400],

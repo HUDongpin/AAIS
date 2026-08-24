@@ -1,4 +1,4 @@
-import { useEffect, useRef, type Dispatch, type SetStateAction } from "react";
+import { useEffect, type Dispatch, type SetStateAction } from "react";
 import {
   toAaisGuideAttachmentMetadata,
   type AaisGuideAttachment,
@@ -13,19 +13,17 @@ export function useHydratePersistedGuideMessages(
   persistedGuideMessages: GuideMessage[],
   setGuideMessages: Dispatch<SetStateAction<GuideMessage[]>>,
 ) {
-  const hydratedMessageIdsRef = useRef(new Set<string>());
-
   useEffect(() => {
-    const unseenMessages = persistedGuideMessages.filter((message) => {
-      if (hydratedMessageIdsRef.current.has(message.id)) {
-        return false;
-      }
-      hydratedMessageIdsRef.current.add(message.id);
-      return true;
+    setGuideMessages((current) => {
+      const currentIds = new Set(current.map((message) => message.id));
+      const seenPersistedIds = new Set<string>();
+      const unseenMessages = persistedGuideMessages.filter((message) => {
+        if (seenPersistedIds.has(message.id)) return false;
+        seenPersistedIds.add(message.id);
+        return !currentIds.has(message.id);
+      });
+      return unseenMessages.length ? [...current, ...unseenMessages] : current;
     });
-    if (unseenMessages.length) {
-      setGuideMessages((current) => [...current, ...unseenMessages]);
-    }
   }, [persistedGuideMessages, setGuideMessages]);
 }
 
@@ -72,12 +70,16 @@ export function getPersistedGuideMessages(
       id: user.id,
       kind: "user",
       text: user.text,
+      ...(user.taskId ? { taskId: user.taskId } : {}),
+      ...(user.phase ? { phase: user.phase } : {}),
       ...(user.attachments?.length ? { attachments: user.attachments } : {}),
     });
     restored.push({
       id: assistant.id,
       kind: "assistant",
       text: assistant.text,
+      ...(assistant.taskId ? { taskId: assistant.taskId } : {}),
+      ...(assistant.phase ? { phase: assistant.phase } : {}),
       ...(visibleTurns?.length ? { turns: visibleTurns } : {}),
       trace: assistant.orchestration
         ? {

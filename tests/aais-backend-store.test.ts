@@ -20,9 +20,59 @@ import {
   type AaisLearnerSession,
 } from "@/lib/server/aais-learning-store";
 import * as lrsClient from "@/lib/server/aais-lrs-client";
-import type { AaisEvent } from "@/data/aais";
+import { aaisEventDefinitions, type AaisEvent } from "@/data/aais";
 
 let tempDir: string;
+
+async function completeTrainingTask(
+  store: ReturnType<typeof createAaisLearningStore>,
+  studentId: string,
+) {
+  await store.recordStageEvidence(
+    studentId,
+    "training_task_1",
+    "launch_import",
+    "orientation_acknowledged",
+  );
+  await store.recordStageEvidence(
+    studentId,
+    "training_task_1",
+    "modeling",
+    "expert_model_reviewed",
+  );
+  return store.completeTask(studentId, "training_task_1");
+}
+
+async function completePilotTaskTwo(
+  store: ReturnType<typeof createAaisLearningStore>,
+  studentId: string,
+) {
+  const session = await store.getOrCreateSession(studentId);
+  const task = session.tasks.find((candidate) => candidate.taskId === "practice_task_1");
+  if (!task) throw new Error("Missing pilot Task 2 fixture.");
+  await store.savePilotEvidence(studentId, "practice_task_1", {
+    diagnosisText: "原提示词没有说明评价标准和具体输出范围。",
+    revisedPromptText: "请按明确目标、范围、结构与评价标准生成课程论文大纲。",
+    outputEvaluationText: "输出结构基本符合要求，但证据范围仍需收紧后再使用。",
+    articulationText: "我先诊断提示词，再修订条件，最后检查生成结果是否符合目标。",
+  }, {
+    expectedPilotEvidenceRevision: task.pilotEvidenceRevision,
+    mutationId: `task-two-evidence-${studentId}`,
+  });
+  await store.recordStageEvidence(
+    studentId,
+    "practice_task_1",
+    "coaching_scaffolding",
+    "guided_practice_completed",
+  );
+  await store.recordStageEvidence(
+    studentId,
+    "practice_task_1",
+    "articulation",
+    "strategy_articulated",
+  );
+  return store.completeTask(studentId, "practice_task_1");
+}
 
 beforeEach(async () => {
   tempDir = await mkdtemp(path.join(tmpdir(), "aais-store-"));
@@ -63,6 +113,836 @@ afterEach(async () => {
 });
 
 describe("AAIS backend learning store", () => {
+  it("separates stage opening from completion evidence and gates training on orientation plus modelling", async () => {
+    const store = createAaisLearningStore({ rootDir: tempDir });
+    const initial = await store.getOrCreateSession("stage-evidence-learner");
+    expect(initial.tasks[0]?.completionMissing).toEqual([
+      "orientation_acknowledged",
+      "expert_model_reviewed",
+    ]);
+
+    const opened = await store.selectStage("stage-evidence-learner", "launch_import");
+    expect(opened.tasks[0]?.milestones.find((milestone) => milestone.id === "launch_import"))
+      .toMatchObject({ status: "open", evidenceKinds: [] });
+    expect(opened.events.at(-1)).toMatchObject({
+      event: "stage_selected",
+      detail: { lifecycle: "stage_opened", milestoneId: "launch_import" },
+    });
+    await expect(store.completeTask("stage-evidence-learner", "training_task_1"))
+      .rejects.toMatchObject({
+        completionMissing: ["orientation_acknowledged", "expert_model_reviewed"],
+      });
+
+    const oriented = await store.recordStageEvidence(
+      "stage-evidence-learner",
+      "training_task_1",
+      "launch_import",
+      "orientation_acknowledged",
+    );
+    expect(oriented.tasks[0]?.completionMissing).toEqual(["expert_model_reviewed"]);
+    expect(oriented.events.at(-1)).toMatchObject({
+      event: "milestone_evidence_recorded",
+      detail: {
+        lifecycle: "completion_evidence_recorded",
+        evidenceKind: "orientation_acknowledged",
+      },
+    });
+    expect(oriented.events.filter((event) => event.event === "stage_selected")).toHaveLength(1);
+    expect(oriented.events.some((event) =>
+      event.event === "expert_model_viewed" && event.task === "training_task_1"
+    )).toBe(false);
+
+    const modeled = await store.recordStageEvidence(
+      "stage-evidence-learner",
+      "training_task_1",
+      "modeling",
+      "expert_model_reviewed",
+    );
+    expect(modeled.tasks[0]?.completionMissing).toEqual([]);
+    expect(modeled.events.some((event) => event.event === "expert_model_viewed")).toBe(true);
+    const completed = await store.completeTask("stage-evidence-learner", "training_task_1");
+    expect(completed.tasks[0]).toMatchObject({
+      status: "completed",
+      completionOutcome: "evidence_complete",
+    });
+  });
+
+  it("keeps local audit facts out of product events and the LRS outbox", async () => {
+    const database = createFakeDatabaseClient();
+    database.seedEnrollment({
+      user_id: "local-audit-teacher",
+      course_id: "cognitive-apprenticeship",
+      cohort: "local-audit",
+      role: "teacher",
+      status: "active",
+    });
+    database.seedEnrollment({
+      user_id: "local-audit-boundary",
+      course_id: "cognitive-apprenticeship",
+      cohort: "local-audit",
+      role: "student",
+      status: "active",
+    });
+    const store = createAaisLearningStore({ database });
+    const session = await store.recordStageEvidence(
+      "local-audit-boundary",
+      "training_task_1",
+      "launch_import",
+      "orientation_acknowledged",
+    );
+    expect(session.events.some((event) => event.event === "milestone_evidence_recorded"))
+      .toBe(true);
+    expect(database.outboxRows.some((row) => row.payload.event === "milestone_evidence_recorded"))
+      .toBe(false);
+    await store.recordStageEvidence(
+      "local-audit-boundary",
+      "training_task_1",
+      "modeling",
+      "expert_model_reviewed",
+    );
+    await store.completeTask("local-audit-boundary", "training_task_1");
+    await store.selectTask("local-audit-boundary", "practice_task_1");
+    await completePilotTaskTwo(store, "local-audit-boundary");
+    await store.saveArtifact("local-audit-boundary", "practice_task_3", "稿".repeat(800));
+    const taskFour = (await store.getOrCreateSession("local-audit-boundary")).tasks.find(
+      (task) => task.taskId === "practice_task_3",
+    );
+    if (!taskFour) throw new Error("Missing local audit Task 4 fixture.");
+    const audited = await store.savePilotEvidence(
+      "local-audit-boundary",
+      "practice_task_3",
+      {
+        planningText: "先确定目标和结构，再分配证据。",
+        monitoringText: "每段完成后检查目标、证据和篇幅。",
+        evaluationText: "依据准确性、相关性和结构完整性评价。",
+        outputEvaluationText: "输出结构可用，但证据仍需复核。",
+        articulationText: "我先规划，再监控，最后评价并修订。",
+        reflectionOutcome: "declined",
+        reflectionDeclineReason: "本地保存但不外发的原因。",
+      },
+      {
+        expectedPilotEvidenceRevision: taskFour.pilotEvidenceRevision,
+        mutationId: "local-audit-report-and-outcome",
+      },
+    );
+    expect(audited.events.some((event) => event.event === "a4_reflection_report_generated"))
+      .toBe(true);
+    expect(audited.events.some((event) => event.event === "pilot_outcome_recorded"))
+      .toBe(true);
+    const localAuditFacts = database.eventRows.filter((row) =>
+      row.event === "milestone_evidence_recorded"
+      || row.event === "a4_reflection_report_generated"
+      || row.event === "pilot_outcome_recorded"
+    );
+    expect(localAuditFacts).toEqual([]);
+    const outboxPayloads = JSON.stringify(database.outboxRows.map((row) => row.payload));
+    expect(outboxPayloads).not.toContain("a4_reflection_report_generated");
+    expect(outboxPayloads).not.toContain("pilot_outcome_recorded");
+    expect(outboxPayloads).not.toContain("analyze_task");
+    expect(outboxPayloads).not.toContain("reason_length");
+    expect(aaisEventDefinitions.milestone_evidence_recorded.lrsEligible).toBe(false);
+    expect(aaisEventDefinitions.a4_reflection_report_generated.lrsEligible).toBe(false);
+    expect(aaisEventDefinitions.pilot_outcome_recorded.lrsEligible).toBe(false);
+
+    const analytics = await store.getEducatorCohortAnalytics({
+      actorId: "local-audit-teacher",
+      actorRole: "teacher",
+    }, {
+      phase: "practice",
+      task: "practice_task_3",
+    });
+    expect(analytics).toMatchObject({
+      learners: [{
+        activePracticeTaskId: "practice_task_3",
+        reflectionStatus: "evidence_present",
+      }],
+      integrations: {
+        factLayer: "aais_events",
+      },
+    });
+    expect(JSON.stringify(analytics)).not.toContain("先确定目标和结构，再分配证据。");
+    expect(JSON.stringify(analytics)).not.toContain("本地保存但不外发的原因。");
+    const cohortQuery = database.queries.find((query) =>
+      /session_reflection_evidence_by_session as/i.test(query.sql)
+    );
+    expect(cohortQuery?.sql).toMatch(/jsonb_array_elements/i);
+    expect(cohortQuery?.sql).not.toMatch(/select\s+learner_session\.payload\b/i);
+    expect(JSON.stringify(cohortQuery?.params)).not.toContain("先确定目标和结构，再分配证据。");
+    expect(JSON.stringify(cohortQuery?.params)).not.toContain("本地保存但不外发的原因。");
+
+    const malformedLegacySession = structuredClone(audited);
+    const malformedTask = malformedLegacySession.tasks.find((task) =>
+      task.taskId === "practice_task_3"
+    );
+    if (!malformedTask) throw new Error("Missing malformed legacy Task 4 fixture.");
+    (malformedTask as unknown as { reflectionReport: unknown }).reflectionReport = {
+      version: "legacy-malformed-report",
+      expertModelId: "legacy-expert",
+      expertStepIds: { unexpected: true },
+    };
+    database.seedSessionPayload(
+      "local-audit-boundary",
+      malformedLegacySession,
+      database.getSessionVersion("local-audit-boundary") ?? 0,
+    );
+    const malformedAnalytics = await store.getEducatorCohortAnalytics({
+      actorId: "local-audit-teacher",
+      actorRole: "teacher",
+    }, {
+      phase: "practice",
+      task: "practice_task_3",
+    });
+    expect(malformedAnalytics.learners[0]?.reflectionStatus)
+      .toBe("needs_reflection_evidence");
+  });
+
+  it("persists AI-free guide exchanges locally without AI quota or analytics facts", async () => {
+    const database = createFakeDatabaseClient();
+    const store = createAaisLearningStore({ database });
+
+    const result = await store.appendGuideExchange({
+      studentId: "ai-free-local-guide",
+      phase: "training",
+      taskId: "training_task_1",
+      question: "请用静态量规提示我下一步。",
+      answer: "先写下目标、约束和一个可核查的评价依据。",
+      interactionMode: "deterministic-local",
+      orchestration: {
+        graphId: "learning-ai-guide",
+        topologicalOrder: ["A1"],
+        threadId: "ai-free-local-thread",
+      },
+    });
+
+    const localEvents = result.session.events.filter((event) =>
+      event.event === "deterministic_guide_prompt_submitted"
+      || event.event === "deterministic_guide_response_completed"
+    );
+    expect(localEvents).toHaveLength(2);
+    expect(localEvents.every((event) =>
+      event.agent === "platform"
+      && event.detail.external_provider_contacted === false
+      && event.detail.raw_text_included === false
+      && event.detail.storage_scope === "learner_session_only"
+    )).toBe(true);
+    expect(result.session.events.some((event) =>
+      event.event === "ai_prompt_submitted" || event.event === "ai_response_completed"
+    )).toBe(false);
+    expect(database.eventRows.some((row) =>
+      row.event === "deterministic_guide_prompt_submitted"
+      || row.event === "deterministic_guide_response_completed"
+    )).toBe(false);
+    expect(JSON.stringify(database.outboxRows)).not.toContain("deterministic_guide_");
+    await expect(store.getDailyGuideUsage("ai-free-local-guide")).resolves.toMatchObject({
+      used: 0,
+    });
+    const analytics = await store.getAnalytics("ai-free-local-guide");
+    expect(analytics.dashboard.coachingEffect.aiInteractions).toBe(0);
+  });
+
+  it("allows only task-owned milestones with saved evidence and canonical ordering", async () => {
+    const store = createAaisLearningStore({ rootDir: tempDir });
+    await expect(store.recordStageEvidence(
+      "milestone-contract-learner",
+      "training_task_1",
+      "reflection",
+      "reflection_submitted",
+    )).rejects.toMatchObject({ reason: "stage_evidence_invalid" });
+    await expect(store.recordStageEvidence(
+      "milestone-contract-learner",
+      "training_task_1",
+      "modeling",
+      "expert_model_reviewed",
+    )).rejects.toMatchObject({ reason: "stage_evidence_invalid" });
+    const opened = await store.selectStage("milestone-contract-learner", "modeling");
+    expect(opened.tasks[0]?.milestones.find((milestone) => milestone.id === "modeling"))
+      .toMatchObject({ status: "open", evidenceKinds: [] });
+    await expect(store.recordStageEvidence(
+      "milestone-contract-learner",
+      "training_task_1",
+      "modeling",
+      "expert_model_reviewed",
+    )).rejects.toMatchObject({ reason: "stage_evidence_invalid" });
+
+    await completeTrainingTask(store, "milestone-contract-learner");
+    await store.selectTask("milestone-contract-learner", "practice_task_1");
+    await expect(store.recordStageEvidence(
+      "milestone-contract-learner",
+      "practice_task_1",
+      "coaching_scaffolding",
+      "guided_practice_completed",
+    )).rejects.toMatchObject({ reason: "stage_evidence_invalid" });
+    await expect(store.recordStageEvidence(
+      "milestone-contract-learner",
+      "practice_task_1",
+      "summary_completion",
+      "summary_acknowledged",
+    )).rejects.toMatchObject({ reason: "stage_evidence_invalid" });
+  });
+
+  it("protects structured pilot evidence with revision and idempotency fences", async () => {
+    const store = createAaisLearningStore({ rootDir: tempDir });
+    await completeTrainingTask(store, "pilot-revision-learner");
+    await store.selectTask("pilot-revision-learner", "practice_task_1");
+    const patch = { diagnosisText: "原提示词缺少目标范围、评价标准和输出约束。" };
+    const first = await store.savePilotEvidence(
+      "pilot-revision-learner",
+      "practice_task_1",
+      patch,
+      {
+        expectedPilotEvidenceRevision: 0,
+        mutationId: "pilot-evidence-save-1",
+      },
+    );
+    expect(first.tasks.find((task) => task.taskId === "practice_task_1")?.pilotEvidenceRevision)
+      .toBe(1);
+
+    const replay = await store.savePilotEvidence(
+      "pilot-revision-learner",
+      "practice_task_1",
+      patch,
+      {
+        expectedPilotEvidenceRevision: 0,
+        mutationId: "pilot-evidence-save-1",
+      },
+    );
+    expect(replay.tasks.find((task) => task.taskId === "practice_task_1")?.pilotEvidenceRevision)
+      .toBe(1);
+
+    await expect(store.savePilotEvidence(
+      "pilot-revision-learner",
+      "practice_task_1",
+      { diagnosisText: "同一 mutation id 的不同内容必须拒绝。" },
+      {
+        expectedPilotEvidenceRevision: 0,
+        mutationId: "pilot-evidence-save-1",
+      },
+    )).rejects.toMatchObject({ reason: "mutation_replay_conflict" });
+
+    await expect(store.savePilotEvidence(
+      "pilot-revision-learner",
+      "practice_task_1",
+      { revisedPromptText: "另一个标签页基于旧 revision 保存。" },
+      {
+        expectedPilotEvidenceRevision: 0,
+        mutationId: "pilot-evidence-save-2",
+      },
+    )).rejects.toMatchObject({ field: "pilot_evidence" });
+  });
+
+  it("uses canonical four-level scaffold content before fading into self-check", async () => {
+    const store = createAaisLearningStore({ rootDir: tempDir });
+    await completeTrainingTask(store, "scaffold-level-learner");
+    await store.selectTask("scaffold-level-learner", "practice_task_1");
+    const results = [];
+    for (let index = 0; index < 5; index += 1) {
+      results.push(await store.requestScaffold(
+        "scaffold-level-learner",
+        "practice_task_1",
+        "pause-prompt",
+      ));
+    }
+    expect(results.map((result) => ({
+      level: result.level,
+      toolId: result.tool.id,
+      mode: result.mode,
+      fading: result.fading,
+    }))).toEqual([
+      { level: 1, toolId: "stage-checklist", mode: "tool-list", fading: false },
+      { level: 2, toolId: "sentence-starters", mode: "tool-list", fading: false },
+      { level: 3, toolId: "pause-prompt", mode: "tool-list", fading: false },
+      { level: 4, toolId: "contrast-case", mode: "tool-list", fading: false },
+      { level: 1, toolId: "stage-checklist", mode: "self-check", fading: true },
+    ]);
+    expect(new Set(results.slice(0, 4).map((result) => result.tool.body)).size).toBe(4);
+    expect(results[4]?.tool.body).toContain("先不查看新的示范");
+    expect(results[4]?.tool.body).not.toBe(results[0]?.tool.body);
+    expect(results[4]).toMatchObject({
+      fadingReason: "direct_assists_exhausted",
+      remainingDirectAssists: 0,
+      evidenceSnapshot: { rawTextIncluded: false },
+    });
+  });
+
+  it("fades one scaffold after structured evidence improves without consuming a direct assist", async () => {
+    const store = createAaisLearningStore({ rootDir: tempDir });
+    const studentId = "evidence-aware-fading-learner";
+    await completeTrainingTask(store, studentId);
+    await store.selectTask(studentId, "practice_task_1");
+    const first = await store.requestScaffold(studentId, "practice_task_1", "stage-checklist");
+    expect(first).toMatchObject({
+      mode: "tool-list",
+      level: 1,
+      remainingDirectAssists: 3,
+      fading: false,
+      evidenceSnapshot: {
+        structuredFieldsCompleted: 0,
+        artifactVisibleCharacterBucket: "under_8",
+        completedMilestones: 0,
+        rawTextIncluded: false,
+      },
+    });
+    const task = first.session.tasks.find((candidate) => candidate.taskId === "practice_task_1");
+    if (!task) throw new Error("Missing evidence-aware scaffold task.");
+    const diagnosisText = "原提示词缺少目标、范围和评价标准。";
+    await store.savePilotEvidence(studentId, "practice_task_1", { diagnosisText }, {
+      expectedPilotEvidenceRevision: task.pilotEvidenceRevision,
+      mutationId: "evidence-aware-fading-diagnosis",
+    });
+
+    const earlyFade = await store.requestScaffold(
+      studentId,
+      "practice_task_1",
+      "sentence-starters",
+    );
+    expect(earlyFade).toMatchObject({
+      requestCount: 2,
+      mode: "self-check",
+      fading: true,
+      fadingReason: "evidence_improved",
+      remainingDirectAssists: 3,
+      evidenceSnapshot: {
+        structuredFieldsCompleted: 1,
+        rawTextIncluded: false,
+      },
+    });
+    const persistedTask = earlyFade.session.tasks.find((candidate) =>
+      candidate.taskId === "practice_task_1"
+    );
+    expect(persistedTask?.scaffoldHistory.at(-1)).toMatchObject({
+      mode: "self-check",
+      fadingReason: "evidence_improved",
+      remainingDirectAssists: 3,
+      evidenceSnapshot: { structuredFieldsCompleted: 1, rawTextIncluded: false },
+    });
+    expect(JSON.stringify(persistedTask?.scaffoldHistory.at(-1)?.evidenceSnapshot))
+      .not.toContain(diagnosisText);
+    const scaffoldEvent = earlyFade.session.events.filter((event) =>
+      event.event === "scaffold_request" && event.task === "practice_task_1"
+    ).at(-1);
+    expect(scaffoldEvent?.detail).not.toHaveProperty("evidenceSnapshot");
+    expect(scaffoldEvent?.detail).not.toHaveProperty("fadingReason");
+
+    const reloadedStore = createAaisLearningStore({ rootDir: tempDir });
+    const resumedDirect = await reloadedStore.requestScaffold(
+      studentId,
+      "practice_task_1",
+      "pause-prompt",
+    );
+    expect(resumedDirect).toMatchObject({
+      requestCount: 3,
+      mode: "tool-list",
+      level: 2,
+      fading: false,
+      remainingDirectAssists: 2,
+    });
+    expect(resumedDirect).not.toHaveProperty("fadingReason");
+  });
+
+  it("uses milestone and artifact buckets for fading while keeping snapshots task-isolated", async () => {
+    const store = createAaisLearningStore({ rootDir: tempDir });
+    const studentId = "evidence-aware-task-isolation";
+    const first = await store.requestScaffold(studentId, "training_task_1", "stage-checklist");
+    expect(first.evidenceSnapshot).toMatchObject({
+      artifactVisibleCharacterBucket: "under_8",
+      completedMilestones: 0,
+    });
+    await store.recordStageEvidence(
+      studentId,
+      "training_task_1",
+      "launch_import",
+      "orientation_acknowledged",
+    );
+    const milestoneFade = await store.requestScaffold(
+      studentId,
+      "training_task_1",
+      "sentence-starters",
+    );
+    expect(milestoneFade).toMatchObject({
+      mode: "self-check",
+      fadingReason: "evidence_improved",
+      remainingDirectAssists: 3,
+      evidenceSnapshot: { completedMilestones: 1 },
+    });
+    await store.saveArtifact(studentId, "training_task_1", "稿".repeat(100));
+    const artifactFade = await store.requestScaffold(
+      studentId,
+      "training_task_1",
+      "pause-prompt",
+    );
+    expect(artifactFade).toMatchObject({
+      mode: "self-check",
+      fadingReason: "evidence_improved",
+      remainingDirectAssists: 3,
+      evidenceSnapshot: { artifactVisibleCharacterBucket: "100_799" },
+    });
+
+    await store.recordStageEvidence(
+      studentId,
+      "training_task_1",
+      "modeling",
+      "expert_model_reviewed",
+    );
+    await store.completeTask(studentId, "training_task_1");
+    await store.selectTask(studentId, "practice_task_1");
+    const taskTwo = (await store.getOrCreateSession(studentId)).tasks.find((candidate) =>
+      candidate.taskId === "practice_task_1"
+    );
+    if (!taskTwo) throw new Error("Missing task-isolated scaffold fixture.");
+    await store.savePilotEvidence(studentId, "practice_task_1", {
+      diagnosisText: "任务二在第一次求助前已经有独立证据。",
+    }, {
+      expectedPilotEvidenceRevision: taskTwo.pilotEvidenceRevision,
+      mutationId: "task-isolated-evidence-baseline",
+    });
+    const taskTwoFirst = await store.requestScaffold(
+      studentId,
+      "practice_task_1",
+      "stage-checklist",
+    );
+    expect(taskTwoFirst).toMatchObject({
+      mode: "tool-list",
+      level: 1,
+      fading: false,
+      remainingDirectAssists: 3,
+      evidenceSnapshot: { structuredFieldsCompleted: 1 },
+    });
+  });
+
+  it("keeps Task 4 reflection refusal auditable while allowing an ended-incomplete close", async () => {
+    const store = createAaisLearningStore({ rootDir: tempDir });
+    await completeTrainingTask(store, "reflection-decline-learner");
+    await store.selectTask("reflection-decline-learner", "practice_task_1");
+    await completePilotTaskTwo(store, "reflection-decline-learner");
+    const before = await store.getOrCreateSession("reflection-decline-learner");
+    const taskFour = before.tasks.find((task) => task.taskId === "practice_task_3");
+    if (!taskFour) throw new Error("Missing pilot Task 4 fixture.");
+    expect(taskFour.reflectionReport).toBeNull();
+    await store.saveArtifact(
+      "reflection-decline-learner",
+      "practice_task_3",
+      "稿".repeat(800),
+    );
+    await store.savePilotEvidence(
+      "reflection-decline-learner",
+      "practice_task_3",
+      {
+        planningText: "先确定受众、目标和交付结构，再开始撰写。",
+        monitoringText: "每完成一节就核对目标、证据和篇幅是否一致。",
+        evaluationText: "按准确性、相关性、结构完整性和可执行性评价。",
+        outputEvaluationText: "生成结果结构可用，但证据边界仍需人工复核。",
+        articulationText: "我先规划，再监控生成过程，最后按标准评价并修订。",
+        reflectionOutcome: "declined",
+        reflectionDeclineReason: "本次不填写反思，稍后可继续。",
+        reflectionText: "旧反思原文仍保留，但本次明确选择暂不提交。",
+        expertComparisonText: "旧对照原文仍保留，之后可以继续修订再提交。",
+      },
+      {
+        expectedPilotEvidenceRevision: taskFour.pilotEvidenceRevision,
+        mutationId: "reflection-declined",
+      },
+    );
+    await store.recordStageEvidence(
+      "reflection-decline-learner",
+      "practice_task_3",
+      "exploration",
+      "artifact_submitted",
+    );
+    await store.recordStageEvidence(
+      "reflection-decline-learner",
+      "practice_task_3",
+      "articulation",
+      "strategy_articulated",
+    );
+    const ended = await store.completeTask(
+      "reflection-decline-learner",
+      "practice_task_3",
+      undefined,
+      { endIncomplete: true },
+    );
+    const endedTask = ended.tasks.find((task) => task.taskId === "practice_task_3");
+    expect(endedTask).toMatchObject({
+      status: "completed",
+      completionOutcome: "ended_incomplete",
+    });
+    expect(endedTask?.completionMissing).toContain("reflect_after_task_four");
+    expect(endedTask?.reflectionReport).not.toBeNull();
+    expect(endedTask?.reflectionReport?.expertStepIds).toEqual([
+      "analyze_task",
+      "set_learning_goals",
+      "draft_prompt",
+      "monitor_generation",
+      "evaluate_and_revise",
+    ]);
+    expect(JSON.stringify(endedTask?.reflectionReport)).not.toContain(
+      "先确定受众、目标和交付结构",
+    );
+    expect(endedTask?.pilotOutcomeAudit.at(-1)).toMatchObject({
+      stage: "reflection",
+      outcome: "declined",
+      reasonLength: 14,
+      attempt: 1,
+      rawReasonIncluded: false,
+    });
+    expect(ended.events.some((event) =>
+      event.event === "a4_reflection_report_generated"
+      && event.detail.storage_scope === "learner_session_only"
+    )).toBe(true);
+    expect(ended.events.some((event) =>
+      event.event === "pilot_outcome_recorded"
+      && event.detail.storage_scope === "learner_session_only"
+      && event.detail.raw_reason_included === false
+    )).toBe(true);
+    expect(endedTask?.supervisionSignals.at(-1)).toMatchObject({
+      type: "reflection_missing",
+      basis: "deterministic-rule",
+      recommendedAction: "invite_reflection",
+    });
+    expect(ended.events.at(-1)?.detail).toMatchObject({
+      completionOutcome: "ended_incomplete",
+    });
+  });
+
+  it("allows Task 2 articulation refusal to end incomplete without fabricating evidence", async () => {
+    const store = createAaisLearningStore({ rootDir: tempDir });
+    await completeTrainingTask(store, "articulation-decline-learner");
+    await store.selectTask("articulation-decline-learner", "practice_task_1");
+    const session = await store.getOrCreateSession("articulation-decline-learner");
+    const task = session.tasks.find((candidate) => candidate.taskId === "practice_task_1");
+    if (!task) throw new Error("Missing Task 2 refusal fixture.");
+    await expect(store.savePilotEvidence("articulation-decline-learner", "practice_task_1", {
+      articulationOutcome: "declined",
+      articulationDeclineReason: "尚未完成其他练习证据。",
+    }, {
+      expectedPilotEvidenceRevision: task.pilotEvidenceRevision,
+      mutationId: "task-two-premature-articulation-decline",
+    })).resolves.toBeDefined();
+    await expect(store.completeTask(
+      "articulation-decline-learner",
+      "practice_task_1",
+      undefined,
+      { endIncomplete: true },
+    )).rejects.toMatchObject({
+      completionMissing: expect.arrayContaining([
+        "diagnose_original_prompt",
+        "submit_revised_prompt",
+        "evaluate_generated_outline",
+      ]),
+    });
+    const afterPrematureDecline = await store.getOrCreateSession("articulation-decline-learner");
+    const afterPrematureTask = afterPrematureDecline.tasks.find((candidate) =>
+      candidate.taskId === "practice_task_1"
+    );
+    if (!afterPrematureTask) throw new Error("Missing premature-decline Task 2 fixture.");
+    await store.savePilotEvidence("articulation-decline-learner", "practice_task_1", {
+      diagnosisText: "原提示词缺少目标、范围和评价标准。",
+      revisedPromptText: "请按目标、范围、结构和评价标准生成大纲。",
+      outputEvaluationText: "生成结构基本可用，但证据边界仍需修订。",
+      articulationText: "旧表达原文仍保留，但本次明确选择暂不提交。",
+      articulationOutcome: "declined",
+      articulationDeclineReason: "本次先跳过阐述，之后仍可补交。",
+    }, {
+      expectedPilotEvidenceRevision: afterPrematureTask.pilotEvidenceRevision,
+      mutationId: "task-two-articulation-declined",
+    });
+    await store.recordStageEvidence(
+      "articulation-decline-learner",
+      "practice_task_1",
+      "coaching_scaffolding",
+      "guided_practice_completed",
+    );
+
+    const ended = await store.completeTask(
+      "articulation-decline-learner",
+      "practice_task_1",
+      undefined,
+      { endIncomplete: true },
+    );
+    expect(ended.activeTaskId).toBe("practice_task_3");
+    expect(ended.tasks.find((candidate) => candidate.taskId === "practice_task_1"))
+      .toMatchObject({
+        status: "completed",
+        completionOutcome: "ended_incomplete",
+        completionMissing: ["articulate_task_two_process"],
+      });
+    expect(ended.tasks.find((candidate) => candidate.taskId === "practice_task_2")?.status)
+      .toBe("locked");
+    expect(ended.tasks.find((candidate) => candidate.taskId === "practice_task_3")?.status)
+      .toBe("active");
+    expect(ended.tasks.find((candidate) => candidate.taskId === "practice_task_1")
+      ?.pilotOutcomeAudit.at(-1)).toMatchObject({
+        stage: "articulation",
+        outcome: "declined",
+        attempt: 2,
+        rawReasonIncluded: false,
+      });
+
+    const endedTask = ended.tasks.find((candidate) => candidate.taskId === "practice_task_1");
+    if (!endedTask) throw new Error("Missing ended Task 2 fixture.");
+    const continued = await store.savePilotEvidence(
+      "articulation-decline-learner",
+      "practice_task_1",
+      {
+        articulationText: "补交说明：我先诊断提示词，再修订条件，最后按标准评价输出。",
+        articulationOutcome: "submitted",
+      },
+      {
+        expectedPilotEvidenceRevision: endedTask.pilotEvidenceRevision,
+        mutationId: "task-two-articulation-continued",
+      },
+    );
+    expect(continued.tasks.find((candidate) => candidate.taskId === "practice_task_1"))
+      .toMatchObject({
+        status: "completed",
+        completionOutcome: "ended_incomplete",
+        completionMissing: ["articulate_task_two_process"],
+      });
+    const upgraded = await store.recordStageEvidence(
+      "articulation-decline-learner",
+      "practice_task_1",
+      "articulation",
+      "strategy_articulated",
+    );
+    expect(upgraded.tasks.find((candidate) => candidate.taskId === "practice_task_1"))
+      .toMatchObject({
+        status: "completed",
+        completionOutcome: "evidence_complete",
+        completionMissing: [],
+      });
+    expect(continued.tasks.find((candidate) => candidate.taskId === "practice_task_1")
+      ?.pilotOutcomeAudit.at(-1)).toMatchObject({
+        stage: "articulation",
+        outcome: "submitted",
+        attempt: 3,
+      });
+  });
+
+  it("uses visible characters for the authoritative 800-character Task 4 gate", async () => {
+    const store = createAaisLearningStore({ rootDir: tempDir });
+    await completeTrainingTask(store, "visible-character-gate");
+    await store.selectTask("visible-character-gate", "practice_task_1");
+    await completePilotTaskTwo(store, "visible-character-gate");
+    const taskFour = (await store.getOrCreateSession("visible-character-gate")).tasks.find(
+      (candidate) => candidate.taskId === "practice_task_3",
+    );
+    if (!taskFour) throw new Error("Missing Task 4 visible-character fixture.");
+    await store.savePilotEvidence("visible-character-gate", "practice_task_3", {
+      planningText: "先确定目标、受众与结构，然后分配证据。",
+      monitoringText: "每段完成后检查目标、证据、结构和篇幅。",
+      evaluationText: "依据准确性、相关性和结构完整性评价。",
+      outputEvaluationText: "生成结果可用，但需要进一步核对证据边界。",
+      articulationText: "我先规划，再监控，最后评价并修订结果。",
+      reflectionText: "我需要把检查点前置，并保留每次修订依据。",
+      expertComparisonText: "专家先分析目标再设检查点；我需要补足前置分析。",
+      reflectionOutcome: "submitted",
+    }, {
+      expectedPilotEvidenceRevision: taskFour.pilotEvidenceRevision,
+      mutationId: "visible-character-evidence",
+    });
+    const below = await store.saveArtifact(
+      "visible-character-gate",
+      "practice_task_3",
+      `<p>${"字".repeat(799)}</p>${"<span></span>".repeat(500)}&nbsp;`,
+    );
+    expect(below.tasks.find((candidate) => candidate.taskId === "practice_task_3")
+      ?.completionMissing).toEqual([
+        "submit_guide_draft",
+        "articulate_task_four_process",
+        "reflect_after_task_four",
+      ]);
+    expect(below.tasks.find((candidate) => candidate.taskId === "practice_task_3")
+      ?.reflectionReport).toBeNull();
+
+    const atGate = await store.saveArtifact(
+      "visible-character-gate",
+      "practice_task_3",
+      `<p>${"字".repeat(800)}</p>${"<span></span>".repeat(500)}&nbsp;`,
+    );
+    expect(atGate.tasks.find((candidate) => candidate.taskId === "practice_task_3")
+      ?.completionMissing).toEqual([
+        "submit_guide_draft",
+        "articulate_task_four_process",
+        "reflect_after_task_four",
+      ]);
+    expect(atGate.tasks.find((candidate) => candidate.taskId === "practice_task_3")
+      ?.reflectionReport).not.toBeNull();
+    await expect(store.completeTask("visible-character-gate", "practice_task_3"))
+      .rejects.toMatchObject({
+        completionMissing: [
+          "submit_guide_draft",
+          "articulate_task_four_process",
+          "reflect_after_task_four",
+        ],
+      });
+    const explored = await store.recordStageEvidence(
+      "visible-character-gate",
+      "practice_task_3",
+      "exploration",
+      "artifact_submitted",
+    );
+    expect(explored.tasks.find((candidate) => candidate.taskId === "practice_task_3")
+      ?.completionMissing).toEqual(["articulate_task_four_process", "reflect_after_task_four"]);
+    await store.recordStageEvidence(
+      "visible-character-gate",
+      "practice_task_3",
+      "articulation",
+      "strategy_articulated",
+    );
+    const reflected = await store.recordStageEvidence(
+      "visible-character-gate",
+      "practice_task_3",
+      "reflection",
+      "reflection_submitted",
+    );
+    expect(reflected.tasks.find((candidate) => candidate.taskId === "practice_task_3")
+      ?.completionMissing).toEqual([]);
+    await expect(store.recordStageEvidence(
+      "visible-character-gate",
+      "practice_task_3",
+      "summary_completion",
+      "summary_acknowledged",
+    )).rejects.toMatchObject({ reason: "stage_evidence_invalid" });
+    await store.completeTask("visible-character-gate", "practice_task_3");
+    const summarized = await store.recordStageEvidence(
+      "visible-character-gate",
+      "practice_task_3",
+      "summary_completion",
+      "summary_acknowledged",
+    );
+    expect(summarized.tasks.find((candidate) => candidate.taskId === "practice_task_3"))
+      .toMatchObject({
+        pilotEvidence: { summaryAcknowledged: true },
+      });
+    expect(summarized.tasks.find((candidate) => candidate.taskId === "practice_task_3")
+      ?.milestones.find((milestone) => milestone.id === "summary_completion"))
+      .toMatchObject({ status: "completed", evidenceKinds: ["summary_acknowledged"] });
+  });
+
+  it("deduplicates same-type A3 signals with a transparent five-minute cooldown", async () => {
+    const store = createAaisLearningStore({ rootDir: tempDir });
+    await store.saveArtifact("a3-cooldown-learner", "training_task_1", "短文");
+    await store.saveArtifact("a3-cooldown-learner", "training_task_1", "短文");
+    const repeated = await store.saveArtifact(
+      "a3-cooldown-learner",
+      "training_task_1",
+      "短文",
+    );
+    const task = repeated.tasks.find((candidate) => candidate.taskId === "training_task_1");
+    const signalTypes = task?.supervisionSignals.map((signal) => signal.type) ?? [];
+    expect(signalTypes).toEqual(["goal_missing", "plan_missing", "no_progress"]);
+    expect(task?.supervisionSignals.every((signal) =>
+      signal.basis === "deterministic-rule"
+      && signal.ruleVersion === "aais-metacognitive-signal-v1"
+      && signal.cooldownSeconds === 300
+      && !("confidence" in signal)
+    )).toBe(true);
+    expect(repeated.events.filter((event) =>
+      event.event === "monitoring_pause_detected"
+      && ["goal_missing", "plan_missing", "no_progress"].includes(String(event.detail.signal))
+    )).toHaveLength(3);
+    expect(JSON.stringify(task?.supervisionSignals)).not.toContain("短文");
+  });
+
   it("normalizes a legacy file payload without a session id to one stable strong id", async () => {
     const store = createAaisLearningStore({ rootDir: tempDir });
     await store.getOrCreateSession("legacy-session-student");
@@ -162,7 +1042,7 @@ describe("AAIS backend learning store", () => {
       answer: "Aa",
       orchestration: { graphId: "g", topologicalOrder: ["A1"], threadId: "t1" },
     });
-    const session = await store.appendGuideExchange({
+    const result = await store.appendGuideExchange({
       studentId: "guide-id-collision-audit",
       phase: "training",
       taskId: "training_task_1",
@@ -170,21 +1050,26 @@ describe("AAIS backend learning store", () => {
       answer: "BB",
       orchestration: { graphId: "g", topologicalOrder: ["A1"], threadId: "t2" },
     });
-    const assistantIds = session.guideMessages
+    const assistantIds = result.session.guideMessages
       .filter((message) => message.kind === "assistant")
       .map((message) => message.id);
     expect(new Set(assistantIds).size).toBe(2);
+    expect(result.exchange.assistantMessageId).toBe(assistantIds[1]);
 
     await store.recordAiAcceptance("guide-id-collision-audit", "training_task_1", {
       accepted: true,
+      expectedPilotEvidenceRevision: 0,
       messageId: assistantIds[0],
+      mutationId: "guide-collision-decision-1",
     });
     const decided = await store.recordAiAcceptance(
       "guide-id-collision-audit",
       "training_task_1",
       {
         accepted: true,
+        expectedPilotEvidenceRevision: 1,
         messageId: assistantIds[1],
+        mutationId: "guide-collision-decision-2",
       },
     );
     const decisions = decided.events.filter((event) => event.event === "ai_acceptance_recorded");
@@ -217,21 +1102,64 @@ describe("AAIS backend learning store", () => {
   it("enforces training-to-practice task sequencing on the server", async () => {
     const store = createAaisLearningStore({ rootDir: tempDir });
 
-    await expect(store.selectTask("S001", "practice_task_2")).rejects.toThrow(
-      "Task practice_task_2 is locked",
-    );
+    await expect(store.selectTask("S001", "practice_task_2")).rejects.toMatchObject({
+      reason: "task_pilot_closed",
+    });
 
-    await store.completeTask("S001", "training_task_1");
+    await completeTrainingTask(store, "S001");
     const practiceOne = await store.selectTask("S001", "practice_task_1");
     expect(practiceOne.activeTaskId).toBe("practice_task_1");
 
-    await expect(store.selectTask("S001", "practice_task_2")).rejects.toThrow(
-      "Task practice_task_2 is locked",
-    );
+    await expect(store.selectTask("S001", "practice_task_2")).rejects.toMatchObject({
+      reason: "task_pilot_closed",
+    });
 
-    await store.completeTask("S001", "practice_task_1");
-    const practiceTwo = await store.selectTask("S001", "practice_task_2");
-    expect(practiceTwo.activeTaskId).toBe("practice_task_2");
+    const practiceFour = await completePilotTaskTwo(store, "S001");
+    expect(practiceFour.activeTaskId).toBe("practice_task_3");
+    expect(practiceFour.tasks.find((task) => task.taskId === "practice_task_2")?.status)
+      .toBe("locked");
+    expect(practiceFour.tasks.find((task) => task.taskId === "practice_task_3"))
+      .toMatchObject({ activeMilestone: "exploration" });
+    expect(practiceFour.tasks.find((task) => task.taskId === "practice_task_3")?.milestones
+      .find((milestone) => milestone.id === "exploration")).toMatchObject({
+        status: "open",
+        evidenceKinds: [],
+      });
+    expect(practiceFour.events.some((event) =>
+      event.event === "stage_selected"
+      && event.task === "practice_task_3"
+      && event.detail.lifecycle === "stage_opened"
+      && event.detail.milestoneId === "exploration"
+      && event.detail.origin === "system_auto_progression"
+    )).toBe(true);
+    expect(practiceFour.events.some((event) =>
+      event.event === "task_selected" && event.task === "practice_task_3"
+    )).toBe(false);
+  });
+
+  it("keeps automatic Task 2 to Task 4 activation out of product events and LRS", async () => {
+    const database = createFakeDatabaseClient();
+    const store = createAaisLearningStore({ database });
+    await completeTrainingTask(store, "auto-advance-lrs-boundary");
+    await store.selectTask("auto-advance-lrs-boundary", "practice_task_1");
+    const completed = await completePilotTaskTwo(store, "auto-advance-lrs-boundary");
+    expect(completed.activeTaskId).toBe("practice_task_3");
+    expect(completed.events.some((event) =>
+      event.event === "task_selected" && event.task === "practice_task_3"
+    )).toBe(false);
+    expect(completed.events.some((event) =>
+      event.event === "stage_selected"
+      && event.task === "practice_task_3"
+      && event.detail.origin === "system_auto_progression"
+    )).toBe(true);
+    expect(database.eventRows.some((row) =>
+      row.task === "practice_task_3"
+      && (row.event === "task_selected" || row.event === "stage_selected")
+    )).toBe(false);
+    expect(database.outboxRows.some((row) =>
+      row.payload.task === "practice_task_3"
+      && (row.payload.event === "task_selected" || row.payload.event === "stage_selected")
+    )).toBe(false);
   });
 
   it("rejects every learner mutation targeting a locked task", async () => {
@@ -241,32 +1169,37 @@ describe("AAIS backend learning store", () => {
     // A brand-new learner has only training_task_1 active; every practice task is
     // locked until its prerequisite is completed. None of these mutations may act on
     // a locked task, otherwise sequencing (and cohort analytics) can be bypassed.
-    await expect(store.completeTask("S001", "practice_task_2")).rejects.toThrow(
-      "Task practice_task_2 is locked",
+    await expect(store.completeTask("S001", "practice_task_3")).rejects.toThrow(
+      "Task practice_task_3 is locked",
     );
-    await expect(store.saveArtifact("S001", "practice_task_2", "x")).rejects.toThrow(
-      "Task practice_task_2 is locked",
+    await expect(store.saveArtifact("S001", "practice_task_3", "x")).rejects.toThrow(
+      "Task practice_task_3 is locked",
     );
-    await expect(store.saveSelfReport("S001", "practice_task_2", "x")).rejects.toThrow(
-      "Task practice_task_2 is locked",
+    await expect(store.saveSelfReport("S001", "practice_task_3", "x")).rejects.toThrow(
+      "Task practice_task_3 is locked",
     );
     await expect(
-      store.requestScaffold("S001", "practice_task_2", "stage-checklist"),
-    ).rejects.toThrow("Task practice_task_2 is locked");
+      store.requestScaffold("S001", "practice_task_3", "stage-checklist"),
+    ).rejects.toThrow("Task practice_task_3 is locked");
     await expect(
-      store.recordAiAcceptance("S001", "practice_task_2", { accepted: true }),
-    ).rejects.toThrow("Task practice_task_2 is locked");
+      store.recordAiAcceptance("S001", "practice_task_3", {
+        accepted: true,
+        expectedPilotEvidenceRevision: 0,
+        messageId: "assistant-locked-task",
+        mutationId: "locked-task-ai-acceptance",
+      }),
+    ).rejects.toThrow("Task practice_task_3 is locked");
     await expect(store.appendGuideExchange({
       studentId: "S001",
       phase: "training",
-      taskId: "practice_task_2",
+      taskId: "practice_task_3",
       question: "locked guide question",
       answer: "must not persist",
       orchestration: { graphId: "g", topologicalOrder: ["A1"], threadId: "t" },
-    })).rejects.toThrow("Task practice_task_2 is locked");
+    })).rejects.toThrow("Task practice_task_3 is locked");
 
     const session = await store.getOrCreateSession("S001");
-    expect(session.tasks.find((task) => task.taskId === "practice_task_2")?.status).toBe(
+    expect(session.tasks.find((task) => task.taskId === "practice_task_3")?.status).toBe(
       "locked",
     );
     expect(
@@ -293,9 +1226,9 @@ describe("AAIS backend learning store", () => {
     const store = createAaisLearningStore({ rootDir: tempDir });
     await store.getOrCreateSession("completion-invariant-learner");
 
-    const completedTraining = await store.completeTask(
+    const completedTraining = await completeTrainingTask(
+      store,
       "completion-invariant-learner",
-      "training_task_1",
     );
     const eventCount = completedTraining.events.length;
     const repeated = await store.completeTask(
@@ -314,9 +1247,9 @@ describe("AAIS backend learning store", () => {
     )).rejects.toMatchObject({ reason: "task_not_active" });
 
     await store.selectTask("completion-invariant-learner", "practice_task_1");
-    const completedPractice = await store.completeTask(
+    const completedPractice = await completePilotTaskTwo(
+      store,
       "completion-invariant-learner",
-      "practice_task_1",
     );
     const repeatedPractice = await store.completeTask(
       "completion-invariant-learner",
@@ -330,7 +1263,7 @@ describe("AAIS backend learning store", () => {
 
   it("persists artifacts, self reports, scaffold counts, and exportable events", async () => {
     const store = createAaisLearningStore({ rootDir: tempDir });
-    await store.completeTask("S001", "training_task_1");
+    await completeTrainingTask(store, "S001");
     await store.selectTask("S001", "practice_task_1");
 
     await store.saveArtifact("S001", "practice_task_1", "我的任务理解和计划");
@@ -393,7 +1326,7 @@ describe("AAIS backend learning store", () => {
       }),
     );
     session.guideMessages = Array.from(
-      { length: aaisLearnerSessionApiWindowLimits.guideMessages + 5 },
+      { length: aaisLearnerSessionApiWindowLimits.guideMessages + 6 },
       (_, index) => ({
         id: `window-message-${index}`,
         kind: index % 2 === 0 ? "user" as const : "assistant" as const,
@@ -407,22 +1340,25 @@ describe("AAIS backend learning store", () => {
         toolId: `tool-${index}`,
         mode: "self-check" as const,
         time: "2026-08-20T00:00:00.000Z",
+        level: 1 as const,
+        intensity: "prompt-question" as const,
+        fading: true,
       }),
     );
 
     const dto = createAaisLearnerSessionApiDto(session);
 
     expect(dto.events).toHaveLength(aaisLearnerSessionApiWindowLimits.events);
-    expect(dto.events[0]?.detail.window_index).toBe(7);
+    expect(dto.events[0]?.detail).toEqual({ schemaVersion: 1 });
     expect(dto.guideMessages).toHaveLength(aaisLearnerSessionApiWindowLimits.guideMessages);
-    expect(dto.guideMessages[0]?.id).toBe("window-message-5");
+    expect(dto.guideMessages[0]?.id).toBe("window-message-6");
     expect(dto.tasks[0]?.scaffoldHistory).toHaveLength(
       aaisLearnerSessionApiWindowLimits.scaffoldHistoryPerTask,
     );
     expect(dto.tasks[0]?.scaffoldHistory[0]?.toolId).toBe("tool-3");
     expect(dto.truncation).toMatchObject({
       events: { total: 107, returned: 100, omitted: 7, truncated: true },
-      guideMessages: { total: 105, returned: 100, omitted: 5, truncated: true },
+      guideMessages: { total: 106, returned: 100, omitted: 6, truncated: true },
       scaffoldHistory: {
         total: 23,
         returned: 20,
@@ -432,7 +1368,7 @@ describe("AAIS backend learning store", () => {
       },
     });
     expect(session.events).toHaveLength(107);
-    expect(session.guideMessages).toHaveLength(105);
+    expect(session.guideMessages).toHaveLength(106);
     expect(session.tasks[0]?.scaffoldHistory).toHaveLength(23);
   });
 
@@ -950,7 +1886,7 @@ describe("AAIS backend learning store", () => {
         savedAt: "2026-08-07T08:00:00.000Z",
       },
     });
-    await store.completeTask("S001", "training_task_1");
+    await completeTrainingTask(store, "S001");
     await store.selectTask("S001", "practice_task_1");
     await store.saveArtifact("S001", "practice_task_1", "task-B-working-copy");
 
@@ -1119,7 +2055,10 @@ describe("AAIS backend learning store", () => {
       postedBodies.flat().map((statement: { object: { definition: { name: { "en-US": string } } } }) =>
         statement.object.definition.name["en-US"],
       ),
-    ).toEqual(expect.arrayContaining(["AAIS session_created", "AAIS task_released", "AAIS artifact_saved"]));
+    ).toEqual(expect.arrayContaining(["AAIS session_created", "AAIS artifact_saved"]));
+    expect(postedBodies.flat().map((statement: { object: { definition: { name: { "en-US": string } } } }) =>
+      statement.object.definition.name["en-US"]
+    )).not.toContain("AAIS task_released");
     expect(lrsClient.getAaisLrsDeliveryQueueStatus()).toMatchObject({
       pendingBatches: 0,
       retryBatches: 0,
@@ -1133,10 +2072,25 @@ describe("AAIS backend learning store", () => {
     await store.getOrCreateSession("S001");
     await store.selectStage("S001", "guide");
     await store.selectStage("S001", "assessment");
-    await store.completeTask("S001", "training_task_1");
+    await completeTrainingTask(store, "S001");
     await store.selectTask("S001", "practice_task_1");
     await store.saveArtifact("S001", "practice_task_1", "我的计划是先复述任务，再检查证据。");
     await store.saveSelfReport("S001", "practice_task_1", "我和专家相比，先列失败条件做得不够。");
+    await completePilotTaskTwo(store, "S001");
+    const taskFourSession = await store.getOrCreateSession("S001");
+    const taskFour = taskFourSession.tasks.find((task) => task.taskId === "practice_task_3");
+    if (!taskFour) throw new Error("Missing Task 4 analytics fixture.");
+    await store.saveArtifact("S001", "practice_task_3", "稿".repeat(800));
+    await store.savePilotEvidence("S001", "practice_task_3", {
+      planningText: "先确定受众、目标和结构，再安排各部分证据。",
+      monitoringText: "每完成一段就检查目标、证据、结构和篇幅。",
+      evaluationText: "依据准确性、相关性和结构完整性进行评价。",
+      outputEvaluationText: "生成结果结构可用，但论据范围需要进一步核对。",
+      articulationText: "我先规划，再监控，最后评价并修订生成结果。",
+    }, {
+      expectedPilotEvidenceRevision: taskFour.pilotEvidenceRevision,
+      mutationId: "analytics-a4-report",
+    });
     await store.selectStage("S001", "comparison");
     await store.requestScaffold("S001", "practice_task_1", "pause-prompt");
     await store.requestScaffold("S001", "practice_task_1", "stage-checklist");
@@ -1150,7 +2104,7 @@ describe("AAIS backend learning store", () => {
       dashboard: {
         trainingToPractice: {
           trainingCompleted: true,
-          activePracticeTaskId: "practice_task_1",
+          activePracticeTaskId: "practice_task_3",
         },
         scaffoldDependency: {
           totalRequests: 5,
@@ -1191,7 +2145,7 @@ describe("AAIS backend learning store", () => {
     expect(database.queries.some((query) => /insert into aais_events/i.test(query.sql))).toBe(true);
     expect(database.queries.some((query) => /select session\.payload/i.test(query.sql))).toBe(true);
     expect(database.eventRows.map((row) => row.event)).toEqual(
-      expect.arrayContaining(["session_created", "task_released", "artifact_saved"]),
+      expect.arrayContaining(["session_created", "artifact_saved"]),
     );
     expect(database.taskStateRows.find((row) => row.task === "training_task_1")).toMatchObject({
       student_id: "S001",
@@ -2279,14 +3233,18 @@ describe("AAIS backend learning store", () => {
     releaseGuideWrite();
 
     const result = await pendingExchange;
-    expect(result.tasks[0]?.artifactText).toBe("并发 autosave 必须保留");
-    expect(result.guideMessages.map((message) => message.text)).toEqual([
+    expect(result.session.tasks[0]?.artifactText).toBe("并发 autosave 必须保留");
+    expect(result.session.guideMessages.map((message) => message.text)).toEqual([
       "保留这次 provider 问题",
       "保留这次 provider 回答",
     ]);
-    expect(new Set(result.guideMessages.map((message) => message.id)).size).toBe(2);
-    const promptEvents = result.events.filter((event) => event.event === "ai_prompt_submitted");
-    const responseEvents = result.events.filter((event) => event.event === "ai_response_completed");
+    expect(new Set(result.session.guideMessages.map((message) => message.id)).size).toBe(2);
+    expect(result.session.guideMessages.map((message) => message.id)).toEqual([
+      result.exchange.userMessageId,
+      result.exchange.assistantMessageId,
+    ]);
+    const promptEvents = result.session.events.filter((event) => event.event === "ai_prompt_submitted");
+    const responseEvents = result.session.events.filter((event) => event.event === "ai_response_completed");
     expect(promptEvents).toHaveLength(1);
     expect(responseEvents).toHaveLength(1);
     expect(promptEvents[0]?.detail.exchange_id_hash).toBe(
@@ -2531,7 +3489,7 @@ describe("AAIS backend learning store", () => {
 
     expect(database.outboxRows.map((row) => row.status)).toContain("pending");
     expect(database.outboxRows.map((row) => row.payload.event)).toEqual(
-      expect.arrayContaining(["session_created", "task_released", "artifact_saved"]),
+      expect.arrayContaining(["session_created", "artifact_saved"]),
     );
 
     const result = await flushAaisPersistentLrsOutbox({
@@ -3072,14 +4030,14 @@ describe("AAIS backend learning store", () => {
     }
     const newestArtifactRow = database.outboxRows.find((row) =>
       row.pending_payload?.event === "artifact_saved"
-      && row.pending_payload.detail.characters === "newest payload".length
+      && row.pending_payload.detail.characters === 13
     );
     expect(newestArtifactRow).toMatchObject({
       status: "sending",
       delivery_claim_id: expect.any(String),
       pending_payload: {
         detail: {
-          characters: "newest payload".length,
+          characters: 13,
           merged_events: 1,
         },
       },
@@ -3095,13 +4053,13 @@ describe("AAIS backend learning store", () => {
       pending_payload: null,
       payload: {
         detail: {
-          characters: "newest payload".length,
+          characters: 13,
           merged_events: 1,
         },
       },
     });
     expect(newestArtifactRow?.payload.detail).toMatchObject({
-      characters: "newest payload".length,
+      characters: 13,
       merged_events: 1,
     });
 
@@ -3172,7 +4130,7 @@ describe("AAIS backend learning store", () => {
     ).toBe(2);
   });
 
-  it("keeps distinct same-millisecond non-coalescible facts in separate outbox rows", async () => {
+  it("keeps stage navigation in the learner session and out of the LRS outbox", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-08-19T06:00:00.000Z"));
     const database = createFakeDatabaseClient();
@@ -3182,9 +4140,10 @@ describe("AAIS backend learning store", () => {
     await store.selectStage("S001", "assessment");
 
     const stageRows = database.outboxRows.filter((row) => row.payload.event === "stage_selected");
-    expect(stageRows).toHaveLength(2);
-    expect(new Set(stageRows.map((row) => row.id)).size).toBe(2);
-    expect(stageRows.map((row) => row.payload.detail.stageId)).toEqual([
+    expect(stageRows).toHaveLength(0);
+    const persisted = await store.readSession("S001");
+    expect(persisted?.events.filter((event) => event.event === "stage_selected")
+      .map((event) => event.detail.stageId)).toEqual([
       "guide",
       "assessment",
     ]);
@@ -3287,7 +4246,7 @@ describe("AAIS backend learning store", () => {
     const database = createFakeDatabaseClient();
     const store = createAaisLearningStore({ database });
     await store.saveArtifact("S001", "training_task_1", "healthy delivery");
-    const poison = database.outboxRows.find((row) => row.payload.event === "task_released");
+    const poison = database.outboxRows.find((row) => row.payload.event === "artifact_saved");
     expect(poison).toBeDefined();
     if (!poison) {
       throw new Error("Missing seeded poison row.");
@@ -3676,7 +4635,7 @@ describe("AAIS backend learning store", () => {
     const planningRows = database.outboxRows.filter((row) => row.payload.event === "planning_submitted");
     expect(artifactEditRows).toHaveLength(1);
     expect(artifactRows).toHaveLength(1);
-    expect(planningRows).toHaveLength(1);
+    expect(planningRows).toHaveLength(0);
     expect(artifactEditRows[0].payload.detail).toMatchObject({
       characters: 3,
       merged_events: 3,
@@ -3685,11 +4644,6 @@ describe("AAIS backend learning store", () => {
     expect(artifactRows[0].payload.detail).toMatchObject({
       characters: 3,
       merged_events: 3,
-    });
-    expect(planningRows[0].payload.detail).toMatchObject({
-      characters: 3,
-      merged_events: 3,
-      sourceEvent: "artifact_saved",
     });
   });
 
@@ -3750,7 +4704,10 @@ describe("AAIS backend learning store", () => {
     const afterCooldown = await store.saveArtifact("S001", "training_task_1", "我先写一点");
 
     expect(afterCooldown.events.filter((event) => event.event === "coaching_push")).toHaveLength(2);
-    expect(afterCooldown.events.filter((event) => event.event === "monitoring_pause_detected")).toHaveLength(2);
+    expect(afterCooldown.events.filter((event) =>
+      event.event === "monitoring_pause_detected"
+      && event.detail.signal === "low_progress_artifact_autosave"
+    )).toHaveLength(2);
     expect(afterCooldown.events.findLast((event) => event.event === "coaching_push")?.detail)
       .toMatchObject({
         reason: "low_progress_artifact_autosave",
@@ -3762,7 +4719,7 @@ describe("AAIS backend learning store", () => {
 
   it("records learner AI acceptance decisions as A2 evidence", async () => {
     const store = createAaisLearningStore({ rootDir: tempDir });
-    const guideSession = await store.appendGuideExchange({
+    const guideExchange = await store.appendGuideExchange({
       studentId: "S001",
       phase: "practice",
       taskId: "training_task_1",
@@ -3774,30 +4731,63 @@ describe("AAIS backend learning store", () => {
         threadId: "acceptance-evidence",
       },
     });
-    const assistantMessageId = guideSession.guideMessages.find(
-      (message) => message.kind === "assistant",
-    )?.id;
+    const assistantMessageId = guideExchange.exchange.assistantMessageId;
     expect(assistantMessageId).toBeTruthy();
-    expect(guideSession.guideMessages).toEqual([
+    expect(guideExchange.session.guideMessages).toEqual([
       expect.objectContaining({ taskId: "training_task_1", phase: "training" }),
       expect.objectContaining({ taskId: "training_task_1", phase: "training" }),
     ]);
 
     const session = await store.recordAiAcceptance("S001", "training_task_1", {
       accepted: false,
+      expectedPilotEvidenceRevision: 0,
       messageId: assistantMessageId,
+      mutationId: "ai-acceptance-decision-1",
       reason: "需要自己先解释依据",
     });
     const duplicate = await store.recordAiAcceptance("S001", "training_task_1", {
       accepted: false,
+      expectedPilotEvidenceRevision: 0,
       messageId: assistantMessageId,
-      reason: "重复点击不应增加证据",
+      mutationId: "ai-acceptance-decision-1",
+      reason: "需要自己先解释依据",
+    });
+    await expect(store.recordAiAcceptance("S001", "training_task_1", {
+      accepted: false,
+      expectedPilotEvidenceRevision: 1,
+      messageId: assistantMessageId,
+      mutationId: "ai-acceptance-decision-1",
+      reason: "同一 mutation id 不得绑定不同理由",
+    })).rejects.toMatchObject({ reason: "mutation_replay_conflict" });
+    const unchanged = await store.recordAiAcceptance("S001", "training_task_1", {
+      accepted: false,
+      expectedPilotEvidenceRevision: 1,
+      messageId: assistantMessageId,
+      mutationId: "ai-acceptance-same-decision",
+      reason: "新的提交仍然维持不采纳决定",
     });
     const changed = await store.recordAiAcceptance("S001", "training_task_1", {
       accepted: true,
+      expectedPilotEvidenceRevision: 1,
       messageId: assistantMessageId,
+      mutationId: "ai-acceptance-decision-2",
       reason: "改为采纳",
     });
+
+    expect(session.tasks.find((task) => task.taskId === "training_task_1")
+      ?.pilotEvidenceRevision).toBe(1);
+    expect(duplicate.tasks.find((task) => task.taskId === "training_task_1")
+      ?.pilotEvidenceRevision).toBe(1);
+    expect(unchanged.tasks.find((task) => task.taskId === "training_task_1")
+      ?.pilotEvidenceRevision).toBe(1);
+    expect(changed.tasks.find((task) => task.taskId === "training_task_1")
+      ?.pilotEvidenceRevision).toBe(2);
+    await expect(store.savePilotEvidence("S001", "training_task_1", {
+      diagnosisText: "旧标签页在 AI 采纳决策后尝试覆盖证据。",
+    }, {
+      expectedPilotEvidenceRevision: 1,
+      mutationId: "stale-after-ai-acceptance",
+    })).rejects.toMatchObject({ field: "pilot_evidence" });
 
     const event = session.events.find((candidate) => candidate.event === "ai_acceptance_recorded");
     expect(event).toMatchObject({
@@ -3812,6 +4802,8 @@ describe("AAIS backend learning store", () => {
       },
     });
     expect(duplicate.events.filter((candidate) => candidate.event === "ai_acceptance_recorded")).toHaveLength(1);
+    expect(unchanged.events.filter((candidate) => candidate.event === "ai_acceptance_recorded")).toHaveLength(1);
+    expect(unchanged.events.filter((candidate) => candidate.event === "ai_acceptance_mutation_bound")).toHaveLength(2);
     expect(changed.events.filter((candidate) => candidate.event === "ai_acceptance_recorded")).toHaveLength(2);
     expect(changed.events.findLast((candidate) => candidate.event === "ai_acceptance_recorded")?.detail)
       .toMatchObject({
@@ -3828,6 +4820,49 @@ describe("AAIS backend learning store", () => {
     expect(JSON.stringify(changed.events)).not.toContain("assistant-decision-1");
   });
 
+  it("rejects a late AI acceptance from a stale tab without superseding the newer decision", async () => {
+    const store = createAaisLearningStore({ rootDir: tempDir });
+    const guideExchange = await store.appendGuideExchange({
+      studentId: "late-ai-acceptance",
+      phase: "training",
+      taskId: "training_task_1",
+      question: "请给我一个可评价的建议",
+      answer: "先检查目标和证据。",
+      orchestration: { graphId: "g", topologicalOrder: ["A2"], threadId: "late-tab" },
+    });
+    const assistantMessageId = guideExchange.exchange.assistantMessageId;
+
+    const newer = await store.recordAiAcceptance(
+      "late-ai-acceptance",
+      "training_task_1",
+      {
+        accepted: true,
+        expectedPilotEvidenceRevision: 0,
+        messageId: assistantMessageId,
+        mutationId: "newer-tab-acceptance",
+        reason: "新标签页确认采纳",
+      },
+    );
+    await expect(store.recordAiAcceptance(
+      "late-ai-acceptance",
+      "training_task_1",
+      {
+        accepted: false,
+        expectedPilotEvidenceRevision: 0,
+        messageId: assistantMessageId,
+        mutationId: "late-stale-tab-rejection",
+        reason: "旧标签页迟到的不采纳请求",
+      },
+    )).rejects.toMatchObject({ field: "pilot_evidence" });
+
+    const current = await store.getOrCreateSession("late-ai-acceptance");
+    expect(newer.tasks[0]?.pilotEvidenceRevision).toBe(1);
+    expect(current.tasks[0]?.pilotEvidence).toMatchObject({ outputEvaluation: "accepted" });
+    expect(current.tasks[0]?.pilotEvidenceRevision).toBe(1);
+    expect(current.events.filter((event) => event.event === "ai_acceptance_recorded"))
+      .toHaveLength(1);
+  });
+
   it("rejects missing, fabricated, user, and cross-task AI acceptance targets without writes", async () => {
     const store = createAaisLearningStore({ rootDir: tempDir });
     const trainingExchange = await store.appendGuideExchange({
@@ -3838,10 +4873,8 @@ describe("AAIS backend learning store", () => {
       answer: "训练回答",
       orchestration: { graphId: "g", topologicalOrder: ["A2"], threadId: "training" },
     });
-    const trainingAssistantId = trainingExchange.guideMessages.find(
-      (message) => message.kind === "assistant",
-    )?.id;
-    await store.completeTask("S001", "training_task_1");
+    const trainingAssistantId = trainingExchange.exchange.assistantMessageId;
+    await completeTrainingTask(store, "S001");
     await store.selectTask("S001", "practice_task_1");
     const practiceExchange = await store.appendGuideExchange({
       studentId: "S001",
@@ -3851,9 +4884,7 @@ describe("AAIS backend learning store", () => {
       answer: "练习回答",
       orchestration: { graphId: "g", topologicalOrder: ["A2"], threadId: "practice" },
     });
-    const practiceUserId = practiceExchange.guideMessages.findLast(
-      (message) => message.kind === "user",
-    )?.id;
+    const practiceUserId = practiceExchange.exchange.userMessageId;
     const before = await store.getOrCreateSession("S001");
     const beforeAcceptanceEvents = before.events.filter(
       (event) => event.event === "ai_acceptance_recorded",
@@ -3862,7 +4893,9 @@ describe("AAIS backend learning store", () => {
     for (const messageId of [undefined, "assistant-fabricated", practiceUserId, trainingAssistantId]) {
       await expect(store.recordAiAcceptance("S001", "practice_task_1", {
         accepted: true,
+        expectedPilotEvidenceRevision: 0,
         messageId,
+        mutationId: `invalid-ai-target-${String(messageId)}`,
       })).rejects.toThrow("AAIS AI acceptance target was not found.");
     }
 
@@ -3878,7 +4911,9 @@ describe("AAIS backend learning store", () => {
 
     await expect(store.recordAiAcceptance("acceptance-fabrication", "training_task_1", {
       accepted: true,
+      expectedPilotEvidenceRevision: 0,
       messageId: "assistant-fabricated",
+      mutationId: "fabricated-ai-target",
     })).rejects.toThrow("AAIS AI acceptance target was not found.");
 
     expect(database.hasSession("acceptance-fabrication")).toBe(false);
@@ -3886,7 +4921,7 @@ describe("AAIS backend learning store", () => {
 
   it("summarizes cohort analytics for teacher dashboards without raw learner text", async () => {
     const store = createAaisLearningStore({ rootDir: tempDir });
-    await store.completeTask("S001", "training_task_1");
+    await completeTrainingTask(store, "S001");
     await store.selectTask("S001", "practice_task_1");
     await store.saveArtifact("S001", "practice_task_1", "第一位学习者的长过程记录");
     await store.requestScaffold("S001", "practice_task_1", "pause-prompt");
@@ -3918,7 +4953,7 @@ describe("AAIS backend learning store", () => {
 
   it("adds deterministic cohort risk bands and priority reasons for teacher action queues", async () => {
     const store = createAaisLearningStore({ rootDir: tempDir });
-    await store.completeTask("S001", "training_task_1");
+    await completeTrainingTask(store, "S001");
     await store.selectTask("S001", "practice_task_1");
     await store.saveArtifact("S001", "practice_task_1", "第一位学习者的低进展风险记录");
     await store.saveArtifact("S001", "practice_task_1", "第一位学习者的低进展风险记录");
@@ -3928,7 +4963,7 @@ describe("AAIS backend learning store", () => {
     await store.requestScaffold("S001", "practice_task_1", "contrast-case");
     await store.requestScaffold("S001", "practice_task_1", "pause-prompt");
 
-    await store.completeTask("S002", "training_task_1");
+    await completeTrainingTask(store, "S002");
     await store.selectTask("S002", "practice_task_1");
     await store.saveSelfReport("S002", "practice_task_1", "第二位学习者已经完成反思");
     await store.selectStage("S002", "comparison");
@@ -3940,8 +4975,8 @@ describe("AAIS backend learning store", () => {
 
     expect(analytics.dashboard.cohort.riskBreakdown).toEqual({
       high: 1,
-      medium: 0,
-      low: 1,
+      medium: 1,
+      low: 0,
     });
     expect(analytics.learners.map((learner) => ({
       riskLevel: learner.riskLevel,
@@ -3957,8 +4992,8 @@ describe("AAIS backend learning store", () => {
         ],
       },
       {
-        riskLevel: "low",
-        priorityReasons: [],
+        riskLevel: "medium",
+        priorityReasons: ["reflection_missing"],
       },
     ]);
     expect(JSON.stringify(analytics)).not.toContain("第一位学习者的低进展风险记录");
@@ -3967,11 +5002,11 @@ describe("AAIS backend learning store", () => {
 
   it("counts A2 AI acceptance as an interaction for cohort risk after coaching", async () => {
     const store = createAaisLearningStore({ rootDir: tempDir });
-    await store.completeTask("S001", "training_task_1");
+    await completeTrainingTask(store, "S001");
     await store.selectTask("S001", "practice_task_1");
     await store.saveArtifact("S001", "practice_task_1", "低进展记录");
     await store.saveArtifact("S001", "practice_task_1", "低进展记录");
-    const guideSession = await store.appendGuideExchange({
+    const guideExchange = await store.appendGuideExchange({
       studentId: "S001",
       phase: "training",
       taskId: "practice_task_1",
@@ -3979,12 +5014,12 @@ describe("AAIS backend learning store", () => {
       answer: "先说明目标，再拆分下一步。",
       orchestration: { graphId: "g", topologicalOrder: ["A2"], threadId: "risk" },
     });
-    const assistantMessageId = guideSession.guideMessages.findLast(
-      (message) => message.kind === "assistant",
-    )?.id;
+    const assistantMessageId = guideExchange.exchange.assistantMessageId;
     await store.recordAiAcceptance("S001", "practice_task_1", {
       accepted: true,
+      expectedPilotEvidenceRevision: 0,
       messageId: assistantMessageId,
+      mutationId: "cohort-risk-ai-acceptance",
       reason: "采纳提示后重新组织计划",
     });
 
@@ -4006,7 +5041,7 @@ describe("AAIS backend learning store", () => {
 
   it("filters cohort analytics by enterprise join keys without raw event payloads", async () => {
     const store = createAaisLearningStore({ rootDir: tempDir });
-    const rawSession = await store.completeTask("S001", "training_task_1");
+    const rawSession = await completeTrainingTask(store, "S001");
     const rawSessionId = rawSession.sessionId;
     await store.selectTask("S001", "practice_task_1");
     await store.saveArtifact("S001", "practice_task_1", "第一位学习者的低进展记录");
@@ -4079,7 +5114,7 @@ describe("AAIS backend learning store", () => {
       });
     }
     const store = createAaisLearningStore({ database });
-    const rawSession = await store.completeTask("S001", "training_task_1");
+    const rawSession = await completeTrainingTask(store, "S001");
     await store.selectTask("S001", "practice_task_1");
     await store.saveArtifact("S001", "practice_task_1", "第一位学习者的数据库低进展记录");
     await store.saveArtifact("S001", "practice_task_1", "第一位学习者的数据库低进展记录");
@@ -4211,7 +5246,7 @@ describe("AAIS backend learning store", () => {
 
   it("summarizes pseudonymous cohort session keys instead of internal learner session ids", async () => {
     const store = createAaisLearningStore({ rootDir: tempDir });
-    const rawSession = await store.completeTask("S001", "training_task_1");
+    const rawSession = await completeTrainingTask(store, "S001");
     await store.selectTask("S001", "practice_task_1");
     await store.saveArtifact("S001", "practice_task_1", "第一位学习者的导出隐私记录");
 
@@ -4357,7 +5392,11 @@ type FakeEnrollmentRow = {
   status: "active" | "withdrawn";
 };
 
-function summarizeFakeSqlCohortRows(events: FakeAaisEventRow[], params: unknown[]) {
+function summarizeFakeSqlCohortRows(
+  events: FakeAaisEventRow[],
+  params: unknown[],
+  sessionPayloads?: Map<string, { payload: unknown; version: number }>,
+) {
   const [phase, task, agent, eventName, cohort, role, courseId] = params.map(readNullableFakeFilter);
   const matchingSessionKeys = new Set(
     events
@@ -4407,6 +5446,22 @@ function summarizeFakeSqlCohortRows(events: FakeAaisEventRow[], params: unknown[
   return Array.from(groups.values())
     .map((group) => {
       const allEvents = [...group.all].sort(compareFakeAaisEventsDesc);
+      const storedSessionRow = sessionPayloads?.get(group.student_id);
+      const storedSession = storedSessionRow
+        ? readFakeLearnerSession(storedSessionRow.payload)
+        : null;
+      const localReflectionEvidenceCount = storedSession?.sessionId === group.session_id
+        && (!agent || agent === "A4")
+        && (!eventName || [
+          "expert_trace_compared",
+          "a4_reflection_report_generated",
+        ].includes(eventName))
+        ? storedSession.tasks.filter((candidate) =>
+            (!phase || candidate.phase === phase)
+            && (!task || candidate.taskId === task)
+            && hasFakeValidReflectionReport(candidate.reflectionReport)
+          ).length
+        : 0;
       const activePracticeEvent = allEvents.find((event) =>
         event.phase === "practice"
         && event.task
@@ -4438,7 +5493,10 @@ function summarizeFakeSqlCohortRows(events: FakeAaisEventRow[], params: unknown[
         ]),
         ai_acceptance_decisions: aiAcceptanceDecisionKeys.size,
         self_report_count: countFakeEvents(group.filtered, ["self_report_saved"]),
-        expert_trace_count: countFakeEvents(group.filtered, ["expert_trace_compared"]),
+        expert_trace_count: Math.max(
+          countFakeEvents(group.filtered, ["expert_trace_compared"]),
+          localReflectionEvidenceCount,
+        ),
       };
     })
     .sort((left, right) =>
@@ -4621,6 +5679,19 @@ function readFakeDetailText(detail: Record<string, unknown>, key: string) {
 
 function readFakeLearnerSession(payload: unknown) {
   return (typeof payload === "string" ? JSON.parse(payload) : payload) as AaisLearnerSession;
+}
+
+function hasFakeValidReflectionReport(value: unknown) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+  const report = value as Record<string, unknown>;
+  return typeof report.version === "string"
+    && report.version.trim().length > 0
+    && typeof report.expertModelId === "string"
+    && report.expertModelId.trim().length > 0
+    && Array.isArray(report.expertStepIds)
+    && report.expertStepIds.length > 0;
 }
 
 function createFakeDatabaseClient() {
@@ -5086,6 +6157,7 @@ function createFakeDatabaseClient() {
           rows: summarizeFakeSqlCohortRows(
             Array.from(events.values()).filter((event) => accessible.has(event.student_id)),
             [params[2], params[3], params[4], params[5], null, null, null],
+            sessions,
           ),
         };
       }

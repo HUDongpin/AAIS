@@ -1,71 +1,44 @@
-import { useEffect, useRef, useState, type FormEvent } from "react";
-import {
-  aaisGuideAttachmentLimits,
-  normalizeAaisGuideAttachments,
-  type AaisGuideAttachment,
-} from "@/lib/ai/aais-guide-attachments";
-import {
-  selectAaisGuideReplyAgentIds,
-  type AaisGuideTargetAgentId,
-} from "@/lib/ai/aais-guide-targets";
+import { useEffect, useRef, useState, type FormEvent, type SetStateAction } from "react";
+import { aaisGuideAttachmentLimits, normalizeAaisGuideAttachments, type AaisGuideAttachment } from "@/lib/ai/aais-guide-attachments";
+import { selectAaisGuideReplyAgentIds, type AaisGuideTargetAgentId } from "@/lib/ai/aais-guide-targets";
 import { readAaisGuideFileAttachment } from "@/lib/client/aais-guide-file-reader";
-import {
-  admitAaisResearchAction,
-  captureAaisResearchActorGeneration,
-  classifyAaisResearchClientError,
-  createAaisResearchOperationId,
-  isAaisResearchDisconnectError,
-  recordAaisResearchEvent,
-} from "@/lib/client/aais-research-telemetry";
+import { admitAaisResearchAction, captureAaisResearchActorGeneration, classifyAaisResearchClientError,
+  createAaisResearchOperationId, isAaisResearchDisconnectError, recordAaisResearchEvent } from "@/lib/client/aais-research-telemetry";
 import { createInitialGuideMessages, getGuideAttachmentOnlyPrompt } from "@/components/pages/learning/learning-page-constants";
 import { getLearningCopy } from "@/components/pages/learning/learning-copy";
-import {
-  getGuideDailyBudgetFailurePresentation,
-} from "@/components/pages/learning/guide-error-presentation";
-import {
-  addReadAttachmentMetadataToGuideMessage,
-  getControlledGuideAttachmentMimeType,
-  useHydratePersistedGuideMessages,
-} from "@/components/pages/learning/guide-message-persistence";
+import { pilotCopy } from "@/components/pages/learning/pilot-learning-copy";
+import { getGuideDailyBudgetFailurePresentation } from "@/components/pages/learning/guide-error-presentation";
+import { addReadAttachmentMetadataToGuideMessage, getControlledGuideAttachmentMimeType,
+  useHydratePersistedGuideMessages } from "@/components/pages/learning/guide-message-persistence";
 import { getVisibleGuideTurns, toGuideAttachmentPayload } from "@/components/pages/learning/guide-chat";
 import { fetchGuideRequest, getAaisCsrfHeader, clientNowMs } from "@/components/pages/learning/client-helpers";
-import type {
-  GuideClientAttachment,
-  GuideMessage,
-} from "@/components/pages/learning/learning-page-types";
-import type {
-  GuideSubmissionOptions,
-  UseLearningGuideInput,
-} from "@/components/pages/learning/learning-guide-types";
-import {
-  isGuideEventStreamResponse,
-  isUsableGuideBody,
-  readGuideJsonBody,
-  readGuideStreamResponse,
-  validateGuideResponse,
-  type GuideResponseBody,
-} from "@/components/pages/learning/guide-stream";
-import {
-  applyGuideResponseToMessages,
-  applyGuideStreamProgressToMessages,
-} from "@/components/pages/learning/guide-message-updates";
+import type { GuideClientAttachment, GuideMessage } from "@/components/pages/learning/learning-page-types";
+import type { GuideSubmissionOptions, UseLearningGuideInput } from "@/components/pages/learning/learning-guide-types";
+import { getCanonicalGuideExchange, isGuideEventStreamResponse, isUsableGuideBody,
+  readGuideJsonBody, readGuideStreamResponse, validateGuideResponse,
+  type GuideResponseBody } from "@/components/pages/learning/guide-stream";
+import { applyGuideResponseToMessages,
+  applyGuideStreamProgressToMessages } from "@/components/pages/learning/guide-message-updates";
+import { attachStableReplayMutation, clearStableReplayMutation, isExplicitClientRejection,
+  type PendingStableReplayMutation } from "@/components/pages/learning/learning-pilot-mutation";
 export function useLearningGuide({
   activeTaskId,
+  activeTaskPhase = activeTaskId.startsWith("practice_") ? "practice" : "training",
   artifactText,
   displayName,
+  isGuideSubmissionBlocked = () => false,
   waitForLearnerDataGeneration,
   locale,
   persistedGuideMessages = [],
   studentId,
 }: UseLearningGuideInput) {
   const copy = getLearningCopy(locale);
-  const [guideDraft, setGuideDraft] = useState("");
+  const [guideDraft, setGuideDraftState] = useState("");
   const [guideMessages, setGuideMessages] = useState<GuideMessage[]>(() =>
     createInitialGuideMessages(displayName, locale)
   );
   const [guideBusy, setGuideBusy] = useState(false);
-  const [pendingGuideAgentId, setPendingGuideAgentId] =
-    useState<AaisGuideTargetAgentId | null>(null);
+  const [pendingGuideAgentId, setPendingGuideAgentId] = useState<AaisGuideTargetAgentId | null>(null);
   const [guideError, setGuideError] = useState("");
   const [guideAttachmentBusy, setGuideAttachmentBusy] = useState(false);
   const [guideAttachmentError, setGuideAttachmentError] = useState("");
@@ -74,20 +47,29 @@ export function useLearningGuide({
   const guideAttachmentIdRef = useRef(0);
   const guideFileInputRef = useRef<HTMLInputElement | null>(null);
   const guideRequestAbortControllerRef = useRef<AbortController | null>(null);
+  const guideDraftRevisionRef = useRef(0);
+  const guideSubmitInFlightRef = useRef(false);
+  const pendingGuideMutationsRef = useRef(new Map<string, PendingStableReplayMutation>());
   useHydratePersistedGuideMessages(persistedGuideMessages, setGuideMessages);
   useEffect(() => () => {
     guideRequestAbortControllerRef.current?.abort();
     guideRequestAbortControllerRef.current = null;
   }, []);
-
   const hasGuideDraft = guideDraft.trim().length > 0;
   const hasGuideSubmission = hasGuideDraft || guideAttachments.length > 0;
-
+  const setGuideDraft = (value: SetStateAction<string>) => {
+    guideDraftRevisionRef.current += 1;
+    setGuideDraftState(value);
+  };
   async function submitGuideQuestion(
     rawQuestion: string,
     options: GuideSubmissionOptions = {},
   ) {
-    if (guideBusy || guideAttachmentBusy) {
+    if (guideSubmitInFlightRef.current || guideBusy || guideAttachmentBusy) {
+      return;
+    }
+    if (isGuideSubmissionBlocked()) {
+      setGuideError(pilotCopy[locale].aiChoiceGuideBlocked);
       return;
     }
     const telemetryActorGeneration = captureAaisResearchActorGeneration();
@@ -108,7 +90,6 @@ export function useLearningGuide({
       has_attachments: guideAttachments.length > 0,
       ...(options.quickStartId ? { quick_start_id: options.quickStartId } : {}),
     };
-
     const attachments = guideAttachments.map(toGuideAttachmentPayload);
     let boundedAttachments: AaisGuideAttachment[] = [];
     try {
@@ -152,7 +133,17 @@ export function useLearningGuide({
     })) {
       return;
     }
-
+    const submittedDraft = options.source === "quick_start" ? "" : rawQuestion;
+    const submittedDraftRevision = guideDraftRevisionRef.current;
+    guideSubmitInFlightRef.current = true;
+    const guideMutationBody = attachStableReplayMutation({
+      action: "request-scaffold",
+      attachments: boundedAttachments,
+      learnerInput: question,
+      locale,
+      phase: activeTaskPhase,
+      taskId: activeTaskId,
+    }, pendingGuideMutationsRef.current, createAaisResearchOperationId);
     const targetAgentIds = selectAaisGuideReplyAgentIds(question);
     setPendingGuideAgentId(targetAgentIds[0] ?? null);
     const userId = createGuideMessageId("user");
@@ -163,20 +154,23 @@ export function useLearningGuide({
         id: userId,
         kind: "user",
         text: question,
+        taskId: activeTaskId,
+        phase: activeTaskPhase,
       },
       {
         id: assistantId,
         kind: "assistant",
         text: "",
+        taskId: activeTaskId,
+        phase: activeTaskPhase,
       },
     ]);
-    setGuideDraft("");
+    setGuideDraftState("");
     setGuideError("");
     setGuideAttachmentError("");
     setGuideBusy(true);
     let attemptNumber = 1;
     let retryReason: string | undefined;
-
     try {
       const generationResult = waitForLearnerDataGeneration();
       const dataGeneration = typeof generationResult === "number"
@@ -190,8 +184,9 @@ export function useLearningGuide({
         },
         body: JSON.stringify({
           dataGeneration,
+          mutationId: String(guideMutationBody.mutationId),
           locale,
-          phase: "training",
+          phase: activeTaskPhase,
           taskId: activeTaskId,
           learnerInput: question,
           targetAgentIds,
@@ -220,14 +215,15 @@ export function useLearningGuide({
         });
       });
       setGuideMessages((current) =>
-        applyGuideResponseToMessages(current, assistantId, body, locale),
+        applyGuideResponseToMessages(current, { userId, assistantId }, body, locale),
       );
       if (boundedAttachments.length) {
         setGuideMessages((current) =>
-          addReadAttachmentMetadataToGuideMessage(current, userId, boundedAttachments),
+          addReadAttachmentMetadataToGuideMessage(current, getCanonicalGuideExchange(body)?.userMessageId ?? userId, boundedAttachments),
         );
       }
       setGuideAttachments([]);
+      clearStableReplayMutation(guideMutationBody, pendingGuideMutationsRef.current);
       recordAaisResearchEvent({
         eventName: "ai_guide_submit",
         outcome: "success",
@@ -247,7 +243,15 @@ export function useLearningGuide({
         },
       });
     } catch (error) {
+      if (isExplicitClientRejection(error)) {
+        clearStableReplayMutation(guideMutationBody, pendingGuideMutationsRef.current);
+      }
       const budgetFailure = getGuideDailyBudgetFailurePresentation(error, copy, locale);
+      setGuideDraftState((current) => (
+        !current.length && guideDraftRevisionRef.current === submittedDraftRevision
+          ? submittedDraft
+          : current
+      ));
       setGuideMessages((current) =>
         current.map((message) =>
           message.id === assistantId
@@ -280,11 +284,11 @@ export function useLearningGuide({
         },
       });
     } finally {
+      guideSubmitInFlightRef.current = false;
       setPendingGuideAgentId(null);
       setGuideBusy(false);
     }
   }
-
   async function requestGuideResponse(
     requestInit: RequestInit,
     assistantId: string,
@@ -308,13 +312,11 @@ export function useLearningGuide({
           () => streamAbortController.abort(),
         );
       }
-
       const streamedJsonBody = await readGuideJsonBody(streamResponse);
       if (!streamResponse.ok || isUsableGuideBody(streamedJsonBody)) {
         validateGuideResponse(streamResponse, streamedJsonBody);
         return streamedJsonBody;
       }
-
       if (!onTransportRetry()) {
         throw new Error("AAIS research telemetry blocked the guide retry.");
       }
@@ -328,7 +330,6 @@ export function useLearningGuide({
     validateGuideResponse(response, body);
     return body;
   }
-
   function createGuideMessageId(prefix: string) {
     guideMessageIdRef.current += 1;
     return `${prefix}-${guideMessageIdRef.current}`;
@@ -470,11 +471,11 @@ export function useLearningGuide({
     setGuideAttachmentBusy(false);
     setGuideAttachmentError("");
     setGuideAttachments([]);
+    pendingGuideMutationsRef.current.clear();
     if (guideFileInputRef.current) {
       guideFileInputRef.current.value = "";
     }
   }
-
   return {
     addGuideFiles,
     guideAttachmentBusy,

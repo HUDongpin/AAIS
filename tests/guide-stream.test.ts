@@ -6,6 +6,10 @@ import {
 } from "@/components/pages/learning/guide-stream";
 
 describe("guide stream visualization transport", () => {
+  const canonicalExchange = {
+    userMessageId: "user-11111111-1111-4111-8111-111111111111",
+    assistantMessageId: "assistant-22222222-2222-4222-8222-222222222222",
+  };
   it("preserves daily-budget metadata from a 429 guide response", () => {
     const response = Response.json({}, { status: 429 });
     const body = {
@@ -84,7 +88,7 @@ describe("guide stream visualization transport", () => {
           })}\n\n`,
         ));
         controller.enqueue(encoder.encode(
-          'event: done\ndata: {"status":"completed"}\n\n',
+          `event: done\ndata: ${JSON.stringify({ status: "completed", exchange: canonicalExchange })}\n\n`,
         ));
         controller.close();
       },
@@ -109,10 +113,48 @@ describe("guide stream visualization transport", () => {
         vertex: { x: -0.75, y: 2.875 },
       }],
     });
+    expect(body.exchange).toEqual(canonicalExchange);
     expect(onProgress).toHaveBeenLastCalledWith(expect.objectContaining({
       turns: [expect.objectContaining({
         visualizations: [expect.objectContaining({ expression: "y = 2x² + 3x + 4" })],
       })],
     }));
+  });
+
+  it("accepts canonical ids only from the final done event", async () => {
+    const encoder = new TextEncoder();
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode(
+          `event: ack\ndata: ${JSON.stringify({
+            status: "accepted",
+            graphId: "learning-ai-guide",
+            exchange: canonicalExchange,
+          })}\n\n`,
+        ));
+        controller.enqueue(encoder.encode(
+          'event: agent_delta\ndata: {"agentId":"A1","content":"已完成。"}\n\n',
+        ));
+        controller.enqueue(encoder.encode(
+          'event: done\ndata: {"status":"completed","exchange":{"userMessageId":"user-1","assistantMessageId":"assistant-2"}}\n\n',
+        ));
+        controller.close();
+      },
+    });
+
+    const body = await readGuideStreamResponse(
+      new Response(stream, {
+        status: 200,
+        headers: { "content-type": "text/event-stream;charset=utf-8" },
+      }),
+      vi.fn(),
+      1_000,
+      "zh-CN",
+    );
+
+    expect(body.exchange).toBeUndefined();
+    expect(body.turns).toEqual([
+      expect.objectContaining({ agentId: "A1", content: "已完成。" }),
+    ]);
   });
 });

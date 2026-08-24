@@ -196,7 +196,7 @@ export function GuidePanel({
               }
               guideFileInputRef.current?.click();
             }}
-            className="grid size-10 shrink-0 place-items-center rounded-full text-[#4b5563] outline-none transition hover:bg-[#f2f4f8] focus-visible:ring-2 focus-visible:ring-[#536de8] disabled:cursor-not-allowed disabled:opacity-60"
+            className="grid size-11 shrink-0 place-items-center rounded-full text-[#4b5563] outline-none transition hover:bg-[#f2f4f8] focus-visible:ring-2 focus-visible:ring-[#536de8] disabled:cursor-not-allowed disabled:opacity-60"
           >
             <Plus size={22} weight="bold" />
           </button>
@@ -214,10 +214,10 @@ export function GuidePanel({
           />
           <button
             type="submit"
-            disabled={guidePanelBusy}
+            disabled={guidePanelBusy || !hasGuideSubmission}
             aria-label={copy.guide.send}
             className={[
-              "grid size-10 shrink-0 place-items-center rounded-full text-white outline-none transition active:translate-y-px focus-visible:ring-2 focus-visible:ring-[#202329] focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-70",
+              "grid size-11 shrink-0 place-items-center rounded-full text-white outline-none transition active:translate-y-px focus-visible:ring-2 focus-visible:ring-[#202329] focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-70",
               hasGuideSubmission
                 ? "bg-[#202329] shadow-[0_10px_20px_rgba(17,24,39,0.18)] hover:bg-[#111318]"
                 : "bg-[#d7dbe3] shadow-none hover:bg-[#cfd4df]",

@@ -53,6 +53,8 @@ export type AaisEvidenceKind =
   | "coaching"
   | "expert_trace_comparison"
   | "expert_modeling"
+  | "learner_choice"
+  | "milestone_evidence"
   | "monitoring"
   | "planning"
   | "recommendation_override"
@@ -66,17 +68,24 @@ export type AaisEvidenceKind =
   | "understanding_check";
 
 export type AaisEventName =
+  | "a4_reflection_report_generated"
+  | "ai_acceptance_mutation_bound"
   | "ai_acceptance_recorded"
   | "ai_prompt_submitted"
   | "ai_response_completed"
+  | "deterministic_guide_prompt_submitted"
+  | "deterministic_guide_response_completed"
   | "artifact_edited"
   | "artifact_saved"
   | "articulation_submitted"
   | "coaching_push"
   | "expert_model_viewed"
   | "expert_trace_compared"
+  | "learner_action_mutation_bound"
+  | "milestone_evidence_recorded"
   | "monitoring_pause_detected"
   | "planning_submitted"
+  | "pilot_outcome_recorded"
   | "recommendation_override_recorded"
   | "scaffold_request"
   | "scaffold_self_check_started"
@@ -94,6 +103,7 @@ export type AaisEventDefinition = {
   family: AaisEventFamily;
   evidenceKind: AaisEvidenceKind;
   description: string;
+  lrsEligible?: boolean;
 };
 
 export type AaisAgentVoice = {
@@ -268,6 +278,20 @@ export type AaisEvent = {
 };
 
 export const aaisEventDefinitions: Record<AaisEventName, AaisEventDefinition> = {
+  a4_reflection_report_generated: {
+    agent: "A4",
+    family: "A4_REFLECTION",
+    evidenceKind: "expert_trace_comparison",
+    description: "A4 generated or refreshed a local expert-process comparison report.",
+    lrsEligible: false,
+  },
+  ai_acceptance_mutation_bound: {
+    agent: "A2",
+    family: "A2_EXPERT",
+    evidenceKind: "ai_interaction",
+    description: "AAIS locally bound an AI acceptance mutation id to its canonical payload.",
+    lrsEligible: false,
+  },
   ai_acceptance_recorded: {
     agent: "A2",
     family: "A2_EXPERT",
@@ -285,6 +309,20 @@ export const aaisEventDefinitions: Record<AaisEventName, AaisEventDefinition> = 
     family: "A1_GUIDE",
     evidenceKind: "ai_interaction",
     description: "AAIS completed a guided multi-agent response.",
+  },
+  deterministic_guide_prompt_submitted: {
+    agent: "platform",
+    family: "PLATFORM",
+    evidenceKind: "session_lifecycle",
+    description: "Learner submitted a prompt to the deterministic AI-free guide flow.",
+    lrsEligible: false,
+  },
+  deterministic_guide_response_completed: {
+    agent: "platform",
+    family: "PLATFORM",
+    evidenceKind: "session_lifecycle",
+    description: "AAIS completed a deterministic AI-free guide response without an external provider.",
+    lrsEligible: false,
   },
   artifact_edited: {
     agent: "A3",
@@ -322,6 +360,20 @@ export const aaisEventDefinitions: Record<AaisEventName, AaisEventDefinition> = 
     evidenceKind: "expert_trace_comparison",
     description: "A4 compared the learner trace with the expert trace.",
   },
+  learner_action_mutation_bound: {
+    agent: "platform",
+    family: "PLATFORM",
+    evidenceKind: "session_lifecycle",
+    description: "AAIS locally bound an idempotent learner action to its canonical payload.",
+    lrsEligible: false,
+  },
+  milestone_evidence_recorded: {
+    agent: "platform",
+    family: "PLATFORM",
+    evidenceKind: "milestone_evidence",
+    description: "AAIS recorded explicit completion evidence for a learning milestone.",
+    lrsEligible: false,
+  },
   monitoring_pause_detected: {
     agent: "A3",
     family: "A3_SUPERVISION",
@@ -333,6 +385,13 @@ export const aaisEventDefinitions: Record<AaisEventName, AaisEventDefinition> = 
     family: "A3_SUPERVISION",
     evidenceKind: "planning",
     description: "A3 captured a planning artifact for a task.",
+  },
+  pilot_outcome_recorded: {
+    agent: "A4",
+    family: "A4_REFLECTION",
+    evidenceKind: "learner_choice",
+    description: "AAIS locally recorded a learner articulation or reflection choice.",
+    lrsEligible: false,
   },
   recommendation_override_recorded: {
     agent: "platform",
@@ -374,7 +433,8 @@ export const aaisEventDefinitions: Record<AaisEventName, AaisEventDefinition> = 
     agent: "platform",
     family: "PLATFORM",
     evidenceKind: "stage_navigation",
-    description: "Learner selected a Cognitive Apprenticeship stage.",
+    description: "AAIS opened a Cognitive Apprenticeship stage for learner navigation.",
+    lrsEligible: false,
   },
   task_completed: {
     agent: "platform",
@@ -386,7 +446,8 @@ export const aaisEventDefinitions: Record<AaisEventName, AaisEventDefinition> = 
     agent: "A1",
     family: "A1_GUIDE",
     evidenceKind: "task_release",
-    description: "A1 released a training or practice task.",
+    description: "A1 or the pilot sequence released a training or practice task.",
+    lrsEligible: false,
   },
   task_selected: {
     agent: "platform",

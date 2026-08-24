@@ -37,11 +37,21 @@ afterEach(() => {
 });
 
 describe("AAIS LRS xAPI client", () => {
-  it("has an xAPI verb mapping for every defined AAIS event", () => {
+  it("keeps deterministic AI-free guide events outside the LRS contract", () => {
+    expect(aaisEventDefinitions.deterministic_guide_prompt_submitted.lrsEligible)
+      .toBe(false);
+    expect(aaisEventDefinitions.deterministic_guide_response_completed.lrsEligible)
+      .toBe(false);
+  });
+
+  it("has an xAPI verb mapping for every LRS-eligible AAIS event", () => {
     // Any event that reaches the LRS outbox must build a statement without
     // throwing; a missing verb mapping would permanently stall the persistent
     // outbox flush. Guard the whole class, not just one event.
     for (const [eventName, definition] of Object.entries(aaisEventDefinitions)) {
+      if (definition.lrsEligible === false) {
+        continue;
+      }
       const event: AaisEvent = {
         student_id: "S001",
         session_id: "session-coverage",

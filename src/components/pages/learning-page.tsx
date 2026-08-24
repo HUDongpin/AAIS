@@ -12,11 +12,8 @@ import { useLearningDocumentArchive } from "@/components/pages/learning/use-lear
 import { useLearningContentNavigation } from "@/components/pages/learning/use-learning-content-navigation";
 import { useHydratedArtifactDraft } from "@/components/pages/learning/use-hydrated-artifact-draft";
 import { useLearningWorkspaceSession } from "@/components/pages/learning/use-learning-workspace-session";
-import {
-  clientNowMs,
-  isUserCancelledFilePicker,
-  type ArtifactDraftJournal,
-} from "@/components/pages/learning/client-helpers";
+import { createPilotLearningActions } from "@/components/pages/learning/pilot-learning-actions";
+import { clientNowMs, isUserCancelledFilePicker, type ArtifactDraftJournal } from "@/components/pages/learning/client-helpers";
 import { LearningResearchWorkspaceBoundary, type LearningResearchBoundary } from "@/components/pages/learning/research-telemetry-boundary";
 import { admitAaisResearchAction, captureAaisResearchActorGeneration, classifyAaisResearchClientError, createAaisResearchOperationId, recordAaisResearchEvent } from "@/lib/client/aais-research-telemetry";
 import { createLearningDocumentFileName, createLearningDocumentMarkdown, saveMarkdownDocumentToLocal } from "@/components/pages/learning/document-markdown";
@@ -25,11 +22,7 @@ import type { Locale } from "@/data/aais";
 import { useLearningLocale } from "@/components/pages/learning/use-learning-locale";
 export type LearningPageActor = { id: string; displayName: string };
 export type LearningPageResearchBoundary = LearningResearchBoundary;
-export function LearningPage({ actor, locale: initialLocale = "zh-CN", research }: {
-  actor: LearningPageActor;
-  locale?: Locale;
-  research: LearningResearchBoundary;
-}) {
+export function LearningPage({ actor, locale: initialLocale = "zh-CN", research }: { actor: LearningPageActor; locale?: Locale; research: LearningResearchBoundary }) {
   return (
     <LearningResearchWorkspaceBoundary locale={initialLocale} research={research}>
       <LearningWorkbench
@@ -48,13 +41,10 @@ function LearningWorkbench({ actor, initialLocale, researchRequired }: {
   const { hydrationReady, initialDraftJournal } = useHydratedArtifactDraft(actor.id, researchRequired);
   return <LearningWorkbenchState
     key={hydrationReady ? "hydrated" : "server"} actor={actor}
-    hydrationReady={hydrationReady}
-    initialDraftJournal={initialDraftJournal}
-    initialLocale={initialLocale}
-    researchRequired={researchRequired}
+    hydrationReady={hydrationReady} initialDraftJournal={initialDraftJournal}
+    initialLocale={initialLocale} researchRequired={researchRequired}
   />;
 }
-
 function LearningWorkbenchState({
   actor, hydrationReady,
   initialDraftJournal,
@@ -85,11 +75,13 @@ function LearningWorkbenchState({
     backendError,
     documentTitle,
     getArtifactRevision,
+    getAiUseModeMutationStatus,
     historyDocuments,
     lastSavedArtifactLengthRef,
     learnerDataGeneration,
     patchSession,
     persistedGuideMessages,
+    requestScaffold,
     resetWorkspaceSession,
     setArtifactText,
     setActiveHistoryDocumentId,
@@ -107,6 +99,9 @@ function LearningWorkbenchState({
     },
   );
   const editingTaskId = documentTaskId ?? activeTaskId;
+  const aiUseModeMutationStatus = getAiUseModeMutationStatus(editingTaskId);
+  const activeTaskPhase = tasks.find((task) => task.taskId === editingTaskId)?.phase
+    ?? (editingTaskId.startsWith("practice_") ? "practice" : "training");
   const {
     archiveIntentRef,
     artifactSaveBusy,
@@ -163,13 +158,16 @@ function LearningWorkbenchState({
     setGuideError,
   } = useLearningGuide({
     activeTaskId: editingTaskId,
+    activeTaskPhase,
     artifactText,
     displayName: actor.displayName,
+    isGuideSubmissionBlocked: () => getAiUseModeMutationStatus(editingTaskId) !== null,
     waitForLearnerDataGeneration,
     locale,
     persistedGuideMessages,
     studentId,
   });
+  const pilotActions = createPilotLearningActions({ patchSession, requestScaffold });
   const {
     activeContentId,
     completeLearningTask,
@@ -192,6 +190,7 @@ function LearningWorkbenchState({
     taskActionErrorMessage: copy.content.taskCards.actionFailed,
   });
   const operationBusy = guideBusy
+    || aiUseModeMutationStatus !== null
     || guideAttachmentBusy
     || hasUncommittedArtifactSave()
     || documentArchiveBusy
@@ -215,7 +214,6 @@ function LearningWorkbenchState({
     locale,
     studentId,
   });
-
   function resetLearnerWorkspace(nextDataGeneration: number) {
     resetArtifactSaveState();
     setDocumentTaskId(null);
@@ -435,7 +433,7 @@ function LearningWorkbenchState({
             guideAttachmentBusy={guideAttachmentBusy}
             guideAttachmentError={guideAttachmentError}
             guideAttachments={guideAttachments}
-            guideBusy={guideBusy}
+            guideBusy={guideBusy || aiUseModeMutationStatus !== null}
             guideDraft={guideDraft}
             guideError={guideError}
             guideFileInputRef={guideFileInputRef}
@@ -473,6 +471,7 @@ function LearningWorkbenchState({
             documentArchiveBusy={documentArchiveBusy}
             documentNavigationLocked={hasUncommittedArtifactSave()}
             flushPendingArtifactSave={() => flushPendingArtifactSave("blur")}
+            guideMessages={guideMessages}
             historyDocuments={historyDocuments}
             locale={locale}
             onDocumentTitleChange={recordDocumentTitle}
@@ -485,6 +484,7 @@ function LearningWorkbenchState({
               archiveIntentRef.current = true;
             }}
             onSelectTask={(taskId) => { void selectLearningTask(taskId); }}
+            pilotActions={pilotActions}
             selectContentTab={selectContentTab}
             onBackContent={returnToContentMenu}
             onOpenContent={openContentItem}

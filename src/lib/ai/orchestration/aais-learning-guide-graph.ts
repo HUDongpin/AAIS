@@ -32,12 +32,29 @@ import {
   type AaisFunctionScaffoldPlan,
   type AaisGuideVisualization,
 } from "@/lib/ai/aais-guide-function-scaffold";
+import type {
+  AaisA3SupervisionSignal,
+  AaisAiUseMode,
+  AaisOutputEvaluation,
+  AaisScaffoldIntensity,
+} from "@/lib/server/aais-learning-loop";
 
-type AaisWorkspaceState = {
+export type AaisWorkspaceState = {
   currentStep: string;
   artifactText?: string;
   helpRequestsUsed?: number;
   attachments?: AaisGuideAttachment[];
+  aiUseMode?: AaisAiUseMode;
+  outputEvaluation?: AaisOutputEvaluation;
+  scaffoldLevel?: 1 | 2 | 3 | 4;
+  scaffoldIntensity?: AaisScaffoldIntensity;
+  scaffoldFading?: boolean;
+  directAnswerRequested?: boolean;
+  taskMode?: "modeling" | "coaching" | "exploration" | "reflection";
+  supervisionSignals?: Array<Pick<
+    AaisA3SupervisionSignal,
+    "id" | "type" | "basis" | "evidence" | "recommendedAction"
+  >>;
 };
 
 export type AaisGuideConversationMessage = {
@@ -158,7 +175,13 @@ export async function runAaisLearningGuideGraph(
     workspaceState: normalizeAaisGuideWorkspaceState(input.workspaceState),
     ...(scaffoldPlan ? { scaffoldPlan } : { scaffoldPlan: undefined }),
   };
-  const modelProvider = options.modelProvider ?? createConfiguredAaisModelProvider();
+  const localVisiblePolicyActive = hasAaisLocalVisiblePolicy(boundedInput.workspaceState);
+  const modelProvider = (
+    boundedInput.workspaceState.aiUseMode === "ai-free"
+    || localVisiblePolicyActive
+  )
+    ? createDeterministicAaisProvider()
+    : options.modelProvider ?? createConfiguredAaisModelProvider();
   const backgroundProvider = createDeterministicAaisProvider();
   const targetAgentIds = boundedInput.targetAgentIds ?? ["A1"];
   const visibleAgentIds = topologicalOrder.filter((agentId): agentId is AaisGuideTargetAgentId =>
@@ -190,6 +213,7 @@ export async function runAaisLearningGuideGraph(
     unsupportedGraphRequest,
     targetAgentIds,
     boundedInput.locale,
+    localVisiblePolicyActive,
   );
   const providerRuns = allRuns.flatMap((run) => run.providerRuns);
   const agentTimings = allRuns.flatMap((run) => run.timings);
@@ -328,7 +352,7 @@ async function createAgentTurn(
       taskId: state.taskId,
       learnerInput: state.learnerInput,
       conversationHistory: state.conversationHistory,
-      workspaceState: state.workspaceState,
+      workspaceState: createProviderSafeWorkspaceState(state.workspaceState),
       scaffoldPlan: state.scaffoldPlan,
       fallbackText,
       signal,
@@ -356,8 +380,17 @@ async function createAgentTurn(
   }
   signal?.throwIfAborted();
   const elapsedMs = Math.round(nowMs() - startedAt);
+  const localA1PolicyText = visible && agentId === "A1"
+    ? createA1LocalPolicyOverride(state)
+    : null;
+  const localA2PolicyText = visible && agentId === "A2"
+    ? createA2LocalPolicyOverride(state)
+    : null;
   const learnerVisibleText = visible
-    ? localizeAaisGuideAgentReferences(response.text, state.locale)
+    ? localizeAaisGuideAgentReferences(
+        localA1PolicyText ?? localA2PolicyText ?? response.text,
+        state.locale,
+      )
     : response.text;
   const providerRun = {
     agentId,
@@ -485,6 +518,23 @@ function createA1ConciseFallback(state: AaisGuideState) {
     state.workspaceState.attachments,
     state.locale,
   );
+  const latestSignal = state.workspaceState.supervisionSignals?.at(-1);
+
+  if (state.workspaceState.directAnswerRequested) {
+    return english
+      ? "I will not replace your task with a finished answer. Write your goal or first attempted step, and I will give one bounded next-step hint."
+      : "我不会用成品答案替代你的任务。先写出你的目标或已经尝试的第一步，我会给一个有边界的下一步提示。";
+  }
+
+  if (state.workspaceState.outputEvaluation === "revision_required") {
+    return english
+      ? "You marked the AI output for revision. Name one mismatch with your goal, then revise the prompt or the output before continuing."
+      : "你已把 AI 输出标记为需要修订。先指出它与目标的一处不一致，再修改提示词或输出后继续。";
+  }
+
+  if (latestSignal) {
+    return createA1SignalFallback(latestSignal.recommendedAction, english);
+  }
 
   if (priorLearnerFocus && refersToPriorContext(state.learnerInput)) {
     return english
@@ -507,6 +557,65 @@ function createA1ConciseFallback(state: AaisGuideState) {
   return english
     ? `${remaining} direct assists remain. Tell me where you are stuck; I will help with only the next step.`
     : `还可直接求助 ${remaining} 次。先说你卡在哪一步，我只帮你推进下一步。`;
+}
+
+function createA1LocalPolicyOverride(state: AaisGuideState) {
+  if (
+    state.workspaceState.directAnswerRequested
+    || state.workspaceState.outputEvaluation === "revision_required"
+    || state.workspaceState.supervisionSignals?.length
+  ) {
+    return createA1ConciseFallback(state);
+  }
+  return null;
+}
+
+function hasAaisLocalVisiblePolicy(workspaceState: AaisWorkspaceState) {
+  return Boolean(
+    workspaceState.directAnswerRequested
+    || workspaceState.outputEvaluation === "revision_required"
+    || workspaceState.supervisionSignals?.length,
+  );
+}
+
+function createA2LocalPolicyOverride(state: AaisGuideState) {
+  if (!state.workspaceState.directAnswerRequested) {
+    return null;
+  }
+  const english = state.locale === "en-US";
+  if (state.workspaceState.taskMode === "modeling") {
+    return english
+      ? "I can model one smaller, parallel example and name the planning, monitoring, and evaluation moves, but I will not complete your current task for you."
+      : "我可以示范一个缩小的同类例子，并标出计划、监控和评估动作，但不会替你完成当前任务。";
+  }
+  return english
+    ? "I will not provide the finished answer in this task mode. Show your first attempt, and I will coach one specific next step."
+    : "在当前任务模式下，我不会直接给成品答案。先展示你的第一次尝试，我会针对一个具体的下一步进行指导。";
+}
+
+function createProviderSafeWorkspaceState(workspaceState: AaisWorkspaceState) {
+  return {
+    currentStep: workspaceState.currentStep,
+    artifactText: workspaceState.artifactText,
+    helpRequestsUsed: workspaceState.helpRequestsUsed,
+    attachments: workspaceState.attachments,
+  };
+}
+
+function createA1SignalFallback(
+  action: AaisA3SupervisionSignal["recommendedAction"],
+  english: boolean,
+) {
+  const responses: Record<AaisA3SupervisionSignal["recommendedAction"], readonly [string, string]> = {
+    ask_goal_question: ["What exact result must this task produce? Write it in one sentence first.", "这个任务最终必须产出什么？先用一句话写清目标。"],
+    ask_for_plan: ["List your next two steps and one checkpoint before asking for more help.", "先列出接下来两步和一个检查点，再继续求助。"],
+    offer_small_next_step: ["Your progress signal has paused. Choose the smallest unfinished part and write one verifiable next step.", "进展信号暂时停住了。选最小的未完成部分，写出一个可验证的下一步。"],
+    invite_recovery_or_revision: ["A large revision was detected. State what you intentionally removed and what still satisfies the task goal.", "检测到较大删改。说明你有意删除了什么，以及目前哪些内容仍满足任务目标。"],
+    prompt_output_evaluation: ["Before using the output, evaluate one strength, one weakness, and whether it matches your goal.", "使用输出前，先评价一个优点、一个不足，以及它是否符合你的目标。"],
+    provide_bounded_scaffold: ["Tell me the exact step where you are stuck; I will scaffold only that step.", "告诉我你卡住的具体一步，我只为这一步提供支架。"],
+    invite_reflection: ["You may decline reflection, but it will remain incomplete. If you continue, write what changed in your plan and why.", "你可以拒绝反思，但会保留为未完成；若继续，请写出计划改变了什么以及原因。"],
+  };
+  return english ? responses[action][0] : responses[action][1];
 }
 
 function createA2ContextualFallback(state: AaisGuideState, learnerInput: string) {
@@ -573,8 +682,11 @@ function applyAaisFunctionScaffold(
   unsupportedGraphRequest: boolean,
   targetAgentIds: AaisGuideTargetAgentId[],
   locale: Locale,
+  localVisiblePolicyActive = false,
 ) {
-  if (!plan && !unsupportedGraphRequest) {
+  // Direct-answer refusal, revision coaching, and actionable A3 guidance own
+  // the learner-visible turn. A function worked step must never replace them.
+  if (localVisiblePolicyActive || (!plan && !unsupportedGraphRequest)) {
     return turns;
   }
   const targetAgentId = targetAgentIds[0];

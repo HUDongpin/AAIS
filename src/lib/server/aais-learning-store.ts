@@ -42,6 +42,43 @@ import {
 } from "@/lib/ai/aais-guide-function-scaffold";
 import { createAaisProductPseudonym } from "@/lib/server/aais-product-pseudonym";
 import { requiresAaisDurableStorage } from "@/lib/server/aais-runtime";
+import {
+  aaisLearningMilestoneIds,
+  aaisTask4MinimumArtifactCharacters,
+  classifyAaisLearnerInput,
+  countAaisVisibleCharacters,
+  createAaisScaffoldEvidenceSnapshot,
+  createAaisSignalDrafts,
+  createDefaultAaisScaffoldState,
+  createDefaultAaisTaskLearningLoop,
+  createDefaultAaisTaskPilotEvidence,
+  deriveAaisScaffoldState,
+  deriveAaisA4ReflectionReport,
+  deriveAaisTaskCompletionMissing,
+  hasAaisScaffoldEvidenceImproved,
+  isAaisOutputEvaluation,
+  isAaisReflectionOutcome,
+  mergeAaisTaskPilotEvidence,
+  normalizeAaisLearningMilestoneId,
+  normalizeAaisScaffoldEvidenceSnapshot,
+  normalizeAaisTaskLearningLoop,
+  normalizeAaisTaskPilotEvidence,
+  openAaisLearningMilestone,
+  pilotClosedTaskIds,
+  recordAaisMilestoneEvidence,
+  type AaisA3SupervisionSignal,
+  type AaisA3SignalType,
+  type AaisA3RecommendedAction,
+  type AaisA4ReflectionReport,
+  type AaisLearningMilestoneId,
+  type AaisMilestoneEvidenceKind,
+  type AaisOutputEvaluation,
+  type AaisScaffoldEvidenceSnapshot,
+  type AaisScaffoldFadingReason,
+  type AaisTaskLearningLoop,
+  type AaisTaskPilotEvidence,
+  type AaisTaskScaffoldState,
+} from "@/lib/server/aais-learning-loop";
 
 export type AaisDatabaseClient = {
   query(sql: string, params?: unknown[]): Promise<{ rows: Array<Record<string, unknown>> }>;
@@ -146,7 +183,7 @@ export class AaisSessionWriteConflictError extends Error {
   }
 }
 
-export type AaisLearnerTextRevisionField = "artifact" | "self_report";
+export type AaisLearnerTextRevisionField = "artifact" | "self_report" | "pilot_evidence";
 
 export class AaisLearnerTextRevisionConflictError extends Error {
   readonly field: AaisLearnerTextRevisionField;
@@ -284,9 +321,12 @@ export type AaisLearnerMutationErrorReason =
   | "history_too_large"
   | "history_task_mismatch"
   | "mutation_replay_conflict"
+  | "pilot_evidence_invalid"
   | "scaffold_practice_only"
   | "scaffold_tool_invalid"
+  | "stage_evidence_invalid"
   | "stage_invalid"
+  | "task_pilot_closed"
   | "task_locked"
   | "task_not_active"
   | "task_unknown";
@@ -305,6 +345,37 @@ export function isAaisLearnerMutationError(
   error: unknown,
 ): error is AaisLearnerMutationError {
   return error instanceof AaisLearnerMutationError;
+}
+
+export class AaisGuideMutationInProgressError extends Error {
+  constructor(readonly retryAfterSeconds: number) {
+    super("AAIS guide mutation is already in progress.");
+    this.name = "AaisGuideMutationInProgressError";
+  }
+}
+
+export function isAaisGuideMutationInProgressError(
+  error: unknown,
+): error is AaisGuideMutationInProgressError {
+  return error instanceof AaisGuideMutationInProgressError;
+}
+
+export class AaisTaskCompletionEvidenceError extends Error {
+  readonly taskId: string;
+  readonly completionMissing: string[];
+
+  constructor(taskId: string, completionMissing: string[]) {
+    super("AAIS task completion evidence is incomplete.");
+    this.name = "AaisTaskCompletionEvidenceError";
+    this.taskId = taskId;
+    this.completionMissing = [...completionMissing];
+  }
+}
+
+export function isAaisTaskCompletionEvidenceError(
+  error: unknown,
+): error is AaisTaskCompletionEvidenceError {
+  return error instanceof AaisTaskCompletionEvidenceError;
 }
 
 export type AaisLearnerSessionLimitReason =
@@ -343,23 +414,53 @@ export function isAaisRecommendationOverrideTargetError(
 }
 
 export type AaisTaskStatus = "locked" | "available" | "active" | "completed";
+export type AaisTaskCompletionOutcome =
+  | "in_progress"
+  | "evidence_complete"
+  | "ended_incomplete";
+
+export type AaisPilotOutcomeAuditRecord = {
+  stage: "articulation" | "reflection";
+  outcome: "pending" | "submitted" | "declined";
+  reasonLength: number;
+  attempt: number;
+  recordedAt: string;
+  rawReasonIncluded: false;
+};
 
 export type AaisTaskRecord = {
   taskId: string;
   phase: AaisPhase;
   status: AaisTaskStatus;
+  completionOutcome: AaisTaskCompletionOutcome;
   artifactText: string;
   documentTitle: string;
   activeDocumentId: string | null;
   artifactRevision: number;
   selfReport: string;
   selfReportRevision: number;
+  pilotEvidenceRevision: number;
   scaffoldRequests: number;
+  scaffoldState: AaisTaskScaffoldState;
   scaffoldHistory: Array<{
     toolId: string;
     mode: "tool-list" | "self-check";
     time: string;
+    level: 1 | 2 | 3 | 4;
+    intensity: AaisTaskScaffoldState["intensity"];
+    fading: boolean;
+    remainingDirectAssists?: number;
+    // Learner-session-only metadata. Never copy these fields into product or LRS event detail.
+    fadingReason?: AaisScaffoldFadingReason;
+    evidenceSnapshot?: AaisScaffoldEvidenceSnapshot;
   }>;
+  activeMilestone: AaisLearningMilestoneId;
+  milestones: AaisTaskLearningLoop["milestones"];
+  pilotEvidence: AaisTaskPilotEvidence;
+  reflectionReport: AaisA4ReflectionReport | null;
+  pilotOutcomeAudit: AaisPilotOutcomeAuditRecord[];
+  completionMissing: string[];
+  supervisionSignals: AaisA3SupervisionSignal[];
 };
 
 export type AaisGuideMessageRecord = {
@@ -378,6 +479,9 @@ export type AaisGuideMessageRecord = {
     topologicalOrder: string[];
     threadId: string;
   };
+  // Internal exactly-once receipt. Learner DTO projection reconstructs the
+  // canonical message and never returns this metadata.
+  guideMutation?: AaisCompletedGuideMutationReceipt;
 };
 
 export type AaisGuideTurnRecord = {
@@ -409,7 +513,79 @@ export type AaisLearnerSession = {
   historyDocuments: AaisHistoryDocumentRecord[];
   guideMessages: AaisGuideMessageRecord[];
   guideCapacityReservations?: AaisGuideCapacityReservation[];
+  guideMutationReservations?: AaisGuideMutationReservation[];
   events: AaisEvent[];
+};
+
+export type AaisPersistedGuideExchange = {
+  userMessageId: string;
+  assistantMessageId: string;
+};
+
+export type AaisGuideMutationReceipt = {
+  mutationKey: string;
+  payloadHash: string;
+};
+
+export type AaisGuideMutationRuntimeSummary = {
+  engine: string;
+  status: string;
+  visibleMs: number;
+  attempts: number;
+  fallback: boolean;
+  timeoutReason: string | null;
+  agentStatuses: Array<{
+    agentId: Extract<AaisAgentId, "A1" | "A2">;
+    status: string;
+  }>;
+};
+
+export type AaisGuideMutationBudgetSnapshot = {
+  limit: number;
+  used: number;
+  remaining: number;
+  resetsAt: string;
+};
+
+type AaisCompletedGuideMutationReceipt = AaisGuideMutationReceipt & {
+  version: 1;
+  userMessageId: string;
+  runtime: AaisGuideMutationRuntimeSummary;
+  budget: AaisGuideMutationBudgetSnapshot;
+};
+
+type AaisGuideMutationReservation = AaisGuideMutationReceipt & {
+  status: "in_flight" | "released";
+  leaseExpiresAt: string;
+  retainUntil: string;
+};
+
+export type AaisCompletedGuideMutationReplay = {
+  exchange: AaisPersistedGuideExchange;
+  messageText: string;
+  turns: AaisGuideTurnRecord[];
+  orchestration: NonNullable<AaisGuideMessageRecord["orchestration"]>;
+  runtime: AaisGuideMutationRuntimeSummary;
+  budget: AaisGuideMutationBudgetSnapshot;
+};
+
+export type AaisGuideMutationClaimResult =
+  | {
+      status: "claimed";
+      receipt: AaisGuideMutationReceipt;
+      session: AaisLearnerSession;
+    }
+  | {
+      status: "completed";
+      replay: AaisCompletedGuideMutationReplay;
+      session: AaisLearnerSession;
+    };
+
+export type AaisGuideInteractionMode = "ai-provider" | "deterministic-local";
+
+export type AaisAppendGuideExchangeResult = {
+  session: AaisLearnerSession;
+  exchange: AaisPersistedGuideExchange;
 };
 
 type AaisGuideCapacityReservation = {
@@ -428,9 +604,13 @@ type AaisSessionWindowMetadata = {
 
 export type AaisLearnerSessionApiDto = Omit<
   AaisLearnerSession,
-  "events" | "guideCapacityReservations" | "guideMessages" | "tasks"
+  | "events"
+  | "guideCapacityReservations"
+  | "guideMessages"
+  | "guideMutationReservations"
+  | "tasks"
 > & {
-  tasks: AaisTaskRecord[];
+  tasks: Array<Omit<AaisTaskRecord, "pilotOutcomeAudit" | "supervisionSignals">>;
   guideMessages: AaisGuideMessageRecord[];
   events: AaisEvent[];
   truncation: {
@@ -450,6 +630,12 @@ type StoreInput = {
 type ScaffoldResult = {
   mode: "tool-list" | "self-check";
   requestCount: number;
+  level: 1 | 2 | 3 | 4;
+  intensity: AaisTaskScaffoldState["intensity"];
+  remainingDirectAssists: number;
+  fading: boolean;
+  fadingReason?: AaisScaffoldFadingReason;
+  evidenceSnapshot: AaisScaffoldEvidenceSnapshot;
   tool: {
     id: string;
     label: string;
@@ -682,9 +868,14 @@ const aaisProductLrsDeliverySafetyMarginMs = 35_000;
 const aaisGuideReservationLeaseDurationSeconds = 600;
 const aaisGuideCapacityReservationLeaseSeconds = 60 * 60;
 const aaisGuideExchangeCapacityReservationBytes = 256 * 1024;
+const aaisGuideMutationLeaseSeconds = 10 * 60;
+const aaisGuideMutationRetentionSeconds = 24 * 60 * 60;
+const aaisGuideMutationReservationLimit = 16;
 const aaisA2CoachingCooldownMs = 10 * 60 * 1000;
+const aaisA3SignalCooldownMs = 5 * 60 * 1000;
 const aaisA2ArtifactRegressionMinimumPreviousCharacters = 80;
 const aaisA2ArtifactRegressionMinimumDropCharacters = 40;
+const aaisA3SupervisionSignalLimitPerTask = 100;
 const aaisArtifactMaxCharacters = 2 * 1024 * 1024;
 const aaisHistoryDocumentMaxCount = 50;
 const aaisHistoryDocumentsMaxCharacters = 16 * 1024 * 1024;
@@ -706,7 +897,50 @@ const selectableAaisStageIds = new Set([
   "comparison",
   "guide",
   "reflection",
+  ...aaisLearningMilestoneIds,
 ]);
+
+const learnerVisibleGuideAgentIds = new Set<AaisAgentId>(["A1", "A2"]);
+const learnerSafeEventDetailFields = {
+  ai_acceptance_recorded: ["accepted", "reason_length", "revision"],
+  ai_prompt_submitted: ["prompt_length"],
+  ai_response_completed: ["response_length"],
+  expert_model_viewed: ["milestoneId", "evidenceKind", "origin"],
+  session_created: ["schemaVersion"],
+  stage_selected: ["stageId", "milestoneId", "lifecycle", "origin"],
+  task_completed: [
+    "taskId",
+    "unlockedTaskId",
+    "autoAdvancedTaskId",
+    "skippedPilotClosedTaskId",
+    "completionOutcome",
+    "completionMissing",
+    "origin",
+  ],
+  task_released: ["taskId", "releaseReason", "origin"],
+  task_selected: ["taskId", "origin"],
+  milestone_evidence_recorded: [
+    "stageId",
+    "milestoneId",
+    "lifecycle",
+    "evidenceKind",
+    "origin",
+  ],
+  scaffold_request: [
+    "request_count",
+    "tool_id",
+    "requested_tool_id",
+    "mode",
+    "scaffold_level",
+    "intensity",
+    "fading",
+    "remaining_direct_assists",
+    "fading_reason",
+    "origin",
+  ],
+  scaffold_self_check_started: ["request_count", "tool_id", "origin"],
+  understanding_check_completed: ["milestoneId", "evidenceKind", "resultRecorded", "origin"],
+} as const satisfies Partial<Record<AaisEventName, readonly string[]>>;
 
 const taskOrder = [
   ...aaisLearningProgram.training.tasks,
@@ -719,13 +953,20 @@ const taskOrder = [
 export function createAaisLearnerSessionApiDto(
   session: AaisLearnerSession,
 ): AaisLearnerSessionApiDto {
-  const { guideCapacityReservations: _internalCapacity, ...publicSession } = session;
+  const {
+    guideCapacityReservations: _internalCapacity,
+    guideMutationReservations: _internalGuideMutations,
+    ...publicSession
+  } = session;
   void _internalCapacity;
+  void _internalGuideMutations;
+  const learnerSafeGuideMessages = projectLearnerSafeGuideMessages(session.guideMessages);
   const guideMessages = takeNewest(
-    session.guideMessages,
+    learnerSafeGuideMessages,
     aaisLearnerSessionApiWindowLimits.guideMessages,
   );
-  const events = takeNewest(session.events, aaisLearnerSessionApiWindowLimits.events);
+  const learnerSafeEvents = projectLearnerSafeEvents(session.events);
+  const events = takeNewest(learnerSafeEvents, aaisLearnerSessionApiWindowLimits.events);
   let totalScaffoldHistory = 0;
   let returnedScaffoldHistory = 0;
   const tasks = session.tasks.map((task) => {
@@ -735,10 +976,18 @@ export function createAaisLearnerSessionApiDto(
       aaisLearnerSessionApiWindowLimits.scaffoldHistoryPerTask,
     );
     returnedScaffoldHistory += scaffoldHistory.length;
+    const {
+      pilotOutcomeAudit: _internalOutcomeAudit,
+      supervisionSignals: _internalSupervisionSignals,
+      ...learnerTask
+    } = task;
+    void _internalOutcomeAudit;
+    void _internalSupervisionSignals;
     return {
-      ...task,
+      ...learnerTask,
       artifactRevision: normalizeAaisTextRevision(task.artifactRevision),
       selfReportRevision: normalizeAaisTextRevision(task.selfReportRevision),
+      pilotEvidenceRevision: normalizeAaisTextRevision(task.pilotEvidenceRevision),
       scaffoldHistory,
     };
   });
@@ -749,12 +998,12 @@ export function createAaisLearnerSessionApiDto(
     events,
     truncation: {
       events: createSessionWindowMetadata(
-        session.events.length,
+        learnerSafeEvents.length,
         events.length,
         aaisLearnerSessionApiWindowLimits.events,
       ),
       guideMessages: createSessionWindowMetadata(
-        session.guideMessages.length,
+        learnerSafeGuideMessages.length,
         guideMessages.length,
         aaisLearnerSessionApiWindowLimits.guideMessages,
       ),
@@ -768,6 +1017,116 @@ export function createAaisLearnerSessionApiDto(
       },
     },
   };
+}
+
+function projectLearnerSafeGuideMessages(messages: AaisGuideMessageRecord[]) {
+  const projected: AaisGuideMessageRecord[] = [];
+  for (let index = 0; index < messages.length - 1; index += 1) {
+    const user = messages[index];
+    const assistant = messages[index + 1];
+    if (
+      user?.kind !== "user"
+      || assistant?.kind !== "assistant"
+      || !isLearnerSafeGuideMessageShell(user)
+      || !isLearnerSafeGuideMessageShell(assistant)
+      || (user.taskId && assistant.taskId && user.taskId !== assistant.taskId)
+      || (user.phase && assistant.phase && user.phase !== assistant.phase)
+    ) {
+      continue;
+    }
+    const hadStructuredTurns = Array.isArray(assistant.turns) && assistant.turns.length > 0;
+    const turns = (assistant.turns ?? []).flatMap((turn): AaisGuideTurnRecord[] => {
+      if (
+        !learnerVisibleGuideAgentIds.has(turn.agentId)
+        || typeof turn.label !== "string"
+        || typeof turn.content !== "string"
+        || !turn.content.trim()
+        || !Array.isArray(turn.actions)
+        || turn.actions.some((action) => typeof action !== "string")
+        || turn.actions.includes("progress")
+      ) {
+        return [];
+      }
+      const visualizations = normalizeAaisGuideVisualizations(turn.visualizations);
+      return [{
+        agentId: turn.agentId,
+        label: turn.label,
+        content: turn.content,
+        actions: [...turn.actions],
+        ...(visualizations.length ? { visualizations } : {}),
+      }];
+    });
+    const assistantText = hadStructuredTurns
+      ? turns.map((turn) => turn.content.trim()).filter(Boolean).join("\n\n")
+      : assistant.text.trim();
+    if ((hadStructuredTurns && !turns.length) || !assistantText) {
+      continue;
+    }
+    const attachments = normalizeLearnerSafeGuideAttachments(user.attachments);
+    projected.push({
+      id: user.id,
+      kind: "user",
+      text: user.text,
+      time: user.time,
+      ...(user.taskId ? { taskId: user.taskId } : {}),
+      ...(user.phase ? { phase: user.phase } : {}),
+      ...(attachments.length ? { attachments } : {}),
+    }, {
+      id: assistant.id,
+      kind: "assistant",
+      text: assistantText,
+      time: assistant.time,
+      ...(assistant.taskId ? { taskId: assistant.taskId } : {}),
+      ...(assistant.phase ? { phase: assistant.phase } : {}),
+      ...(turns.length ? { turns } : {}),
+    });
+    index += 1;
+  }
+  return projected;
+}
+
+function isLearnerSafeGuideMessageShell(message: AaisGuideMessageRecord) {
+  return typeof message.id === "string"
+    && Boolean(message.id)
+    && typeof message.text === "string"
+    && typeof message.time === "string";
+}
+
+function normalizeLearnerSafeGuideAttachments(
+  attachments: AaisGuideAttachmentMetadata[] | undefined,
+) {
+  try {
+    return normalizeAaisGuideAttachmentMetadata(attachments);
+  } catch {
+    return [];
+  }
+}
+
+function projectLearnerSafeEvents(events: AaisEvent[]) {
+  return events.flatMap((event): AaisEvent[] => {
+    const fields = (learnerSafeEventDetailFields as Partial<
+      Record<AaisEventName, readonly string[]>
+    >)[event.event];
+    if (
+      !fields
+      || (event.agent !== "platform" && event.agent !== "A1" && event.agent !== "A2")
+    ) {
+      return [];
+    }
+    const detail = Object.fromEntries(fields.flatMap((field) =>
+      Object.hasOwn(event.detail, field) ? [[field, event.detail[field]]] : []
+    ));
+    return [{
+      student_id: event.student_id,
+      session_id: event.session_id,
+      phase: event.phase,
+      task: event.task,
+      agent: event.agent,
+      event: event.event,
+      time: event.time,
+      detail,
+    }];
+  });
 }
 
 export function createAaisLearningStore(input: StoreInput = {}) {
@@ -926,18 +1285,36 @@ export function createAaisLearningStore(input: StoreInput = {}) {
         taskId: task.taskId,
         phase: task.phase,
         status: index === 0 ? "active" : "locked",
+        completionOutcome: "in_progress",
         artifactText: "",
         documentTitle: "",
         activeDocumentId: null,
         artifactRevision: 0,
         selfReport: "",
         selfReportRevision: 0,
+        pilotEvidenceRevision: 0,
         scaffoldRequests: 0,
+        scaffoldState: createDefaultAaisScaffoldState(),
         scaffoldHistory: [],
+        activeMilestone: "launch_import",
+        milestones: createDefaultAaisTaskLearningLoop().milestones,
+        pilotEvidence: createDefaultAaisTaskPilotEvidence(),
+        reflectionReport: null,
+        pilotOutcomeAudit: [],
+        completionMissing: deriveAaisTaskCompletionMissing({
+              taskId: task.taskId,
+              phase: task.phase,
+              artifactText: "",
+              selfReport: "",
+              pilotEvidence: createDefaultAaisTaskPilotEvidence(),
+              milestones: createDefaultAaisTaskLearningLoop().milestones,
+            }),
+        supervisionSignals: [],
       })),
       historyDocuments: [],
       guideMessages: [],
       guideCapacityReservations: [],
+      guideMutationReservations: [],
       events: [
         createAaisEvent({
           studentId: safeStudentId,
@@ -961,6 +1338,7 @@ export function createAaisLearningStore(input: StoreInput = {}) {
           detail: {
             taskId: "training_task_1",
             releaseReason: "initial_training_task",
+            origin: "system_initialization",
           },
           now: () => new Date(now),
         }),
@@ -987,19 +1365,86 @@ export function createAaisLearningStore(input: StoreInput = {}) {
     return session;
   }
 
-  async function selectStage(studentId: string, stageId: string, dataGeneration?: number) {
+  async function bindNoopLearnerActionMutation(
+    session: AaisLearnerSession,
+    task: AaisTaskRecord,
+    receipt: AaisStableLearnerMutationReceipt | null,
+  ) {
+    if (!receipt) {
+      return session;
+    }
+    const event = createAaisEvent({
+      studentId: session.studentId,
+      sessionId: session.sessionId,
+      phase: task.phase,
+      task: task.taskId,
+      agent: "platform",
+      event: "learner_action_mutation_bound",
+      detail: {
+        ...createAaisStableLearnerMutationDetail(receipt),
+        origin: "learner_action_replay_fence",
+        result: "no_state_change",
+      },
+    });
+    const updated = touch({
+      ...session,
+      events: [...session.events, event],
+    });
+    await writeSessionAndMirrorEvents(updated, [event]);
+    return updated;
+  }
+
+  async function selectStage(
+    studentId: string,
+    stageId: string,
+    dataGeneration?: number,
+    options: { mutationId?: string } = {},
+  ) {
     if (!selectableAaisStageIds.has(stageId)) {
+      throw new AaisLearnerMutationError("stage_invalid");
+    }
+    const milestoneId = normalizeAaisLearningMilestoneId(stageId);
+    if (!milestoneId) {
       throw new AaisLearnerMutationError("stage_invalid");
     }
     const expectedGeneration = await resolveMutationDataGeneration(studentId, dataGeneration);
     const session = await getOrCreateSession(studentId, expectedGeneration);
-    if (session.activeStage === stageId) {
+    const task = requireTask(session, session.activeTaskId);
+    const receipt = createAaisStableLearnerMutationReceipt({
+      action: "select-stage",
+      mutationId: options.mutationId,
+      payload: [task.taskId, stageId],
+    });
+    if (findAaisStableLearnerMutationReplay(session, receipt)) {
       return session;
     }
-    const task = requireTask(session, session.activeTaskId);
+    const currentMilestone = task.milestones.find((candidate) => candidate.id === milestoneId);
+    if (
+      session.activeStage === stageId
+      && task.activeMilestone === milestoneId
+      && currentMilestone?.status !== "locked"
+    ) {
+      return bindNoopLearnerActionMutation(session, task, receipt);
+    }
+    const now = new Date().toISOString();
+    const loop = openAaisLearningMilestone({
+      version: "caasi-pilot-v1",
+      activeMilestone: task.activeMilestone,
+      milestones: task.milestones,
+    }, milestoneId, now);
+    const tasks = session.tasks.map((candidate): AaisTaskRecord =>
+      candidate.taskId === task.taskId
+        ? refreshTaskCompletion({
+            ...candidate,
+            activeMilestone: loop.activeMilestone,
+            milestones: loop.milestones,
+          })
+        : candidate
+    );
     const updated = touch({
       ...session,
       activeStage: requireSafeText(stageId, "stage id"),
+      tasks,
       events: [
         ...session.events,
         createAaisEvent({
@@ -1011,21 +1456,127 @@ export function createAaisLearningStore(input: StoreInput = {}) {
           event: "stage_selected",
           detail: {
             stageId,
+            milestoneId,
+            lifecycle: "stage_opened",
+            origin: "learner_navigation",
+            ...createAaisStableLearnerMutationDetail(receipt),
           },
+          now: () => new Date(now),
         }),
-        ...createStageEvidenceEvents(session, task, stageId),
       ],
     });
     await writeSessionAndMirrorEvents(updated, updated.events.slice(session.events.length));
     return updated;
   }
 
-  async function selectTask(studentId: string, taskId: string, dataGeneration?: number) {
+  async function recordStageEvidence(
+    studentId: string,
+    taskId: string,
+    stageId: string,
+    evidenceKind: string,
+    dataGeneration?: number,
+    options: { mutationId?: string } = {},
+  ) {
+    const milestoneId = normalizeAaisLearningMilestoneId(stageId);
+    if (!milestoneId || !selectableAaisStageIds.has(stageId)) {
+      throw new AaisLearnerMutationError("stage_invalid");
+    }
     const expectedGeneration = await resolveMutationDataGeneration(studentId, dataGeneration);
     const session = await getOrCreateSession(studentId, expectedGeneration);
-    const selected = requireTask(session, taskId);
+    const task = requireUnlockedTask(session, taskId);
+    const receipt = createAaisStableLearnerMutationReceipt({
+      action: "record-stage-evidence",
+      mutationId: options.mutationId,
+      payload: [task.taskId, stageId, evidenceKind],
+    });
+    if (findAaisStableLearnerMutationReplay(session, receipt)) {
+      return session;
+    }
+    if (!canRecordStageEvidence(task, milestoneId)) {
+      throw new AaisLearnerMutationError("stage_evidence_invalid");
+    }
+    const current = task.milestones.find((milestone) => milestone.id === milestoneId);
+    if (current?.evidenceKinds.includes(evidenceKind as AaisMilestoneEvidenceKind)) {
+      return bindNoopLearnerActionMutation(session, task, receipt);
+    }
+    const now = new Date().toISOString();
+    const loop = recordAaisMilestoneEvidence({
+      version: "caasi-pilot-v1",
+      activeMilestone: task.activeMilestone,
+      milestones: task.milestones,
+    }, milestoneId, evidenceKind, now);
+    if (!loop) {
+      throw new AaisLearnerMutationError("stage_evidence_invalid");
+    }
+    const tasks = session.tasks.map((candidate): AaisTaskRecord =>
+      candidate.taskId === task.taskId
+        ? refreshTaskCompletion({
+            ...candidate,
+            activeMilestone: loop.activeMilestone,
+            milestones: loop.milestones,
+            pilotEvidence: milestoneId === "summary_completion"
+              ? { ...candidate.pilotEvidence, summaryAcknowledged: true }
+              : candidate.pilotEvidence,
+          })
+        : candidate
+    );
+    const updatedTask = tasks.find((candidate) => candidate.taskId === task.taskId) ?? task;
+    const evidenceEvents = createStageEvidenceEvents(
+      session,
+      updatedTask,
+      milestoneId,
+      evidenceKind,
+      now,
+    );
+    const event = createAaisEvent({
+      studentId: session.studentId,
+      sessionId: session.sessionId,
+      phase: task.phase,
+      task: task.taskId,
+      agent: "platform",
+      event: "milestone_evidence_recorded",
+      detail: {
+        stageId,
+        milestoneId,
+        lifecycle: "completion_evidence_recorded",
+        evidenceKind,
+        origin: "learner_evidence_submission",
+        ...createAaisStableLearnerMutationDetail(receipt),
+      },
+      now: () => new Date(now),
+    });
+    const updated = touch({
+      ...session,
+      activeStage: stageId,
+      tasks,
+      events: [...session.events, event, ...evidenceEvents],
+    });
+    await writeSessionAndMirrorEvents(updated, [event, ...evidenceEvents]);
+    return updated;
+  }
+
+  async function selectTask(
+    studentId: string,
+    taskId: string,
+    dataGeneration?: number,
+    options: { mutationId?: string } = {},
+  ) {
+    const expectedGeneration = await resolveMutationDataGeneration(studentId, dataGeneration);
+    const session = await getOrCreateSession(studentId, expectedGeneration);
+    const receipt = createAaisStableLearnerMutationReceipt({
+      action: "select-task",
+      mutationId: options.mutationId,
+      payload: [taskId],
+    });
+    if (findAaisStableLearnerMutationReplay(session, receipt)) {
+      return session;
+    }
+    const selected = requireUnlockedTask(session, taskId);
     if (selected.status === "locked") {
       throw new Error(`Task ${taskId} is locked`);
+    }
+    if (session.activeTaskId === taskId && selected.status === "active") {
+      return bindNoopLearnerActionMutation(session, selected, receipt);
     }
 
     const tasks = session.tasks.map((task): AaisTaskRecord => {
@@ -1059,6 +1610,8 @@ export function createAaisLearningStore(input: StoreInput = {}) {
           event: "task_selected",
           detail: {
             taskId,
+            origin: "learner_navigation",
+            ...createAaisStableLearnerMutationDetail(receipt),
           },
         }),
       ],
@@ -1067,34 +1620,107 @@ export function createAaisLearningStore(input: StoreInput = {}) {
     return updated;
   }
 
-  async function completeTask(studentId: string, taskId: string, dataGeneration?: number) {
+  async function completeTask(
+    studentId: string,
+    taskId: string,
+    dataGeneration?: number,
+    options: { endIncomplete?: boolean; mutationId?: string } = {},
+  ) {
     const expectedGeneration = await resolveMutationDataGeneration(studentId, dataGeneration);
     const session = await getOrCreateSession(studentId, expectedGeneration);
+    const receipt = createAaisStableLearnerMutationReceipt({
+      action: "complete-task",
+      mutationId: options.mutationId,
+      payload: [taskId, options.endIncomplete === true],
+    });
+    if (findAaisStableLearnerMutationReplay(session, receipt)) {
+      return session;
+    }
     const completed = requireUnlockedTask(session, taskId);
     if (completed.status === "completed") {
-      return session;
+      return bindNoopLearnerActionMutation(session, completed, receipt);
     }
     if (completed.status !== "active" || session.activeTaskId !== completed.taskId) {
       throw new AaisLearnerMutationError("task_not_active");
     }
+    const completionMissing = refreshTaskCompletion(completed).completionMissing;
+    const allowedIncompleteRequirement = completed.taskId === "practice_task_1"
+      ? "articulate_task_two_process"
+      : completed.taskId === "practice_task_3"
+        ? "reflect_after_task_four"
+        : null;
+    const recordedDecline = completed.taskId === "practice_task_1"
+      ? completed.pilotEvidence.articulationOutcome === "declined"
+      : completed.taskId === "practice_task_3"
+        ? completed.pilotEvidence.reflectionOutcome === "declined"
+        : false;
+    const mayEndIncomplete = options.endIncomplete === true
+      && recordedDecline
+      && allowedIncompleteRequirement !== null
+      && completionMissing.length > 0
+      && completionMissing.every((requirement) => requirement === allowedIncompleteRequirement);
+    if (completionMissing.length && !mayEndIncomplete) {
+      if (completionMissing.includes("reflection")) {
+        const now = new Date().toISOString();
+        const signals = createStoredA3Signals(completed, createAaisSignalDrafts({
+          source: "completion_gate",
+          pilotEvidence: completed.pilotEvidence,
+        }), now);
+        if (signals.length) {
+          const tasks = session.tasks.map((candidate): AaisTaskRecord =>
+            candidate.taskId === completed.taskId
+              ? refreshTaskCompletion(appendTaskSignals(candidate, signals))
+              : candidate
+          );
+          const signalEvents = createA3SignalEvents(session, completed, signals, now);
+          const signaled = touch({
+            ...session,
+            tasks,
+            events: [...session.events, ...signalEvents],
+          });
+          await writeSessionAndMirrorEvents(signaled, signalEvents);
+        }
+      }
+      throw new AaisTaskCompletionEvidenceError(taskId, completionMissing);
+    }
     const nextTaskId = getNextTaskId(taskId);
+    const autoAdvance = taskId === "practice_task_1" && nextTaskId === "practice_task_3";
+    const now = new Date().toISOString();
     const tasks = session.tasks.map((task) => {
       if (task.taskId === taskId) {
         return {
           ...task,
           status: "completed" as const,
+          completionOutcome: completionMissing.length
+            ? "ended_incomplete" as const
+            : "evidence_complete" as const,
         };
       }
       if (task.taskId === nextTaskId && task.status === "locked") {
+        const nextLoop = autoAdvance
+          ? openAaisLearningMilestone({
+              version: "caasi-pilot-v1",
+              activeMilestone: task.activeMilestone,
+              milestones: task.milestones,
+            }, "exploration", now)
+          : null;
         return {
           ...task,
-          status: "available" as const,
+          status: autoAdvance ? "active" as const : "available" as const,
+          ...(nextLoop
+            ? {
+                activeMilestone: nextLoop.activeMilestone,
+                milestones: nextLoop.milestones,
+              }
+            : {}),
         };
       }
       return task;
     });
     const updated = touch({
       ...session,
+      activeTaskId: autoAdvance && nextTaskId ? nextTaskId : session.activeTaskId,
+      activeStage: autoAdvance ? "exploration" : session.activeStage,
       tasks,
       events: [
         ...session.events,
@@ -1108,15 +1734,45 @@ export function createAaisLearningStore(input: StoreInput = {}) {
           detail: {
             taskId,
             unlockedTaskId: nextTaskId,
+            ...(autoAdvance
+              ? {
+                  autoAdvancedTaskId: nextTaskId,
+                  skippedPilotClosedTaskId: "practice_task_2",
+                }
+              : {}),
+            completionOutcome: completionMissing.length
+              ? "ended_incomplete"
+              : "evidence_complete",
+            completionMissing,
+            origin: "learner_completion_action",
+            ...createAaisStableLearnerMutationDetail(receipt),
           },
         }),
         ...createTaskReleaseEvents(
           session,
-          tasks.find((task) => task.taskId === nextTaskId)?.status === "available"
+          (tasks.find((task) => task.taskId === nextTaskId)?.status === "available"
+            || tasks.find((task) => task.taskId === nextTaskId)?.status === "active")
             && session.tasks.find((task) => task.taskId === nextTaskId)?.status === "locked"
             ? nextTaskId
             : undefined,
         ),
+        ...(autoAdvance && nextTaskId
+          ? [createAaisEvent({
+              studentId: session.studentId,
+              sessionId: session.sessionId,
+              phase: "practice",
+              task: nextTaskId,
+              agent: "platform",
+              event: "stage_selected",
+              detail: {
+                stageId: "exploration",
+                milestoneId: "exploration",
+                lifecycle: "stage_opened",
+                origin: "system_auto_progression",
+              },
+              now: () => new Date(now),
+            })]
+          : []),
       ],
     });
     await writeSessionAndMirrorEvents(updated, updated.events.slice(session.events.length));
@@ -1267,13 +1923,13 @@ export function createAaisLearningStore(input: StoreInput = {}) {
         ...session,
         tasks: session.tasks.map((candidate) =>
           candidate.taskId === safeTaskId
-            ? {
+            ? refreshTaskCompletion({
                 ...candidate,
                 artifactText: "",
                 documentTitle: "",
                 activeDocumentId: null,
                 artifactRevision: incrementAaisTextRevision(candidate.artifactRevision),
-              }
+              })
             : candidate
         ),
         historyDocuments,
@@ -1324,48 +1980,248 @@ export function createAaisLearningStore(input: StoreInput = {}) {
     });
   }
 
+  async function savePilotEvidence(
+    studentId: string,
+    taskId: string,
+    patch: Partial<AaisTaskPilotEvidence>,
+    options: {
+      dataGeneration?: number;
+      expectedPilotEvidenceRevision: number;
+      mutationId: string;
+    },
+  ) {
+    const safePatch = requireAaisPilotEvidencePatch(patch);
+    const expectedRevision = requireAaisTextRevision(
+      options.expectedPilotEvidenceRevision,
+      "expected pilot evidence revision",
+    );
+    const mutationId = requireSafeId(options.mutationId, "mutation id");
+    const mutationKey = createAaisMutationKey(mutationId);
+    const mutationPayloadHash = createAaisPilotEvidenceMutationPayloadHash({
+      taskId,
+      patch: safePatch,
+    });
+    const expectedGeneration = await resolveMutationDataGeneration(
+      studentId,
+      options.dataGeneration,
+    );
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const session = await getOrCreateSession(studentId, expectedGeneration);
+      const priorMutation = session.events.find((event) =>
+        event.detail.mutation_key === mutationKey
+      );
+      if (priorMutation) {
+        if (priorMutation.detail.mutation_payload_hash !== mutationPayloadHash) {
+          throw new AaisLearnerMutationError(
+            "mutation_replay_conflict",
+            "AAIS mutation id was reused with different content.",
+          );
+        }
+        return session;
+      }
+      const task = requireUnlockedTask(session, taskId);
+      if (task.pilotEvidenceRevision !== expectedRevision) {
+        throw new AaisLearnerTextRevisionConflictError("pilot_evidence");
+      }
+      const pilotEvidence = mergeAaisTaskPilotEvidence(task.pilotEvidence, safePatch);
+      const loop: AaisTaskLearningLoop = {
+        version: "caasi-pilot-v1",
+        activeMilestone: task.activeMilestone,
+        milestones: task.milestones,
+      };
+      const now = new Date().toISOString();
+      const supervisionSignals = safePatch.reflectionOutcome === "declined"
+        ? createStoredA3Signals(task, createAaisSignalDrafts({
+            source: "self_report",
+            text: safePatch.reflectionText,
+            pilotEvidence,
+          }), now)
+        : [];
+      const outcomeAuditRecords = createPilotOutcomeAuditRecords(
+        task,
+        safePatch,
+        pilotEvidence,
+        now,
+      );
+      const tasks = session.tasks.map((candidate): AaisTaskRecord =>
+        candidate.taskId === task.taskId
+          ? refreshTaskCompletion(appendTaskSignals({
+              ...candidate,
+              pilotEvidence,
+              pilotEvidenceRevision: incrementAaisTextRevision(
+                candidate.pilotEvidenceRevision,
+              ),
+              activeMilestone: loop.activeMilestone,
+              milestones: loop.milestones,
+              pilotOutcomeAudit: [
+                ...candidate.pilotOutcomeAudit,
+                ...outcomeAuditRecords,
+              ].slice(-20),
+            }, supervisionSignals))
+          : candidate
+      );
+      const changedFields = Object.keys(safePatch).filter((field) =>
+        safePatch[field as keyof AaisTaskPilotEvidence]
+          !== task.pilotEvidence[field as keyof AaisTaskPilotEvidence]
+      );
+      const updatedTask = tasks.find((candidate) => candidate.taskId === task.taskId) ?? task;
+      const event = createAaisEvent({
+        studentId: session.studentId,
+        sessionId: session.sessionId,
+        phase: task.phase,
+        task: task.taskId,
+        agent: "A4",
+        event: "self_report_saved",
+        detail: {
+          source: "structured_pilot_evidence",
+          fields: changedFields,
+          text_lengths: Object.fromEntries(changedFields.flatMap((field) => {
+            const value = pilotEvidence[field as keyof AaisTaskPilotEvidence];
+            return typeof value === "string" && !field.endsWith("DeclineReason")
+              ? [[field, countAaisVisibleCharacters(value)]]
+              : [];
+          })),
+          raw_text: "stored_in_learner_session_only",
+          mutation_key: mutationKey,
+          mutation_payload_hash: mutationPayloadHash,
+          revision: task.pilotEvidenceRevision + 1,
+        },
+        now: () => new Date(now),
+      });
+      const localAuditEvents = [
+        ...createA4ReflectionReportEvents(session, task, updatedTask, now),
+        ...createPilotOutcomeEvents(session, task, outcomeAuditRecords, now),
+      ];
+      const signalEvents = createA3SignalEvents(session, task, supervisionSignals, now);
+      const newEvents = [event, ...localAuditEvents, ...signalEvents];
+      const updated = touch({
+        ...session,
+        tasks,
+        events: [...session.events, ...newEvents],
+      });
+      try {
+        await writeSessionAndMirrorEvents(updated, newEvents);
+        return updated;
+      } catch (error) {
+        if (isAaisSessionWriteConflictError(error) && attempt === 0) {
+          recordAaisSessionWriteConflict({
+            studentId: session.studentId,
+            operation: "save_pilot_evidence",
+            attempt,
+            resolution: "retrying",
+            storage: database ? "postgres" : "file",
+          });
+          continue;
+        }
+        throw error;
+      }
+    }
+    throw new AaisSessionWriteConflictError();
+  }
+
   async function requestScaffold(
     studentId: string,
     taskId: string,
     toolId: string | undefined,
     dataGeneration?: number,
+    options: { mutationId?: string; sourceText?: string } = {},
   ): Promise<ScaffoldResult> {
     const programTask = taskOrder.find((candidate) => candidate.taskId === taskId);
     if (!programTask) {
       throw new AaisLearnerMutationError("task_unknown");
     }
-    if (programTask.phase !== "practice") {
-      throw new AaisLearnerMutationError(
-        "scaffold_practice_only",
-        "A1 scaffolding is only available in practice tasks",
-      );
-    }
     const requestedToolId = toolId ?? "stage-checklist";
-    const tool = scaffoldTools.find((candidate) => candidate.id === requestedToolId);
-    if (!tool) {
+    if (!scaffoldTools.some((candidate) => candidate.id === requestedToolId)) {
       throw new AaisLearnerMutationError("scaffold_tool_invalid");
     }
     const expectedGeneration = await resolveMutationDataGeneration(studentId, dataGeneration);
     const session = await getOrCreateSession(studentId, expectedGeneration);
+    const receipt = createAaisStableLearnerMutationReceipt({
+      action: "request-scaffold",
+      mutationId: options.mutationId,
+      payload: [taskId, requestedToolId, options.sourceText?.trim() ?? ""],
+    });
+    const replay = findAaisStableLearnerMutationReplay(session, receipt);
+    if (replay) {
+      const task = requireTask(session, taskId);
+      return createAaisScaffoldReplayResult(session, task, replay);
+    }
     const task = requireUnlockedTask(session, taskId);
     const requestCount = task.scaffoldRequests + 1;
+    const directAssistsUsed = countAaisDirectScaffoldAssists(task);
+    const evidenceSnapshot = createAaisScaffoldEvidenceSnapshot({
+      taskId: task.taskId,
+      artifactText: task.artifactText,
+      pilotEvidence: task.pilotEvidence,
+      milestones: task.milestones,
+    });
+    const previousSnapshot = task.scaffoldHistory.at(-1)?.evidenceSnapshot;
+    const evidenceImproved = directAssistsUsed < 4
+      && hasAaisScaffoldEvidenceImproved(evidenceSnapshot, previousSnapshot);
+    const directAssistsExhausted = directAssistsUsed >= 4;
+    const fadingReason: AaisScaffoldFadingReason | undefined = directAssistsExhausted
+      ? "direct_assists_exhausted"
+      : evidenceImproved
+        ? "evidence_improved"
+        : undefined;
     const mode: AaisTaskRecord["scaffoldHistory"][number]["mode"] =
-      requestCount >= 5 ? "self-check" : "tool-list";
+      fadingReason ? "self-check" : "tool-list";
+    const deliveredDirectAssists = directAssistsUsed + (mode === "tool-list" ? 1 : 0);
+    const directScaffoldState = deriveAaisScaffoldState(deliveredDirectAssists);
+    const scaffoldState: AaisTaskScaffoldState = mode === "self-check"
+      ? {
+          currentLevel: 1,
+          intensity: "prompt-question",
+          fading: true,
+          remainingDirectAssists: Math.max(0, 4 - directAssistsUsed),
+        }
+      : directScaffoldState;
+    const canonicalToolId = mode === "self-check"
+      ? "stage-checklist"
+      : ({
+          1: "stage-checklist",
+          2: "sentence-starters",
+          3: "pause-prompt",
+          4: "contrast-case",
+        } as const)[scaffoldState.currentLevel];
+    const canonicalTool = scaffoldTools.find((candidate) => candidate.id === canonicalToolId);
+    if (!canonicalTool) {
+      throw new AaisLearnerMutationError("scaffold_tool_invalid");
+    }
+    const tool = mode === "self-check"
+      ? {
+          ...canonicalTool,
+          label: "独立自检",
+          body: "先不查看新的示范：写下你的目标、下一步和一个检查标准；完成后再对照已有阶段检查表自行判断。",
+        }
+      : canonicalTool;
     const now = new Date().toISOString();
+    const signals = createStoredA3Signals(task, createAaisSignalDrafts({
+      source: "scaffold",
+      text: options.sourceText?.trim() || "help",
+      pilotEvidence: task.pilotEvidence,
+    }), now);
     const tasks = session.tasks.map((candidate): AaisTaskRecord =>
       candidate.taskId === taskId
-        ? {
+        ? refreshTaskCompletion(appendTaskSignals({
             ...candidate,
             scaffoldRequests: requestCount,
+            scaffoldState,
             scaffoldHistory: [
               ...candidate.scaffoldHistory,
               {
                 toolId: tool.id,
                 mode,
                 time: now,
+                level: scaffoldState.currentLevel,
+                intensity: scaffoldState.intensity,
+                fading: scaffoldState.fading,
+                remainingDirectAssists: scaffoldState.remainingDirectAssists,
+                ...(fadingReason ? { fadingReason } : {}),
+                evidenceSnapshot,
               },
             ],
-          }
+          }, signals))
         : candidate,
     );
     const updated = touch({
@@ -1376,14 +2232,22 @@ export function createAaisLearningStore(input: StoreInput = {}) {
         createAaisEvent({
           studentId: session.studentId,
           sessionId: session.sessionId,
-          phase: "practice",
+          phase: task.phase,
           task: taskId,
           agent: "A1",
           event: "scaffold_request",
           detail: {
             request_count: requestCount,
             tool_id: tool.id,
+            requested_tool_id: requestedToolId,
             mode,
+            scaffold_level: scaffoldState.currentLevel,
+            intensity: scaffoldState.intensity,
+            fading: scaffoldState.fading,
+            remaining_direct_assists: scaffoldState.remainingDirectAssists,
+            ...(fadingReason ? { fading_reason: fadingReason } : {}),
+            origin: "learner_scaffold_request",
+            ...createAaisStableLearnerMutationDetail(receipt),
           },
           now: () => new Date(now),
         }),
@@ -1392,7 +2256,7 @@ export function createAaisLearningStore(input: StoreInput = {}) {
               createAaisEvent({
                 studentId: session.studentId,
                 sessionId: session.sessionId,
-                phase: "practice",
+                phase: task.phase,
                 task: taskId,
                 agent: "A1",
                 event: "scaffold_self_check_started",
@@ -1404,12 +2268,19 @@ export function createAaisLearningStore(input: StoreInput = {}) {
               }),
             ]
           : []),
+        ...createA3SignalEvents(session, task, signals, now),
       ],
     });
     await writeSessionAndMirrorEvents(updated, updated.events.slice(session.events.length));
     return {
       mode,
       requestCount,
+      level: scaffoldState.currentLevel,
+      intensity: scaffoldState.intensity,
+      remainingDirectAssists: scaffoldState.remainingDirectAssists,
+      fading: scaffoldState.fading,
+      ...(fadingReason ? { fadingReason } : {}),
+      evidenceSnapshot,
       tool,
       session: updated,
     };
@@ -1423,59 +2294,312 @@ export function createAaisLearningStore(input: StoreInput = {}) {
       messageId?: string;
       reason?: string;
       dataGeneration?: number;
+      expectedPilotEvidenceRevision: number;
+      mutationId: string;
     },
   ) {
     const safeStudentId = requireSafeId(studentId, "student id");
-    const dataGeneration = await resolveMutationDataGeneration(safeStudentId, input.dataGeneration);
-    const existingSession = await readSession(safeStudentId);
-    if (!existingSession) {
-      throw new AaisAiAcceptanceTargetError();
-    }
-    const session = normalizeSession(existingSession, dataGeneration);
-    const task = requireUnlockedTask(session, taskId);
     const messageId = requireAiAcceptanceMessageId(input.messageId);
     const reason = requireSafeText(input.reason ?? "", "AI acceptance reason");
-    const targetMessage = session.guideMessages.find((message) =>
-      message.id === messageId
-      && message.kind === "assistant"
-      && message.taskId === task.taskId
-      && message.phase === task.phase
+    const expectedRevision = requireAaisTextRevision(
+      input.expectedPilotEvidenceRevision,
+      "expected pilot evidence revision",
     );
-    if (!targetMessage) {
-      throw new AaisAiAcceptanceTargetError();
+    const mutationId = requireSafeId(input.mutationId, "mutation id");
+    const mutationKey = createAaisMutationKey(mutationId);
+    const mutationPayloadHash = createAaisAiAcceptanceMutationPayloadHash({
+      accepted: input.accepted,
+      messageId,
+      reason,
+      taskId,
+    });
+    const dataGeneration = await resolveMutationDataGeneration(safeStudentId, input.dataGeneration);
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const existingSession = await readSession(safeStudentId);
+      if (!existingSession) {
+        throw new AaisAiAcceptanceTargetError();
+      }
+      const session = normalizeSession(existingSession, dataGeneration);
+      const priorMutation = session.events.find((event) =>
+        event.detail.mutation_key === mutationKey
+      );
+      if (priorMutation) {
+        if (priorMutation.detail.mutation_payload_hash !== mutationPayloadHash) {
+          throw new AaisLearnerMutationError(
+            "mutation_replay_conflict",
+            "AAIS mutation id was reused with different content.",
+          );
+        }
+        return session;
+      }
+      const task = requireUnlockedTask(session, taskId);
+      if (task.pilotEvidenceRevision !== expectedRevision) {
+        throw new AaisLearnerTextRevisionConflictError("pilot_evidence");
+      }
+      const targetMessage = session.guideMessages.find((message) =>
+        message.id === messageId
+        && message.kind === "assistant"
+        && message.taskId === task.taskId
+        && message.phase === task.phase
+      );
+      if (!targetMessage) {
+        throw new AaisAiAcceptanceTargetError();
+      }
+      const decisionKey = createAiAcceptanceDecisionKey(session, task, targetMessage.id);
+      const existingDecisionEvents = session.events.filter((event) =>
+        event.event === "ai_acceptance_recorded"
+        && event.task === task.taskId
+        && event.detail.decision_key === decisionKey
+      );
+      const latestDecision = existingDecisionEvents.at(-1);
+      const decisionChanged = latestDecision?.detail.accepted !== input.accepted;
+      const now = new Date().toISOString();
+      const decisionEvent = decisionChanged
+        ? createAaisEvent({
+            studentId: session.studentId,
+            sessionId: session.sessionId,
+            phase: task.phase,
+            task: task.taskId,
+            agent: "A2",
+            event: "ai_acceptance_recorded",
+            detail: {
+              accepted: input.accepted,
+              reason_length: reason.trim().length,
+              decision_key: decisionKey,
+              message_id_hash: decisionKey,
+              revision: existingDecisionEvents.length + 1,
+              supersedes_previous: existingDecisionEvents.length > 0,
+            },
+            now: () => new Date(now),
+          })
+        : null;
+      const mutationEvent = createAaisEvent({
+        studentId: session.studentId,
+        sessionId: session.sessionId,
+        phase: task.phase,
+        task: task.taskId,
+        agent: "A2",
+        event: "ai_acceptance_mutation_bound",
+        detail: {
+          accepted: input.accepted,
+          decision_changed: decisionChanged,
+          decision_key: decisionKey,
+          message_id_hash: decisionKey,
+          mutation_key: mutationKey,
+          mutation_payload_hash: mutationPayloadHash,
+          raw_reason_included: false,
+          state_revision: task.pilotEvidenceRevision,
+          storage_scope: "learner_session_only",
+        },
+        now: () => new Date(now),
+      });
+      const outputEvaluation: AaisOutputEvaluation = input.accepted
+        ? "accepted"
+        : "revision_required";
+      const tasks = decisionChanged
+        ? session.tasks.map((candidate): AaisTaskRecord =>
+            candidate.taskId === task.taskId
+              ? refreshTaskCompletion({
+                  ...candidate,
+                  pilotEvidence: {
+                    ...candidate.pilotEvidence,
+                    outputEvaluation,
+                  },
+                  pilotEvidenceRevision: incrementAaisTextRevision(
+                    candidate.pilotEvidenceRevision,
+                  ),
+                })
+              : candidate
+          )
+        : session.tasks;
+      const newEvents = [
+        ...(decisionEvent ? [decisionEvent] : []),
+        mutationEvent,
+      ];
+      const updated = touch({
+        ...session,
+        tasks,
+        events: [...session.events, ...newEvents],
+      });
+      try {
+        await writeSessionAndMirrorEvents(updated, newEvents);
+        return updated;
+      } catch (error) {
+        if (isAaisSessionWriteConflictError(error) && attempt === 0) {
+          recordAaisSessionWriteConflict({
+            studentId: session.studentId,
+            operation: "record_ai_acceptance",
+            attempt,
+            resolution: "retrying",
+            storage: database ? "postgres" : "file",
+          });
+          continue;
+        }
+        throw error;
+      }
     }
-    const decisionKey = createAiAcceptanceDecisionKey(session, task, targetMessage.id);
-    const existingDecisionEvents = session.events.filter((event) =>
-      event.event === "ai_acceptance_recorded"
-      && event.task === task.taskId
-      && event.detail.decision_key === decisionKey
+    throw new AaisSessionWriteConflictError();
+  }
+
+  async function claimGuideMutation(input: {
+    studentId: string;
+    mutationId: string;
+    payloadHash: string;
+    dataGeneration?: number;
+    now?: Date;
+  }): Promise<AaisGuideMutationClaimResult> {
+    const studentId = requireSafeId(input.studentId, "student id");
+    const receipt = createAaisGuideMutationReceipt(input.mutationId, input.payloadHash);
+    const dataGeneration = await resolveMutationDataGeneration(
+      studentId,
+      input.dataGeneration,
     );
-    const latestDecision = existingDecisionEvents.at(-1);
-    if (latestDecision?.detail.accepted === input.accepted) {
-      return session;
+    const now = input.now ?? new Date();
+    const leaseExpiresAt = new Date(
+      now.getTime() + aaisGuideMutationLeaseSeconds * 1000,
+    ).toISOString();
+    const retainUntil = new Date(
+      now.getTime() + aaisGuideMutationRetentionSeconds * 1000,
+    ).toISOString();
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const session = await getOrCreateSession(studentId, dataGeneration);
+      const completed = findCompletedAaisGuideMutation(session, receipt);
+      if (completed) {
+        return { status: "completed", replay: completed, session };
+      }
+      const reservations = normalizeGuideMutationReservations(
+        session.guideMutationReservations,
+        now,
+      );
+      const existing = reservations.find((reservation) =>
+        reservation.mutationKey === receipt.mutationKey
+      );
+      if (existing && existing.payloadHash !== receipt.payloadHash) {
+        throw new AaisLearnerMutationError(
+          "mutation_replay_conflict",
+          "AAIS guide mutation id was reused with different content.",
+        );
+      }
+      if (
+        existing?.status === "in_flight"
+        && Date.parse(existing.leaseExpiresAt) > now.getTime()
+      ) {
+        throw new AaisGuideMutationInProgressError(Math.max(
+          1,
+          Math.ceil((Date.parse(existing.leaseExpiresAt) - now.getTime()) / 1000),
+        ));
+      }
+      const remaining = reservations.filter((reservation) =>
+        reservation.mutationKey !== receipt.mutationKey
+      );
+      if (remaining.length >= aaisGuideMutationReservationLimit) {
+        throw new AaisLearnerSessionLimitError("guide_messages_limit_reached");
+      }
+      const updated = touch({
+        ...session,
+        guideMutationReservations: [
+          ...remaining,
+          {
+            ...receipt,
+            status: "in_flight",
+            leaseExpiresAt,
+            retainUntil,
+          },
+        ],
+      });
+      try {
+        await writeSession(updated);
+        return { status: "claimed", receipt, session: updated };
+      } catch (error) {
+        if (!isAaisSessionWriteConflictError(error) || attempt === 2) {
+          throw error;
+        }
+        recordAaisSessionWriteConflict({
+          studentId,
+          operation: "claim_guide_mutation",
+          attempt,
+          resolution: "retrying",
+          storage: database ? "postgres" : "file",
+        });
+      }
     }
-    const event = createAaisEvent({
-      studentId: session.studentId,
-      sessionId: session.sessionId,
-      phase: task.phase,
-      task: task.taskId,
-      agent: "A2",
-      event: "ai_acceptance_recorded",
-      detail: {
-        accepted: input.accepted,
-        reason_length: reason.trim().length,
-        decision_key: decisionKey,
-        message_id_hash: decisionKey,
-        revision: existingDecisionEvents.length + 1,
-        supersedes_previous: existingDecisionEvents.length > 0,
-      },
-    });
-    const updated = touch({
-      ...session,
-      events: [...session.events, event],
-    });
-    await writeSessionAndMirrorEvents(updated, [event]);
-    return updated;
+    throw new AaisSessionWriteConflictError();
+  }
+
+  async function releaseGuideMutation(input: {
+    studentId: string;
+    receipt: AaisGuideMutationReceipt;
+    dataGeneration?: number;
+    now?: Date;
+  }) {
+    const studentId = requireSafeId(input.studentId, "student id");
+    const receipt = requireAaisGuideMutationReceipt(input.receipt);
+    const dataGeneration = await resolveMutationDataGeneration(
+      studentId,
+      input.dataGeneration,
+    );
+    const now = input.now ?? new Date();
+    const retainUntil = new Date(
+      now.getTime() + aaisGuideMutationRetentionSeconds * 1000,
+    ).toISOString();
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const existingSession = await readSession(studentId);
+      if (!existingSession) {
+        return { status: "unchanged" as const };
+      }
+      const session = normalizeSession(existingSession, dataGeneration);
+      if (findCompletedAaisGuideMutation(session, receipt)) {
+        return { status: "completed" as const };
+      }
+      const reservations = normalizeGuideMutationReservations(
+        session.guideMutationReservations,
+        now,
+      );
+      const existing = reservations.find((reservation) =>
+        reservation.mutationKey === receipt.mutationKey
+      );
+      if (!existing) {
+        return { status: "unchanged" as const };
+      }
+      if (existing.payloadHash !== receipt.payloadHash) {
+        throw new AaisLearnerMutationError(
+          "mutation_replay_conflict",
+          "AAIS guide mutation id was reused with different content.",
+        );
+      }
+      if (existing.status === "released") {
+        return { status: "released" as const };
+      }
+      const updated = touch({
+        ...session,
+        guideMutationReservations: reservations.map((reservation) =>
+          reservation.mutationKey === receipt.mutationKey
+            ? {
+                ...reservation,
+                status: "released" as const,
+                leaseExpiresAt: now.toISOString(),
+                retainUntil,
+              }
+            : reservation
+        ),
+      });
+      try {
+        await writeSession(updated);
+        return { status: "released" as const };
+      } catch (error) {
+        if (!isAaisSessionWriteConflictError(error) || attempt === 2) {
+          throw error;
+        }
+        recordAaisSessionWriteConflict({
+          studentId,
+          operation: "release_guide_mutation",
+          attempt,
+          resolution: "retrying",
+          storage: database ? "postgres" : "file",
+        });
+      }
+    }
+    throw new AaisSessionWriteConflictError();
   }
 
   async function reserveGuideExchangeCapacity(input: {
@@ -1586,11 +2710,17 @@ export function createAaisLearningStore(input: StoreInput = {}) {
     taskId: string;
     question: string;
     answer: string;
+    interactionMode?: AaisGuideInteractionMode;
     budgetReservationId?: string;
     capacityReservationId?: string;
     dataGeneration?: number;
     attachments?: AaisGuideAttachmentMetadata[];
     turns?: AaisGuideTurnRecord[];
+    guideMutation?: {
+      receipt: AaisGuideMutationReceipt;
+      runtime: AaisGuideMutationRuntimeSummary;
+      budget: AaisGuideMutationBudgetSnapshot;
+    };
     orchestration: {
       graphId: string;
       topologicalOrder: string[];
@@ -1599,12 +2729,30 @@ export function createAaisLearningStore(input: StoreInput = {}) {
   }) {
     const dataGeneration = await resolveMutationDataGeneration(input.studentId, input.dataGeneration);
     const now = new Date().toISOString();
+    const interactionMode = input.interactionMode ?? "ai-provider";
     const attachments = normalizeAaisGuideAttachmentMetadata(input.attachments);
+    const guideMutation = input.guideMutation
+      ? {
+          receipt: requireAaisGuideMutationReceipt(input.guideMutation.receipt),
+          runtime: requireAaisGuideMutationRuntimeSummary(input.guideMutation.runtime),
+          budget: requireAaisGuideMutationBudgetSnapshot(input.guideMutation.budget),
+        }
+      : null;
     const userMessageId = `user-${randomUUID()}`;
     const assistantMessageId = `assistant-${randomUUID()}`;
+    const exchange = { userMessageId, assistantMessageId } satisfies AaisPersistedGuideExchange;
     for (let attempt = 0; attempt < 3; attempt += 1) {
       const session = await getOrCreateSession(input.studentId, dataGeneration);
       const task = requireUnlockedTask(session, input.taskId);
+      if (guideMutation) {
+        const completed = findCompletedAaisGuideMutation(session, guideMutation.receipt);
+        if (completed) {
+          return {
+            session,
+            exchange: completed.exchange,
+          } satisfies AaisAppendGuideExchangeResult;
+        }
+      }
       const existingUserMessage = session.guideMessages.some((message) =>
         message.id === userMessageId
       );
@@ -1612,7 +2760,7 @@ export function createAaisLearningStore(input: StoreInput = {}) {
         message.id === assistantMessageId
       );
       if (existingUserMessage && existingAssistantMessage) {
-        return session;
+        return { session, exchange } satisfies AaisAppendGuideExchangeResult;
       }
       if (existingUserMessage || existingAssistantMessage) {
         throw new Error("AAIS guide exchange persistence was partially applied.");
@@ -1620,6 +2768,27 @@ export function createAaisLearningStore(input: StoreInput = {}) {
       const capacityReservations = normalizeGuideCapacityReservations(
         session.guideCapacityReservations,
       );
+      const mutationReservations = normalizeGuideMutationReservations(
+        session.guideMutationReservations,
+        new Date(now),
+      );
+      const mutationReservation = guideMutation
+        ? mutationReservations.find((reservation) =>
+            reservation.mutationKey === guideMutation.receipt.mutationKey
+          )
+        : undefined;
+      if (guideMutation && mutationReservation?.payloadHash !== guideMutation.receipt.payloadHash) {
+        if (mutationReservation) {
+          throw new AaisLearnerMutationError(
+            "mutation_replay_conflict",
+            "AAIS guide mutation id was reused with different content.",
+          );
+        }
+        throw new AaisGuideMutationInProgressError(1);
+      }
+      if (guideMutation && mutationReservation?.status !== "in_flight") {
+        throw new AaisGuideMutationInProgressError(1);
+      }
       if (
         input.capacityReservationId
         && !capacityReservations.some((reservation) =>
@@ -1646,8 +2815,66 @@ export function createAaisLearningStore(input: StoreInput = {}) {
         phase: task.phase,
         ...(input.turns?.length ? { turns: input.turns } : {}),
         orchestration: input.orchestration,
+        ...(guideMutation
+          ? {
+              guideMutation: {
+                version: 1,
+                ...guideMutation.receipt,
+                userMessageId,
+                runtime: guideMutation.runtime,
+                budget: guideMutation.budget,
+              },
+            }
+          : {}),
       };
-      const newEvents = [
+      const inputClassification = classifyAaisLearnerInput(input.question);
+      const supervisionSignals = inputClassification.explicitHelpRequested
+        ? createStoredA3Signals(task, createAaisSignalDrafts({
+            source: "guide",
+            text: input.question,
+            pilotEvidence: task.pilotEvidence,
+          }), now)
+        : [];
+      const guideEvents = interactionMode === "deterministic-local"
+        ? [
+            createAaisEvent({
+              studentId: session.studentId,
+              sessionId: session.sessionId,
+              phase: task.phase,
+              task: task.taskId,
+              agent: "platform",
+              event: "deterministic_guide_prompt_submitted",
+              detail: {
+                prompt_length: input.question.length,
+                exchange_id_hash: hashAaisGuideExchangeId(userMessageId, assistantMessageId),
+                external_provider_contacted: false,
+                interaction_mode: interactionMode,
+                raw_text_included: false,
+                storage_scope: "learner_session_only",
+              },
+              now: () => new Date(now),
+            }),
+            createAaisEvent({
+              studentId: session.studentId,
+              sessionId: session.sessionId,
+              phase: task.phase,
+              task: task.taskId,
+              agent: "platform",
+              event: "deterministic_guide_response_completed",
+              detail: {
+                graphId: input.orchestration.graphId,
+                node_count: input.orchestration.topologicalOrder.length,
+                response_length: input.answer.length,
+                exchange_id_hash: hashAaisGuideExchangeId(userMessageId, assistantMessageId),
+                external_provider_contacted: false,
+                interaction_mode: interactionMode,
+                raw_text_included: false,
+                storage_scope: "learner_session_only",
+              },
+              now: () => new Date(now),
+            }),
+          ]
+        : [
         createAaisEvent({
           studentId: session.studentId,
           sessionId: session.sessionId,
@@ -1677,14 +2904,30 @@ export function createAaisLearningStore(input: StoreInput = {}) {
           now: () => new Date(now),
         }),
       ];
+      const newEvents = [
+        ...guideEvents,
+        // Explicit-help signals are intentionally appended after the response
+        // event so the request that created them cannot consume them itself.
+        ...createA3SignalEvents(session, task, supervisionSignals, now),
+      ];
       const updated = touch({
         ...session,
+        tasks: session.tasks.map((candidate): AaisTaskRecord =>
+          candidate.taskId === task.taskId
+            ? refreshTaskCompletion(appendTaskSignals(candidate, supervisionSignals))
+            : candidate
+        ),
         guideMessages: [...session.guideMessages, userMessage, assistantMessage],
         guideCapacityReservations: input.capacityReservationId
           ? capacityReservations.filter((reservation) =>
-              reservation.id !== input.capacityReservationId
-            )
+            reservation.id !== input.capacityReservationId
+          )
           : capacityReservations,
+        guideMutationReservations: guideMutation
+          ? mutationReservations.filter((reservation) =>
+              reservation.mutationKey !== guideMutation.receipt.mutationKey
+            )
+          : mutationReservations,
         events: [...session.events, ...newEvents],
       });
       try {
@@ -1693,7 +2936,7 @@ export function createAaisLearningStore(input: StoreInput = {}) {
           newEvents,
           input.budgetReservationId,
         );
-        return updated;
+        return { session: updated, exchange } satisfies AaisAppendGuideExchangeResult;
       } catch (error) {
         if (!isAaisSessionWriteConflictError(error) || attempt === 2) {
           throw error;
@@ -2572,14 +3815,43 @@ export function createAaisLearningStore(input: StoreInput = {}) {
   }) {
     const { session, task, value } = input;
     const previousTask = task;
-    const tasks = session.tasks.map((candidate) =>
+    const now = new Date();
+    const nowIso = now.toISOString();
+    const pilotEvidence = input.input.field === "selfReport"
+      ? mergeAaisTaskPilotEvidence(task.pilotEvidence, {
+          articulationText: value.trim(),
+          reflectionText: value.trim(),
+          reflectionOutcome: value.trim().length >= 12 ? "submitted" : "pending",
+        })
+      : task.pilotEvidence;
+    const signalDrafts = createAaisSignalDrafts({
+      source: input.input.field === "artifactText" ? "artifact" : "self_report",
+      text: value,
+      previousText: task[input.input.field],
+      pilotEvidence,
+    });
+    const supervisionSignals = createStoredA3Signals(task, signalDrafts, nowIso);
+    const loop: AaisTaskLearningLoop = {
+      version: "caasi-pilot-v1",
+      activeMilestone: task.activeMilestone,
+      milestones: task.milestones,
+    };
+    const tasks = session.tasks.map((candidate): AaisTaskRecord =>
       candidate.taskId === input.input.taskId
-        ? {
+        ? refreshTaskCompletion(appendTaskSignals({
             ...candidate,
             [input.input.field]: value,
+            pilotEvidence,
+            activeMilestone: loop.activeMilestone,
+            milestones: loop.milestones,
             ...(input.input.field === "artifactText"
               ? { artifactRevision: incrementAaisTextRevision(candidate.artifactRevision) }
-              : { selfReportRevision: incrementAaisTextRevision(candidate.selfReportRevision) }),
+              : {
+                  selfReportRevision: incrementAaisTextRevision(candidate.selfReportRevision),
+                  pilotEvidenceRevision: incrementAaisTextRevision(
+                    candidate.pilotEvidenceRevision,
+                  ),
+                }),
             ...(input.input.field === "artifactText"
               ? {
                   ...(input.documentTitle === undefined
@@ -2590,10 +3862,10 @@ export function createAaisLearningStore(input: StoreInput = {}) {
                     : { activeDocumentId: input.activeDocumentId }),
                 }
               : {}),
-          }
+          }, supervisionSignals))
         : candidate,
     );
-    const now = new Date();
+    const updatedTask = tasks.find((candidate) => candidate.taskId === task.taskId) ?? task;
     const artifactEditEvent = input.input.field === "artifactText"
       ? createAaisEvent({
           studentId: session.studentId,
@@ -2603,7 +3875,7 @@ export function createAaisLearningStore(input: StoreInput = {}) {
           agent: "A3",
           event: "artifact_edited",
           detail: {
-            characters: value.length,
+            characters: countAaisVisibleCharacters(value),
             source: "debounced_server_save",
           },
           now: () => now,
@@ -2617,7 +3889,7 @@ export function createAaisLearningStore(input: StoreInput = {}) {
       agent: input.input.field === "artifactText" ? "A3" : "A4",
       event: input.input.event,
       detail: {
-        characters: value.length,
+        characters: countAaisVisibleCharacters(value),
         ...(input.mutationKey
           ? {
               mutation_key: input.mutationKey,
@@ -2626,12 +3898,6 @@ export function createAaisLearningStore(input: StoreInput = {}) {
           : {}),
       },
       now: () => now,
-    });
-    const evidenceEvents = createTaskTextEvidenceEvents({
-      session,
-      task,
-      event: input.input.event,
-      value,
     });
     const monitoringEvents = input.input.field === "artifactText"
       ? createArtifactMonitoringEvents({
@@ -2644,7 +3910,8 @@ export function createAaisLearningStore(input: StoreInput = {}) {
     const newEvents = [
       ...(artifactEditEvent ? [artifactEditEvent] : []),
       primaryEvent,
-      ...evidenceEvents,
+      ...createA4ReflectionReportEvents(session, task, updatedTask, nowIso),
+      ...createA3SignalEvents(session, task, supervisionSignals, nowIso),
       ...monitoringEvents,
     ];
     const updated = touch({
@@ -2781,6 +4048,10 @@ export function createAaisLearningStore(input: StoreInput = {}) {
     educatorAccess?: AaisEducatorCohortAccess,
   ) {
     serializeAaisLearnerSession(session);
+    // Newly introduced progress, reflection-report, and choice audit events
+    // remain in the learner-owned session until a separate data-governance
+    // decision explicitly authorizes each payload for the external LRS.
+    const lrsEvents = events.filter(isAaisEventEligibleForLrs);
     if (educatorAccess && !database) {
       throw new AaisLearningStorageConfigurationError();
     }
@@ -2808,16 +4079,16 @@ export function createAaisLearningStore(input: StoreInput = {}) {
       } else {
         await writeSession(session);
       }
-      if (events.length && !requiresAaisResearchDataPlaneIsolation()) {
-        enqueueAaisLrsEvents(events);
+      if (lrsEvents.length && !requiresAaisResearchDataPlaneIsolation()) {
+        enqueueAaisLrsEvents(lrsEvents);
       }
       return;
     }
 
-    const persistLegacyEvents = events.length > 0 && !requiresAaisResearchDataPlaneIsolation();
+    const persistLegacyEvents = lrsEvents.length > 0 && !requiresAaisResearchDataPlaneIsolation();
     const statement = createAtomicLearnerMutationStatement({
       session,
-      events: persistLegacyEvents ? events : [],
+      events: persistLegacyEvents ? lrsEvents : [],
       budgetReservationId,
       educatorAccess,
     });
@@ -2870,6 +4141,7 @@ export function createAaisLearningStore(input: StoreInput = {}) {
   return {
     appendGuideExchange,
     archiveArtifact,
+    claimGuideMutation,
     completeTask,
     deleteLearnerData,
     deleteRestrictedResearchRawText,
@@ -2882,13 +4154,16 @@ export function createAaisLearningStore(input: StoreInput = {}) {
     getOrCreateSession,
     readSession,
     releaseGuideExchangeCapacity,
+    releaseGuideMutation,
     recordRecommendationOverride,
     recordAiAcceptance,
+    recordStageEvidence,
     finalizeDailyGuideRequest,
     reserveGuideExchangeCapacity,
     reserveDailyGuideRequest,
     requestScaffold,
     saveArtifact,
+    savePilotEvidence,
     saveSelfReport,
     selectStage,
     selectTask,
@@ -2914,10 +4189,33 @@ export function summarizeAaisLearningAnalytics(session: AaisLearnerSession) {
     : session.events.filter((event) =>
         event.event === "scaffold_request" && event.detail.mode === "self-check"
       );
-  const selfReportEvents = session.events.filter((event) => event.event === "self_report_saved");
-  const expertTraceEvents = session.events.filter((event) => event.event === "expert_trace_compared");
+  const selfReportEvents = session.events.filter((event) =>
+    event.event === "self_report_saved"
+    && (
+      event.detail.source !== "structured_pilot_evidence"
+      || (
+        Array.isArray(event.detail.fields)
+        && event.detail.fields.some((field) =>
+          field === "reflectionText"
+          || field === "reflectionOutcome"
+          || field === "expertComparisonText"
+        )
+      )
+    )
+  );
+  const expertTraceEvents = session.events.filter((event) =>
+    event.event === "expert_trace_compared"
+    || event.event === "a4_reflection_report_generated"
+  );
   const coachingEvents = session.events.filter((event) =>
-    event.event === "coaching_push" || event.event === "monitoring_pause_detected"
+    event.event === "coaching_push"
+    || (
+      event.event === "monitoring_pause_detected"
+      && (
+        event.detail.signal === "low_progress_artifact_autosave"
+        || event.detail.signal === "artifact_regression_autosave"
+      )
+    )
   );
   const aiAcceptanceDecisionCount = countUniqueAiAcceptanceDecisions(session.events);
   const aiPromptResponseEvents = session.events.filter((event) =>
@@ -3305,6 +4603,53 @@ async function readAuthorizedSqlCohortAnalyticsRows(
          from filtered_session_events
          group by student_id, session_id
        ),
+       session_reflection_evidence_by_session as (
+         select
+           m.student_id,
+           m.session_id,
+           count(*) filter (
+             where ($3::text is null or task_record.task->>'phase' = $3)
+               and ($4::text is null or task_record.task->>'taskId' = $4)
+               and ($5::text is null or $5 = 'A4')
+               and (
+                 $6::text is null
+                 or $6 in ('expert_trace_compared', 'a4_reflection_report_generated')
+               )
+               and jsonb_typeof(task_record.task->'reflectionReport') = 'object'
+               and nullif(
+                 btrim(task_record.task->'reflectionReport'->>'version'),
+                 ''
+               ) is not null
+               and nullif(
+                 btrim(task_record.task->'reflectionReport'->>'expertModelId'),
+                 ''
+               ) is not null
+               and jsonb_typeof(
+                 task_record.task->'reflectionReport'->'expertStepIds'
+               ) = 'array'
+               and jsonb_array_length(
+                 case
+                   when jsonb_typeof(
+                     task_record.task->'reflectionReport'->'expertStepIds'
+                   ) = 'array'
+                   then task_record.task->'reflectionReport'->'expertStepIds'
+                   else '[]'::jsonb
+                 end
+               ) > 0
+           )::int as expert_trace_count
+         from matching_sessions m
+         inner join aais_learner_sessions learner_session
+           on learner_session.student_id = m.student_id
+          and learner_session.payload->>'sessionId' = m.session_id
+         cross join lateral jsonb_array_elements(
+           case
+             when jsonb_typeof(learner_session.payload->'tasks') = 'array'
+             then learner_session.payload->'tasks'
+             else '[]'::jsonb
+           end
+         ) as task_record(task)
+         group by m.student_id, m.session_id
+       ),
        latest_recommendation_overrides as (
          select distinct on (student_id, session_id, detail->>'recommendation_id')
            student_id,
@@ -3366,13 +4711,19 @@ async function readAuthorizedSqlCohortAnalyticsRows(
          coalesce(c.ai_prompt_response_events, 0)::int as ai_prompt_response_events,
          coalesce(c.ai_acceptance_decisions, 0)::int as ai_acceptance_decisions,
          coalesce(c.self_report_count, 0)::int as self_report_count,
-         coalesce(c.expert_trace_count, 0)::int as expert_trace_count,
+         greatest(
+           coalesce(c.expert_trace_count, 0),
+           coalesce(session_reflection.expert_trace_count, 0)
+         )::int as expert_trace_count,
          coalesce(o.decisions, '{}'::jsonb) as recommendation_override_decisions,
          coalesce(evidence.evidence, '[]'::jsonb) as recommendation_override_evidence
        from status_by_session s
        left join counts_by_session c
          on c.student_id = s.student_id
         and c.session_id = s.session_id
+       left join session_reflection_evidence_by_session session_reflection
+         on session_reflection.student_id = s.student_id
+        and session_reflection.session_id = s.session_id
        left join recommendation_overrides_by_session o
          on o.student_id = s.student_id
         and o.session_id = s.session_id
@@ -5904,6 +7255,71 @@ function createAaisMutationKey(mutationId: string) {
     .slice(0, 32);
 }
 
+type AaisStableLearnerAction =
+  | "complete-task"
+  | "record-stage-evidence"
+  | "request-scaffold"
+  | "select-stage"
+  | "select-task";
+
+type AaisStableLearnerMutationReceipt = {
+  action: AaisStableLearnerAction;
+  mutationKey: string;
+  payloadHash: string;
+};
+
+function createAaisStableLearnerMutationReceipt(input: {
+  action: AaisStableLearnerAction;
+  mutationId?: string;
+  payload: readonly unknown[];
+}): AaisStableLearnerMutationReceipt | null {
+  if (!input.mutationId) {
+    return null;
+  }
+  const mutationId = requireSafeId(input.mutationId, "mutation id");
+  return {
+    action: input.action,
+    mutationKey: createAaisMutationKey(mutationId),
+    payloadHash: createHash("sha256")
+      .update(JSON.stringify([input.action, ...input.payload]))
+      .digest("hex"),
+  };
+}
+
+function findAaisStableLearnerMutationReplay(
+  session: AaisLearnerSession,
+  receipt: AaisStableLearnerMutationReceipt | null,
+) {
+  if (!receipt) {
+    return null;
+  }
+  const prior = session.events.find((event) =>
+    event.detail.mutation_key === receipt.mutationKey
+  );
+  if (!prior) {
+    return null;
+  }
+  if (prior.detail.mutation_payload_hash !== receipt.payloadHash) {
+    throw new AaisLearnerMutationError(
+      "mutation_replay_conflict",
+      "AAIS mutation id was reused with different content.",
+    );
+  }
+  return prior;
+}
+
+function createAaisStableLearnerMutationDetail(
+  receipt: AaisStableLearnerMutationReceipt | null,
+) {
+  return receipt
+    ? {
+        mutation_action: receipt.action,
+        mutation_key: receipt.mutationKey,
+        mutation_payload_hash: receipt.payloadHash,
+      }
+    : {};
+}
+
 function createAaisMutationPayloadHash(input: {
   activeDocumentId?: string | null;
   documentTitle?: string;
@@ -5939,6 +7355,36 @@ function createAaisArchiveMutationPayloadHash(input: {
     .digest("hex");
 }
 
+function createAaisPilotEvidenceMutationPayloadHash(input: {
+  taskId: string;
+  patch: Partial<AaisTaskPilotEvidence>;
+}) {
+  return createHash("sha256")
+    .update(JSON.stringify([
+      input.taskId,
+      "pilotEvidence",
+      Object.entries(input.patch).sort(([left], [right]) => left.localeCompare(right)),
+    ]))
+    .digest("hex");
+}
+
+function createAaisAiAcceptanceMutationPayloadHash(input: {
+  accepted: boolean;
+  messageId: string;
+  reason: string;
+  taskId: string;
+}) {
+  return createHash("sha256")
+    .update(JSON.stringify([
+      input.taskId,
+      "aiAcceptance",
+      input.messageId,
+      input.accepted,
+      input.reason.trim(),
+    ]))
+    .digest("hex");
+}
+
 function createAaisLrsOutboxId(event: AaisEvent) {
   const time = Date.parse(event.time);
   const coalescingWindowMs = aaisLrsOutboxCoalescingPolicy.windowSeconds * 1000;
@@ -5962,6 +7408,17 @@ function createAaisLrsOutboxId(event: AaisEvent) {
 
 function isCoalescibleLrsEvent(event: AaisEvent) {
   return (aaisLrsOutboxCoalescingPolicy.events as readonly string[]).includes(event.event);
+}
+
+function isAaisEventEligibleForLrs(event: AaisEvent) {
+  if (aaisEventDefinitions[event.event].lrsEligible === false) {
+    return false;
+  }
+  const origin = event.detail.origin;
+  return origin !== "learner_navigation"
+    && origin !== "system_initialization"
+    && origin !== "system_task_progression"
+    && origin !== "system_auto_progression";
 }
 
 function getLrsOutboxCoalescingStatus(enabled: boolean) {
@@ -6778,37 +8235,208 @@ function normalizeSession(
 ): AaisLearnerSession {
   const sessionId = session.sessionId
     ?? deriveLegacyAaisSessionId(session.studentId, session.createdAt);
+  const normalizedTasks = taskOrder.map((task, index) =>
+    normalizeAaisTaskRecord(session, task, index)
+  );
+  const legacyPilotTask = session.activeTaskId === "practice_task_2";
+  const normalizedActiveTaskId = legacyPilotTask
+    ? normalizedTasks.find((task) => task.taskId === "practice_task_1")?.status === "completed"
+      ? "practice_task_3"
+      : "practice_task_1"
+    : normalizedTasks.some((task) => task.taskId === session.activeTaskId)
+      ? session.activeTaskId
+      : "training_task_1";
+  const tasks = normalizedTasks.map((task): AaisTaskRecord => {
+    if (task.taskId === "practice_task_2" && task.status !== "completed") {
+      return { ...task, status: "locked" };
+    }
+    if (legacyPilotTask && task.taskId === normalizedActiveTaskId && task.status !== "completed") {
+      return { ...task, status: "active" };
+    }
+    return task;
+  });
   return {
     ...session,
     schemaVersion: 1,
     dataGeneration: requireLearnerDataGeneration(dataGeneration),
     sessionId,
-    tasks: taskOrder.map((task, index) => {
-      const existing = session.tasks?.find((candidate) => candidate.taskId === task.taskId);
-      return {
-        taskId: task.taskId,
-        phase: task.phase,
-        status: existing?.status ?? (index === 0 ? "active" : "locked"),
-        artifactText: existing?.artifactText ?? "",
-        documentTitle: existing?.documentTitle ?? "",
-        activeDocumentId: existing?.activeDocumentId ?? null,
-        artifactRevision: normalizeAaisTextRevision(existing?.artifactRevision),
-        selfReport: existing?.selfReport ?? "",
-        selfReportRevision: normalizeAaisTextRevision(existing?.selfReportRevision),
-        scaffoldRequests: existing?.scaffoldRequests ?? 0,
-        scaffoldHistory: existing?.scaffoldHistory ?? [],
-      };
-    }),
+    activeTaskId: normalizedActiveTaskId,
+    tasks,
     historyDocuments: session.historyDocuments ?? [],
     guideMessages: (session.guideMessages ?? []).map(normalizeGuideMessageRecord),
     guideCapacityReservations: normalizeGuideCapacityReservations(
       session.guideCapacityReservations,
+    ),
+    guideMutationReservations: normalizeGuideMutationReservations(
+      session.guideMutationReservations,
     ),
     events: (session.events ?? []).map((event) => ({
       ...event,
       session_id: event.session_id ?? sessionId,
     })),
   };
+}
+
+function normalizeAaisTaskRecord(
+  session: AaisLearnerSession,
+  taskDefinition: { taskId: string; phase: AaisPhase },
+  index: number,
+): AaisTaskRecord {
+  const existing = session.tasks?.find((candidate) =>
+    candidate.taskId === taskDefinition.taskId
+  ) as Partial<AaisTaskRecord> | undefined;
+  const artifactText = typeof existing?.artifactText === "string" ? existing.artifactText : "";
+  const selfReport = typeof existing?.selfReport === "string" ? existing.selfReport : "";
+  let pilotEvidence = normalizeAaisTaskPilotEvidence(existing?.pilotEvidence, {
+    artifactText,
+    selfReport,
+  });
+  const latestAcceptance = (session.events ?? []).filter((event) =>
+    event.task === taskDefinition.taskId && event.event === "ai_acceptance_recorded"
+  ).at(-1);
+  if (typeof latestAcceptance?.detail.accepted === "boolean") {
+    pilotEvidence = {
+      ...pilotEvidence,
+      outputEvaluation: latestAcceptance.detail.accepted ? "accepted" : "revision_required",
+    };
+  }
+  const hasExplicitLearningLoop = Array.isArray(existing?.milestones);
+  let loop = normalizeAaisTaskLearningLoop(hasExplicitLearningLoop
+    ? {
+        version: "caasi-pilot-v1",
+        activeMilestone: existing.activeMilestone,
+        milestones: existing.milestones,
+      }
+    : undefined);
+  const legacyActiveMilestone = session.activeTaskId === taskDefinition.taskId
+    ? normalizeAaisLearningMilestoneId(session.activeStage)
+    : null;
+  if (legacyActiveMilestone) {
+    loop = openAaisLearningMilestone(loop, legacyActiveMilestone, session.updatedAt);
+  }
+  const legacyExpertModelViewed = (session.events ?? []).some((event) =>
+    event.task === taskDefinition.taskId && event.event === "expert_model_viewed"
+  );
+  if (legacyExpertModelViewed) {
+    loop = recordAaisMilestoneEvidence(
+      loop,
+      "modeling",
+      "expert_model_reviewed",
+      session.updatedAt,
+    ) ?? loop;
+  }
+  if (!hasExplicitLearningLoop) {
+    loop = completeMilestonesFromEvidence(
+      taskDefinition.taskId,
+      loop,
+      pilotEvidence,
+      artifactText,
+      session.updatedAt,
+    );
+  }
+  const scaffoldRequests = Number.isSafeInteger(existing?.scaffoldRequests)
+    ? Math.max(0, Number(existing?.scaffoldRequests))
+    : 0;
+  let normalizedDirectAssists = 0;
+  const scaffoldHistory = (Array.isArray(existing?.scaffoldHistory)
+    ? existing.scaffoldHistory
+    : []).map((entry, entryIndex) => {
+      const mode = entry?.mode === "self-check" ? "self-check" as const : "tool-list" as const;
+      if (mode === "tool-list") {
+        normalizedDirectAssists = Math.min(4, normalizedDirectAssists + 1);
+      }
+      const state = mode === "self-check"
+        ? {
+            currentLevel: 1 as const,
+            intensity: "prompt-question" as const,
+            fading: true,
+            remainingDirectAssists: Math.max(0, 4 - normalizedDirectAssists),
+          }
+        : deriveAaisScaffoldState(normalizedDirectAssists || entryIndex + 1);
+      const evidenceSnapshot = normalizeAaisScaffoldEvidenceSnapshot(entry?.evidenceSnapshot);
+      const fadingReason = mode === "self-check"
+        && (entry?.fadingReason === "evidence_improved"
+          || entry?.fadingReason === "direct_assists_exhausted")
+        ? entry.fadingReason
+        : mode === "self-check" && normalizedDirectAssists >= 4
+          ? "direct_assists_exhausted" as const
+          : undefined;
+      return {
+        toolId: typeof entry?.toolId === "string" ? entry.toolId : "stage-checklist",
+        mode,
+        time: typeof entry?.time === "string" && Number.isFinite(Date.parse(entry.time))
+          ? entry.time
+          : session.updatedAt,
+        level: entry?.level === 1 || entry?.level === 2 || entry?.level === 3 || entry?.level === 4
+          ? entry.level
+          : state.currentLevel,
+        intensity: entry?.intensity === "prompt-question"
+          || entry?.intensity === "step-breakdown"
+          || entry?.intensity === "evaluation-cue"
+          || entry?.intensity === "worked-model"
+          ? entry.intensity
+          : state.intensity,
+        fading: mode === "self-check",
+        remainingDirectAssists: state.remainingDirectAssists,
+        ...(fadingReason ? { fadingReason } : {}),
+        ...(evidenceSnapshot ? { evidenceSnapshot } : {}),
+      };
+    });
+  const latestScaffold = scaffoldHistory.at(-1);
+  const normalizedScaffoldState: AaisTaskScaffoldState = latestScaffold
+    ? {
+        currentLevel: latestScaffold.level,
+        intensity: latestScaffold.intensity,
+        fading: latestScaffold.mode === "self-check",
+        remainingDirectAssists: latestScaffold.remainingDirectAssists,
+      }
+    : deriveAaisScaffoldState(scaffoldRequests);
+  const practiceOneCompleted = session.tasks?.some((candidate) =>
+    candidate.taskId === "practice_task_1" && candidate.status === "completed"
+  ) ?? false;
+  const status = taskDefinition.taskId === "practice_task_3"
+    && practiceOneCompleted
+    && (!existing?.status || existing.status === "locked")
+    ? "available"
+    : existing?.status ?? (index === 0 ? "active" : "locked");
+  const normalized: AaisTaskRecord = {
+    taskId: taskDefinition.taskId,
+    phase: taskDefinition.phase,
+    status,
+    completionOutcome: existing?.completionOutcome === "evidence_complete"
+      || existing?.completionOutcome === "ended_incomplete"
+      ? existing.completionOutcome
+      : status === "completed"
+        ? "ended_incomplete"
+        : "in_progress",
+    artifactText,
+    documentTitle: typeof existing?.documentTitle === "string" ? existing.documentTitle : "",
+    activeDocumentId: typeof existing?.activeDocumentId === "string"
+      ? existing.activeDocumentId
+      : null,
+    artifactRevision: normalizeAaisTextRevision(existing?.artifactRevision),
+    selfReport,
+    selfReportRevision: normalizeAaisTextRevision(existing?.selfReportRevision),
+    pilotEvidenceRevision: normalizeAaisTextRevision(existing?.pilotEvidenceRevision),
+    scaffoldRequests,
+    scaffoldState: normalizedScaffoldState,
+    scaffoldHistory,
+    activeMilestone: loop.activeMilestone,
+    milestones: loop.milestones,
+    pilotEvidence,
+    reflectionReport: deriveAaisA4ReflectionReport({
+      taskId: taskDefinition.taskId,
+      artifactText,
+      pilotEvidence,
+    }),
+    pilotOutcomeAudit: normalizeAaisPilotOutcomeAudit(existing?.pilotOutcomeAudit),
+    completionMissing: [],
+    supervisionSignals: normalizeAaisSupervisionSignals(existing?.supervisionSignals),
+  };
+  const refreshed = refreshTaskCompletion(normalized);
+  return refreshed.status === "completed" && !refreshed.completionMissing.length
+    ? { ...refreshed, completionOutcome: "evidence_complete" }
+    : refreshed;
 }
 
 function normalizeGuideCapacityReservations(
@@ -6824,9 +8452,257 @@ function normalizeGuideCapacityReservations(
   );
 }
 
+function createAaisGuideMutationReceipt(
+  mutationId: string,
+  payloadHash: string,
+): AaisGuideMutationReceipt {
+  const safeMutationId = requireSafeId(mutationId, "guide mutation id");
+  return {
+    mutationKey: createHash("sha256")
+      .update(`aais-guide-mutation:${safeMutationId}`)
+      .digest("hex"),
+    payloadHash: requireAaisGuideMutationPayloadHash(payloadHash),
+  };
+}
+
+function requireAaisGuideMutationReceipt(
+  receipt: AaisGuideMutationReceipt,
+): AaisGuideMutationReceipt {
+  if (!receipt || typeof receipt !== "object") {
+    throw new Error("Invalid AAIS guide mutation receipt.");
+  }
+  return {
+    mutationKey: requireAaisGuideMutationPayloadHash(receipt.mutationKey),
+    payloadHash: requireAaisGuideMutationPayloadHash(receipt.payloadHash),
+  };
+}
+
+function requireAaisGuideMutationPayloadHash(value: unknown) {
+  if (typeof value !== "string" || !/^[a-f0-9]{64}$/.test(value)) {
+    throw new Error("Invalid AAIS guide mutation payload hash.");
+  }
+  return value;
+}
+
+function normalizeGuideMutationReservations(
+  reservations: AaisGuideMutationReservation[] | undefined,
+  now = new Date(),
+) {
+  const nowMs = now.getTime();
+  const normalized = (Array.isArray(reservations) ? reservations : []).flatMap(
+    (reservation): AaisGuideMutationReservation[] => {
+      try {
+        if (
+          reservation?.status !== "in_flight"
+          && reservation?.status !== "released"
+        ) {
+          return [];
+        }
+        const leaseExpiresAt = new Date(reservation.leaseExpiresAt);
+        const retainUntil = new Date(reservation.retainUntil);
+        if (
+          Number.isNaN(leaseExpiresAt.getTime())
+          || Number.isNaN(retainUntil.getTime())
+          || retainUntil.getTime() <= nowMs
+        ) {
+          return [];
+        }
+        return [{
+          ...requireAaisGuideMutationReceipt(reservation),
+          status: reservation.status,
+          leaseExpiresAt: leaseExpiresAt.toISOString(),
+          retainUntil: retainUntil.toISOString(),
+        }];
+      } catch {
+        return [];
+      }
+    },
+  );
+  const unique = new Map<string, AaisGuideMutationReservation>();
+  for (const reservation of normalized) {
+    if (!unique.has(reservation.mutationKey)) {
+      unique.set(reservation.mutationKey, reservation);
+    }
+  }
+  return [...unique.values()].slice(-aaisGuideMutationReservationLimit);
+}
+
+function requireAaisGuideMutationRuntimeSummary(
+  value: AaisGuideMutationRuntimeSummary,
+): AaisGuideMutationRuntimeSummary {
+  if (!value || typeof value !== "object") {
+    throw new Error("Invalid AAIS guide runtime summary.");
+  }
+  const engine = requireBoundedGuideMetadataText(value.engine, "runtime engine");
+  const status = requireBoundedGuideMetadataText(value.status, "runtime status");
+  const visibleMs = Number(value.visibleMs);
+  const attempts = Number(value.attempts);
+  if (!Number.isFinite(visibleMs) || visibleMs < 0 || visibleMs > Number.MAX_SAFE_INTEGER) {
+    throw new Error("Invalid AAIS guide visible runtime.");
+  }
+  if (!Number.isSafeInteger(attempts) || attempts < 0) {
+    throw new Error("Invalid AAIS guide attempt count.");
+  }
+  if (typeof value.fallback !== "boolean") {
+    throw new Error("Invalid AAIS guide fallback status.");
+  }
+  const timeoutReason = value.timeoutReason === null
+    ? null
+    : requireBoundedGuideMetadataText(value.timeoutReason, "timeout reason", 256);
+  if (!Array.isArray(value.agentStatuses) || value.agentStatuses.length > 2) {
+    throw new Error("Invalid AAIS guide agent statuses.");
+  }
+  const agentStatuses: AaisGuideMutationRuntimeSummary["agentStatuses"] = [];
+  for (const candidate of value.agentStatuses) {
+    if (
+      !candidate
+      || (candidate.agentId !== "A1" && candidate.agentId !== "A2")
+      || agentStatuses.some((entry) => entry.agentId === candidate.agentId)
+    ) {
+      throw new Error("Invalid AAIS guide visible agent status.");
+    }
+    agentStatuses.push({
+      agentId: candidate.agentId,
+      status: requireBoundedGuideMetadataText(candidate.status, "agent status"),
+    });
+  }
+  return {
+    engine,
+    status,
+    visibleMs,
+    attempts,
+    fallback: value.fallback,
+    timeoutReason,
+    agentStatuses,
+  };
+}
+
+function requireAaisGuideMutationBudgetSnapshot(
+  value: AaisGuideMutationBudgetSnapshot,
+): AaisGuideMutationBudgetSnapshot {
+  if (!value || typeof value !== "object") {
+    throw new Error("Invalid AAIS guide budget snapshot.");
+  }
+  const limit = Number(value.limit);
+  const used = Number(value.used);
+  const remaining = Number(value.remaining);
+  const resetsAt = new Date(value.resetsAt);
+  if (
+    !Number.isSafeInteger(limit)
+    || !Number.isSafeInteger(used)
+    || !Number.isSafeInteger(remaining)
+    || limit < 0
+    || used < 0
+    || remaining < 0
+    || Number.isNaN(resetsAt.getTime())
+  ) {
+    throw new Error("Invalid AAIS guide budget snapshot.");
+  }
+  return { limit, used, remaining, resetsAt: resetsAt.toISOString() };
+}
+
+function normalizeCompletedAaisGuideMutationReceipt(
+  value: AaisCompletedGuideMutationReceipt | undefined,
+) {
+  try {
+    if (!value || value.version !== 1) {
+      return undefined;
+    }
+    return {
+      version: 1 as const,
+      ...requireAaisGuideMutationReceipt(value),
+      userMessageId: requireSafeId(value.userMessageId, "guide user message id"),
+      runtime: requireAaisGuideMutationRuntimeSummary(value.runtime),
+      budget: requireAaisGuideMutationBudgetSnapshot(value.budget),
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+function findCompletedAaisGuideMutation(
+  session: AaisLearnerSession,
+  receipt: AaisGuideMutationReceipt,
+): AaisCompletedGuideMutationReplay | null {
+  const matches = session.guideMessages.flatMap((message, index) =>
+    message.kind === "assistant"
+      && message.guideMutation?.mutationKey === receipt.mutationKey
+      ? [{ message, index, completion: message.guideMutation }]
+      : []
+  );
+  for (const match of matches) {
+    if (match.completion.payloadHash !== receipt.payloadHash) {
+      throw new AaisLearnerMutationError(
+        "mutation_replay_conflict",
+        "AAIS guide mutation id was reused with different content.",
+      );
+    }
+  }
+  if (!matches.length) {
+    return null;
+  }
+  if (matches.length !== 1) {
+    throw new AaisLearnerDataIntegrityError();
+  }
+  const [{ message: assistant, index, completion }] = matches;
+  const user = session.guideMessages[index - 1];
+  if (
+    !user
+    || user.kind !== "user"
+    || user.id !== completion.userMessageId
+    || !assistant.orchestration
+    || (user.taskId && assistant.taskId && user.taskId !== assistant.taskId)
+    || (user.phase && assistant.phase && user.phase !== assistant.phase)
+  ) {
+    throw new AaisLearnerDataIntegrityError();
+  }
+  const turns = assistant.turns ?? [];
+  if (
+    !turns.length
+    || turns.some((turn) =>
+      !learnerVisibleGuideAgentIds.has(turn.agentId)
+      || typeof turn.label !== "string"
+      || !turn.label
+      || typeof turn.content !== "string"
+      || !turn.content.trim()
+      || !Array.isArray(turn.actions)
+      || turn.actions.some((action) => typeof action !== "string")
+      || turn.actions.includes("progress")
+    )
+    || assistant.orchestration.topologicalOrder.some((agentId) =>
+      agentId !== "A1" && agentId !== "A2"
+    )
+  ) {
+    throw new AaisLearnerDataIntegrityError();
+  }
+  return {
+    exchange: {
+      userMessageId: user.id,
+      assistantMessageId: assistant.id,
+    },
+    messageText: assistant.text,
+    turns: turns.map((turn) => ({ ...turn })),
+    orchestration: {
+      graphId: assistant.orchestration.graphId,
+      topologicalOrder: [...assistant.orchestration.topologicalOrder],
+      threadId: assistant.orchestration.threadId,
+    },
+    runtime: requireAaisGuideMutationRuntimeSummary(completion.runtime),
+    budget: requireAaisGuideMutationBudgetSnapshot(completion.budget),
+  };
+}
+
+function requireBoundedGuideMetadataText(value: unknown, label: string, limit = 128) {
+  if (typeof value !== "string" || !value.trim() || value.length > limit) {
+    throw new Error(`Invalid AAIS guide ${label}.`);
+  }
+  return value;
+}
+
 function normalizeGuideMessageRecord(
   message: AaisGuideMessageRecord,
 ): AaisGuideMessageRecord {
+  const guideMutation = normalizeCompletedAaisGuideMutationReceipt(message.guideMutation);
   const messageWithoutAttachments = {
     ...message,
     ...(message.turns
@@ -6842,8 +8718,12 @@ function normalizeGuideMessageRecord(
       : {}),
   };
   delete messageWithoutAttachments.attachments;
+  delete messageWithoutAttachments.guideMutation;
   if (message.kind !== "user") {
-    return messageWithoutAttachments;
+    return {
+      ...messageWithoutAttachments,
+      ...(guideMutation ? { guideMutation } : {}),
+    };
   }
   try {
     const attachments = normalizeAaisGuideAttachmentMetadata(message.attachments);
@@ -6862,12 +8742,26 @@ function redactRestrictedResearchRawText(
 ): AaisLearnerSession {
   return touch({
     ...session,
-    tasks: session.tasks.map((task) => ({
+    tasks: session.tasks.map((task) => refreshTaskCompletion({
       ...task,
       artifactText: "",
       documentTitle: "",
       activeDocumentId: null,
       selfReport: "",
+      pilotEvidence: {
+        ...task.pilotEvidence,
+        diagnosisText: "",
+        revisedPromptText: "",
+        outputEvaluationText: "",
+        planningText: "",
+        monitoringText: "",
+        evaluationText: "",
+        articulationText: "",
+        articulationDeclineReason: "",
+        reflectionText: "",
+        reflectionDeclineReason: "",
+        expertComparisonText: "",
+      },
     })),
     historyDocuments: [],
     guideMessages: session.guideMessages.map((message) => {
@@ -7020,6 +8914,12 @@ function requireTask(session: AaisLearnerSession, taskId: string) {
 
 function requireUnlockedTask(session: AaisLearnerSession, taskId: string) {
   const task = requireTask(session, taskId);
+  if (pilotClosedTaskIds.has(task.taskId)) {
+    throw new AaisLearnerMutationError(
+      "task_pilot_closed",
+      `Task ${taskId} is closed for the current pilot.`,
+    );
+  }
   if (task.status === "locked") {
     throw new AaisLearnerMutationError("task_locked", `Task ${taskId} is locked`);
   }
@@ -7028,7 +8928,10 @@ function requireUnlockedTask(session: AaisLearnerSession, taskId: string) {
 
 function getNextTaskId(taskId: string) {
   const index = taskOrder.findIndex((task) => task.taskId === taskId);
-  return index >= 0 ? taskOrder[index + 1]?.taskId : undefined;
+  if (index < 0) {
+    return undefined;
+  }
+  return taskOrder.slice(index + 1).find((task) => !pilotClosedTaskIds.has(task.taskId))?.taskId;
 }
 
 function createTaskReleaseEvents(session: AaisLearnerSession, nextTaskId: string | undefined) {
@@ -7050,54 +8953,617 @@ function createTaskReleaseEvents(session: AaisLearnerSession, nextTaskId: string
       detail: {
         taskId: nextTask.taskId,
         releaseReason: "previous_task_completed",
+        origin: "system_task_progression",
       },
     }),
   ];
 }
 
+function createAaisScaffoldReplayResult(
+  session: AaisLearnerSession,
+  task: AaisTaskRecord,
+  event: AaisEvent,
+): ScaffoldResult {
+  const requestCount = Number(event.detail.request_count);
+  const history = Number.isSafeInteger(requestCount) && requestCount > 0
+    ? task.scaffoldHistory[requestCount - 1]
+    : undefined;
+  if (!history) {
+    throw new AaisLearnerDataIntegrityError();
+  }
+  const canonicalTool = scaffoldTools.find((candidate) => candidate.id === history.toolId);
+  if (!canonicalTool) {
+    throw new AaisLearnerDataIntegrityError();
+  }
+  const tool = history.mode === "self-check"
+    ? {
+        ...canonicalTool,
+        label: "独立自检",
+        body: "先不查看新的示范：写下你的目标、下一步和一个检查标准；完成后再对照已有阶段检查表自行判断。",
+      }
+    : canonicalTool;
+  return {
+    mode: history.mode,
+    requestCount,
+    level: history.level,
+    intensity: history.intensity,
+    remainingDirectAssists: history.remainingDirectAssists
+      ?? Math.max(0, 4 - countAaisDirectScaffoldAssists(task)),
+    fading: history.fading,
+    ...(history.fadingReason ? { fadingReason: history.fadingReason } : {}),
+    evidenceSnapshot: history.evidenceSnapshot ?? createAaisScaffoldEvidenceSnapshot({
+      taskId: task.taskId,
+      artifactText: task.artifactText,
+      pilotEvidence: task.pilotEvidence,
+      milestones: task.milestones,
+    }),
+    tool,
+    session,
+  };
+}
+
+function refreshTaskCompletion(task: AaisTaskRecord): AaisTaskRecord {
+  const completionMissing = deriveAaisTaskCompletionMissing({
+    taskId: task.taskId,
+    phase: task.phase,
+    artifactText: task.artifactText,
+    selfReport: task.selfReport,
+    pilotEvidence: task.pilotEvidence,
+    milestones: task.milestones,
+  });
+  return {
+    ...task,
+    reflectionReport: deriveAaisA4ReflectionReport({
+      taskId: task.taskId,
+      artifactText: task.artifactText,
+      pilotEvidence: task.pilotEvidence,
+    }),
+    completionMissing,
+    completionOutcome: task.status === "completed"
+      && task.completionOutcome === "ended_incomplete"
+      && completionMissing.length === 0
+      ? "evidence_complete"
+      : task.completionOutcome,
+  };
+}
+
+function countAaisDirectScaffoldAssists(task: AaisTaskRecord) {
+  if (
+    !task.scaffoldHistory.length
+    || !task.scaffoldHistory.some((entry) => entry.evidenceSnapshot)
+  ) {
+    return Math.min(4, Math.max(0, task.scaffoldRequests));
+  }
+  return Math.min(4, task.scaffoldHistory.filter((entry) =>
+    entry.mode === "tool-list"
+  ).length);
+}
+
+const allowedMilestonesByTask: Record<string, readonly AaisLearningMilestoneId[]> = {
+  training_task_1: ["launch_import", "modeling"],
+  practice_task_1: ["coaching_scaffolding", "articulation"],
+  practice_task_2: [],
+  practice_task_3: ["exploration", "articulation", "reflection", "summary_completion"],
+};
+
+function canRecordStageEvidence(
+  task: AaisTaskRecord,
+  milestoneId: AaisLearningMilestoneId,
+) {
+  if (!allowedMilestonesByTask[task.taskId]?.includes(milestoneId)) {
+    return false;
+  }
+  const milestoneComplete = (id: AaisLearningMilestoneId) => task.milestones.some((milestone) =>
+    milestone.id === id && milestone.status === "completed"
+  );
+  const hasText = (value: string) => countAaisVisibleCharacters(value) >= 8;
+  if (task.taskId === "training_task_1") {
+    return milestoneId === "launch_import"
+      || (milestoneId === "modeling" && milestoneComplete("launch_import"));
+  }
+  if (task.taskId === "practice_task_1") {
+    if (milestoneId === "coaching_scaffolding") {
+      return hasText(task.pilotEvidence.diagnosisText)
+        && hasText(task.pilotEvidence.revisedPromptText)
+        && hasText(task.pilotEvidence.outputEvaluationText);
+    }
+    return milestoneId === "articulation"
+      && milestoneComplete("coaching_scaffolding")
+      && task.pilotEvidence.articulationOutcome === "submitted"
+      && hasText(task.pilotEvidence.articulationText);
+  }
+  if (task.taskId !== "practice_task_3") {
+    return false;
+  }
+  if (milestoneId === "exploration") {
+    return countAaisVisibleCharacters(task.artifactText) >= aaisTask4MinimumArtifactCharacters;
+  }
+  if (milestoneId === "articulation") {
+    return milestoneComplete("exploration")
+      && task.pilotEvidence.articulationOutcome === "submitted"
+      && hasText(task.pilotEvidence.articulationText);
+  }
+  if (milestoneId === "reflection") {
+    return milestoneComplete("articulation")
+      && task.pilotEvidence.reflectionOutcome === "submitted"
+      && hasText(task.pilotEvidence.reflectionText)
+      && hasText(task.pilotEvidence.expertComparisonText)
+      && deriveAaisA4ReflectionReport({
+        taskId: task.taskId,
+        artifactText: task.artifactText,
+        pilotEvidence: task.pilotEvidence,
+      }) !== null;
+  }
+  return milestoneId === "summary_completion"
+    && task.status === "completed"
+    && milestoneComplete("reflection");
+}
+
+function completeMilestonesFromEvidence(
+  taskId: string,
+  current: AaisTaskLearningLoop,
+  evidence: AaisTaskPilotEvidence,
+  artifactText: string,
+  now: string,
+) {
+  let loop = current;
+  const complete = (milestoneId: AaisLearningMilestoneId, evidenceKind: string) => {
+    loop = recordAaisMilestoneEvidence(loop, milestoneId, evidenceKind, now) ?? loop;
+  };
+  if (taskId === "practice_task_1") {
+    if (
+      countAaisVisibleCharacters(evidence.diagnosisText) >= 8
+      && countAaisVisibleCharacters(evidence.revisedPromptText) >= 8
+      && countAaisVisibleCharacters(evidence.outputEvaluationText) >= 8
+    ) {
+      complete("coaching_scaffolding", "guided_practice_completed");
+    }
+    if (
+      evidence.articulationOutcome === "submitted"
+      && countAaisVisibleCharacters(evidence.articulationText) >= 8
+      && isMilestoneCompletedInLoop(loop, "coaching_scaffolding")
+    ) {
+      complete("articulation", "strategy_articulated");
+    }
+  }
+  if (taskId === "practice_task_3") {
+    if (countAaisVisibleCharacters(artifactText) >= aaisTask4MinimumArtifactCharacters) {
+      complete("exploration", "artifact_submitted");
+    }
+    if (
+      evidence.articulationOutcome === "submitted"
+      && countAaisVisibleCharacters(evidence.articulationText) >= 8
+      && isMilestoneCompletedInLoop(loop, "exploration")
+    ) {
+      complete("articulation", "strategy_articulated");
+    }
+    if (
+      evidence.reflectionOutcome === "submitted"
+      && countAaisVisibleCharacters(evidence.reflectionText) >= 8
+      && countAaisVisibleCharacters(evidence.expertComparisonText) >= 8
+      && isMilestoneCompletedInLoop(loop, "articulation")
+      && deriveAaisA4ReflectionReport({ taskId, artifactText, pilotEvidence: evidence }) !== null
+    ) {
+      complete("reflection", "reflection_submitted");
+    }
+  }
+  if (
+    taskId === "practice_task_3"
+    && evidence.summaryAcknowledged
+    && isMilestoneCompletedInLoop(loop, "reflection")
+  ) {
+    complete("summary_completion", "summary_acknowledged");
+  }
+  return loop;
+}
+
+function isMilestoneCompletedInLoop(
+  loop: AaisTaskLearningLoop,
+  milestoneId: AaisLearningMilestoneId,
+) {
+  return loop.milestones.some((milestone) =>
+    milestone.id === milestoneId && milestone.status === "completed"
+  );
+}
+
+function requireAaisPilotEvidencePatch(
+  value: Partial<AaisTaskPilotEvidence>,
+): Partial<AaisTaskPilotEvidence> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new AaisLearnerMutationError("pilot_evidence_invalid");
+  }
+  const textFields = new Set([
+    "diagnosisText",
+    "revisedPromptText",
+    "outputEvaluationText",
+    "planningText",
+    "monitoringText",
+    "evaluationText",
+    "articulationText",
+    "articulationDeclineReason",
+    "reflectionText",
+    "reflectionDeclineReason",
+    "expertComparisonText",
+  ]);
+  const allowedFields = new Set([
+    ...textFields,
+    "outputEvaluation",
+    "articulationOutcome",
+    "reflectionOutcome",
+    "summaryAcknowledged",
+    "aiUseMode",
+  ]);
+  const patch: Partial<AaisTaskPilotEvidence> = {};
+  for (const [field, fieldValue] of Object.entries(value)) {
+    if (!allowedFields.has(field)) {
+      throw new AaisLearnerMutationError("pilot_evidence_invalid");
+    }
+    if (textFields.has(field)) {
+      if (typeof fieldValue !== "string") {
+        throw new AaisLearnerMutationError("pilot_evidence_invalid");
+      }
+      (patch as Record<string, unknown>)[field] = requireSafeText(
+        fieldValue,
+        `pilot evidence ${field}`,
+      ).trim();
+      continue;
+    }
+    if (field === "outputEvaluation") {
+      if (!isAaisOutputEvaluation(fieldValue)) {
+        throw new AaisLearnerMutationError("pilot_evidence_invalid");
+      }
+      patch.outputEvaluation = fieldValue;
+      continue;
+    }
+    if (field === "reflectionOutcome") {
+      if (!isAaisReflectionOutcome(fieldValue)) {
+        throw new AaisLearnerMutationError("pilot_evidence_invalid");
+      }
+      patch.reflectionOutcome = fieldValue;
+      continue;
+    }
+    if (field === "articulationOutcome") {
+      if (!isAaisReflectionOutcome(fieldValue)) {
+        throw new AaisLearnerMutationError("pilot_evidence_invalid");
+      }
+      patch.articulationOutcome = fieldValue;
+      continue;
+    }
+    if (field === "summaryAcknowledged") {
+      if (typeof fieldValue !== "boolean") {
+        throw new AaisLearnerMutationError("pilot_evidence_invalid");
+      }
+      patch.summaryAcknowledged = fieldValue;
+      continue;
+    }
+    if (field === "aiUseMode") {
+      if (fieldValue !== "ai-supported" && fieldValue !== "ai-free") {
+        throw new AaisLearnerMutationError("pilot_evidence_invalid");
+      }
+      patch.aiUseMode = fieldValue;
+    }
+  }
+  if (!Object.keys(patch).length) {
+    throw new AaisLearnerMutationError("pilot_evidence_invalid");
+  }
+  return patch;
+}
+
+function createA4ReflectionReportEvents(
+  session: AaisLearnerSession,
+  previousTask: AaisTaskRecord,
+  updatedTask: AaisTaskRecord,
+  now: string,
+) {
+  if (
+    updatedTask.reflectionReport === null
+    || JSON.stringify(previousTask.reflectionReport)
+      === JSON.stringify(updatedTask.reflectionReport)
+  ) {
+    return [];
+  }
+  return [createAaisEvent({
+    studentId: session.studentId,
+    sessionId: session.sessionId,
+    phase: updatedTask.phase,
+    task: updatedTask.taskId,
+    agent: "A4",
+    event: "a4_reflection_report_generated",
+    detail: {
+      report_version: updatedTask.reflectionReport.version,
+      expert_model_id: updatedTask.reflectionReport.expertModelId,
+      expert_step_ids: updatedTask.reflectionReport.expertStepIds,
+      raw_text_included: false,
+      learner_visible_turn: false,
+      storage_scope: "learner_session_only",
+    },
+    now: () => new Date(now),
+  })];
+}
+
+function createPilotOutcomeEvents(
+  session: AaisLearnerSession,
+  task: AaisTaskRecord,
+  records: AaisPilotOutcomeAuditRecord[],
+  now: string,
+) {
+  return records.map((record) => createAaisEvent({
+    studentId: session.studentId,
+    sessionId: session.sessionId,
+    phase: task.phase,
+    task: task.taskId,
+    agent: "A4",
+    event: "pilot_outcome_recorded",
+    detail: {
+      stage: record.stage,
+      outcome: record.outcome,
+      reason_length: record.reasonLength,
+      attempt: record.attempt,
+      raw_reason_included: false,
+      storage_scope: "learner_session_only",
+    },
+    now: () => new Date(now),
+  }));
+}
+
+function createPilotOutcomeAuditRecords(
+  task: AaisTaskRecord,
+  patch: Partial<AaisTaskPilotEvidence>,
+  evidence: AaisTaskPilotEvidence,
+  now: string,
+): AaisPilotOutcomeAuditRecord[] {
+  const createRecord = (
+    stage: AaisPilotOutcomeAuditRecord["stage"],
+    outcome: AaisPilotOutcomeAuditRecord["outcome"],
+    reason: string,
+  ): AaisPilotOutcomeAuditRecord => ({
+    stage,
+    outcome,
+    reasonLength: countAaisVisibleCharacters(reason),
+    attempt: task.pilotOutcomeAudit.filter((record) => record.stage === stage).length + 1,
+    recordedAt: now,
+    rawReasonIncluded: false,
+  });
+  return [
+    ...(patch.articulationOutcome === undefined
+      ? []
+      : [createRecord(
+          "articulation",
+          evidence.articulationOutcome,
+          evidence.articulationDeclineReason,
+        )]),
+    ...(patch.reflectionOutcome === undefined
+      ? []
+      : [createRecord(
+          "reflection",
+          evidence.reflectionOutcome,
+          evidence.reflectionDeclineReason,
+        )]),
+  ];
+}
+
+function normalizeAaisPilotOutcomeAudit(value: unknown): AaisPilotOutcomeAuditRecord[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.flatMap((candidate): AaisPilotOutcomeAuditRecord[] => {
+    if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) {
+      return [];
+    }
+    const record = candidate as Partial<AaisPilotOutcomeAuditRecord>;
+    if (
+      (record.stage !== "articulation" && record.stage !== "reflection")
+      || !isAaisReflectionOutcome(record.outcome)
+      || !Number.isSafeInteger(record.reasonLength)
+      || Number(record.reasonLength) < 0
+      || !Number.isSafeInteger(record.attempt)
+      || Number(record.attempt) < 1
+      || typeof record.recordedAt !== "string"
+      || !Number.isFinite(Date.parse(record.recordedAt))
+    ) {
+      return [];
+    }
+    return [{
+      stage: record.stage,
+      outcome: record.outcome,
+      reasonLength: Number(record.reasonLength),
+      attempt: Number(record.attempt),
+      recordedAt: record.recordedAt,
+      rawReasonIncluded: false,
+    }];
+  }).slice(-20);
+}
+
+function createStoredA3Signals(
+  task: AaisTaskRecord,
+  drafts: ReturnType<typeof createAaisSignalDrafts>,
+  now: string,
+): AaisA3SupervisionSignal[] {
+  const nowMs = Date.parse(now);
+  return drafts.flatMap((draft) => {
+    const latestSameSignal = [...task.supervisionSignals].reverse().find((signal) =>
+      signal.type === draft.type && signal.evidence.source === draft.evidence.source
+    );
+    const exactEvidenceReplay = latestSameSignal
+      ? JSON.stringify(latestSameSignal.evidence) === JSON.stringify(draft.evidence)
+      : false;
+    const latestAt = latestSameSignal ? Date.parse(latestSameSignal.createdAt) : Number.NaN;
+    const withinCooldown = Number.isFinite(nowMs)
+      && Number.isFinite(latestAt)
+      && nowMs - latestAt >= 0
+      && nowMs - latestAt < aaisA3SignalCooldownMs;
+    if (exactEvidenceReplay || withinCooldown) {
+      return [];
+    }
+    return [{
+      id: `a3-signal-${randomUUID()}`,
+      type: draft.type,
+      createdAt: now,
+      basis: "deterministic-rule" as const,
+      ruleVersion: "aais-metacognitive-signal-v1" as const,
+      cooldownSeconds: 300 as const,
+      evidence: draft.evidence,
+      recommendedAction: draft.recommendedAction,
+    }];
+  });
+}
+
+function appendTaskSignals(
+  task: AaisTaskRecord,
+  signals: AaisA3SupervisionSignal[],
+): AaisTaskRecord {
+  if (!signals.length) {
+    return task;
+  }
+  return {
+    ...task,
+    supervisionSignals: [
+      ...task.supervisionSignals,
+      ...signals,
+    ].slice(-aaisA3SupervisionSignalLimitPerTask),
+  };
+}
+
+function createA3SignalEvents(
+  session: AaisLearnerSession,
+  task: AaisTaskRecord,
+  signals: AaisA3SupervisionSignal[],
+  now: string,
+) {
+  return signals.map((signal) => createAaisEvent({
+    studentId: session.studentId,
+    sessionId: session.sessionId,
+    phase: task.phase,
+    task: task.taskId,
+    agent: "A3",
+    event: "monitoring_pause_detected",
+    detail: {
+      signal: signal.type,
+      signal_id: signal.id,
+      basis: signal.basis,
+      rule_version: signal.ruleVersion,
+      cooldown_seconds: signal.cooldownSeconds,
+      dedupe_policy: "same_type_source_and_evidence_permanent_else_five_minutes",
+      evidence: signal.evidence,
+      recommendedAction: signal.recommendedAction,
+      learner_visible_turn: false,
+    },
+    now: () => new Date(now),
+  }));
+}
+
+function normalizeAaisSupervisionSignals(value: unknown): AaisA3SupervisionSignal[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  const signalTypes = new Set<AaisA3SignalType>([
+    "goal_missing",
+    "plan_missing",
+    "no_progress",
+    "large_regression",
+    "output_evaluation_missing",
+    "explicit_help_requested",
+    "reflection_missing",
+  ]);
+  const recommendedActions = new Set<AaisA3RecommendedAction>([
+    "ask_goal_question",
+    "ask_for_plan",
+    "offer_small_next_step",
+    "invite_recovery_or_revision",
+    "prompt_output_evaluation",
+    "provide_bounded_scaffold",
+    "invite_reflection",
+  ]);
+  return value.flatMap((candidate): AaisA3SupervisionSignal[] => {
+    if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) {
+      return [];
+    }
+    const signal = candidate as Partial<AaisA3SupervisionSignal>;
+    if (
+      typeof signal.id !== "string"
+      || !signalTypes.has(signal.type as AaisA3SignalType)
+      || signal.basis !== "deterministic-rule"
+      || typeof signal.createdAt !== "string"
+      || !Number.isFinite(Date.parse(signal.createdAt))
+      || !recommendedActions.has(signal.recommendedAction as AaisA3RecommendedAction)
+      || !signal.evidence
+      || signal.evidence.patternVersion !== "aais-metacognitive-signal-v1"
+    ) {
+      return [];
+    }
+    const source = signal.evidence.source;
+    if (
+      source !== "artifact"
+      && source !== "guide"
+      && source !== "scaffold"
+      && source !== "self_report"
+      && source !== "completion_gate"
+    ) {
+      return [];
+    }
+    return [{
+      id: signal.id,
+      type: signal.type as AaisA3SignalType,
+      createdAt: signal.createdAt,
+      basis: "deterministic-rule",
+      ruleVersion: "aais-metacognitive-signal-v1",
+      cooldownSeconds: 300,
+      evidence: {
+        source,
+        ...(Number.isSafeInteger(signal.evidence.previousCharacters)
+          ? { previousCharacters: signal.evidence.previousCharacters }
+          : {}),
+        ...(Number.isSafeInteger(signal.evidence.currentCharacters)
+          ? { currentCharacters: signal.evidence.currentCharacters }
+          : {}),
+        ...(signal.evidence.directRequest === true ? { directRequest: true } : {}),
+        patternVersion: "aais-metacognitive-signal-v1",
+      },
+      recommendedAction: signal.recommendedAction as AaisA3RecommendedAction,
+    }];
+  }).slice(-aaisA3SupervisionSignalLimitPerTask);
+}
+
 function createStageEvidenceEvents(
   session: AaisLearnerSession,
   task: AaisTaskRecord,
-  stageId: string,
+  milestoneId: AaisLearningMilestoneId,
+  evidenceKind: string,
+  now: string,
 ) {
-  const stageEventMap: Record<string, {
+  const stageEventMap: Partial<Record<AaisLearningMilestoneId, {
     agent: AaisAgentId;
     event: AaisEventName;
     detail: Record<string, unknown>;
-  }> = {
-    guide: {
+  }>> = {
+    modeling: {
       agent: "A2",
       event: "expert_model_viewed",
       detail: {
-        stageId,
+        milestoneId,
+        evidenceKind,
       },
     },
-    assessment: {
+    coaching_scaffolding: {
       agent: "A1",
       event: "understanding_check_completed",
       detail: {
-        stageId,
-        resultRecorded: false,
+        milestoneId,
+        evidenceKind,
+        resultRecorded: true,
       },
     },
-    reflection: {
+    articulation: {
       agent: "A4",
       event: "articulation_submitted",
       detail: {
-        stageId,
-        source: "reflection_stage",
-      },
-    },
-    comparison: {
-      agent: "A4",
-      event: "expert_trace_compared",
-      detail: {
-        stageId,
-        taskId: task.taskId,
+        milestoneId,
+        evidenceKind,
+        source: "articulation_stage",
       },
     },
   };
-  const mapped = stageEventMap[stageId];
+  const mapped = stageEventMap[milestoneId];
   if (!mapped) {
     return [];
   }
@@ -7110,35 +9576,7 @@ function createStageEvidenceEvents(
       agent: mapped.agent,
       event: mapped.event,
       detail: mapped.detail,
-    }),
-  ];
-}
-
-function createTaskTextEvidenceEvents(input: {
-  session: AaisLearnerSession;
-  task: AaisTaskRecord;
-  event: "artifact_saved" | "self_report_saved";
-  value: string;
-}) {
-  if (!input.value.trim()) {
-    return [];
-  }
-  const event: AaisEventName = input.event === "artifact_saved"
-    ? "planning_submitted"
-    : "articulation_submitted";
-  const agent: AaisAgentId = input.event === "artifact_saved" ? "A3" : "A4";
-  return [
-    createAaisEvent({
-      studentId: input.session.studentId,
-      sessionId: input.session.sessionId,
-      phase: input.task.phase,
-      task: input.task.taskId,
-      agent,
-      event,
-      detail: {
-        characters: input.value.length,
-        sourceEvent: input.event,
-      },
+      now: () => new Date(now),
     }),
   ];
 }
@@ -7149,8 +9587,8 @@ function createArtifactMonitoringEvents(input: {
   previousValue: string;
   nextValue: string;
 }) {
-  const previousLength = input.previousValue.trim().length;
-  const nextLength = input.nextValue.trim().length;
+  const previousLength = countAaisVisibleCharacters(input.previousValue);
+  const nextLength = countAaisVisibleCharacters(input.nextValue);
   const now = new Date();
   const regressionDrop = previousLength - nextLength;
   if (
@@ -7352,14 +9790,17 @@ function serializeAaisLearnerSession(session: AaisLearnerSession) {
   const capacityReservations = normalizeGuideCapacityReservations(
     session.guideCapacityReservations,
   );
+  const mutationReservations = normalizeGuideMutationReservations(
+    session.guideMutationReservations,
+  );
   if (
-    session.events.length + capacityReservations.length * 2
+    session.events.length + capacityReservations.length * 2 + mutationReservations.length
     > aaisLearnerSessionPersistenceLimits.maxEvents
   ) {
     throw new AaisLearnerSessionLimitError("events_limit_reached");
   }
   if (
-    session.guideMessages.length + capacityReservations.length * 2
+    session.guideMessages.length + capacityReservations.length * 2 + mutationReservations.length * 2
     > aaisLearnerSessionPersistenceLimits.maxGuideMessages
   ) {
     throw new AaisLearnerSessionLimitError("guide_messages_limit_reached");

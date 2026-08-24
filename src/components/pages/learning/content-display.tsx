@@ -8,15 +8,27 @@ import {
   PlayCircle,
   SquaresFour,
 } from "@phosphor-icons/react";
-import { formatHistoryDocumentTime } from "@/components/pages/learning/document-markdown";
+import { HistoryDocuments } from "@/components/pages/learning/history-documents";
+import { getVisibleGuideTurns } from "@/components/pages/learning/guide-chat";
+import { isCanonicalGuideAssistantMessageId } from "@/components/pages/learning/guide-stream";
 import { getLearningCopy } from "@/components/pages/learning/learning-copy";
+import {
+  CompletionGate,
+  PilotExpertModel,
+  PilotFlowOverview,
+  PilotSummaryCard,
+  PilotTaskExperience,
+  type PilotLearningActions,
+} from "@/components/pages/learning/pilot-learning-loop";
 import type {
   AaisClientTaskRecord,
   AaisClientTaskStatus,
   ContentItemId,
+  GuideMessage,
   SavedLearningDocument,
 } from "@/components/pages/learning/learning-page-types";
 import { aaisLearningProgram, type Locale } from "@/data/aais";
+import { getCaasiPilotTaskDefinition } from "@/data/aais-course-packages";
 
 export type ContentDisplayItem = {
   id: ContentItemId;
@@ -51,6 +63,8 @@ function getContentDisplayAccessibleLabel(
 export function ContentDisplay({
   activeContent,
   activeTaskId,
+  artifactText,
+  guideMessages,
   historyDocuments,
   locale = "zh-CN",
   navigationLocked = false,
@@ -59,12 +73,15 @@ export function ContentDisplay({
   onOpen,
   onOpenDocument,
   onSelectTask,
+  pilotActions,
   taskActionBusy = false,
   taskActionError = "",
   tasks,
 }: {
   activeContent: ContentDisplayItem | null;
   activeTaskId: string;
+  artifactText: string;
+  guideMessages: GuideMessage[];
   historyDocuments: SavedLearningDocument[];
   locale?: Locale;
   navigationLocked?: boolean;
@@ -73,6 +90,7 @@ export function ContentDisplay({
   onOpen: (id: ContentItemId) => void;
   onOpenDocument: (document: SavedLearningDocument) => void;
   onSelectTask: (taskId: string) => void;
+  pilotActions: PilotLearningActions;
   taskActionBusy?: boolean;
   taskActionError?: string;
   tasks: AaisClientTaskRecord[];
@@ -113,18 +131,28 @@ export function ContentDisplay({
           ) : activeContent.id === "theory" ? (
             <TaskCards
               activeTaskId={activeTaskId}
+              artifactText={artifactText}
               busy={taskActionBusy}
               error={taskActionError}
+              guideMessages={guideMessages}
               locale={locale}
               navigationLocked={navigationLocked}
               onCompleteTask={onCompleteTask}
               onSelectTask={onSelectTask}
+              pilotActions={pilotActions}
               tasks={tasks}
             />
           ) : (
-            <p className="break-words text-[28px] font-normal leading-[1.55] tracking-normal text-[#111318]">
-              {activeContent.body}
-            </p>
+            <>
+              <p className="break-words text-[28px] font-normal leading-[1.55] tracking-normal text-[#111318]">
+                {activeContent.body}
+              </p>
+              <PilotFlowOverview
+                actions={pilotActions}
+                locale={locale}
+                tasks={tasks}
+              />
+            </>
           )}
         </div>
       </section>
@@ -180,37 +208,53 @@ const taskDefinitions = [
 
 function TaskCards({
   activeTaskId,
+  artifactText,
   busy,
   error,
+  guideMessages,
   locale,
   navigationLocked,
   onCompleteTask,
   onSelectTask,
+  pilotActions,
   tasks,
 }: {
   activeTaskId: string;
+  artifactText: string;
   busy: boolean;
   error: string;
+  guideMessages: GuideMessage[];
   locale: Locale;
   navigationLocked: boolean;
   onCompleteTask: (taskId: string) => void;
   onSelectTask: (taskId: string) => void;
+  pilotActions: PilotLearningActions;
   tasks: AaisClientTaskRecord[];
 }) {
   const copy = getLearningCopy(locale).content.taskCards;
   const taskCards = taskDefinitions.map((definition, index) => {
     const record = tasks.find((task) => task.taskId === definition.id);
+    const courseTask = getCaasiPilotTaskDefinition(definition.id);
+    const pilotClosed = courseTask?.availability === "pilot-closed";
     return {
+      courseTask,
       definition,
       index,
-      status: resolveTaskCardStatus({
-        activeTaskId,
-        index,
-        record,
-      }),
+      pilotClosed,
+      record,
+      status: pilotClosed
+        ? "locked" as const
+        : resolveTaskCardStatus({
+            activeTaskId,
+            index,
+            record,
+          }),
     };
   });
-  const completedCount = taskCards.filter((task) => task.status === "completed").length;
+  const requiredTaskCards = taskCards.filter((task) => !task.pilotClosed);
+  const completedCount = requiredTaskCards.filter((task) =>
+    task.status === "completed" && task.record?.completionOutcome !== "ended_incomplete"
+  ).length;
 
   return (
     <section aria-label={copy.listLabel}>
@@ -222,7 +266,7 @@ function TaskCards({
           aria-live="polite"
           className="shrink-0 rounded-full border border-[#d7ddff] bg-[#eef2ff] px-3 py-1 text-sm font-semibold text-[#3f55bb]"
         >
-          {copy.progress(completedCount, taskCards.length)}
+          {copy.progress(completedCount, requiredTaskCards.length)}
         </span>
       </div>
       {error ? (
@@ -235,12 +279,16 @@ function TaskCards({
         </p>
       ) : null}
       <ol className="grid gap-4">
-        {taskCards.map(({ definition, index, status }) => {
-          const title = definition.title[locale];
-          const brief = definition.brief[locale];
+        {taskCards.map(({ courseTask, definition, index, pilotClosed, record, status }) => {
+          const title = courseTask?.title[locale] ?? definition.title[locale];
+          const brief = courseTask?.brief[locale] ?? definition.brief[locale];
           const locked = status === "locked";
           const completed = status === "completed";
           const active = status === "active" && definition.id === activeTaskId;
+          const endedIncomplete = record?.completionOutcome === "ended_incomplete";
+          const completionMissing = record?.completionMissing ?? [];
+          const completionBlocked = active && completionMissing.length > 0;
+          const pilotClosedLabel = locale === "zh-CN" ? "暂不开放" : "Pilot closed";
           const StatusIcon = locked ? LockKey : completed ? CheckCircle : PlayCircle;
           const primaryLabel = completed
             ? copy.review
@@ -272,6 +320,8 @@ function TaskCards({
               key={definition.id}
               data-task-card={definition.id}
               data-task-status={status}
+              data-task-availability={pilotClosed ? "pilot-closed" : "available"}
+              data-completion-outcome={record?.completionOutcome}
               className={`rounded-2xl border p-5 transition-colors ${cardStateClass}`}
             >
               <article aria-labelledby={`aais-task-card-${definition.id}`}>
@@ -285,10 +335,14 @@ function TaskCards({
                   <div className="min-w-0 flex-1">
                     <div className="flex flex-wrap items-center gap-2">
                       <span className="text-xs font-semibold uppercase tracking-[0.08em] text-[#6b7280]">
-                        {copy.ordinal(index + 1)} · {copy.phase[definition.phase]}
+                        {copy.ordinal(courseTask?.visibleTaskNumber ?? index + 1)} · {copy.phase[definition.phase]}
                       </span>
                       <span className={`rounded-full border px-2.5 py-1 text-xs font-bold ${statusClass}`}>
-                        {copy.status[status]}
+                        {pilotClosed
+                          ? locale === "zh-CN" ? "先导未开放" : "Pilot closed"
+                          : endedIncomplete
+                            ? locale === "zh-CN" ? "未完成结束" : "Ended incomplete"
+                            : copy.status[status]}
                       </span>
                     </div>
                     <h3
@@ -298,20 +352,57 @@ function TaskCards({
                       {title}
                     </h3>
                     <p className={`mt-2 text-[15px] leading-6 ${locked ? "text-[#747b86]" : "text-[#555d69]"}`}>
-                      {locked ? copy.lockedHint : brief}
+                      {pilotClosed && courseTask?.cardNote
+                        ? courseTask.cardNote[locale]
+                        : locked
+                          ? copy.lockedHint
+                          : brief}
                     </p>
                   </div>
                 </div>
+                {definition.id === "training_task_1" && !locked ? (
+                  <PilotExpertModel actions={pilotActions} locale={locale} task={record} />
+                ) : null}
+                {definition.id === "training_task_1" && !locked && completionMissing.length ? (
+                  <div className="mt-5">
+                    <CompletionGate
+                      completionMissing={completionMissing}
+                      locale={locale}
+                    />
+                  </div>
+                ) : null}
+                {courseTask && !pilotClosed && (active || completed) ? (
+                  <PilotTaskExperience
+                    actions={pilotActions}
+                    artifactText={definition.id === activeTaskId
+                      ? artifactText
+                      : record?.artifactText ?? ""}
+                    courseTask={courseTask}
+                    latestAssistantMessageId={getLatestTaskAssistantMessageId(
+                      guideMessages,
+                      definition.id,
+                    )}
+                    locale={locale}
+                    task={record}
+                  />
+                ) : null}
+                {courseTask?.taskId === "practice_task_3" && completed && record ? (
+                  <PilotSummaryCard actions={pilotActions} locale={locale} task={record} />
+                ) : null}
                 <div className="mt-5 flex flex-wrap justify-end gap-3">
                   {locked ? (
                     <button
                       type="button"
                       disabled
-                      aria-label={copy.lockedButton(title)}
+                      aria-label={pilotClosed
+                        ? locale === "zh-CN"
+                          ? `任务${courseTask?.visibleTaskNumber ?? index + 1}：${title}：${pilotClosedLabel}`
+                          : `Task ${courseTask?.visibleTaskNumber ?? index + 1}: ${title}: ${pilotClosedLabel}`
+                        : copy.lockedButton(title)}
                       className="inline-flex min-h-11 min-w-[132px] cursor-not-allowed items-center justify-center gap-2 rounded-xl border border-[#cfd3db] bg-[#e3e5e9] px-4 text-sm font-semibold text-[#555d69]"
                     >
                       <LockKey aria-hidden="true" size={18} weight="bold" />
-                      {copy.status.locked}
+                      {pilotClosed ? pilotClosedLabel : copy.status.locked}
                     </button>
                   ) : (
                     <>
@@ -327,7 +418,10 @@ function TaskCards({
                       {active ? (
                         <button
                           type="button"
-                          disabled={busy || navigationLocked}
+                          disabled={busy || navigationLocked || completionBlocked}
+                          aria-describedby={completionBlocked && courseTask
+                            ? `aais-completion-missing-${courseTask.taskId}`
+                            : undefined}
                           aria-label={copy.completeButton(title)}
                           onClick={() => onCompleteTask(definition.id)}
                           className="inline-flex min-h-11 min-w-[132px] items-center justify-center rounded-xl bg-[#536de8] px-4 text-sm font-semibold text-white shadow-[0_8px_18px_rgba(83,109,232,0.22)] outline-none transition hover:bg-[#4059d1] focus-visible:ring-2 focus-visible:ring-[#253fb0] focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-60"
@@ -370,52 +464,21 @@ function resolveTaskCardStatus({
   return "locked";
 }
 
-function HistoryDocuments({
-  documents,
-  emptyText,
-  locale,
-  navigationLocked,
-  onOpenDocument,
-}: {
-  documents: SavedLearningDocument[];
-  emptyText: string;
-  locale: Locale;
-  navigationLocked: boolean;
-  onOpenDocument: (document: SavedLearningDocument) => void;
-}) {
-  if (!documents.length) {
-    return (
-      <p className="break-words text-[28px] font-normal leading-[1.55] tracking-normal text-[#111318]">
-        {emptyText}
-      </p>
-    );
+function getLatestTaskAssistantMessageId(
+  messages: GuideMessage[],
+  taskId: string,
+) {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (
+      message?.kind === "assistant"
+      && message.taskId === taskId
+      && isCanonicalGuideAssistantMessageId(message.id)
+      && getVisibleGuideTurns(message.turns).some((turn) => !turn.actions.includes("progress"))
+      && (message.text.trim() || message.turns?.length)
+    ) {
+      return message.id;
+    }
   }
-
-  return (
-    <div className="grid grid-cols-[repeat(auto-fill,minmax(136px,1fr))] gap-x-8 gap-y-9">
-      {documents.map((document) => (
-        <button
-          key={document.id}
-          type="button"
-          disabled={navigationLocked}
-          onClick={() => onOpenDocument(document)}
-          aria-label={getLearningCopy(locale).content.documentFolder(document.title)}
-          className="group flex min-h-[128px] w-full max-w-[160px] flex-col items-center justify-start rounded-md px-2 py-1 text-center outline-none transition focus-visible:ring-2 focus-visible:ring-[#536de8] disabled:cursor-wait disabled:opacity-70"
-        >
-          <span
-            data-history-folder="icon"
-            className="relative block h-[76px] w-[124px] rounded-[10px] bg-gradient-to-b from-[#68d4ff] via-[#45bff3] to-[#249fe3] shadow-[inset_0_1px_0_rgba(255,255,255,0.75),0_9px_18px_rgba(22,105,170,0.25)] before:absolute before:-top-[11px] before:left-[8px] before:h-[24px] before:w-[58px] before:rounded-t-[10px] before:bg-gradient-to-b before:from-[#73dcff] before:to-[#42bdf2] before:content-[''] after:absolute after:inset-x-0 after:bottom-[9px] after:h-px after:bg-white/25 after:content-[''] group-hover:brightness-105"
-          >
-            <span className="absolute inset-x-[6px] bottom-[5px] h-[6px] rounded-full bg-[#168bd5]/35" />
-          </span>
-          <span className="mt-3 line-clamp-2 max-w-full break-words text-[15px] font-semibold leading-5 text-[#202329]">
-            {document.title}
-          </span>
-          <span className="mt-1 text-xs leading-4 text-[#70757f]">
-            {formatHistoryDocumentTime(document.savedAt, locale)}
-          </span>
-        </button>
-      ))}
-    </div>
-  );
+  return null;
 }

@@ -47,12 +47,29 @@ function LearningGuideResetHarness() {
     <div>
       <output data-testid="pending-guide-agent">{guide.pendingGuideAgentId ?? "none"}</output>
       <output data-testid="guide-error">{guide.guideError}</output>
+      <input
+        aria-label="Guide recovery draft"
+        value={guide.guideDraft}
+        onChange={(event) => guide.setGuideDraft(event.target.value)}
+      />
+      <button type="button" onClick={() => { void guide.submitGuideQuestion(guide.guideDraft); }}>
+        Start draft request
+      </button>
+      <button type="button" onClick={() => {
+        void guide.submitGuideQuestion(guide.guideDraft);
+        void guide.submitGuideQuestion(guide.guideDraft);
+      }}>
+        Start duplicate request
+      </button>
       <button type="button" onClick={() => { void guide.submitGuideQuestion("@教授 请检查下一步"); }}>
         Start Professor request
       </button>
       <button type="button" onClick={guide.resetGuideState}>
         Reset guide
       </button>
+      {guide.guideMessages.map((message) => (
+        <p data-guide-harness-kind={message.kind} key={message.id}>{message.text}</p>
+      ))}
     </div>
   );
 }
@@ -1549,6 +1566,10 @@ describe("AAIS LearningPage", () => {
 
   it("keeps one Professor thinking bubble through hidden SSE progress and replaces it in place", async () => {
     setCsrfCookie();
+    const canonicalExchange = {
+      userMessageId: "user-33333333-3333-4333-8333-333333333333",
+      assistantMessageId: "assistant-44444444-4444-4444-8444-444444444444",
+    };
     const encoder = new TextEncoder();
     let streamController: ReadableStreamDefaultController<Uint8Array> | null = null;
     const stream = new ReadableStream<Uint8Array>({
@@ -1593,11 +1614,14 @@ describe("AAIS LearningPage", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     render(<LearningPage />);
-    submitGuidePrompt("@Professor 请检查我的下一步。");
+    const submittedPrompt = "@Professor 请检查我的下一步。";
+    submitGuidePrompt(submittedPrompt);
 
     const thinkingText = await screen.findByText("教授正在思考");
     const pendingMessage = thinkingText.closest("[data-guide-message-id]");
     const pendingMessageId = pendingMessage?.getAttribute("data-guide-message-id");
+    const pendingUserMessage = screen.getByText(submittedPrompt)
+      .closest("[data-guide-message-id]");
     expect(pendingMessageId).toBeTruthy();
     expect(document.querySelectorAll('[data-guide-thinking-agent="A2"]')).toHaveLength(1);
     expect(screen.getByRole("img", { name: "教授大学教育风格头像" })).toBeTruthy();
@@ -1610,7 +1634,7 @@ describe("AAIS LearningPage", () => {
         'event: agent_delta\ndata: {"agentId":"A2","content":"教授已完成下一步检查。"}\n\n',
       ));
       streamController?.enqueue(encoder.encode(
-        'event: done\ndata: {"status":"completed"}\n\n',
+        `event: done\ndata: ${JSON.stringify({ status: "completed", exchange: canonicalExchange })}\n\n`,
       ));
       streamController?.close();
     });
@@ -1618,7 +1642,15 @@ describe("AAIS LearningPage", () => {
     const finalText = await screen.findByText("教授已完成下一步检查。");
     expect(screen.queryByText("教授正在思考")).toBeNull();
     expect(finalText.closest("[data-guide-message-id]")?.getAttribute("data-guide-message-id"))
-      .toBe(pendingMessageId);
+      .toBe(canonicalExchange.assistantMessageId);
+    expect(pendingMessageId).not.toBe(canonicalExchange.assistantMessageId);
+    expect(document.querySelector(`[data-guide-message-id="${pendingMessageId}"]`)).toBeNull();
+    expect(pendingUserMessage?.getAttribute("data-guide-message-id"))
+      .not.toBe(canonicalExchange.userMessageId);
+    expect(screen.getByText(submittedPrompt)
+      .closest("[data-guide-message-id]")?.getAttribute("data-guide-message-id"))
+      .toBe(canonicalExchange.userMessageId);
+    expect(screen.getAllByText("教授已完成下一步检查。")).toHaveLength(1);
     expect((screen.getByLabelText("向智能导学输入你的想法") as HTMLInputElement).disabled).toBe(false);
   });
 
@@ -1715,7 +1747,7 @@ describe("AAIS LearningPage", () => {
       name: "完成任务：专家示范后的案例训练",
     })).toBeTruthy();
     expect((screen.getByRole("button", {
-      name: "L1 挑战：复述与计划，已锁定",
+      name: "社交媒体与大学生心理健康课程论文大纲，已锁定",
     }) as HTMLButtonElement).disabled).toBe(true);
 
     fireEvent.click(screen.getByRole("button", { name: "返回内容展示" }));
@@ -1762,10 +1794,10 @@ describe("AAIS LearningPage", () => {
     fireEvent.click(screen.getByRole("button", { name: /任务卡片/ }));
 
     expect((screen.getByRole("button", {
-      name: "L1 挑战：复述与计划，已锁定",
+      name: "社交媒体与大学生心理健康课程论文大纲，已锁定",
     }) as HTMLButtonElement).disabled).toBe(true);
     expect((screen.getByRole("button", {
-      name: "L2 挑战：执行与监控，已锁定",
+      name: "任务3：L2 挑战：执行与监控：暂不开放",
     }) as HTMLButtonElement).disabled).toBe(true);
 
     fireEvent.click(screen.getByRole("button", {
@@ -1773,12 +1805,645 @@ describe("AAIS LearningPage", () => {
     }));
 
     expect(await screen.findByRole("button", {
-      name: "进入任务：L1 挑战：复述与计划",
+      name: "进入任务：社交媒体与大学生心理健康课程论文大纲",
     })).toBeTruthy();
     expect((screen.getByRole("button", {
-      name: "L2 挑战：执行与监控，已锁定",
+      name: "任务3：L2 挑战：执行与监控：暂不开放",
     }) as HTMLButtonElement).disabled).toBe(true);
-    expect(screen.getByText("已完成 1/4 个任务")).toBeTruthy();
+    expect(screen.getByText("已完成 1/3 个任务")).toBeTruthy();
+  });
+
+  it("skips the pilot-closed Task 3 and activates Task 4 after Task 2 completes", async () => {
+    setCsrfCookie();
+    const initialSession = createPilotTaskFlowSession(
+      "practice_task_1",
+      ["completed", "active", "locked", "locked"],
+    );
+    const completedSession = createPilotTaskFlowSession(
+      "practice_task_3",
+      ["completed", "completed", "locked", "active"],
+    );
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === "/api/learning/session" && (!init || init.method === "GET")) {
+        return Response.json({ session: initialSession });
+      }
+      if (String(input) === "/api/learning/session" && init?.method === "PATCH") {
+        expect(JSON.parse(String(init.body))).toMatchObject({
+          action: "complete-task",
+          dataGeneration: 1,
+          taskId: "practice_task_1",
+        });
+        return Response.json({ session: completedSession });
+      }
+      return Response.json({ ok: true });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<LearningPage />);
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/learning/session"));
+    fireEvent.click(screen.getByRole("button", { name: /任务卡片/ }));
+    fireEvent.click(screen.getByRole("button", {
+      name: "完成任务：社交媒体与大学生心理健康课程论文大纲",
+    }));
+
+    expect(await screen.findByRole("button", {
+      name: "继续任务：设计一份《大学生GenAI学习使用指南》",
+    })).toBeTruthy();
+    expect(document.querySelector('[data-task-card="practice_task_3"]')?.getAttribute("data-task-status"))
+      .toBe("active");
+    expect((screen.getByRole("button", {
+      name: "任务3：L2 挑战：执行与监控：暂不开放",
+    }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("sends versioned Task 2 pilot evidence and a fresh mutation id", async () => {
+    setCsrfCookie();
+    const initialSession = createPilotTaskFlowSession(
+      "practice_task_1",
+      ["completed", "active", "locked", "locked"],
+      {
+        practice_task_1: {
+          pilotEvidenceRevision: 4,
+          completionMissing: [
+            "diagnose_original_prompt",
+            "submit_revised_prompt",
+            "evaluate_generated_outline",
+            "articulate_task_two_process",
+          ],
+        },
+      },
+    );
+    let currentSession = initialSession;
+    let pilotEvidenceRevision = 4;
+    const patchBodies: Array<Record<string, unknown>> = [];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === "/api/learning/session" && (!init || init.method === "GET")) {
+        return Response.json({ session: currentSession });
+      }
+      if (String(input) === "/api/learning/session" && init?.method === "PATCH") {
+        const body = JSON.parse(String(init.body)) as Record<string, unknown>;
+        patchBodies.push(body);
+        if (body.action === "save-pilot-evidence") {
+          pilotEvidenceRevision += 1;
+          const pilotEvidence = body.pilotEvidence as Record<string, string>;
+          currentSession = createPilotTaskFlowSession(
+            "practice_task_1",
+            ["completed", "active", "locked", "locked"],
+            {
+              practice_task_1: {
+                pilotEvidenceRevision,
+                pilotEvidence,
+                completionMissing: Object.keys(pilotEvidence).length === 1
+                  ? [
+                      "diagnose_original_prompt",
+                      "submit_revised_prompt",
+                      "evaluate_generated_outline",
+                      "articulate_task_two_process",
+                    ]
+                  : [],
+              },
+            },
+          );
+        }
+        return Response.json({ session: currentSession });
+      }
+      return Response.json({ ok: true });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<LearningPage />);
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/learning/session"));
+    fireEvent.click(screen.getByRole("button", { name: /任务卡片/ }));
+    fillTaskTwoEvidence();
+    fireEvent.click(screen.getByLabelText("不使用实时 GenAI"));
+    await screen.findByText("AI 使用选择已保存。");
+    fireEvent.click(screen.getByRole("button", { name: "保存学习证据" }));
+
+    await screen.findByText("学习证据已保存，完成门槛已由服务器重新计算。");
+    const [modeBody, saveBody] = patchBodies.filter(
+      (body) => body.action === "save-pilot-evidence",
+    );
+    expect(modeBody).toMatchObject({
+      action: "save-pilot-evidence",
+      taskId: "practice_task_1",
+      expectedPilotEvidenceRevision: 4,
+      mutationId: expect.stringMatching(/^pilot-evidence-mutation-test-/),
+      pilotEvidence: { aiUseMode: "ai-free" },
+    });
+    expect(saveBody).toMatchObject({
+      action: "save-pilot-evidence",
+      taskId: "practice_task_1",
+      dataGeneration: 1,
+      expectedPilotEvidenceRevision: 5,
+      mutationId: expect.stringMatching(/^pilot-evidence-mutation-test-/),
+      pilotEvidence: expect.objectContaining({
+        aiUseMode: "ai-free",
+        outputEvaluation: "ai_free",
+      }),
+    });
+    expect(saveBody?.mutationId).not.toBe(modeBody?.mutationId);
+    expect(patchBodies.filter((body) => body.action === "record-ai-acceptance")).toHaveLength(0);
+  });
+
+  it("fences AI acceptance after evidence save and preserves the draft after a stale-tab conflict", async () => {
+    setCsrfCookie();
+    const canonicalExchange = {
+      userMessageId: "user-55555555-5555-4555-8555-555555555555",
+      assistantMessageId: "assistant-66666666-6666-4666-8666-666666666666",
+    };
+    let currentSession = createPilotTaskFlowSession(
+      "practice_task_1",
+      ["completed", "active", "locked", "locked"],
+      { practice_task_1: { pilotEvidenceRevision: 4 } },
+    );
+    const staleConflictSession = createPilotTaskFlowSession(
+      "practice_task_1",
+      ["completed", "active", "locked", "locked"],
+      { practice_task_1: { pilotEvidenceRevision: 999 } },
+    );
+    const patchBodies: Array<Record<string, unknown>> = [];
+    let evidenceSaveCount = 0;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === "/api/learning/session" && (!init || init.method === "GET")) {
+        return Response.json({ session: currentSession });
+      }
+      if (String(input) === "/api/learning/ai-guide" && init?.method === "POST") {
+        return Response.json({
+          message: { text: "请先按任务约束评价结构和依据。" },
+          exchange: canonicalExchange,
+          turns: [{
+            agentId: "A1",
+            label: "导学智能体",
+            content: "请先按任务约束评价结构和依据。",
+            actions: ["respond"],
+          }],
+          orchestration: {
+            graph: { graphId: "learning-ai-guide", topologicalOrder: ["A1"] },
+            runtime: { timings: { fallback: false } },
+          },
+        });
+      }
+      if (String(input) === "/api/learning/session" && init?.method === "PATCH") {
+        const body = JSON.parse(String(init.body)) as Record<string, unknown>;
+        patchBodies.push(body);
+        if (body.action === "save-pilot-evidence") {
+          evidenceSaveCount += 1;
+          if (evidenceSaveCount <= 2) {
+            currentSession = createPilotTaskFlowSession(
+              "practice_task_1",
+              ["completed", "active", "locked", "locked"],
+              {
+                practice_task_1: {
+                  pilotEvidenceRevision: 4 + evidenceSaveCount,
+                  pilotEvidence: body.pilotEvidence as Record<string, string>,
+                  completionMissing: evidenceSaveCount === 1
+                    ? [
+                        "diagnose_original_prompt",
+                        "submit_revised_prompt",
+                        "evaluate_generated_outline",
+                        "articulate_task_two_process",
+                      ]
+                    : [],
+                },
+              },
+            );
+            return Response.json({ session: currentSession });
+          }
+        }
+        return Response.json({
+          error: {
+            code: "AAIS_PILOT_EVIDENCE_REVISION_CONFLICT",
+            message: "AAIS pilot evidence revision conflicted.",
+          },
+          session: staleConflictSession,
+        }, { status: 409 });
+      }
+      return Response.json({ ok: true });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<LearningPage />);
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/learning/session"));
+    submitGuidePrompt("请帮我检查生成的大纲。");
+    expect(await screen.findByText("请先按任务约束评价结构和依据。")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /任务卡片/ }));
+    fillTaskTwoEvidence();
+    fireEvent.click(screen.getByLabelText("使用 GenAI 辅助"));
+    await screen.findByText("AI 使用选择已保存。");
+    fireEvent.click(screen.getByLabelText("采纳，并说明依据"));
+    fireEvent.click(screen.getByRole("button", { name: "保存学习证据" }));
+
+    expect(await screen.findByText(/你的输入仍保留；请刷新后比较并合并/)).toBeTruthy();
+    expect(patchBodies).toHaveLength(3);
+    expect(patchBodies[0]).toMatchObject({
+      action: "save-pilot-evidence",
+      taskId: "practice_task_1",
+      expectedPilotEvidenceRevision: 4,
+      mutationId: expect.stringMatching(/^pilot-evidence-mutation-test-/),
+      pilotEvidence: { aiUseMode: "ai-supported" },
+    });
+    expect(patchBodies[1]).toMatchObject({
+      action: "save-pilot-evidence",
+      taskId: "practice_task_1",
+      expectedPilotEvidenceRevision: 5,
+      mutationId: expect.stringMatching(/^pilot-evidence-mutation-test-/),
+    });
+    expect(patchBodies[2]).toMatchObject({
+      action: "record-ai-acceptance",
+      accepted: true,
+      expectedPilotEvidenceRevision: 6,
+      messageId: canonicalExchange.assistantMessageId,
+      mutationId: expect.stringMatching(/^ai-acceptance-mutation-test-/),
+      reason: "结构基本完整，但引用依据仍需补充。",
+      taskId: "practice_task_1",
+    });
+    expect((screen.getByLabelText(/指出原提示词的不足并说明理由/) as HTMLTextAreaElement).value)
+      .toBe("对象、范围与证据标准不明确。");
+    expect((screen.getByLabelText("采纳，并说明依据") as HTMLInputElement).checked).toBe(true);
+
+    fireEvent.click(screen.getByRole("button", { name: "保存学习证据" }));
+    await waitFor(() => expect(patchBodies).toHaveLength(4));
+    expect(patchBodies[3]).toMatchObject({
+      action: "save-pilot-evidence",
+      expectedPilotEvidenceRevision: 6,
+      mutationId: expect.stringMatching(/^pilot-evidence-mutation-test-/),
+    });
+    expect(patchBodies[3]?.mutationId).not.toBe(patchBodies[1]?.mutationId);
+  });
+
+  it("retains the local evidence draft and gives merge guidance after a revision conflict", async () => {
+    setCsrfCookie();
+    const initialSession = createPilotTaskFlowSession(
+      "practice_task_1",
+      ["completed", "active", "locked", "locked"],
+      { practice_task_1: { pilotEvidenceRevision: 7 } },
+    );
+    const patchBodies: Array<Record<string, unknown>> = [];
+    let modeSaved = false;
+    let currentSession = initialSession;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === "/api/learning/session" && (!init || init.method === "GET")) {
+        return Response.json({ session: currentSession });
+      }
+      if (String(input) === "/api/learning/session" && init?.method === "PATCH") {
+        const body = JSON.parse(String(init.body)) as Record<string, unknown>;
+        patchBodies.push(body);
+        if (!modeSaved && body.action === "save-pilot-evidence") {
+          modeSaved = true;
+          currentSession = createPilotTaskFlowSession(
+            "practice_task_1",
+            ["completed", "active", "locked", "locked"],
+            {
+              practice_task_1: {
+                pilotEvidenceRevision: 8,
+                pilotEvidence: body.pilotEvidence as Record<string, string>,
+              },
+            },
+          );
+          return Response.json({ session: currentSession });
+        }
+        return Response.json({
+          error: {
+            code: "AAIS_PILOT_EVIDENCE_REVISION_CONFLICT",
+            message: "AAIS pilot evidence revision conflicted.",
+          },
+        }, { status: 409 });
+      }
+      return Response.json({ ok: true });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<LearningPage />);
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/learning/session"));
+    fireEvent.click(screen.getByRole("button", { name: /任务卡片/ }));
+    fillTaskTwoEvidence();
+    fireEvent.click(screen.getByLabelText("不使用实时 GenAI"));
+    await screen.findByText("AI 使用选择已保存。");
+    fireEvent.click(screen.getByRole("button", { name: "保存学习证据" }));
+
+    expect(await screen.findByText(/你的输入仍保留；请刷新后比较并合并/)).toBeTruthy();
+    expect((screen.getByLabelText(/指出原提示词的不足并说明理由/) as HTMLTextAreaElement).value)
+      .toBe("对象、范围与证据标准不明确。");
+    expect(patchBodies).toHaveLength(2);
+    expect(patchBodies[0]).toMatchObject({
+      action: "save-pilot-evidence",
+      expectedPilotEvidenceRevision: 7,
+      mutationId: expect.stringMatching(/^pilot-evidence-mutation-test-/),
+      pilotEvidence: { aiUseMode: "ai-free" },
+    });
+    expect(patchBodies[1]).toMatchObject({
+      action: "save-pilot-evidence",
+      expectedPilotEvidenceRevision: 8,
+      mutationId: expect.stringMatching(/^pilot-evidence-mutation-test-/),
+    });
+  });
+
+  it("requests a server scaffold and renders the returned level and fading allowance", async () => {
+    setCsrfCookie();
+    const session = createPilotTaskFlowSession(
+      "practice_task_1",
+      ["completed", "active", "locked", "locked"],
+    );
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === "/api/learning/session" && (!init || init.method === "GET")) {
+        return Response.json({ session });
+      }
+      if (String(input) === "/api/learning/scaffold" && init?.method === "POST") {
+        expect(JSON.parse(String(init.body))).toMatchObject({
+          dataGeneration: 1,
+          taskId: "practice_task_1",
+          toolId: "stage-checklist",
+          mutationId: expect.stringMatching(/^request-scaffold-mutation-test-/),
+        });
+        return Response.json({
+          session,
+          mode: "tool-list",
+          requestCount: 2,
+          level: 2,
+          intensity: "step-breakdown",
+          remainingDirectAssists: 2,
+          fading: false,
+          tool: {
+            id: "sentence-starters",
+            label: "思维句子开头",
+            body: "先说明当前目标与卡点。",
+          },
+        });
+      }
+      return Response.json({ ok: true });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<LearningPage />);
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/learning/session"));
+    fireEvent.click(screen.getByRole("button", { name: /任务卡片/ }));
+    fireEvent.click(screen.getByRole("button", { name: "获取下一步支架（L1）" }));
+
+    expect(await screen.findByText("支架等级 L2")).toBeTruthy();
+    expect(screen.getByText("还可直接求助 2 次")).toBeTruthy();
+    expect(screen.getByText("先说明当前目标与卡点。")).toBeTruthy();
+  });
+
+  it("switches the page to self-check immediately after the fourth direct scaffold", async () => {
+    setCsrfCookie();
+    const session = createPilotTaskFlowSession(
+      "practice_task_1",
+      ["completed", "active", "locked", "locked"],
+      {
+        practice_task_1: {
+          scaffoldRequests: 3,
+          scaffoldState: {
+            currentLevel: 3,
+            intensity: "evaluation-cue",
+            fading: false,
+            remainingDirectAssists: 1,
+          },
+        },
+      },
+    );
+    const updatedSession = createPilotTaskFlowSession(
+      "practice_task_1",
+      ["completed", "active", "locked", "locked"],
+      {
+        practice_task_1: {
+          scaffoldRequests: 4,
+          scaffoldHistory: [{
+            toolId: "contrast-case",
+            mode: "tool-list",
+            time: "2026-08-25T00:00:00.000Z",
+            level: 4,
+            intensity: "worked-model",
+            fading: false,
+            remainingDirectAssists: 0,
+          }],
+          scaffoldState: {
+            currentLevel: 4,
+            intensity: "worked-model",
+            fading: false,
+            remainingDirectAssists: 0,
+          },
+        },
+      },
+    );
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === "/api/learning/session" && (!init || init.method === "GET")) {
+        return Response.json({ session });
+      }
+      if (String(input) === "/api/learning/scaffold" && init?.method === "POST") {
+        expect(JSON.parse(String(init.body))).toMatchObject({
+          dataGeneration: 1,
+          taskId: "practice_task_1",
+          toolId: "stage-checklist",
+          mutationId: expect.stringMatching(/^request-scaffold-mutation-test-/),
+        });
+        return Response.json({
+          session: updatedSession,
+          mode: "tool-list",
+          requestCount: 4,
+          level: 4,
+          intensity: "worked-model",
+          remainingDirectAssists: 0,
+          fading: false,
+          tool: {
+            id: "contrast-case",
+            label: "短示范对照",
+            body: "这是刚交付的第四层直接支架。",
+          },
+        });
+      }
+      return Response.json({ ok: true });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<LearningPage />);
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/learning/session"));
+    fireEvent.click(screen.getByRole("button", { name: /任务卡片/ }));
+    fireEvent.click(screen.getByRole("button", { name: "获取下一步支架（L4）" }));
+
+    expect(await screen.findByText("这是刚交付的第四层直接支架。")).toBeTruthy();
+    expect(screen.getByText("支架等级 L4")).toBeTruthy();
+    expect(screen.getByText(/直接支架已用完/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "进入自检式帮助" })).toBeTruthy();
+    expect(screen.queryByText("还可直接求助 0 次")).toBeNull();
+    expect(screen.queryByRole("button", { name: "获取下一步支架（L4）" })).toBeNull();
+  });
+
+  it("persists a declined Task 4 reflection before ending the cycle as incomplete", async () => {
+    setCsrfCookie();
+    let currentSession = createPilotTaskFlowSession(
+      "practice_task_3",
+      ["completed", "completed", "locked", "active"],
+      {
+        practice_task_3: {
+          artifactText: "指南正文".repeat(300),
+          pilotEvidenceRevision: 2,
+          pilotEvidence: {
+            aiUseMode: "ai-free",
+            planningText: "先确定目标、受众和结构，再安排写作步骤。",
+            monitoringText: "每一节完成后检查边界、证据与篇幅。",
+            evaluationText: "按准确性、相关性和可操作性逐项评价。",
+            outputEvaluationText: "识别生成建议中的过度概括并人工修订。",
+            articulationText: "我先规划，再监控，最后按量规评价并修订。",
+            articulationOutcome: "submitted",
+          },
+          reflectionReport: createPilotReflectionReport(),
+          completionMissing: ["reflect_after_task_four"],
+        },
+      },
+    );
+    const patchBodies: Array<Record<string, unknown>> = [];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === "/api/learning/session" && (!init || init.method === "GET")) {
+        return Response.json({ session: currentSession });
+      }
+      if (String(input) === "/api/learning/session" && init?.method === "PATCH") {
+        const body = JSON.parse(String(init.body)) as Record<string, unknown>;
+        patchBodies.push(body);
+        if (body.action === "save-pilot-evidence") {
+          currentSession = createPilotTaskFlowSession(
+            "practice_task_3",
+            ["completed", "completed", "locked", "active"],
+            {
+              practice_task_3: {
+                pilotEvidenceRevision: 3,
+                pilotEvidence: body.pilotEvidence as Record<string, string>,
+                completionMissing: ["reflect_after_task_four"],
+              },
+            },
+          );
+        } else if (body.action === "complete-task") {
+          currentSession = createPilotTaskFlowSession(
+            "practice_task_3",
+            ["completed", "completed", "locked", "completed"],
+            {
+              practice_task_3: {
+                completionOutcome: "ended_incomplete",
+                completionMissing: ["reflect_after_task_four"],
+              },
+            },
+          );
+        }
+        return Response.json({ session: currentSession });
+      }
+      return Response.json({ ok: true });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<LearningPage />);
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/learning/session"));
+    fireEvent.click(screen.getByRole("button", { name: /任务卡片/ }));
+    fireEvent.click(screen.getByRole("button", { name: "结束但标记未完成" }));
+    fireEvent.change(screen.getByLabelText("如愿意，可说明为什么暂不完成反思"), {
+      target: { value: "暂时无法完成，保留后续补写。" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "确认结束并标记未完成" }));
+
+    expect(await screen.findByText("本轮已结束，但学习目标未完成")).toBeTruthy();
+    expect(patchBodies[0]).toMatchObject({
+      action: "save-pilot-evidence",
+      taskId: "practice_task_3",
+      expectedPilotEvidenceRevision: 2,
+      mutationId: expect.stringMatching(/^pilot-evidence-mutation-test-/),
+      pilotEvidence: {
+        reflectionOutcome: "declined",
+        reflectionDeclineReason: "暂时无法完成，保留后续补写。",
+      },
+    });
+    expect(patchBodies[1]).toMatchObject({
+      action: "complete-task",
+      taskId: "practice_task_3",
+      endIncomplete: true,
+    });
+  });
+
+  it("records a declined Task 2 articulation and continues to Task 4 without mastery credit", async () => {
+    setCsrfCookie();
+    let currentSession = createPilotTaskFlowSession(
+      "practice_task_1",
+      ["completed", "active", "locked", "locked"],
+      {
+        practice_task_1: {
+          pilotEvidenceRevision: 5,
+          pilotEvidence: {
+            diagnosisText: "原提示词缺少对象、范围和评价标准。",
+            revisedPromptText: "请按对象、范围、结构和评价标准生成课程论文大纲。",
+            outputEvaluationText: "结构基本可用，但证据边界仍需继续核查。",
+          },
+          completionMissing: ["articulate_task_two_process"],
+        },
+      },
+    );
+    const patchBodies: Array<Record<string, unknown>> = [];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === "/api/learning/session" && (!init || init.method === "GET")) {
+        return Response.json({ session: currentSession });
+      }
+      if (String(input) === "/api/learning/session" && init?.method === "PATCH") {
+        const body = JSON.parse(String(init.body)) as Record<string, unknown>;
+        patchBodies.push(body);
+        if (body.action === "save-pilot-evidence") {
+          currentSession = createPilotTaskFlowSession(
+            "practice_task_1",
+            ["completed", "active", "locked", "locked"],
+            {
+              practice_task_1: {
+                pilotEvidenceRevision: 6,
+                pilotEvidence: body.pilotEvidence as Record<string, string>,
+                completionMissing: ["articulate_task_two_process"],
+              },
+            },
+          );
+        } else if (body.action === "complete-task") {
+          currentSession = createPilotTaskFlowSession(
+            "practice_task_3",
+            ["completed", "completed", "locked", "active"],
+            {
+              practice_task_1: {
+                completionOutcome: "ended_incomplete",
+                completionMissing: ["articulate_task_two_process"],
+              },
+            },
+          );
+        }
+        return Response.json({ session: currentSession });
+      }
+      return Response.json({ ok: true });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<LearningPage />);
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/learning/session"));
+    fireEvent.click(screen.getByRole("button", { name: /任务卡片/ }));
+    fireEvent.click(screen.getByRole("button", { name: "结束但标记未完成" }));
+    expect(screen.getByText(/任务2会标记为未完成，然后继续进入任务4/)).toBeTruthy();
+    fireEvent.change(screen.getByLabelText(/为什么暂不完成本任务的学习表达/), {
+      target: { value: "先继续开放任务，稍后补充表达。" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "确认结束并标记未完成" }));
+
+    expect(await screen.findByRole("button", {
+      name: "继续任务：设计一份《大学生GenAI学习使用指南》",
+    })).toBeTruthy();
+    expect(patchBodies[0]).toMatchObject({
+      action: "save-pilot-evidence",
+      taskId: "practice_task_1",
+      expectedPilotEvidenceRevision: 5,
+      mutationId: expect.stringMatching(/^pilot-evidence-mutation-test-/),
+      pilotEvidence: {
+        articulationOutcome: "declined",
+        articulationDeclineReason: "先继续开放任务，稍后补充表达。",
+      },
+    });
+    expect(patchBodies[1]).toMatchObject({
+      action: "complete-task",
+      taskId: "practice_task_1",
+      endIncomplete: true,
+    });
+    expect(document.querySelector('[data-task-card="practice_task_1"]')
+      ?.getAttribute("data-completion-outcome")).toBe("ended_incomplete");
+    expect(document.querySelector('[data-task-card="practice_task_3"]')
+      ?.getAttribute("data-task-status")).toBe("active");
+    expect(screen.getByText("已完成 1/3 个任务")).toBeTruthy();
   });
 
   it("keeps incomplete stale backend guide messages out of the learner transcript", async () => {
@@ -2242,6 +2907,123 @@ describe("AAIS LearningPage", () => {
     });
   });
 
+  it("restores a failed guide draft while retaining its user bubble and inline error", async () => {
+    setCsrfCookie();
+    const guideResponse = createDeferred<Response>();
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === "/api/learning/ai-guide" && init?.method === "POST") {
+        return guideResponse.promise;
+      }
+      return Promise.resolve(Response.json({ ok: true }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<LearningGuideResetHarness />);
+
+    const draftInput = screen.getByLabelText("Guide recovery draft") as HTMLInputElement;
+    fireEvent.change(draftInput, { target: { value: "请帮我检查这个学习计划" } });
+    fireEvent.click(screen.getByRole("button", { name: "Start draft request" }));
+
+    expect(draftInput.value).toBe("");
+    expect(screen.getByText("请帮我检查这个学习计划", { selector: "p" })).toBeTruthy();
+    guideResponse.resolve(Response.json({ error: "provider unavailable" }, { status: 503 }));
+
+    await waitFor(() => {
+      expect(draftInput.value).toBe("请帮我检查这个学习计划");
+      expect(screen.getByTestId("guide-error").textContent)
+        .toBe("智能服务暂时不可用，已保留你的问题。");
+    });
+    expect(screen.getByText(
+      "智能服务暂时不可用，已保留你的问题。请稍后重试。",
+    )).toBeTruthy();
+    expect(fetchMock.mock.calls.filter(([input, init]) => (
+      String(input) === "/api/learning/ai-guide" && init?.method === "POST"
+    ))).toHaveLength(1);
+  });
+
+  it("does not overwrite a new guide draft when an older request fails", async () => {
+    setCsrfCookie();
+    const guideResponse = createDeferred<Response>();
+    vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === "/api/learning/ai-guide" && init?.method === "POST") {
+        return guideResponse.promise;
+      }
+      return Promise.resolve(Response.json({ ok: true }));
+    }));
+    render(<LearningGuideResetHarness />);
+
+    const draftInput = screen.getByLabelText("Guide recovery draft") as HTMLInputElement;
+    fireEvent.change(draftInput, { target: { value: "第一版问题" } });
+    fireEvent.click(screen.getByRole("button", { name: "Start draft request" }));
+    fireEvent.change(draftInput, { target: { value: "请求期间写下的新草稿" } });
+    guideResponse.reject(new Error("provider unavailable"));
+
+    await waitFor(() => {
+      expect(draftInput.value).toBe("请求期间写下的新草稿");
+      expect(screen.getByTestId("guide-error").textContent)
+        .toBe("智能服务暂时不可用，已保留你的问题。");
+    });
+    expect(screen.getByText("第一版问题", { selector: "p" })).toBeTruthy();
+  });
+
+  it("admits only one guide request from an accidental duplicate submission", async () => {
+    setCsrfCookie();
+    const guideResponse = createDeferred<Response>();
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === "/api/learning/ai-guide" && init?.method === "POST") {
+        return guideResponse.promise;
+      }
+      return Promise.resolve(Response.json({ ok: true }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<LearningGuideResetHarness />);
+
+    fireEvent.change(screen.getByLabelText("Guide recovery draft"), {
+      target: { value: "只发送一次的问题" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Start duplicate request" }));
+
+    await waitFor(() => {
+      expect(fetchMock.mock.calls.filter(([input, init]) => (
+        String(input) === "/api/learning/ai-guide" && init?.method === "POST"
+      ))).toHaveLength(1);
+    });
+    expect(screen.getAllByText("只发送一次的问题", { selector: "p" })).toHaveLength(1);
+    guideResponse.resolve(Response.json({
+      message: { text: "已收到。" },
+      turns: [{ agentId: "A1", label: "导学智能体", content: "已收到。", actions: ["respond"] }],
+    }));
+    expect(await screen.findByText("AAIS 智能体已回复。", { selector: "p" })).toBeTruthy();
+  });
+
+  it.each([
+    ["blank provider body", "保留空白响应后的草稿", 200, {}],
+    ["unrecognizable input", "\uFFFD\uFFFD", 400, {
+      error: {
+        code: "AAIS_GUIDE_INPUT_UNRECOGNIZABLE",
+        message: "AAIS guide input is blank or cannot be recognized.",
+      },
+    }],
+  ])("restores the guide draft after a %s error", async (_case, draft, status, body) => {
+    setCsrfCookie();
+    vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === "/api/learning/ai-guide" && init?.method === "POST") {
+        return Promise.resolve(Response.json(body, { status }));
+      }
+      return Promise.resolve(Response.json({ ok: true }));
+    }));
+    render(<LearningGuideResetHarness />);
+
+    const draftInput = screen.getByLabelText("Guide recovery draft") as HTMLInputElement;
+    fireEvent.change(draftInput, { target: { value: draft } });
+    fireEvent.click(screen.getByRole("button", { name: "Start draft request" }));
+
+    await waitFor(() => {
+      expect(draftInput.value).toBe(draft);
+      expect(screen.getByTestId("guide-error").textContent)
+        .toBe("智能服务暂时不可用，已保留你的问题。");
+    });
+  });
+
   it("replaces a stalled guide request with an unavailable message and unlocks input", async () => {
     vi.useFakeTimers();
     setCsrfCookie();
@@ -2287,6 +3069,8 @@ describe("AAIS LearningPage", () => {
     expect(screen.queryByText("CAAIS 已收到，多智能体链路正在处理。")).toBeNull();
     expect(screen.queryByText("教授正在思考")).toBeNull();
     expect(screen.getByText("智能服务暂时不可用，已保留你的问题。请稍后重试。")).toBeTruthy();
+    expect((screen.getByLabelText("向智能导学输入你的想法") as HTMLInputElement).value)
+      .toBe("@教授 请检查下一步。");
     expect((screen.getByRole("button", { name: "发送" }) as HTMLButtonElement).disabled).toBe(false);
   });
 
@@ -2331,6 +3115,8 @@ describe("AAIS LearningPage", () => {
     expect(screen.queryByText("智能服务暂时不可用，已保留你的问题。请稍后重试。")).toBeNull();
     expect(screen.queryByText("智能服务暂时不可用，已保留你的问题。")).toBeNull();
     expect(screen.queryByRole("alert")).toBeNull();
+    expect((screen.getByLabelText("向智能导学输入你的想法") as HTMLInputElement).value)
+      .toBe("你好");
     expect((screen.getByRole("button", { name: "发送" }) as HTMLButtonElement).disabled).toBe(false);
     expect(getLastResearchEvent("ai_guide_submit")).toMatchObject({
       outcome: "failure",
@@ -2392,6 +3178,8 @@ describe("AAIS LearningPage", () => {
     expect(guideSignal?.aborted).toBe(true);
     expect(cancelStream).toHaveBeenCalledTimes(1);
     expect(screen.getByText("智能服务暂时不可用，已保留你的问题。请稍后重试。")).toBeTruthy();
+    expect((screen.getByLabelText("向智能导学输入你的想法") as HTMLInputElement).value)
+      .toBe("我卡住了，想要一个支架提示。");
     expect((screen.getByRole("button", { name: "发送" }) as HTMLButtonElement).disabled).toBe(false);
   });
 
@@ -4863,6 +5651,77 @@ function createTaskFlowSession(
     guideMessages: [],
     events: [],
   };
+}
+
+function createPilotTaskFlowSession(
+  activeTaskId: string,
+  statuses: Array<"locked" | "available" | "active" | "completed">,
+  taskOverrides: Record<string, Record<string, unknown>> = {},
+) {
+  const session = createTaskFlowSession(statuses);
+  return {
+    ...session,
+    activeStage: activeTaskId.startsWith("practice_") ? "practice" : "training",
+    activeTaskId,
+    tasks: session.tasks.map((task) => ({
+      ...task,
+      completionOutcome: task.status === "completed" ? "evidence_complete" : "in_progress",
+      pilotEvidenceRevision: 0,
+      pilotEvidence: {},
+      completionMissing: [],
+      milestones: [],
+      scaffoldState: {
+        currentLevel: 1,
+        intensity: "prompt-question",
+        fading: false,
+        remainingDirectAssists: 4,
+      },
+      ...taskOverrides[task.taskId],
+    })),
+  };
+}
+
+function createPilotReflectionReport() {
+  const expertStepIds = [
+    "analyze_task",
+    "set_learning_goals",
+    "draft_prompt",
+    "monitor_generation",
+    "evaluate_and_revise",
+  ];
+  return {
+    version: "aais-a4-reflection-report-v1",
+    basis: "deterministic-field-presence",
+    learnerVisibleTurn: false,
+    expertModelId: "circle-area-classroom-assessment",
+    expertStepIds,
+    evidenceSummary: {
+      artifactCharacters: 1200,
+      structuredFieldCharacters: {},
+      rawTextIncluded: false,
+    },
+    comparisons: expertStepIds.map((expertStepId) => ({
+      expertStepId,
+      evidenceFields: ["planningText"],
+      status: "evidence-recorded",
+      recommendedAction: "continue",
+    })),
+  };
+}
+
+function fillTaskTwoEvidence() {
+  fireEvent.change(screen.getByLabelText(/指出原提示词的不足并说明理由/), {
+    target: { value: "对象、范围与证据标准不明确。" },
+  });
+  fireEvent.change(screen.getByLabelText(/提交清晰、具体、完整的修改版提示词/), {
+    target: { value: "请按对象、范围、证据和格式约束生成大纲。" },
+  });
+  fireEvent.change(screen.getByLabelText(/生成内容并评价其是否符合任务要求/), {
+    target: { value: "结构基本完整，但引用依据仍需补充。" },
+  });
+  fireEvent.change(screen.getByLabelText(/说明本任务中使用的规划、监控和评价方法/), {
+    target: { value: "先列约束，过程中核对，最后按量规评价。" },
+  });
 }
 
 function createRequiredResearchBoundary(): LearningPageResearchBoundary {

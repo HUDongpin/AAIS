@@ -4,6 +4,7 @@ import { getLearningCopy } from "@/components/pages/learning/learning-copy";
 import {
   fetchLearningSession,
   patchLearningSession,
+  requestLearningScaffold,
   type LearningSessionPatchBody,
 } from "@/components/pages/learning/learning-session-client";
 import type {
@@ -22,6 +23,25 @@ import {
   recordAaisResearchEvent,
 } from "@/lib/client/aais-research-telemetry";
 import type { Locale } from "@/data/aais";
+import {
+  attachStableReplayMutation,
+  clearStableReplayMutation,
+  createPendingPilotMutationKey,
+  getAiUseModeMutationValue,
+  isExplicitClientRejection,
+  isPilotMutationAction,
+  readExpectedPilotEvidenceRevision,
+  stableSerializePilotMutationPayload,
+  type PendingPilotMutation,
+  type PendingStableReplayMutation,
+} from "@/components/pages/learning/learning-pilot-mutation";
+
+type AiUseModeMutationStatus = "pending" | "unsaved";
+
+type AiUseModeMutationHandle = {
+  taskId: string;
+  token: string;
+};
 
 export function useLearningWorkspaceSession(
   locale: Locale = "zh-CN",
@@ -51,12 +71,20 @@ export function useLearningWorkspaceSession(
   const artifactRevisionRef = useRef(0);
   const taskTextRevisionsRef = useRef(new Map<string, {
     artifactRevision: number;
+    pilotEvidenceRevision: number;
     selfReportRevision: number;
   }>());
   const lastSavedArtifactLengthRef = useRef(0);
   const sessionGenerationRef = useRef(0);
   const learnerDataGenerationRef = useRef<number | null>(null);
   const learnerDataGenerationWaitersRef = useRef<Array<(generation: number) => void>>([]);
+  const pendingPilotMutationsRef = useRef(new Map<string, PendingPilotMutation>());
+  const pendingStableMutationsRef = useRef(new Map<string, PendingStableReplayMutation>());
+  const aiUseModeMutationsRef = useRef(new Map<string, {
+    status: AiUseModeMutationStatus;
+    token: string;
+  }>());
+  const [aiUseModeMutationRevision, setAiUseModeMutationRevision] = useState(0);
   const localeRef = useRef(locale);
 
   useEffect(() => {
@@ -84,8 +112,16 @@ export function useLearningWorkspaceSession(
         && task.selfReportRevision >= 0
         ? task.selfReportRevision
         : current?.selfReportRevision ?? 0;
+      const pilotEvidenceRevision = Number.isSafeInteger(task.pilotEvidenceRevision)
+        && Number(task.pilotEvidenceRevision) >= 0
+        ? Number(task.pilotEvidenceRevision)
+        : current?.pilotEvidenceRevision ?? 0;
       nextTaskTextRevisions.set(task.taskId, {
         artifactRevision: Math.max(current?.artifactRevision ?? 0, artifactRevision),
+        pilotEvidenceRevision: Math.max(
+          current?.pilotEvidenceRevision ?? 0,
+          pilotEvidenceRevision,
+        ),
         selfReportRevision: Math.max(current?.selfReportRevision ?? 0, selfReportRevision),
       });
     }
@@ -123,22 +159,109 @@ export function useLearningWorkspaceSession(
   }
 
   async function patchSession(body: LearningSessionPatchBody) {
+    const aiUseModeMutation = beginAiUseModeMutation(body);
+    const sessionGeneration = sessionGenerationRef.current;
+    let requestBody = body;
+    try {
+      const dataGeneration = learnerDataGenerationRef.current
+        ?? await waitForLearnerDataGeneration();
+      requestBody = attachStableReplayMutation(
+        body,
+        pendingStableMutationsRef.current,
+        createAaisResearchOperationId,
+      );
+      requestBody = attachExpectedTextRevision(requestBody);
+      const session = await patchLearningSession({
+        ...requestBody,
+        dataGeneration,
+      });
+      clearPendingPilotMutation(requestBody);
+      clearStableReplayMutation(requestBody, pendingStableMutationsRef.current);
+      settleAiUseModeMutation(aiUseModeMutation, null);
+      if (sessionGeneration === sessionGenerationRef.current) {
+        applySession(session, {
+          preserveArtifactText: body.action === "save-artifact",
+          preserveGuideMessages: true,
+        });
+        setBackendError("");
+      }
+      return session;
+    } catch (error) {
+      if (isExplicitClientRejection(error)) {
+        clearPendingPilotMutation(requestBody);
+        clearStableReplayMutation(requestBody, pendingStableMutationsRef.current);
+      }
+      settleAiUseModeMutation(aiUseModeMutation, "unsaved");
+      throw error;
+    }
+  }
+
+  function beginAiUseModeMutation(
+    body: LearningSessionPatchBody,
+  ): AiUseModeMutationHandle | null {
+    const aiUseMode = getAiUseModeMutationValue(body);
+    if (!aiUseMode || typeof body.taskId !== "string") {
+      return null;
+    }
+    const handle = {
+      taskId: body.taskId,
+      token: createAaisResearchOperationId("ai-use-mode-choice"),
+    };
+    aiUseModeMutationsRef.current.set(handle.taskId, {
+      status: "pending",
+      token: handle.token,
+    });
+    setAiUseModeMutationRevision((revision) => revision + 1);
+    return handle;
+  }
+
+  function settleAiUseModeMutation(
+    handle: AiUseModeMutationHandle | null,
+    status: AiUseModeMutationStatus | null,
+  ) {
+    if (!handle || aiUseModeMutationsRef.current.get(handle.taskId)?.token !== handle.token) {
+      return;
+    }
+    if (status) {
+      aiUseModeMutationsRef.current.set(handle.taskId, {
+        status,
+        token: handle.token,
+      });
+    } else {
+      aiUseModeMutationsRef.current.delete(handle.taskId);
+    }
+    setAiUseModeMutationRevision((revision) => revision + 1);
+  }
+
+  async function requestScaffold(taskId: string, toolId: string) {
     const sessionGeneration = sessionGenerationRef.current;
     const dataGeneration = learnerDataGenerationRef.current
       ?? await waitForLearnerDataGeneration();
-    const requestBody = attachExpectedTextRevision(body);
-    const session = await patchLearningSession({
-      ...requestBody,
+    const requestBody = attachStableReplayMutation({
+      action: "request-scaffold",
       dataGeneration,
-    });
-    if (sessionGeneration === sessionGenerationRef.current) {
-      applySession(session, {
-        preserveArtifactText: body.action === "save-artifact",
-        preserveGuideMessages: true,
+      taskId,
+      toolId,
+    }, pendingStableMutationsRef.current, createAaisResearchOperationId);
+    try {
+      const result = await requestLearningScaffold({
+        dataGeneration,
+        mutationId: String(requestBody.mutationId),
+        taskId,
+        toolId,
       });
-      setBackendError("");
+      clearStableReplayMutation(requestBody, pendingStableMutationsRef.current);
+      if (sessionGeneration === sessionGenerationRef.current) {
+        applySession(result.session, { preserveArtifactText: true, preserveGuideMessages: true });
+        setBackendError("");
+      }
+      return result;
+    } catch (error) {
+      if (isExplicitClientRejection(error)) {
+        clearStableReplayMutation(requestBody, pendingStableMutationsRef.current);
+      }
+      throw error;
     }
-    return session;
   }
 
   function attachExpectedTextRevision(body: LearningSessionPatchBody) {
@@ -146,6 +269,8 @@ export function useLearningWorkspaceSession(
     if (
       action !== "save-artifact"
       && action !== "archive-artifact"
+      && action !== "record-ai-acceptance"
+      && action !== "save-pilot-evidence"
       && action !== "save-self-report"
     ) {
       return body;
@@ -154,6 +279,39 @@ export function useLearningWorkspaceSession(
       throw new Error("AAIS learner task revision is unavailable.");
     }
     const revisions = taskTextRevisionsRef.current.get(body.taskId);
+    if (action === "save-pilot-evidence" || action === "record-ai-acceptance") {
+      if (body.expectedPilotEvidenceRevision !== undefined && body.mutationId !== undefined) {
+        return body;
+      }
+      if (!revisions && body.expectedPilotEvidenceRevision === undefined) {
+        throw new Error("AAIS learner pilot-evidence revision is unavailable.");
+      }
+      const pendingKey = createPendingPilotMutationKey(action, body.taskId);
+      const payloadSignature = stableSerializePilotMutationPayload(body);
+      const currentPending = pendingPilotMutationsRef.current.get(pendingKey);
+      const pending = currentPending?.payloadSignature === payloadSignature
+        ? currentPending
+        : {
+            expectedPilotEvidenceRevision: readExpectedPilotEvidenceRevision(
+              body.expectedPilotEvidenceRevision,
+              revisions?.pilotEvidenceRevision,
+            ),
+            mutationId: typeof body.mutationId === "string"
+              ? body.mutationId
+              : createAaisResearchOperationId(
+                  action === "record-ai-acceptance"
+                    ? "ai-acceptance-mutation"
+                    : "pilot-evidence-mutation",
+                ),
+            payloadSignature,
+          };
+      pendingPilotMutationsRef.current.set(pendingKey, pending);
+      return {
+        ...body,
+        expectedPilotEvidenceRevision: pending.expectedPilotEvidenceRevision,
+        mutationId: pending.mutationId,
+      };
+    }
     if (action === "save-self-report") {
       if (body.expectedSelfReportRevision !== undefined) {
         return body;
@@ -178,9 +336,27 @@ export function useLearningWorkspaceSession(
     };
   }
 
+  function clearPendingPilotMutation(body: LearningSessionPatchBody) {
+    if (!isPilotMutationAction(body.action) || typeof body.taskId !== "string") {
+      return;
+    }
+    const key = createPendingPilotMutationKey(body.action, body.taskId);
+    const pending = pendingPilotMutationsRef.current.get(key);
+    if (pending?.mutationId === body.mutationId) {
+      pendingPilotMutationsRef.current.delete(key);
+    }
+  }
+
   const getArtifactRevision = useCallback((taskId: string) => {
     return taskTextRevisionsRef.current.get(taskId)?.artifactRevision ?? null;
   }, []);
+
+  function getAiUseModeMutationStatus(taskId: string) {
+    // Reading the revision keeps this getter tied to the render that observed
+    // the latest ref-backed mutation state without memoizing a stale identity.
+    void aiUseModeMutationRevision;
+    return aiUseModeMutationsRef.current.get(taskId)?.status ?? null;
+  }
 
   function waitForLearnerDataGeneration() {
     const current = learnerDataGenerationRef.current;
@@ -205,6 +381,10 @@ export function useLearningWorkspaceSession(
     sessionGenerationRef.current += 1;
     artifactRevisionRef.current += 1;
     taskTextRevisionsRef.current = new Map();
+    pendingPilotMutationsRef.current.clear();
+    pendingStableMutationsRef.current.clear();
+    aiUseModeMutationsRef.current.clear();
+    setAiUseModeMutationRevision((revision) => revision + 1);
     setActiveTaskId(defaultTaskId);
     setArtifactTextState("");
     setDocumentTitle("");
@@ -295,11 +475,13 @@ export function useLearningWorkspaceSession(
     backendError,
     historyDocuments,
     getArtifactRevision,
+    getAiUseModeMutationStatus,
     documentTitle,
     lastSavedArtifactLengthRef,
     learnerDataGeneration,
     patchSession,
     persistedGuideMessages,
+    requestScaffold,
     tasks,
     resetWorkspaceSession,
     setArtifactText,
