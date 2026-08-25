@@ -91,7 +91,7 @@ describe("learning page components", () => {
     ));
   });
 
-  it("scrolls a newly appended user message into the visible transcript", () => {
+  it("keeps a newly appended user message and immediately completed reply visible", () => {
     const scrollIntoView = vi.fn();
     const originalScrollIntoView = HTMLElement.prototype.scrollIntoView;
     Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
@@ -142,10 +142,16 @@ describe("learning page components", () => {
       ]));
 
       const userMessage = screen.getByText("不知道").closest("[data-guide-message-id]");
-      expect(scrollIntoView).toHaveBeenCalledTimes(1);
+      const agentMessageEnd = document.querySelector('[data-guide-message-end="assistant-3"]');
+      expect(scrollIntoView).toHaveBeenCalledTimes(2);
       expect(scrollIntoView.mock.contexts[0]).toBe(userMessage);
-      expect(scrollIntoView).toHaveBeenCalledWith({
+      expect(scrollIntoView.mock.contexts[1]).toBe(agentMessageEnd);
+      expect(scrollIntoView).toHaveBeenNthCalledWith(1, {
         block: "nearest",
+        inline: "nearest",
+      });
+      expect(scrollIntoView).toHaveBeenNthCalledWith(2, {
+        block: "end",
         inline: "nearest",
       });
     } finally {
