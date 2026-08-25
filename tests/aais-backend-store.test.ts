@@ -1350,7 +1350,7 @@ describe("AAIS backend learning store", () => {
     expect(afterFour.events.filter((event) => event.event === "scaffold_request"))
       .toHaveLength(4);
 
-    const afterFifth = await appendA1Help("training_task_1", 5);
+    const afterFifth = (await appendA1Help("training_task_1", 5)).session;
     expect(afterFifth.tasks.find((task) => task.taskId === "training_task_1")?.scaffoldRequests)
       .toBe(5);
     expect(afterFifth.tasks.find((task) => task.taskId === "training_task_1")?.scaffoldHistory)
@@ -1362,9 +1362,21 @@ describe("AAIS backend learning store", () => {
     expect(afterFifth.events.filter((event) => event.event === "scaffold_self_check_started"))
       .toHaveLength(1);
 
+    await store.recordStageEvidence(
+      "guide-help-counter",
+      "training_task_1",
+      "launch_import",
+      "orientation_acknowledged",
+    );
+    await store.recordStageEvidence(
+      "guide-help-counter",
+      "training_task_1",
+      "modeling",
+      "expert_model_reviewed",
+    );
     await store.completeTask("guide-help-counter", "training_task_1");
     await store.selectTask("guide-help-counter", "practice_task_1");
-    const practiceHelp = await appendA1Help("practice_task_1", 1);
+    const practiceHelp = (await appendA1Help("practice_task_1", 1)).session;
     expect(practiceHelp.tasks.find((task) => task.taskId === "training_task_1")?.scaffoldRequests)
       .toBe(5);
     expect(practiceHelp.tasks.find((task) => task.taskId === "practice_task_1")?.scaffoldRequests)

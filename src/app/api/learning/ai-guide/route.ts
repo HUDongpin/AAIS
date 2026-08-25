@@ -213,20 +213,6 @@ export async function POST(request: Request) {
         session = claim.session;
         task = requireGuideTask(session, task.taskId);
       }
-      if (inputClassification.explicitHelpRequested) {
-        const scaffold = await store.requestScaffold(
-          studentId,
-          task.taskId,
-          undefined,
-          body.dataGeneration,
-          {
-            mutationId: deriveGuideScaffoldMutationId(body.mutationId!),
-            sourceText: body.learnerInput,
-          },
-        );
-        session = scaffold.session;
-        task = requireGuideTask(session, task.taskId);
-      }
       guideBudgetReservation = await reserveDailyGuideBudget(
         studentId,
         body.dataGeneration,
@@ -460,10 +446,6 @@ function requireGuideRequestBody(value: unknown): AaisGuideRequestBody {
     ...(targetAgentIds ? { targetAgentIds } : {}),
     ...(workspaceState ? { workspaceState } : {}),
   };
-}
-
-function deriveGuideScaffoldMutationId(mutationId: string) {
-  return `guide-scaffold-${createHash("sha256").update(mutationId).digest("hex").slice(0, 32)}`;
 }
 
 function createCanonicalGuideMutationPayloadHash(input: {
@@ -876,6 +858,13 @@ function createCompletedGuideReplayJsonBody(replay: AaisCompletedGuideMutationRe
       },
     },
     budget: replay.budget,
+    ...(replay.helpRequestsUsed !== undefined
+      ? {
+          workspaceState: {
+            helpRequestsUsed: normalizeGuideHelpRequestsUsed(replay.helpRequestsUsed),
+          },
+        }
+      : {}),
   };
 }
 
@@ -1069,6 +1058,13 @@ function createCompletedGuideReplayStreamResponse(
   send("done", {
     status: "completed",
     exchange: replay.exchange,
+    ...(replay.helpRequestsUsed !== undefined
+      ? {
+          workspaceState: {
+            helpRequestsUsed: normalizeGuideHelpRequestsUsed(replay.helpRequestsUsed),
+          },
+        }
+      : {}),
   });
   return new Response(events.join(""), {
     status: 200,

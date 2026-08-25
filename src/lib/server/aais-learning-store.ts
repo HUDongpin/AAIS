@@ -550,6 +550,7 @@ export type AaisGuideMutationBudgetSnapshot = {
 type AaisCompletedGuideMutationReceipt = AaisGuideMutationReceipt & {
   version: 1;
   userMessageId: string;
+  helpRequestsUsed?: number;
   runtime: AaisGuideMutationRuntimeSummary;
   budget: AaisGuideMutationBudgetSnapshot;
 };
@@ -563,6 +564,7 @@ type AaisGuideMutationReservation = AaisGuideMutationReceipt & {
 export type AaisCompletedGuideMutationReplay = {
   exchange: AaisPersistedGuideExchange;
   messageText: string;
+  helpRequestsUsed?: number;
   turns: AaisGuideTurnRecord[];
   orchestration: NonNullable<AaisGuideMessageRecord["orchestration"]>;
   runtime: AaisGuideMutationRuntimeSummary;
@@ -2830,6 +2832,9 @@ export function createAaisLearningStore(input: StoreInput = {}) {
                 version: 1,
                 ...guideMutation.receipt,
                 userMessageId,
+                helpRequestsUsed: consumedA1Help
+                  ? task.scaffoldRequests + 1
+                  : task.scaffoldRequests,
                 runtime: guideMutation.runtime,
                 budget: guideMutation.budget,
               },
@@ -2951,6 +2956,7 @@ export function createAaisLearningStore(input: StoreInput = {}) {
                   ? { fading_reason: scaffoldFadingReason }
                   : {}),
                 origin: "ai_guide_response",
+                source: "ai-guide",
               },
               now: () => new Date(now),
             }),
@@ -8704,10 +8710,18 @@ function normalizeCompletedAaisGuideMutationReceipt(
     if (!value || value.version !== 1) {
       return undefined;
     }
+    const helpRequestsUsed = value.helpRequestsUsed;
+    if (
+      helpRequestsUsed !== undefined
+      && (!Number.isSafeInteger(helpRequestsUsed) || helpRequestsUsed < 0)
+    ) {
+      return undefined;
+    }
     return {
       version: 1 as const,
       ...requireAaisGuideMutationReceipt(value),
       userMessageId: requireSafeId(value.userMessageId, "guide user message id"),
+      ...(helpRequestsUsed !== undefined ? { helpRequestsUsed } : {}),
       runtime: requireAaisGuideMutationRuntimeSummary(value.runtime),
       budget: requireAaisGuideMutationBudgetSnapshot(value.budget),
     };
@@ -8777,6 +8791,9 @@ function findCompletedAaisGuideMutation(
       assistantMessageId: assistant.id,
     },
     messageText: assistant.text,
+    ...(completion.helpRequestsUsed !== undefined
+      ? { helpRequestsUsed: completion.helpRequestsUsed }
+      : {}),
     turns: turns.map((turn) => ({ ...turn })),
     orchestration: {
       graphId: assistant.orchestration.graphId,

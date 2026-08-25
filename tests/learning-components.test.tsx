@@ -978,7 +978,7 @@ describe("learning page components", () => {
       name: "完成任务：社交媒体与大学生心理健康课程论文大纲",
     }) as HTMLButtonElement).disabled).toBe(true);
     expect(screen.getByText("指出原提示词的不足并说明理由", { selector: "li" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: /任务3.*暂不开放/ })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /L2 挑战.*暂不开放/ })).toBeTruthy();
   });
 
   it("shows scaffold level and remaining direct assists returned by the real scaffold action", async () => {

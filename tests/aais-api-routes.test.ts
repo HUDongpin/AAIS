@@ -1680,13 +1680,14 @@ describe("AAIS learning API routes", () => {
     const cookie = createAuthedCookie(studentId, "student", csrf);
     await initializeLearnerSession(studentId, cookie, csrf);
 
-    const sendHelp = () => guideRoute.POST(new Request(
+    const sendHelp = (ordinal: number) => guideRoute.POST(new Request(
       "http://localhost/api/learning/ai-guide",
       {
         method: "POST",
         headers: { cookie, "x-aais-csrf": csrf },
         body: JSON.stringify({
           dataGeneration: 1,
+          mutationId: `durable-guide-help-${ordinal}`,
           taskId: "training_task_1",
           learnerInput: "请给我一个下一步提示",
           workspaceState: {
@@ -1698,7 +1699,7 @@ describe("AAIS learning API routes", () => {
       },
     ));
 
-    const failedResponse = await sendHelp();
+    const failedResponse = await sendHelp(0);
     expect(failedResponse.status).toBe(500);
     const afterFailure = await sessionRoute.GET(new Request(
       "http://localhost/api/learning/session",
@@ -1709,7 +1710,7 @@ describe("AAIS learning API routes", () => {
 
     const confirmedCounts: number[] = [];
     for (let ordinal = 0; ordinal < 5; ordinal += 1) {
-      const response = await sendHelp();
+      const response = await sendHelp(ordinal);
       const body = await response.json();
       expect(response.status).toBe(200);
       confirmedCounts.push(body.workspaceState.helpRequestsUsed);
