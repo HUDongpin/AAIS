@@ -1,0 +1,30 @@
+AAIS production readiness evidence
+Test window: 2026-08-23 13:13:28-13:26:34 CST (Asia/Shanghai)
+
+START CHECK
+https://aais.site/api/system/readiness
+HTTP 503
+content-type: application/json
+body: {"status":"not_ready"}
+
+https://www.aais.site/api/system/readiness
+HTTP 503
+content-type: application/json
+body: {"status":"not_ready"}
+
+END CHECK
+https://aais.site/api/system/readiness
+HTTP 503
+content-type: application/json
+body: {"status":"not_ready"}
+
+https://www.aais.site/api/system/readiness
+HTTP 503
+content-type: application/json
+body: {"status":"not_ready"}
+
+Control observations at end of test:
+https://aais.site/login -> HTTP 200
+https://www.aais.site/login -> HTTP 200
+
+No credentials, cookies, response headers containing session data, or private readiness details are included.

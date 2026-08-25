@@ -282,13 +282,14 @@ function TaskCards({
         {taskCards.map(({ courseTask, definition, index, pilotClosed, record, status }) => {
           const title = courseTask?.title[locale] ?? definition.title[locale];
           const brief = courseTask?.brief[locale] ?? definition.brief[locale];
+          const cardNote = courseTask?.cardNote;
+          const cardSections = courseTask?.cardSections ?? [];
           const locked = status === "locked";
           const completed = status === "completed";
           const active = status === "active" && definition.id === activeTaskId;
           const endedIncomplete = record?.completionOutcome === "ended_incomplete";
           const completionMissing = record?.completionMissing ?? [];
           const completionBlocked = active && completionMissing.length > 0;
-          const pilotClosedLabel = locale === "zh-CN" ? "暂不开放" : "Pilot closed";
           const StatusIcon = locked ? LockKey : completed ? CheckCircle : PlayCircle;
           const primaryLabel = completed
             ? copy.review
@@ -339,7 +340,7 @@ function TaskCards({
                       </span>
                       <span className={`rounded-full border px-2.5 py-1 text-xs font-bold ${statusClass}`}>
                         {pilotClosed
-                          ? locale === "zh-CN" ? "先导未开放" : "Pilot closed"
+                          ? copy.unavailable
                           : endedIncomplete
                             ? locale === "zh-CN" ? "未完成结束" : "Ended incomplete"
                             : copy.status[status]}
@@ -347,19 +348,84 @@ function TaskCards({
                     </div>
                     <h3
                       id={`aais-task-card-${definition.id}`}
-                      className={`mt-2 text-[20px] font-semibold leading-7 ${locked ? "text-[#5d6470]" : "text-[#171a21]"}`}
+                      className={`mt-2 max-w-prose break-words text-[20px] font-semibold leading-7 ${locked ? "text-[#5d6470]" : "text-[#171a21]"}`}
                     >
                       {title}
                     </h3>
-                    <p className={`mt-2 text-[15px] leading-6 ${locked ? "text-[#747b86]" : "text-[#555d69]"}`}>
-                      {pilotClosed && courseTask?.cardNote
-                        ? courseTask.cardNote[locale]
-                        : locked
-                          ? copy.lockedHint
-                          : brief}
+                    <p className={`mt-2 max-w-prose break-words text-[15px] leading-7 ${locked ? "text-[#686f7a]" : "text-[#555d69]"}`}>
+                      {brief}
                     </p>
                   </div>
                 </div>
+                {cardNote ? (
+                  <p
+                    data-task-card-note={definition.id}
+                    className={`mt-3 max-w-prose break-words rounded-lg border px-3 py-2 text-sm font-semibold leading-6 ${
+                      pilotClosed
+                        ? "border-[#ead39a] bg-[#fff8e8] text-[#76571a]"
+                        : "border-[#d7ddff] bg-[#eef2ff] text-[#3f55bb]"
+                    }`}
+                  >
+                    {cardNote[locale]}
+                  </p>
+                ) : null}
+                {cardSections.length ? (
+                  <div className="mt-4 grid gap-3">
+                    {cardSections.map((section) => {
+                      const sectionId = `aais-task-card-${definition.id}-section-${section.id}`;
+                      return (
+                        <section
+                          key={sectionId}
+                          aria-labelledby={sectionId}
+                          className={`rounded-xl border px-4 py-3 ${
+                            locked
+                              ? "border-[#d8dce3] bg-white/55"
+                              : "border-[#dde2eb] bg-white/80"
+                          }`}
+                        >
+                          <h4
+                            id={sectionId}
+                            className={`text-[15px] font-bold leading-6 ${
+                              locked ? "text-[#5d6470]" : "text-[#242a35]"
+                            }`}
+                          >
+                            {section.title[locale]}
+                          </h4>
+                          {section.paragraphs?.map((paragraph, paragraphIndex) => (
+                            <p
+                              key={`${sectionId}-paragraph-${paragraphIndex}`}
+                              className={`mt-2 max-w-prose break-words text-[15px] leading-7 ${
+                                locked ? "text-[#686f7a]" : "text-[#555d69]"
+                              }`}
+                            >
+                              {paragraph[locale]}
+                            </p>
+                          ))}
+                          {section.bullets?.length ? (
+                            <ul className={`mt-2 grid list-disc gap-2 pl-5 text-[15px] leading-7 ${
+                              locked ? "text-[#686f7a]" : "text-[#555d69]"
+                            }`}>
+                              {section.bullets.map((bullet, bulletIndex) => (
+                                <li
+                                  key={`${sectionId}-bullet-${bulletIndex}`}
+                                  className="max-w-prose break-words pl-1"
+                                >
+                                  {bullet[locale]}
+                                </li>
+                              ))}
+                            </ul>
+                          ) : null}
+                        </section>
+                      );
+                    })}
+                  </div>
+                ) : null}
+                {locked && !pilotClosed ? (
+                  <p className="mt-3 flex max-w-prose items-start gap-2 text-sm font-semibold leading-6 text-[#686f7a]">
+                    <LockKey aria-hidden="true" className="mt-0.5 shrink-0" size={17} weight="bold" />
+                    <span>{copy.lockedHint}</span>
+                  </p>
+                ) : null}
                 {definition.id === "training_task_1" && !locked ? (
                   <PilotExpertModel actions={pilotActions} locale={locale} task={record} />
                 ) : null}
@@ -395,14 +461,12 @@ function TaskCards({
                       type="button"
                       disabled
                       aria-label={pilotClosed
-                        ? locale === "zh-CN"
-                          ? `任务${courseTask?.visibleTaskNumber ?? index + 1}：${title}：${pilotClosedLabel}`
-                          : `Task ${courseTask?.visibleTaskNumber ?? index + 1}: ${title}: ${pilotClosedLabel}`
+                        ? copy.unavailableButton(title)
                         : copy.lockedButton(title)}
                       className="inline-flex min-h-11 min-w-[132px] cursor-not-allowed items-center justify-center gap-2 rounded-xl border border-[#cfd3db] bg-[#e3e5e9] px-4 text-sm font-semibold text-[#555d69]"
                     >
                       <LockKey aria-hidden="true" size={18} weight="bold" />
-                      {pilotClosed ? pilotClosedLabel : copy.status.locked}
+                      {pilotClosed ? copy.unavailable : copy.status.locked}
                     </button>
                   ) : (
                     <>

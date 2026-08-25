@@ -1749,6 +1749,13 @@ describe("AAIS LearningPage", () => {
     expect((screen.getByRole("button", {
       name: "社交媒体与大学生心理健康课程论文大纲，已锁定",
     }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByText(
+      "先导实验阶段，任务3暂不开放，完成任务2后，会自动进入任务4",
+    )).toBeTruthy();
+    expect(screen.getByRole("heading", {
+      name: "设计一份《大学生GenAI学习使用指南》",
+      level: 3,
+    })).toBeTruthy();
 
     fireEvent.click(screen.getByRole("button", { name: "返回内容展示" }));
     fireEvent.click(screen.getByRole("button", { name: "历史文档" }));
@@ -1797,7 +1804,7 @@ describe("AAIS LearningPage", () => {
       name: "社交媒体与大学生心理健康课程论文大纲，已锁定",
     }) as HTMLButtonElement).disabled).toBe(true);
     expect((screen.getByRole("button", {
-      name: "任务3：L2 挑战：执行与监控：暂不开放",
+      name: "L2 挑战：执行与监控，暂不开放",
     }) as HTMLButtonElement).disabled).toBe(true);
 
     fireEvent.click(screen.getByRole("button", {
@@ -1808,9 +1815,9 @@ describe("AAIS LearningPage", () => {
       name: "进入任务：社交媒体与大学生心理健康课程论文大纲",
     })).toBeTruthy();
     expect((screen.getByRole("button", {
-      name: "任务3：L2 挑战：执行与监控：暂不开放",
+      name: "L2 挑战：执行与监控，暂不开放",
     }) as HTMLButtonElement).disabled).toBe(true);
-    expect(screen.getByText("已完成 1/3 个任务")).toBeTruthy();
+    expect(screen.getByText("已完成 1/3 个开放任务")).toBeTruthy();
   });
 
   it("skips the pilot-closed Task 3 and activates Task 4 after Task 2 completes", async () => {
@@ -1846,14 +1853,22 @@ describe("AAIS LearningPage", () => {
       name: "完成任务：社交媒体与大学生心理健康课程论文大纲",
     }));
 
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "文档编辑" }).getAttribute("aria-pressed"))
+        .toBe("true");
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    fireEvent.click(screen.getByRole("button", { name: "内容展示" }));
+    fireEvent.click(screen.getByRole("button", { name: /任务卡片/ }));
     expect(await screen.findByRole("button", {
       name: "继续任务：设计一份《大学生GenAI学习使用指南》",
     })).toBeTruthy();
     expect(document.querySelector('[data-task-card="practice_task_3"]')?.getAttribute("data-task-status"))
       .toBe("active");
     expect((screen.getByRole("button", {
-      name: "任务3：L2 挑战：执行与监控：暂不开放",
+      name: "L2 挑战：执行与监控，暂不开放",
     }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByText("已完成 2/3 个开放任务")).toBeTruthy();
   });
 
   it("sends versioned Task 2 pilot evidence and a fresh mutation id", async () => {
@@ -2443,7 +2458,7 @@ describe("AAIS LearningPage", () => {
       ?.getAttribute("data-completion-outcome")).toBe("ended_incomplete");
     expect(document.querySelector('[data-task-card="practice_task_3"]')
       ?.getAttribute("data-task-status")).toBe("active");
-    expect(screen.getByText("已完成 1/3 个任务")).toBeTruthy();
+    expect(screen.getByText("已完成 1/3 个开放任务")).toBeTruthy();
   });
 
   it("keeps incomplete stale backend guide messages out of the learner transcript", async () => {
