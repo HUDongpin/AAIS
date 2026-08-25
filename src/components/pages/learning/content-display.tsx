@@ -12,6 +12,7 @@ import { HistoryDocuments } from "@/components/pages/learning/history-documents"
 import { getVisibleGuideTurns } from "@/components/pages/learning/guide-chat";
 import { isCanonicalGuideAssistantMessageId } from "@/components/pages/learning/guide-stream";
 import { getLearningCopy } from "@/components/pages/learning/learning-copy";
+import { TaskCardCourseDetails } from "@/components/pages/learning/task-card-course-details";
 import {
   CompletionGate,
   PilotExpertModel,
@@ -282,8 +283,6 @@ function TaskCards({
         {taskCards.map(({ courseTask, definition, index, pilotClosed, record, status }) => {
           const title = courseTask?.title[locale] ?? definition.title[locale];
           const brief = courseTask?.brief[locale] ?? definition.brief[locale];
-          const cardNote = courseTask?.cardNote;
-          const cardSections = courseTask?.cardSections ?? [];
           const locked = status === "locked";
           const completed = status === "completed";
           const active = status === "active" && definition.id === activeTaskId;
@@ -357,69 +356,13 @@ function TaskCards({
                     </p>
                   </div>
                 </div>
-                {cardNote ? (
-                  <p
-                    data-task-card-note={definition.id}
-                    className={`mt-3 max-w-prose break-words rounded-lg border px-3 py-2 text-sm font-semibold leading-6 ${
-                      pilotClosed
-                        ? "border-[#ead39a] bg-[#fff8e8] text-[#76571a]"
-                        : "border-[#d7ddff] bg-[#eef2ff] text-[#3f55bb]"
-                    }`}
-                  >
-                    {cardNote[locale]}
-                  </p>
-                ) : null}
-                {cardSections.length ? (
-                  <div className="mt-4 grid gap-3">
-                    {cardSections.map((section) => {
-                      const sectionId = `aais-task-card-${definition.id}-section-${section.id}`;
-                      return (
-                        <section
-                          key={sectionId}
-                          aria-labelledby={sectionId}
-                          className={`rounded-xl border px-4 py-3 ${
-                            locked
-                              ? "border-[#d8dce3] bg-white/55"
-                              : "border-[#dde2eb] bg-white/80"
-                          }`}
-                        >
-                          <h4
-                            id={sectionId}
-                            className={`text-[15px] font-bold leading-6 ${
-                              locked ? "text-[#5d6470]" : "text-[#242a35]"
-                            }`}
-                          >
-                            {section.title[locale]}
-                          </h4>
-                          {section.paragraphs?.map((paragraph, paragraphIndex) => (
-                            <p
-                              key={`${sectionId}-paragraph-${paragraphIndex}`}
-                              className={`mt-2 max-w-prose break-words text-[15px] leading-7 ${
-                                locked ? "text-[#686f7a]" : "text-[#555d69]"
-                              }`}
-                            >
-                              {paragraph[locale]}
-                            </p>
-                          ))}
-                          {section.bullets?.length ? (
-                            <ul className={`mt-2 grid list-disc gap-2 pl-5 text-[15px] leading-7 ${
-                              locked ? "text-[#686f7a]" : "text-[#555d69]"
-                            }`}>
-                              {section.bullets.map((bullet, bulletIndex) => (
-                                <li
-                                  key={`${sectionId}-bullet-${bulletIndex}`}
-                                  className="max-w-prose break-words pl-1"
-                                >
-                                  {bullet[locale]}
-                                </li>
-                              ))}
-                            </ul>
-                          ) : null}
-                        </section>
-                      );
-                    })}
-                  </div>
-                ) : null}
+                <TaskCardCourseDetails
+                  courseTask={courseTask}
+                  locale={locale}
+                  locked={locked}
+                  pilotClosed={pilotClosed}
+                  taskId={definition.id}
+                />
                 {locked && !pilotClosed ? (
                   <p className="mt-3 flex max-w-prose items-start gap-2 text-sm font-semibold leading-6 text-[#686f7a]">
                     <LockKey aria-hidden="true" className="mt-0.5 shrink-0" size={17} weight="bold" />
