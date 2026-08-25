@@ -1,0 +1,22 @@
+AAIS public login diagnostics summary
+Test date: 2026-08-23 CST
+URL: https://aais.site/login?lang=zh-CN
+
+Chrome DevTools Protocol network capture after a real page reload:
+- Network.responseReceived / Network.loadingFailed events captured: 23
+- Network.loadingFailed events: 0
+- Responses with HTTP status >= 400: 0
+- Event buffer truncated: no
+
+Browser console across tested public login, language, forgot-password, legal-page, mobile, and protected-route navigation:
+- warning/error entries observed: 0
+
+Login response headers observed on apex and www:
+- Content-Security-Policy present
+- Strict-Transport-Security present with includeSubDomains and preload
+- X-Frame-Options: DENY
+- X-Content-Type-Options: nosniff
+- Permissions-Policy disables camera, microphone, geolocation, and payment
+- Referrer-Policy: strict-origin-when-cross-origin
+
+No credentials, cookies, page content from an authenticated learner, or private response bodies are included.

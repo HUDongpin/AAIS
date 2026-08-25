@@ -12,7 +12,14 @@ import {
   UsersThree,
 } from "@phosphor-icons/react";
 import { Header } from "@/components/layout/header";
+import {
+  getTeacherDashboardCopy,
+  getTeacherRecommendationPresentation,
+  type TeacherDashboardCopy,
+} from "@/components/pages/teacher-dashboard/teacher-dashboard-copy";
 import { getAaisApiErrorMessage } from "@/lib/client/aais-api-error";
+import { applyAaisLocaleToDocument } from "@/lib/aais-locale";
+import type { Locale } from "@/data/aais";
 import {
   MetricTile,
   RiskBand,
@@ -49,6 +56,7 @@ type CohortRecommendationsLoadResult = {
 
 async function loadCohortRecommendations(
   url: string,
+  copy: TeacherDashboardCopy,
 ): Promise<CohortRecommendationsLoadResult> {
   try {
     const response = await fetch(url);
@@ -59,8 +67,8 @@ async function loadCohortRecommendations(
         error: getAaisApiErrorMessage(
           body,
           response.status === 403
-            ? "当前账户无权读取推荐跟进。"
-            : "推荐跟进暂时不可用，请稍后刷新重试。",
+            ? copy.recommendationsForbidden
+            : copy.recommendationsUnavailable,
         ),
         recommendations: [],
       };
@@ -68,7 +76,7 @@ async function loadCohortRecommendations(
     if (!body || !Array.isArray(body.recommendations)) {
       return {
         availability: "unavailable",
-        error: "推荐跟进响应无效，请稍后刷新重试。",
+        error: copy.recommendationsInvalid,
         recommendations: [],
       };
     }
@@ -87,13 +95,14 @@ async function loadCohortRecommendations(
   } catch {
     return {
       availability: "unavailable",
-      error: "推荐跟进暂时不可用，请检查网络后刷新重试。",
+      error: copy.recommendationsNetwork,
       recommendations: [],
     };
   }
 }
 
-export function TeacherDashboardPage() {
+export function TeacherDashboardPage({ locale = "zh-CN" }: { locale?: Locale }) {
+  const copy = getTeacherDashboardCopy(locale);
   const [analytics, setAnalytics] = useState<AaisCohortAnalytics | null>(null);
   const [recommendations, setRecommendations] = useState<AaisLearnerRecommendation[]>([]);
   const [recommendationsAvailability, setRecommendationsAvailability] = useState<
@@ -117,6 +126,10 @@ export function TeacherDashboardPage() {
   const recommendationsUrl = useMemo(() => buildCohortRecommendationsUrl(filters), [filters]);
 
   useEffect(() => {
+    applyAaisLocaleToDocument(locale);
+  }, [locale]);
+
+  useEffect(() => {
     let cancelled = false;
 
     async function loadCohortAnalytics() {
@@ -126,13 +139,13 @@ export function TeacherDashboardPage() {
       try {
         const [response, recommendationsResult] = await Promise.all([
           fetch(analyticsUrl),
-          loadCohortRecommendations(recommendationsUrl),
+          loadCohortRecommendations(recommendationsUrl, copy),
         ]);
         const body = (await response.json().catch(() => null)) as AaisCohortAnalyticsResponse | null;
         if (!response.ok || !body?.analytics) {
           throw new Error(response.status === 403
-            ? "教师或管理员登录后可查看 cohort dashboard。"
-            : getAaisApiErrorMessage(body, "AAIS cohort analytics request failed."));
+            ? copy.analyticsForbidden
+            : getAaisApiErrorMessage(body, copy.analyticsFailed));
         }
         if (!cancelled) {
           setAnalytics(selectSafeCohortAnalytics(body.analytics));
@@ -153,7 +166,7 @@ export function TeacherDashboardPage() {
           setRecommendationsError("");
           setError(caught instanceof Error
             ? caught.message
-            : "AAIS cohort analytics request failed.");
+            : copy.analyticsFailed);
         }
       } finally {
         if (!cancelled) {
@@ -167,7 +180,7 @@ export function TeacherDashboardPage() {
     return () => {
       cancelled = true;
     };
-  }, [analyticsUrl, recommendationsUrl, refreshTick]);
+  }, [analyticsUrl, copy, recommendationsUrl, refreshTick]);
 
   const safeAnalytics = analytics ?? emptyAnalytics;
   const cohort = safeAnalytics.dashboard.cohort;
@@ -197,7 +210,7 @@ export function TeacherDashboardPage() {
       return;
     }
     setExportingFormat(format);
-    setExportStatus(format === "csv" ? "CSV 正在生成..." : "JSON 正在生成...");
+    setExportStatus(format === "csv" ? copy.export.csvStarting : copy.export.jsonStarting);
     try {
       const response = await fetch(buildCohortExportUrl(filters, format));
       if (!response.ok) {
@@ -207,9 +220,9 @@ export function TeacherDashboardPage() {
       const fileName = parseAttachmentFileName(response.headers.get("content-disposition"))
         ?? `aais-cohort-analytics.${format}`;
       downloadText(fileName, text, format === "csv" ? "text/csv;charset=utf-8" : "application/json;charset=utf-8");
-      setExportStatus(format === "csv" ? "CSV 已生成" : "JSON 已生成");
+      setExportStatus(format === "csv" ? copy.export.csvDone : copy.export.jsonDone);
     } catch {
-      setExportStatus("Cohort export failed.");
+      setExportStatus(copy.export.failed);
     } finally {
       setExportingFormat(null);
     }
@@ -220,7 +233,7 @@ export function TeacherDashboardPage() {
       return;
     }
     setActiveOverrideId(recommendation.id);
-    setOverrideStatus("正在记录推荐处理...");
+    setOverrideStatus(copy.recommendations.recordingStatus);
     try {
       const response = await fetch("/api/learning/recommendations", {
         method: "POST",
@@ -239,41 +252,45 @@ export function TeacherDashboardPage() {
       });
       const body = (await response.json().catch(() => null)) as AaisRecommendationsResponse | null;
       if (!response.ok) {
-        throw new Error(getAaisApiErrorMessage(body, "AAIS recommendation override failed."));
+        throw new Error(getAaisApiErrorMessage(body, copy.recommendations.overrideFailed));
       }
       setRecommendations((current) =>
         current.filter((candidate) => candidate.id !== recommendation.id)
       );
-      setOverrideStatus("推荐处理已记录");
+      setOverrideStatus(copy.recommendations.recordedStatus);
     } catch (caught) {
       setOverrideStatus(caught instanceof Error
         ? caught.message
-        : "AAIS recommendation override failed.");
+        : copy.recommendations.overrideFailed);
     } finally {
       setActiveOverrideId(null);
     }
   }
 
   return (
-    <div className="min-h-[100dvh] bg-[var(--background)] text-[var(--foreground)]">
-      <Header />
+    <div
+      className="min-h-[100dvh] min-w-0 bg-[var(--background)] text-[var(--foreground)]"
+      data-locale={locale}
+      lang={locale}
+    >
+      <Header locale={locale} />
       <main
-        className="mx-auto grid w-full max-w-[1608px] gap-5 px-3 py-6 sm:px-4 lg:px-5 2xl:px-6"
+        className="mx-auto grid min-w-0 w-full max-w-[1608px] gap-5 px-3 py-6 sm:px-4 lg:px-5 2xl:px-6"
         aria-labelledby="aais-dashboard-heading"
         aria-busy={loading || Boolean(exportingFormat) || Boolean(activeOverrideId)}
       >
-        <section className="rounded-2xl border border-[#dfe7f6] bg-white p-5 shadow-[0_18px_44px_rgba(46,58,91,0.08)] sm:p-6">
+        <section className="min-w-0 rounded-2xl border border-[#dfe7f6] bg-white p-5 shadow-[0_18px_44px_rgba(46,58,91,0.08)] sm:p-6">
           <div className="flex flex-wrap items-start justify-between gap-4">
             <div>
-              <p className="text-sm font-semibold text-[#1557c0]">Cohort learning analytics</p>
+              <p className="text-sm font-semibold text-[#1557c0]">{copy.hero.eyebrow}</p>
               <h1
                 id="aais-dashboard-heading"
                 className="mt-1 text-3xl font-black tracking-normal text-[#171b35]"
               >
-                教师看板
+                {copy.hero.heading}
               </h1>
               <p className="mt-2 max-w-3xl text-sm leading-6 text-[#59657a]">
-                聚合训练完成、支架依赖、后台监督与教授 coaching 信号、AI 互动和反思证据，帮助教师快速定位需要跟进的学习者。
+                {copy.hero.description}
               </p>
             </div>
             <div className="grid gap-2 rounded-xl border border-[#d8e6fb] bg-[#f8fbff] px-4 py-3 text-sm font-semibold text-[#3f4b69]">
@@ -295,7 +312,7 @@ export function TeacherDashboardPage() {
               aria-live="polite"
               aria-atomic="true"
             >
-              正在加载 cohort analytics...
+              {copy.loading}
             </p>
           ) : null}
 
@@ -312,35 +329,35 @@ export function TeacherDashboardPage() {
 
           <div className="mt-5 grid gap-3 rounded-xl border border-[#dfe7f6] bg-[#fbfdff] p-3 lg:grid-cols-[repeat(3,minmax(150px,1fr))_auto_auto_auto]">
             <SelectField
-              label="Phase"
+              label={copy.filters.phase}
               value={filters.phase}
               onChange={(value) => updateFilter({ ...filters, phase: value as CohortFilterState["phase"] })}
               options={[
-                ["all", "全部"],
+                ["all", copy.filters.all],
                 ["training", "Training"],
                 ["practice", "Practice"],
               ]}
             />
             <SelectField
-              label="Agent"
+              label={copy.filters.agent}
               value={filters.agent}
               onChange={(value) => updateFilter({ ...filters, agent: value as CohortFilterState["agent"] })}
               options={[
-                ["all", "全部"],
-                ["platform", "Platform"],
-                ["A1", "小张"],
-                ["A2", "教授"],
+                ["all", copy.filters.all],
+                ["platform", copy.filters.platform],
+                ["A1", copy.filters.guide],
+                ["A2", copy.filters.professor],
                 ["A3", "A3"],
                 ["A4", "A4"],
               ]}
             />
             <SelectField
-              label="Event"
+              label={copy.filters.event}
               value={filters.event}
               onChange={(value) => updateFilter({ ...filters, event: value as CohortFilterState["event"] })}
               options={[
-                ["all", "全部"],
-                ["coaching_push", "教授 coaching"],
+                ["all", copy.filters.all],
+                ["coaching_push", copy.filters.professorCoaching],
                 ["ai_acceptance_recorded", "AI acceptance"],
                 ["artifact_saved", "Artifact saved"],
                 ["artifact_edited", "Artifact edited"],
@@ -356,7 +373,7 @@ export function TeacherDashboardPage() {
               className="inline-flex min-h-11 items-center justify-center gap-2 rounded-lg border border-[#cfe0f5] bg-white px-3 text-sm font-bold text-[#1557c0] outline-none transition hover:border-[#1f6feb] disabled:cursor-not-allowed disabled:opacity-60 focus-visible:ring-2 focus-visible:ring-[#1f6feb]"
             >
               <ChartLineUp size={16} weight="duotone" />
-              {loading ? "刷新中" : "刷新"}
+              {loading ? copy.controls.refreshing : copy.controls.refresh}
             </button>
             <button
               type="button"
@@ -365,7 +382,7 @@ export function TeacherDashboardPage() {
               className="inline-flex min-h-11 items-center justify-center gap-2 rounded-lg border border-[#d8e6fb] bg-white px-3 text-sm font-bold text-[#3f4b69] outline-none transition hover:border-[#1f6feb] disabled:cursor-not-allowed disabled:opacity-60 focus-visible:ring-2 focus-visible:ring-[#1f6feb]"
             >
               <Database size={16} weight="duotone" />
-              {exportingFormat === "csv" ? "CSV 生成中" : "CSV"}
+              {exportingFormat === "csv" ? copy.controls.csvBusy : "CSV"}
             </button>
             <button
               type="button"
@@ -374,7 +391,7 @@ export function TeacherDashboardPage() {
               className="inline-flex min-h-11 items-center justify-center gap-2 rounded-lg border border-[#d8e6fb] bg-white px-3 text-sm font-bold text-[#3f4b69] outline-none transition hover:border-[#1f6feb] disabled:cursor-not-allowed disabled:opacity-60 focus-visible:ring-2 focus-visible:ring-[#1f6feb]"
             >
               <ShieldCheck size={16} weight="duotone" />
-              {exportingFormat === "json" ? "JSON 生成中" : "JSON"}
+              {exportingFormat === "json" ? copy.controls.jsonBusy : "JSON"}
             </button>
           </div>
           {exportStatus ? (
@@ -389,23 +406,23 @@ export function TeacherDashboardPage() {
           ) : null}
         </section>
 
-        <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-7">
-          <MetricTile icon={UsersThree} label="学习者" value={cohort.learnerCount} />
-          <MetricTile icon={CheckCircle} label="完成训练" value={cohort.trainingCompleted} />
-          <MetricTile icon={Student} label="练习完成数" value={cohort.completedPracticeTasks} />
-          <MetricTile icon={ArrowsLeftRight} label="支架请求" value={cohort.scaffoldRequests} />
-          <MetricTile icon={WarningCircle} label="监督/教授信号" value={cohort.coachingSignals} />
-          <MetricTile icon={ChartLineUp} label="AI 互动" value={cohort.aiInteractions} />
-          <MetricTile icon={CheckCircle} label="AI 采纳" value={cohort.aiAcceptanceDecisions} />
+        <section className="grid min-w-0 gap-3 sm:grid-cols-2 xl:grid-cols-7">
+          <MetricTile icon={UsersThree} label={copy.metrics.learners} value={cohort.learnerCount} />
+          <MetricTile icon={CheckCircle} label={copy.metrics.trainingCompleted} value={cohort.trainingCompleted} />
+          <MetricTile icon={Student} label={copy.metrics.practiceCompleted} value={cohort.completedPracticeTasks} />
+          <MetricTile icon={ArrowsLeftRight} label={copy.metrics.scaffoldRequests} value={cohort.scaffoldRequests} />
+          <MetricTile icon={WarningCircle} label={copy.metrics.coachingSignals} value={cohort.coachingSignals} />
+          <MetricTile icon={ChartLineUp} label={copy.metrics.aiInteractions} value={cohort.aiInteractions} />
+          <MetricTile icon={CheckCircle} label={copy.metrics.aiAcceptance} value={cohort.aiAcceptanceDecisions} />
         </section>
 
-        <section className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_360px]">
-          <div className="rounded-2xl border border-[#dfe7f6] bg-white shadow-[0_18px_44px_rgba(46,58,91,0.08)]">
+        <section className="grid min-w-0 gap-5 xl:grid-cols-[minmax(0,1fr)_360px]">
+          <div className="min-w-0 max-w-full rounded-2xl border border-[#dfe7f6] bg-white shadow-[0_18px_44px_rgba(46,58,91,0.08)]">
             <div className="border-b border-[#e9ecf4] px-5 py-4">
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div>
-                  <h2 className="text-lg font-black text-[#171b35]">学习者风险队列</h2>
-                  <p className="mt-1 text-sm text-[#68708a]">优先显示训练未完成、反思证据不足或监督/教授信号较多的学习者。</p>
+                  <h2 className="text-lg font-black text-[#171b35]">{copy.queue.heading}</h2>
+                  <p className="mt-1 text-sm text-[#68708a]">{copy.queue.description}</p>
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
                   <span className="rounded-full border border-[#d8e6fb] bg-[#f8fbff] px-3 py-1 text-xs font-bold text-[#1557c0]">
@@ -417,7 +434,7 @@ export function TeacherDashboardPage() {
                     disabled={loading || !pagination.hasPreviousPage}
                     className="inline-flex min-h-8 items-center rounded-lg border border-[#d8e6fb] bg-white px-3 text-xs font-bold text-[#3f4b69] outline-none transition hover:border-[#1f6feb] disabled:cursor-not-allowed disabled:opacity-45 focus-visible:ring-2 focus-visible:ring-[#1f6feb]"
                   >
-                    上一页
+                    {copy.controls.previous}
                   </button>
                   <button
                     type="button"
@@ -425,24 +442,29 @@ export function TeacherDashboardPage() {
                     disabled={loading || !pagination.hasNextPage}
                     className="inline-flex min-h-8 items-center rounded-lg border border-[#d8e6fb] bg-white px-3 text-xs font-bold text-[#3f4b69] outline-none transition hover:border-[#1f6feb] disabled:cursor-not-allowed disabled:opacity-45 focus-visible:ring-2 focus-visible:ring-[#1f6feb]"
                   >
-                    下一页
+                    {copy.controls.next}
                   </button>
                 </div>
               </div>
             </div>
 
-            <div className="overflow-x-auto">
+            <div
+              className="w-full max-w-full overflow-x-auto overscroll-x-contain outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[#1f6feb]"
+              role="region"
+              aria-label={`${copy.queue.heading} ${locale === "en-US" ? "table" : "表格"}`}
+              tabIndex={0}
+            >
               <table className="w-full min-w-[820px] border-collapse text-left text-sm">
                 <thead>
                   <tr className="border-b border-[#e9ecf4] bg-[#f8fbff] text-xs uppercase text-[#68708a]">
-                    <th className="px-5 py-3 font-bold">Learner</th>
-                    <th className="px-4 py-3 font-bold">Training</th>
-                    <th className="px-4 py-3 font-bold">Practice</th>
-                    <th className="px-4 py-3 font-bold">Scaffold</th>
-                    <th className="px-4 py-3 font-bold">教授</th>
-                    <th className="px-4 py-3 font-bold">AI</th>
-                    <th className="px-4 py-3 font-bold">Reflection</th>
-                    <th className="px-5 py-3 font-bold">Action</th>
+                    <th className="px-5 py-3 font-bold">{copy.queue.learner}</th>
+                    <th className="px-4 py-3 font-bold">{copy.queue.training}</th>
+                    <th className="px-4 py-3 font-bold">{copy.queue.practice}</th>
+                    <th className="px-4 py-3 font-bold">{copy.queue.scaffold}</th>
+                    <th className="px-4 py-3 font-bold">{copy.queue.professor}</th>
+                    <th className="px-4 py-3 font-bold">{copy.queue.ai}</th>
+                    <th className="px-4 py-3 font-bold">{copy.queue.reflection}</th>
+                    <th className="px-5 py-3 font-bold">{copy.queue.action}</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -450,31 +472,35 @@ export function TeacherDashboardPage() {
                     <tr key={learner.learnerKey} className="border-b border-[#eef2f8] last:border-b-0">
                       <td className="px-5 py-4">
                         <p className="font-bold text-[#222842]">{learner.learnerKey}</p>
-                        <p className="mt-1 text-xs text-[#68708a]">{formatUpdatedAt(learner.updatedAt)}</p>
+                        <p className="mt-1 text-xs text-[#68708a]">{formatUpdatedAt(learner.updatedAt, locale)}</p>
                       </td>
                       <td className="px-4 py-4">
                         <StatusPill tone={learner.trainingCompleted ? "ok" : "risk"}>
-                          {learner.trainingCompleted ? "完成" : "未完成"}
+                          {learner.trainingCompleted ? copy.queue.completed : copy.queue.incomplete}
                         </StatusPill>
                       </td>
                       <td className="px-4 py-4 font-semibold text-[#303650]">
-                        {learner.completedPracticeTasks} / {learner.activePracticeTaskId ?? "未开始"}
+                        {learner.completedPracticeTasks} / {learner.activePracticeTaskId ?? copy.queue.notStarted}
                       </td>
-                      <td className="px-4 py-4 font-semibold text-[#303650]">{learner.scaffoldRequests} 次</td>
+                      <td className="px-4 py-4 font-semibold text-[#303650]">
+                        {learner.scaffoldRequests} {copy.queue.requestsSuffix}
+                      </td>
                       <td className="px-4 py-4 font-semibold text-[#303650]">{learner.coachingSignals}</td>
                       <td className="px-4 py-4 font-semibold text-[#303650]">
                         <p>{learner.aiInteractions}</p>
-                        <p className="mt-1 text-xs font-bold text-[#68708a]">采纳 {learner.aiAcceptanceDecisions}</p>
+                        <p className="mt-1 text-xs font-bold text-[#68708a]">
+                          {copy.queue.acceptedPrefix} {learner.aiAcceptanceDecisions}
+                        </p>
                       </td>
                       <td className="px-4 py-4">
                         <StatusPill tone={learner.reflectionStatus === "evidence_present" ? "ok" : "risk"}>
-                          {formatReflectionStatus(learner.reflectionStatus)}
+                          {formatReflectionStatus(learner.reflectionStatus, locale)}
                         </StatusPill>
                       </td>
                       <td className="px-5 py-4">
                         <div className="grid gap-2">
                           <StatusPill tone={learner.riskLevel === "low" ? "ok" : "risk"}>
-                            {formatRiskLevel(learner.riskLevel)}
+                            {formatRiskLevel(learner.riskLevel, locale)}
                           </StatusPill>
                           {learner.priorityReasons.length ? (
                             <div className="flex max-w-[220px] flex-wrap gap-1">
@@ -483,7 +509,7 @@ export function TeacherDashboardPage() {
                                   key={reason}
                                   className="rounded-full bg-[#fff8ed] px-2 py-0.5 text-[11px] font-bold leading-5 text-[#8a5a12]"
                                 >
-                                  {formatPriorityReason(reason)}
+                                  {formatPriorityReason(reason, locale)}
                                 </span>
                               ))}
                             </div>
@@ -494,7 +520,7 @@ export function TeacherDashboardPage() {
                   )) : (
                     <tr>
                       <td className="px-5 py-8 text-sm font-semibold text-[#68708a]" colSpan={8}>
-                        暂无 cohort 学习记录。
+                        {copy.queue.empty}
                       </td>
                     </tr>
                   )}
@@ -503,34 +529,34 @@ export function TeacherDashboardPage() {
             </div>
           </div>
 
-          <aside className="grid content-start gap-5">
+          <aside className="grid min-w-0 content-start gap-5">
             <section
               className="rounded-2xl border border-[#dfe7f6] bg-white p-5 shadow-[0_18px_44px_rgba(46,58,91,0.08)]"
               aria-busy={Boolean(activeOverrideId)}
             >
               <div className="flex items-center justify-between gap-3">
-                <h2 className="text-lg font-black text-[#171b35]">推荐跟进</h2>
+                <h2 className="text-lg font-black text-[#171b35]">{copy.recommendations.heading}</h2>
                 <span className="text-xs font-bold text-[#68708a]">
                   {recommendationsAvailability === "available"
-                    ? `${recommendations.length} 条`
+                    ? `${recommendations.length} ${copy.recommendations.itemSuffix}`
                     : recommendationsAvailability === "paused"
-                      ? "已暂停"
+                      ? copy.recommendations.pausedBadge
                       : recommendationsAvailability === "unavailable"
-                        ? "不可用"
-                        : "加载中"}
+                        ? copy.recommendations.unavailableBadge
+                        : copy.recommendations.loadingBadge}
                 </span>
               </div>
               <div className="mt-4 grid gap-3">
                 {recommendationsAvailability === "loading" ? (
                   <p className="text-sm font-semibold leading-6 text-[#68708a]">
-                    正在加载规则推荐...
+                    {copy.recommendations.loading}
                   </p>
                 ) : recommendationsAvailability === "unavailable" ? (
                   recommendationsError ? (
                     <p
                       className="rounded-lg border border-[#f0b7c9] bg-[#fff1f5] px-3 py-2 text-sm font-semibold leading-6 text-[#a12f56]"
                       role="alert"
-                      aria-label="推荐跟进不可用"
+                      aria-label={copy.recommendations.unavailableLabel}
                       aria-live="assertive"
                       aria-atomic="true"
                     >
@@ -539,20 +565,22 @@ export function TeacherDashboardPage() {
                   ) : null
                 ) : recommendationsAvailability === "paused" ? (
                   <p className="text-sm font-semibold leading-6 text-[#68708a]">
-                    规则推荐已暂停。
+                    {copy.recommendations.paused}
                   </p>
-                ) : recommendations.length ? recommendations.slice(0, 4).map((recommendation) => (
+                ) : recommendations.length ? recommendations.slice(0, 4).map((recommendation) => {
+                  const presentation = getTeacherRecommendationPresentation(recommendation, locale);
+                  return (
                   <div key={recommendation.id} className="border-t border-[#edf1f8] pt-3 first:border-t-0 first:pt-0">
                     <div className="flex items-start justify-between gap-3">
                       <div>
-                        <p className="text-sm font-black text-[#222842]">{recommendation.title}</p>
+                        <p className="text-sm font-black text-[#222842]">{presentation.title}</p>
                         <p className="mt-1 text-xs font-bold text-[#68708a]">{recommendation.learnerKey}</p>
                       </div>
                       <StatusPill tone={recommendation.priority === "low" ? "ok" : "risk"}>
-                        {formatRecommendationPriority(recommendation.priority)}
+                        {formatRecommendationPriority(recommendation.priority, locale)}
                       </StatusPill>
                     </div>
-                    <p className="mt-2 text-sm leading-6 text-[#4f5873]">{recommendation.reasons[0]}</p>
+                    <p className="mt-2 text-sm leading-6 text-[#4f5873]">{presentation.reason}</p>
                     <button
                       type="button"
                       onClick={() => void recordRecommendationOverride(recommendation)}
@@ -560,12 +588,15 @@ export function TeacherDashboardPage() {
                       className="mt-3 inline-flex min-h-9 items-center justify-center gap-2 rounded-lg border border-[#d8e6fb] bg-[#f8fbff] px-3 text-xs font-bold text-[#1557c0] outline-none transition hover:border-[#1f6feb] disabled:cursor-not-allowed disabled:opacity-60 focus-visible:ring-2 focus-visible:ring-[#1f6feb]"
                     >
                       <CheckCircle size={14} weight="duotone" />
-                      {activeOverrideId === recommendation.id ? "记录中..." : "标记已处理"}
+                      {activeOverrideId === recommendation.id
+                        ? copy.recommendations.recording
+                        : copy.recommendations.markHandled}
                     </button>
                   </div>
-                )) : (
+                  );
+                }) : (
                   <p className="text-sm font-semibold leading-6 text-[#68708a]">
-                    暂无需要立即跟进的规则建议。
+                    {copy.recommendations.empty}
                   </p>
                 )}
               </div>
@@ -582,31 +613,31 @@ export function TeacherDashboardPage() {
             </section>
 
             <section className="rounded-2xl border border-[#dfe7f6] bg-white p-5 shadow-[0_18px_44px_rgba(46,58,91,0.08)]">
-              <h2 className="text-lg font-black text-[#171b35]">风险分层</h2>
+              <h2 className="text-lg font-black text-[#171b35]">{copy.risk.heading}</h2>
               <div className="mt-4 grid gap-3">
-                <RiskBand label="高风险" value={cohort.riskBreakdown.high} tone="risk" />
-                <RiskBand label="中风险" value={cohort.riskBreakdown.medium} tone="watch" />
-                <RiskBand label="低风险" value={cohort.riskBreakdown.low} tone="ok" />
+                <RiskBand label={copy.risk.high} value={cohort.riskBreakdown.high} tone="risk" />
+                <RiskBand label={copy.risk.medium} value={cohort.riskBreakdown.medium} tone="watch" />
+                <RiskBand label={copy.risk.low} value={cohort.riskBreakdown.low} tone="ok" />
               </div>
             </section>
 
             <section className="rounded-2xl border border-[#dfe7f6] bg-white p-5 shadow-[0_18px_44px_rgba(46,58,91,0.08)]">
-              <h2 className="text-lg font-black text-[#171b35]">数据边界</h2>
+              <h2 className="text-lg font-black text-[#171b35]">{copy.dataBoundary.heading}</h2>
               <div className="mt-4 grid gap-3 text-sm leading-6 text-[#4f5873]">
                 <p className="rounded-lg border border-[#e1e8f5] bg-[#f8fbff] px-3 py-2">
-                  Actor mode: <strong className="text-[#1557c0]">{safeAnalytics.privacy.actorMode}</strong>
+                  {copy.dataBoundary.actorMode}: <strong className="text-[#1557c0]">{safeAnalytics.privacy.actorMode}</strong>
                 </p>
                 <p className="rounded-lg border border-[#e1e8f5] bg-[#f8fbff] px-3 py-2">
-                  Raw prompt storage: <strong className="text-[#1557c0]">{safeAnalytics.privacy.rawPromptStorage}</strong>
+                  {copy.dataBoundary.rawPromptStorage}: <strong className="text-[#1557c0]">{safeAnalytics.privacy.rawPromptStorage}</strong>
                 </p>
                 <p className="rounded-lg border border-[#e1e8f5] bg-[#f8fbff] px-3 py-2">
-                  Minimum necessary fields: <strong className="text-[#1557c0]">{String(safeAnalytics.privacy.minimumNecessaryFields)}</strong>
+                  {copy.dataBoundary.minimumNecessaryFields}: <strong className="text-[#1557c0]">{String(safeAnalytics.privacy.minimumNecessaryFields)}</strong>
                 </p>
               </div>
             </section>
 
             <section className="rounded-2xl border border-[#dfe7f6] bg-white p-5 shadow-[0_18px_44px_rgba(46,58,91,0.08)]">
-              <h2 className="text-lg font-black text-[#171b35]">Join keys</h2>
+              <h2 className="text-lg font-black text-[#171b35]">{copy.dataBoundary.joinKeys}</h2>
               <div className="mt-4 flex flex-wrap gap-2">
                 {safeAnalytics.integrations.joinKeys.map((key) => (
                   <span

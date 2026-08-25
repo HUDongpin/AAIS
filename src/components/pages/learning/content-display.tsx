@@ -12,6 +12,7 @@ import { HistoryDocuments } from "@/components/pages/learning/history-documents"
 import { getVisibleGuideTurns } from "@/components/pages/learning/guide-chat";
 import { isCanonicalGuideAssistantMessageId } from "@/components/pages/learning/guide-stream";
 import { getLearningCopy } from "@/components/pages/learning/learning-copy";
+import { TaskCardCourseDetails } from "@/components/pages/learning/task-card-course-details";
 import {
   CompletionGate,
   PilotExpertModel,
@@ -288,7 +289,6 @@ function TaskCards({
           const endedIncomplete = record?.completionOutcome === "ended_incomplete";
           const completionMissing = record?.completionMissing ?? [];
           const completionBlocked = active && completionMissing.length > 0;
-          const pilotClosedLabel = locale === "zh-CN" ? "暂不开放" : "Pilot closed";
           const StatusIcon = locked ? LockKey : completed ? CheckCircle : PlayCircle;
           const primaryLabel = completed
             ? copy.review
@@ -339,7 +339,7 @@ function TaskCards({
                       </span>
                       <span className={`rounded-full border px-2.5 py-1 text-xs font-bold ${statusClass}`}>
                         {pilotClosed
-                          ? locale === "zh-CN" ? "先导未开放" : "Pilot closed"
+                          ? copy.unavailable
                           : endedIncomplete
                             ? locale === "zh-CN" ? "未完成结束" : "Ended incomplete"
                             : copy.status[status]}
@@ -347,19 +347,28 @@ function TaskCards({
                     </div>
                     <h3
                       id={`aais-task-card-${definition.id}`}
-                      className={`mt-2 text-[20px] font-semibold leading-7 ${locked ? "text-[#5d6470]" : "text-[#171a21]"}`}
+                      className={`mt-2 max-w-prose break-words text-[20px] font-semibold leading-7 ${locked ? "text-[#5d6470]" : "text-[#171a21]"}`}
                     >
                       {title}
                     </h3>
-                    <p className={`mt-2 text-[15px] leading-6 ${locked ? "text-[#747b86]" : "text-[#555d69]"}`}>
-                      {pilotClosed && courseTask?.cardNote
-                        ? courseTask.cardNote[locale]
-                        : locked
-                          ? copy.lockedHint
-                          : brief}
+                    <p className={`mt-2 max-w-prose break-words text-[15px] leading-7 ${locked ? "text-[#686f7a]" : "text-[#555d69]"}`}>
+                      {brief}
                     </p>
                   </div>
                 </div>
+                <TaskCardCourseDetails
+                  courseTask={courseTask}
+                  locale={locale}
+                  locked={locked}
+                  pilotClosed={pilotClosed}
+                  taskId={definition.id}
+                />
+                {locked && !pilotClosed ? (
+                  <p className="mt-3 flex max-w-prose items-start gap-2 text-sm font-semibold leading-6 text-[#686f7a]">
+                    <LockKey aria-hidden="true" className="mt-0.5 shrink-0" size={17} weight="bold" />
+                    <span>{copy.lockedHint}</span>
+                  </p>
+                ) : null}
                 {definition.id === "training_task_1" && !locked ? (
                   <PilotExpertModel actions={pilotActions} locale={locale} task={record} />
                 ) : null}
@@ -395,14 +404,12 @@ function TaskCards({
                       type="button"
                       disabled
                       aria-label={pilotClosed
-                        ? locale === "zh-CN"
-                          ? `任务${courseTask?.visibleTaskNumber ?? index + 1}：${title}：${pilotClosedLabel}`
-                          : `Task ${courseTask?.visibleTaskNumber ?? index + 1}: ${title}: ${pilotClosedLabel}`
+                        ? copy.unavailableButton(title)
                         : copy.lockedButton(title)}
                       className="inline-flex min-h-11 min-w-[132px] cursor-not-allowed items-center justify-center gap-2 rounded-xl border border-[#cfd3db] bg-[#e3e5e9] px-4 text-sm font-semibold text-[#555d69]"
                     >
                       <LockKey aria-hidden="true" size={18} weight="bold" />
-                      {pilotClosed ? pilotClosedLabel : copy.status.locked}
+                      {pilotClosed ? copy.unavailable : copy.status.locked}
                     </button>
                   ) : (
                     <>

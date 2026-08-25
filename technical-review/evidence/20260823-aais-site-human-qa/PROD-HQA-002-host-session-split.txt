@@ -1,0 +1,28 @@
+AAIS apex/www session divergence evidence
+Observed in one Chrome browser session.
+No cookies were inspected and no account identity is included.
+
+PASS 1
+Requested: https://aais.site/learning
+Final URL: https://aais.site/login?from=%2Flearning
+Login heading visible: yes
+Learning shell count: 0
+
+Requested: https://www.aais.site/learning
+Final URL: https://www.aais.site/learning
+Login heading count: 0
+Learning shell visible: yes
+
+PASS 2
+Requested: https://aais.site/learning
+Final URL: https://aais.site/login?from=%2Flearning
+Login heading visible: yes
+Learning shell count: 0
+
+Requested: https://www.aais.site/learning
+Final URL: https://www.aais.site/learning
+Login heading count: 0
+Learning shell visible: yes
+
+No intentional authenticated product mutation, export, deletion, or logout action was performed.
+Ordinary page visits may produce standard site telemetry; telemetry row counts were not inspected.

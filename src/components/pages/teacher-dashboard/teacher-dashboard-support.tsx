@@ -1,4 +1,5 @@
 import { UsersThree } from "@phosphor-icons/react";
+import type { Locale } from "@/data/aais";
 
 export type AaisCohortAnalytics = {
   dashboard: {
@@ -242,35 +243,50 @@ export function shouldPrioritizeLearner(learner: AaisCohortLearner) {
     || learner.coachingSignals > 0;
 }
 
-export function formatRiskLevel(level: AaisCohortLearner["riskLevel"]) {
+export function formatRiskLevel(
+  level: AaisCohortLearner["riskLevel"],
+  locale: Locale = "zh-CN",
+) {
   if (level === "high") {
-    return "高风险";
+    return locale === "en-US" ? "High risk" : "高风险";
   }
   if (level === "medium") {
-    return "中风险";
+    return locale === "en-US" ? "Medium risk" : "中风险";
   }
-  return "低风险";
+  return locale === "en-US" ? "Low risk" : "低风险";
 }
 
-export function formatRecommendationPriority(priority: AaisLearnerRecommendation["priority"]) {
+export function formatRecommendationPriority(
+  priority: AaisLearnerRecommendation["priority"],
+  locale: Locale = "zh-CN",
+) {
   if (priority === "high") {
-    return "高";
+    return locale === "en-US" ? "High" : "高";
   }
   if (priority === "medium") {
-    return "中";
+    return locale === "en-US" ? "Medium" : "中";
   }
-  return "低";
+  return locale === "en-US" ? "Low" : "低";
 }
 
-export function formatPriorityReason(reason: string) {
-  const labels: Record<string, string> = {
-    training_incomplete: "训练未完成",
-    reflection_missing: "需补反思",
-    a2_coaching_signals: "监督/教授已触发",
-    high_scaffold_dependency: "支架依赖高",
-    no_ai_interaction_after_coaching: "需要跟进 AI 使用决策",
+export function formatPriorityReason(reason: string, locale: Locale = "zh-CN") {
+  const labels: Record<Locale, Record<string, string>> = {
+    "zh-CN": {
+      training_incomplete: "训练未完成",
+      reflection_missing: "需补反思",
+      a2_coaching_signals: "监督/教授已触发",
+      high_scaffold_dependency: "支架依赖高",
+      no_ai_interaction_after_coaching: "需要跟进 AI 使用决策",
+    },
+    "en-US": {
+      training_incomplete: "Training incomplete",
+      reflection_missing: "Reflection missing",
+      a2_coaching_signals: "Supervision / Professor triggered",
+      high_scaffold_dependency: "High scaffold reliance",
+      no_ai_interaction_after_coaching: "AI use decision needs follow-up",
+    },
   };
-  return labels[reason] ?? "需跟进";
+  return labels[locale][reason] ?? (locale === "en-US" ? "Follow-up needed" : "需跟进");
 }
 
 export function getAaisCsrfHeader(): Record<string, string> {
@@ -278,16 +294,19 @@ export function getAaisCsrfHeader(): Record<string, string> {
   return token ? { "x-aais-csrf": token } : {};
 }
 
-export function formatReflectionStatus(status: string) {
-  return status === "evidence_present" ? "证据充分" : "需补反思";
+export function formatReflectionStatus(status: string, locale: Locale = "zh-CN") {
+  if (status === "evidence_present") {
+    return locale === "en-US" ? "Evidence present" : "证据充分";
+  }
+  return locale === "en-US" ? "Reflection needed" : "需补反思";
 }
 
-export function formatUpdatedAt(value: string) {
+export function formatUpdatedAt(value: string, locale: Locale = "zh-CN") {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) {
-    return "更新时间未知";
+    return locale === "en-US" ? "Update time unavailable" : "更新时间未知";
   }
-  return new Intl.DateTimeFormat("zh-HK", {
+  return new Intl.DateTimeFormat(locale === "en-US" ? "en-US" : "zh-HK", {
     month: "2-digit",
     day: "2-digit",
     hour: "2-digit",

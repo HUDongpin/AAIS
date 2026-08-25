@@ -340,7 +340,9 @@ function AiUseModeFailClosedHarness({ studentId }: { studentId: string }) {
     displayName: "Test learner",
     isGuideSubmissionBlocked: () =>
       workspace.getAiUseModeMutationStatus("training_task_1") !== null,
+    getHelpRequestsUsed: workspace.getTaskScaffoldRequests,
     locale: "zh-CN",
+    onHelpRequestsUsedConfirmed: workspace.confirmTaskScaffoldRequests,
     studentId,
     waitForLearnerDataGeneration: workspace.waitForLearnerDataGeneration,
   });

@@ -156,10 +156,10 @@ test.describe("CAAIS pilot learning loop", () => {
     await page.getByRole("button", { name: "发送" }).click();
     const aiFreeResponse = await aiFreeResponsePromise;
     expect(aiFreeResponse.status()).toBe(200);
+    const aiFreeBudget = await readGuideResponseBudget(aiFreeResponse);
     await expect(page.locator('[data-guide-message-kind="assistant"]'))
       .toHaveCount(aiFreeAssistantCount + 1);
     await expect(aiFreeGuideInput).toBeEnabled();
-    const aiFreeBudget = await readGuideResponseBudget(aiFreeResponse);
     expect(aiFreeBudget.used).toBe(0);
     expect(aiFreeBudget.remaining).toBe(aiFreeBudget.limit);
     expect(guideRequestBodies).toEqual([
@@ -175,6 +175,10 @@ test.describe("CAAIS pilot learning loop", () => {
 
     await expect(taskTwoComplete).toBeEnabled();
     await taskTwoComplete.click();
+    await expect(page.getByRole("textbox", {
+      name: "在这里写下任务理解、计划、执行过程或最终产出。",
+    })).toBeVisible();
+    await openTaskCards(page);
 
     const taskThreeCard = getTaskCard(page, taskIds.taskThree);
     const taskFourCard = getTaskCard(page, taskIds.taskFour);
@@ -189,7 +193,7 @@ test.describe("CAAIS pilot learning loop", () => {
       "pilot-closed",
     );
     await expect(taskThreeCard.getByRole("button", {
-      name: /任务3.*暂不开放/,
+      name: /L2 挑战：执行与监控.*暂不开放/,
     })).toBeDisabled();
     await expect(taskFourCard).toHaveAttribute("data-task-status", "active");
     const afterTaskTwo = await readLearningSession(page);
@@ -326,10 +330,15 @@ test.describe("CAAIS pilot learning loop", () => {
     ]));
     expect(taskTwo.status).toBe("completed");
     expect(taskTwo.completionOutcome).toBe("evidence_complete");
-    expect(taskTwo.scaffoldRequests).toBe(5);
+    expect(taskTwo.scaffoldRequests).toBe(6);
     expect(taskTwo.scaffoldHistory?.slice(0, 4).map((entry) => entry.level))
       .toEqual([1, 2, 3, 4]);
+    expect(taskTwo.scaffoldHistory?.at(-2)).toMatchObject({
+      mode: "self-check",
+      fading: true,
+    });
     expect(taskTwo.scaffoldHistory?.at(-1)).toMatchObject({
+      toolId: "ai-guide",
       mode: "self-check",
       fading: true,
     });
@@ -1031,6 +1040,7 @@ type TaskSnapshot = {
   }>;
   scaffoldRequests?: number;
   scaffoldHistory?: Array<{
+    toolId?: string;
     level?: number;
     mode?: string;
     fading?: boolean;

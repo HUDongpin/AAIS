@@ -1298,6 +1298,91 @@ describe("AAIS backend learning store", () => {
     expect(csv.body).toContain("practice_task_1");
   });
 
+  it("persists successful A1 guide help per task and starts fading on the fifth request", async () => {
+    const store = createAaisLearningStore({ rootDir: tempDir });
+    const appendA1Help = (taskId: string, ordinal: number) => store.appendGuideExchange({
+      studentId: "guide-help-counter",
+      phase: taskId === "training_task_1" ? "training" : "practice",
+      taskId,
+      question: `question-${taskId}-${ordinal}`,
+      answer: `answer-${taskId}-${ordinal}`,
+      turns: [{
+        agentId: "A1",
+        label: "导学智能体",
+        content: `answer-${taskId}-${ordinal}`,
+        actions: ["guide-flow", "scaffold"],
+      }],
+      orchestration: {
+        graphId: "learning-ai-guide",
+        topologicalOrder: ["A1"],
+        threadId: `thread-${taskId}-${ordinal}`,
+      },
+    });
+
+    for (let ordinal = 1; ordinal <= 4; ordinal += 1) {
+      await appendA1Help("training_task_1", ordinal);
+    }
+    await store.appendGuideExchange({
+      studentId: "guide-help-counter",
+      phase: "training",
+      taskId: "training_task_1",
+      question: "Professor request",
+      answer: "Professor response",
+      turns: [{
+        agentId: "A2",
+        label: "Professor",
+        content: "Professor response",
+        actions: ["model", "coach"],
+      }],
+      orchestration: {
+        graphId: "learning-ai-guide",
+        topologicalOrder: ["A2"],
+        threadId: "thread-professor",
+      },
+    });
+
+    const afterFour = await createAaisLearningStore({ rootDir: tempDir })
+      .getOrCreateSession("guide-help-counter");
+    expect(afterFour.tasks.find((task) => task.taskId === "training_task_1")?.scaffoldRequests)
+      .toBe(4);
+    expect(afterFour.tasks.find((task) => task.taskId === "training_task_1")?.scaffoldHistory)
+      .toHaveLength(4);
+    expect(afterFour.events.filter((event) => event.event === "scaffold_request"))
+      .toHaveLength(4);
+
+    const afterFifth = (await appendA1Help("training_task_1", 5)).session;
+    expect(afterFifth.tasks.find((task) => task.taskId === "training_task_1")?.scaffoldRequests)
+      .toBe(5);
+    expect(afterFifth.tasks.find((task) => task.taskId === "training_task_1")?.scaffoldHistory)
+      .toHaveLength(5);
+    expect(afterFifth.tasks.find((task) => task.taskId === "training_task_1")?.scaffoldHistory.at(-1))
+      .toMatchObject({ toolId: "ai-guide", mode: "self-check" });
+    expect(afterFifth.events.findLast((event) => event.event === "scaffold_request")?.detail)
+      .toMatchObject({ request_count: 5, mode: "self-check", source: "ai-guide" });
+    expect(afterFifth.events.filter((event) => event.event === "scaffold_self_check_started"))
+      .toHaveLength(1);
+
+    await store.recordStageEvidence(
+      "guide-help-counter",
+      "training_task_1",
+      "launch_import",
+      "orientation_acknowledged",
+    );
+    await store.recordStageEvidence(
+      "guide-help-counter",
+      "training_task_1",
+      "modeling",
+      "expert_model_reviewed",
+    );
+    await store.completeTask("guide-help-counter", "training_task_1");
+    await store.selectTask("guide-help-counter", "practice_task_1");
+    const practiceHelp = (await appendA1Help("practice_task_1", 1)).session;
+    expect(practiceHelp.tasks.find((task) => task.taskId === "training_task_1")?.scaffoldRequests)
+      .toBe(5);
+    expect(practiceHelp.tasks.find((task) => task.taskId === "practice_task_1")?.scaffoldRequests)
+      .toBe(1);
+  });
+
   it("persists a bounded inline image in the document artifact without weakening other text limits", async () => {
     const store = createAaisLearningStore({ rootDir: tempDir });
     const inlineImageArtifact = `<p>图片记录</p><img alt="测试截图" src="data:image/png;base64,${"A".repeat(64_000)}">`;

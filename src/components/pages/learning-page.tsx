@@ -76,6 +76,7 @@ function LearningWorkbenchState({
     documentTitle,
     getArtifactRevision,
     getAiUseModeMutationStatus,
+    getTaskScaffoldRequests,
     historyDocuments,
     lastSavedArtifactLengthRef,
     learnerDataGeneration,
@@ -88,8 +89,7 @@ function LearningWorkbenchState({
     setBackendError,
     setDocumentTitle,
     setHistoryDocuments,
-    waitForLearnerDataGeneration,
-    tasks,
+    waitForLearnerDataGeneration, tasks, confirmTaskScaffoldRequests,
   } = useLearningWorkspaceSession(
     locale,
     {
@@ -162,8 +162,10 @@ function LearningWorkbenchState({
     artifactText,
     displayName: actor.displayName,
     isGuideSubmissionBlocked: () => getAiUseModeMutationStatus(editingTaskId) !== null,
+    getHelpRequestsUsed: getTaskScaffoldRequests,
     waitForLearnerDataGeneration,
     locale,
+    onHelpRequestsUsedConfirmed: confirmTaskScaffoldRequests,
     persistedGuideMessages,
     studentId,
   });
@@ -228,7 +230,6 @@ function LearningWorkbenchState({
     setHistoryDocuments([]);
     setActiveHistoryDocumentId(null);
   }
-
   function recordArtifact(value: string) {
     setDocumentDownloadStatus("");
     setDocumentDownloadError("");
@@ -236,13 +237,11 @@ function LearningWorkbenchState({
     setArtifactText(value);
     scheduleArtifactSave(editingTaskId, value);
   }
-
   function recordDocumentTitle(value: string) {
     documentTitleRef.current = value;
     setDocumentTitle(value);
     scheduleArtifactSave(editingTaskId, artifactText, { documentTitle: value });
   }
-
   function selectContentTab(nextTab: ContentTab) {
     if (
       activeTab === "editor"
@@ -267,7 +266,6 @@ function LearningWorkbenchState({
       setActiveContentId(null);
     }
   }
-
   const saveAndCloseDocument = useLearningDocumentArchive({
     activeHistoryDocumentId,
     activeTaskId: editingTaskId,
@@ -295,7 +293,6 @@ function LearningWorkbenchState({
     setDocumentCloseError,
     setDocumentTitle,
   });
-
   async function downloadDocumentToLocal() {
     if (documentDownloadBusy) {
       return;
@@ -358,7 +355,6 @@ function LearningWorkbenchState({
       setDocumentDownloadBusy(false);
     }
   }
-
   function openHistoryDocument(document: SavedLearningDocument) {
     if (hasUncommittedArtifactSave()) {
       flushPendingArtifactSave("history-navigation");

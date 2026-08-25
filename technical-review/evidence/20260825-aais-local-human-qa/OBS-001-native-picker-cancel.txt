@@ -1,0 +1,13 @@
+schema=aais.local-human-qa.observation.v1
+observation=OBS-001
+status=OBSERVATION
+severity=none
+reproduction=1
+action=cancel native Markdown save picker
+document_area_generic_failure_visible=true
+guide_area_same_generic_failure_visible=true
+confirmed_defect=false
+reason=did not reach 2/2 confirmation threshold
+native_path_retained=false
+document_content_retained=false
+retest=use a controllable headed operating-system file picker and repeat in two fresh sessions

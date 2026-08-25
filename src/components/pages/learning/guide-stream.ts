@@ -34,6 +34,9 @@ export type GuideResponseBody = {
     remaining?: number;
     resetsAt?: string;
   };
+  workspaceState?: {
+    helpRequestsUsed?: number;
+  };
 };
 
 export type GuidePersistedExchange = {
@@ -45,6 +48,11 @@ export type GuideDailyBudgetExceededDetails = {
   limit: number | null;
   resetsAt: string | null;
 };
+
+export function readConfirmedHelpRequestsUsed(body: GuideResponseBody) {
+  const count = body.workspaceState?.helpRequestsUsed;
+  return Number.isSafeInteger(count) && Number(count) >= 0 ? Number(count) : null;
+}
 
 export class AaisGuideRequestError extends Error {
   constructor(
@@ -100,6 +108,7 @@ export async function readGuideStreamResponse(
   let fallback = false;
   let graphId: string | undefined;
   let exchange: GuidePersistedExchange | undefined;
+  let helpRequestsUsed: number | undefined;
   let buffer = "";
   let streamCompleted = false;
 
@@ -171,6 +180,17 @@ export async function readGuideStreamResponse(
 
     if (streamEvent.event === "done" || streamEvent.event === "background_done") {
       exchange = readCanonicalGuideExchange(streamEvent.data.exchange) ?? exchange;
+      const workspaceState = streamEvent.data.workspaceState;
+      if (isRecord(workspaceState)) {
+        const confirmedCount = workspaceState.helpRequestsUsed;
+        if (
+          typeof confirmedCount === "number"
+          && Number.isInteger(confirmedCount)
+          && confirmedCount >= 0
+        ) {
+          helpRequestsUsed = confirmedCount;
+        }
+      }
       streamCompleted = true;
     }
   };
@@ -231,6 +251,9 @@ export async function readGuideStreamResponse(
         },
       },
     },
+    ...(helpRequestsUsed !== undefined
+      ? { workspaceState: { helpRequestsUsed } }
+      : {}),
   };
   validateGuideResponse(response, body);
   return body;
@@ -397,6 +420,10 @@ function parseGuideStreamEvent(block: string): GuideStreamEvent | null {
 
 function readStreamAgentId(data: Record<string, unknown>) {
   return typeof data.agentId === "string" ? data.agentId : null;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function readGuideStreamAgentLabel(agentId: string, locale: Locale) {

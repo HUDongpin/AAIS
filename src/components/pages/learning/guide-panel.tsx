@@ -92,7 +92,6 @@ export function GuidePanel({
         block: "nearest",
         inline: "nearest",
       });
-      return;
     }
     if (agentMessageChanged) {
       latestAgentMessageEndRef.current?.scrollIntoView?.({

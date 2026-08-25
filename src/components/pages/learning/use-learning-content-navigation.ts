@@ -107,10 +107,20 @@ export function useLearningContentNavigation({
     setTaskActionBusy(true);
     setTaskActionError("");
     try {
-      await patchSession({
+      const nextSession = await patchSession({
         action: "complete-task",
         taskId,
       });
+      const nextActiveTask = nextSession.tasks.find(
+        (task) => task.taskId === nextSession.activeTaskId,
+      );
+      if (
+        nextSession.activeTaskId !== taskId
+        && nextActiveTask?.status === "active"
+      ) {
+        setActiveContentId(null);
+        onOpenTaskEditor();
+      }
     } catch {
       setTaskActionError(taskActionErrorMessage);
     } finally {

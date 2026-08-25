@@ -91,7 +91,7 @@ describe("learning page components", () => {
     ));
   });
 
-  it("scrolls a newly appended user message into the visible transcript", () => {
+  it("keeps a newly appended user message and immediately completed reply visible", () => {
     const scrollIntoView = vi.fn();
     const originalScrollIntoView = HTMLElement.prototype.scrollIntoView;
     Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
@@ -142,10 +142,16 @@ describe("learning page components", () => {
       ]));
 
       const userMessage = screen.getByText("不知道").closest("[data-guide-message-id]");
-      expect(scrollIntoView).toHaveBeenCalledTimes(1);
+      const agentMessageEnd = document.querySelector('[data-guide-message-end="assistant-3"]');
+      expect(scrollIntoView).toHaveBeenCalledTimes(2);
       expect(scrollIntoView.mock.contexts[0]).toBe(userMessage);
-      expect(scrollIntoView).toHaveBeenCalledWith({
+      expect(scrollIntoView.mock.contexts[1]).toBe(agentMessageEnd);
+      expect(scrollIntoView).toHaveBeenNthCalledWith(1, {
         block: "nearest",
+        inline: "nearest",
+      });
+      expect(scrollIntoView).toHaveBeenNthCalledWith(2, {
+        block: "end",
         inline: "nearest",
       });
     } finally {
@@ -655,6 +661,24 @@ describe("learning page components", () => {
     expect((screen.getByRole("button", {
       name: "社交媒体与大学生心理健康课程论文大纲，已锁定",
     }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByText(
+      "我想写一篇关于社交媒体对大学生心理健康影响的课程论文，请帮我写一个大纲，要有引言、文献综述、分析和结论。",
+    )).toBeTruthy();
+    expect(screen.getByText("练习1")).toBeTruthy();
+    expect(screen.getByText("练习2")).toBeTruthy();
+    expect(screen.getByText("练习3")).toBeTruthy();
+    expect(screen.getByText(
+      "先导实验阶段，任务3暂不开放，完成任务2后，会自动进入任务4",
+    ).getAttribute("data-task-card-note")).toBe("practice_task_2");
+    expect(document.querySelector('[data-task-card="practice_task_2"]')?.getAttribute(
+      "data-task-availability",
+    )).toBe("pilot-closed");
+    expect((screen.getByRole("button", {
+      name: "L2 挑战：执行与监控，暂不开放",
+    }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByText(
+      "产出一份结构完整、内容合理、可操作性强的《大学生GenAI学习使用指南》设计稿（不少于800字）。",
+    )).toBeTruthy();
 
     fireEvent.click(screen.getByRole("button", {
       name: "完成任务：专家示范后的案例训练",
@@ -687,7 +711,7 @@ describe("learning page components", () => {
       name: "进入任务：社交媒体与大学生心理健康课程论文大纲",
     }));
     expect(onSelectTask).toHaveBeenCalledWith("practice_task_1");
-    expect(screen.getByText("已完成 1/3 个任务")).toBeTruthy();
+    expect(screen.getByText("已完成 1/3 个开放任务")).toBeTruthy();
   });
 
   it("shows the seven-stage pilot flow and keeps completed modelling visible after task transition", () => {
@@ -960,7 +984,7 @@ describe("learning page components", () => {
       name: "完成任务：社交媒体与大学生心理健康课程论文大纲",
     }) as HTMLButtonElement).disabled).toBe(true);
     expect(screen.getByText("指出原提示词的不足并说明理由", { selector: "li" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: /任务3.*暂不开放/ })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /L2 挑战.*暂不开放/ })).toBeTruthy();
   });
 
   it("shows scaffold level and remaining direct assists returned by the real scaffold action", async () => {

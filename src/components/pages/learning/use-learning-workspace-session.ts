@@ -16,6 +16,11 @@ import { hydrateHistoryDocuments } from "@/components/pages/learning/document-ma
 import type { SavedLearningDocument } from "@/components/pages/learning/learning-page-types";
 import { getPersistedGuideMessages } from "@/components/pages/learning/guide-message-persistence";
 import {
+  attachExpectedTextRevision,
+  clearPendingPilotMutation,
+  type TaskTextRevisions,
+} from "@/components/pages/learning/learning-session-revisions";
+import {
   admitAaisResearchAction,
   captureAaisResearchActorGeneration,
   classifyAaisResearchClientError,
@@ -26,12 +31,8 @@ import type { Locale } from "@/data/aais";
 import {
   attachStableReplayMutation,
   clearStableReplayMutation,
-  createPendingPilotMutationKey,
   getAiUseModeMutationValue,
   isExplicitClientRejection,
-  isPilotMutationAction,
-  readExpectedPilotEvidenceRevision,
-  stableSerializePilotMutationPayload,
   type PendingPilotMutation,
   type PendingStableReplayMutation,
 } from "@/components/pages/learning/learning-pilot-mutation";
@@ -66,14 +67,11 @@ export function useLearningWorkspaceSession(
   const [historyDocuments, setHistoryDocuments] = useState<SavedLearningDocument[]>([]);
   const [persistedGuideMessages, setPersistedGuideMessages] = useState<GuideMessage[]>([]);
   const [tasks, setTasks] = useState<AaisClientTaskRecord[]>([]);
+  const tasksRef = useRef<AaisClientTaskRecord[]>([]);
   const [learnerDataGeneration, setLearnerDataGeneration] = useState<number | null>(null);
   const [backendError, setBackendError] = useState("");
   const artifactRevisionRef = useRef(0);
-  const taskTextRevisionsRef = useRef(new Map<string, {
-    artifactRevision: number;
-    pilotEvidenceRevision: number;
-    selfReportRevision: number;
-  }>());
+  const taskTextRevisionsRef = useRef(new Map<string, TaskTextRevisions>());
   const lastSavedArtifactLengthRef = useRef(0);
   const sessionGenerationRef = useRef(0);
   const learnerDataGenerationRef = useRef<number | null>(null);
@@ -129,7 +127,9 @@ export function useLearningWorkspaceSession(
       throw new Error("AAIS learner data generation is unavailable.");
     }
     taskTextRevisionsRef.current = nextTaskTextRevisions;
-    setTasks(session.tasks ?? []);
+    const nextTasks = session.tasks ?? [];
+    tasksRef.current = nextTasks;
+    setTasks(nextTasks);
     learnerDataGenerationRef.current = session.dataGeneration;
     setLearnerDataGeneration(session.dataGeneration);
     for (const resolve of learnerDataGenerationWaitersRef.current.splice(0)) {
@@ -170,12 +170,17 @@ export function useLearningWorkspaceSession(
         pendingStableMutationsRef.current,
         createAaisResearchOperationId,
       );
-      requestBody = attachExpectedTextRevision(requestBody);
+      requestBody = attachExpectedTextRevision(
+        requestBody,
+        taskTextRevisionsRef.current,
+        pendingPilotMutationsRef.current,
+        createAaisResearchOperationId,
+      );
       const session = await patchLearningSession({
         ...requestBody,
         dataGeneration,
       });
-      clearPendingPilotMutation(requestBody);
+      clearPendingPilotMutation(requestBody, pendingPilotMutationsRef.current);
       clearStableReplayMutation(requestBody, pendingStableMutationsRef.current);
       settleAiUseModeMutation(aiUseModeMutation, null);
       if (sessionGeneration === sessionGenerationRef.current) {
@@ -188,7 +193,7 @@ export function useLearningWorkspaceSession(
       return session;
     } catch (error) {
       if (isExplicitClientRejection(error)) {
-        clearPendingPilotMutation(requestBody);
+        clearPendingPilotMutation(requestBody, pendingPilotMutationsRef.current);
         clearStableReplayMutation(requestBody, pendingStableMutationsRef.current);
       }
       settleAiUseModeMutation(aiUseModeMutation, "unsaved");
@@ -264,89 +269,6 @@ export function useLearningWorkspaceSession(
     }
   }
 
-  function attachExpectedTextRevision(body: LearningSessionPatchBody) {
-    const action = body.action;
-    if (
-      action !== "save-artifact"
-      && action !== "archive-artifact"
-      && action !== "record-ai-acceptance"
-      && action !== "save-pilot-evidence"
-      && action !== "save-self-report"
-    ) {
-      return body;
-    }
-    if (typeof body.taskId !== "string") {
-      throw new Error("AAIS learner task revision is unavailable.");
-    }
-    const revisions = taskTextRevisionsRef.current.get(body.taskId);
-    if (action === "save-pilot-evidence" || action === "record-ai-acceptance") {
-      if (body.expectedPilotEvidenceRevision !== undefined && body.mutationId !== undefined) {
-        return body;
-      }
-      if (!revisions && body.expectedPilotEvidenceRevision === undefined) {
-        throw new Error("AAIS learner pilot-evidence revision is unavailable.");
-      }
-      const pendingKey = createPendingPilotMutationKey(action, body.taskId);
-      const payloadSignature = stableSerializePilotMutationPayload(body);
-      const currentPending = pendingPilotMutationsRef.current.get(pendingKey);
-      const pending = currentPending?.payloadSignature === payloadSignature
-        ? currentPending
-        : {
-            expectedPilotEvidenceRevision: readExpectedPilotEvidenceRevision(
-              body.expectedPilotEvidenceRevision,
-              revisions?.pilotEvidenceRevision,
-            ),
-            mutationId: typeof body.mutationId === "string"
-              ? body.mutationId
-              : createAaisResearchOperationId(
-                  action === "record-ai-acceptance"
-                    ? "ai-acceptance-mutation"
-                    : "pilot-evidence-mutation",
-                ),
-            payloadSignature,
-          };
-      pendingPilotMutationsRef.current.set(pendingKey, pending);
-      return {
-        ...body,
-        expectedPilotEvidenceRevision: pending.expectedPilotEvidenceRevision,
-        mutationId: pending.mutationId,
-      };
-    }
-    if (action === "save-self-report") {
-      if (body.expectedSelfReportRevision !== undefined) {
-        return body;
-      }
-      if (!revisions) {
-        throw new Error("AAIS learner self-report revision is unavailable.");
-      }
-      return {
-        ...body,
-        expectedSelfReportRevision: revisions.selfReportRevision,
-      };
-    }
-    if (body.expectedArtifactRevision !== undefined) {
-      return body;
-    }
-    if (!revisions) {
-      throw new Error("AAIS learner artifact revision is unavailable.");
-    }
-    return {
-      ...body,
-      expectedArtifactRevision: revisions.artifactRevision,
-    };
-  }
-
-  function clearPendingPilotMutation(body: LearningSessionPatchBody) {
-    if (!isPilotMutationAction(body.action) || typeof body.taskId !== "string") {
-      return;
-    }
-    const key = createPendingPilotMutationKey(body.action, body.taskId);
-    const pending = pendingPilotMutationsRef.current.get(key);
-    if (pending?.mutationId === body.mutationId) {
-      pendingPilotMutationsRef.current.delete(key);
-    }
-  }
-
   const getArtifactRevision = useCallback((taskId: string) => {
     return taskTextRevisionsRef.current.get(taskId)?.artifactRevision ?? null;
   }, []);
@@ -357,6 +279,24 @@ export function useLearningWorkspaceSession(
     void aiUseModeMutationRevision;
     return aiUseModeMutationsRef.current.get(taskId)?.status ?? null;
   }
+
+  const getTaskScaffoldRequests = useCallback((taskId: string) => {
+    const count = tasksRef.current.find((task) => task.taskId === taskId)?.scaffoldRequests;
+    return Number.isSafeInteger(count) && Number(count) >= 0 ? Number(count) : 0;
+  }, []);
+
+  const confirmTaskScaffoldRequests = useCallback((taskId: string, count: number) => {
+    if (!Number.isSafeInteger(count) || count < 0) {
+      return;
+    }
+    const nextTasks = tasksRef.current.map((task) =>
+      task.taskId === taskId
+        ? { ...task, scaffoldRequests: count }
+        : task
+    );
+    tasksRef.current = nextTasks;
+    setTasks(nextTasks);
+  }, []);
 
   function waitForLearnerDataGeneration() {
     const current = learnerDataGenerationRef.current;
@@ -391,6 +331,7 @@ export function useLearningWorkspaceSession(
     setActiveHistoryDocumentId(null);
     setHistoryDocuments([]);
     setPersistedGuideMessages([]);
+    tasksRef.current = [];
     setTasks([]);
     learnerDataGenerationRef.current = nextDataGeneration;
     setLearnerDataGeneration(nextDataGeneration);
@@ -476,6 +417,7 @@ export function useLearningWorkspaceSession(
     historyDocuments,
     getArtifactRevision,
     getAiUseModeMutationStatus,
+    getTaskScaffoldRequests,
     documentTitle,
     lastSavedArtifactLengthRef,
     learnerDataGeneration,
@@ -483,6 +425,7 @@ export function useLearningWorkspaceSession(
     persistedGuideMessages,
     requestScaffold,
     tasks,
+    confirmTaskScaffoldRequests,
     resetWorkspaceSession,
     setArtifactText,
     setActiveHistoryDocumentId,

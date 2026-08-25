@@ -62,6 +62,7 @@ export type LearningCopy = {
       ordinal: (index: number) => string;
       phase: Record<"training" | "practice", string>;
       status: Record<AaisClientTaskStatus, string>;
+      unavailable: string;
       lockedHint: string;
       enter: string;
       continue: string;
@@ -70,6 +71,7 @@ export type LearningCopy = {
       completing: string;
       actionFailed: string;
       lockedButton: (title: string) => string;
+      unavailableButton: (title: string) => string;
       enterButton: (title: string) => string;
       continueButton: (title: string) => string;
       reviewButton: (title: string) => string;
@@ -217,7 +219,7 @@ export const learningCopyByLocale: Record<Locale, LearningCopy> = {
       },
       taskCards: {
         listLabel: "认知学徒任务卡片",
-        progress: (completed, total) => `已完成 ${completed}/${total} 个任务`,
+        progress: (completed, total) => `已完成 ${completed}/${total} 个开放任务`,
         ordinal: (index) => `任务 ${index}`,
         phase: {
           training: "训练任务",
@@ -229,7 +231,8 @@ export const learningCopyByLocale: Record<Locale, LearningCopy> = {
           active: "进行中",
           completed: "已完成",
         },
-        lockedHint: "完成上一任务后解锁",
+        unavailable: "暂不开放",
+        lockedHint: "完成当前可用任务后解锁",
         enter: "进入任务",
         continue: "继续任务",
         review: "查看任务",
@@ -237,6 +240,7 @@ export const learningCopyByLocale: Record<Locale, LearningCopy> = {
         completing: "处理中...",
         actionFailed: "任务状态更新失败，请稍后重试。",
         lockedButton: (title) => `${title}，已锁定`,
+        unavailableButton: (title) => `${title}，暂不开放`,
         enterButton: (title) => `进入任务：${title}`,
         continueButton: (title) => `继续任务：${title}`,
         reviewButton: (title) => `查看任务：${title}`,
@@ -386,7 +390,7 @@ export const learningCopyByLocale: Record<Locale, LearningCopy> = {
       },
       taskCards: {
         listLabel: "Cognitive Apprenticeship task cards",
-        progress: (completed, total) => `${completed} of ${total} tasks completed`,
+        progress: (completed, total) => `${completed} of ${total} available tasks completed`,
         ordinal: (index) => `Task ${index}`,
         phase: {
           training: "Training task",
@@ -398,7 +402,8 @@ export const learningCopyByLocale: Record<Locale, LearningCopy> = {
           active: "In progress",
           completed: "Completed",
         },
-        lockedHint: "Complete the previous task to unlock this one",
+        unavailable: "Unavailable",
+        lockedHint: "Complete the current available task to unlock this one",
         enter: "Open task",
         continue: "Continue task",
         review: "Review task",
@@ -406,6 +411,7 @@ export const learningCopyByLocale: Record<Locale, LearningCopy> = {
         completing: "Updating...",
         actionFailed: "The task status could not be updated. Please try again.",
         lockedButton: (title) => `${title}, locked`,
+        unavailableButton: (title) => `${title}, unavailable`,
         enterButton: (title) => `Open task: ${title}`,
         continueButton: (title) => `Continue task: ${title}`,
         reviewButton: (title) => `Review task: ${title}`,

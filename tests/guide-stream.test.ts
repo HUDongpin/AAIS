@@ -88,7 +88,11 @@ describe("guide stream visualization transport", () => {
           })}\n\n`,
         ));
         controller.enqueue(encoder.encode(
-          `event: done\ndata: ${JSON.stringify({ status: "completed", exchange: canonicalExchange })}\n\n`,
+          `event: done\ndata: ${JSON.stringify({
+            status: "completed",
+            exchange: canonicalExchange,
+            workspaceState: { helpRequestsUsed: 4 },
+          })}\n\n`,
         ));
         controller.close();
       },
@@ -119,6 +123,7 @@ describe("guide stream visualization transport", () => {
         visualizations: [expect.objectContaining({ expression: "y = 2x² + 3x + 4" })],
       })],
     }));
+    expect(body.workspaceState).toEqual({ helpRequestsUsed: 4 });
   });
 
   it("accepts canonical ids only from the final done event", async () => {

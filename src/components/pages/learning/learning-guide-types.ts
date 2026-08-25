@@ -10,8 +10,10 @@ export type UseLearningGuideInput = {
   artifactText: string;
   displayName: string;
   isGuideSubmissionBlocked?: () => boolean;
+  getHelpRequestsUsed: (taskId: string) => number;
   waitForLearnerDataGeneration: () => number | Promise<number>;
   locale: Locale;
+  onHelpRequestsUsedConfirmed: (taskId: string, count: number) => void;
   persistedGuideMessages?: GuideMessage[];
   studentId: string;
 };

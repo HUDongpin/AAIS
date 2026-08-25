@@ -38,7 +38,9 @@ function LearningGuideResetHarness() {
     activeTaskId: "training_task_1",
     artifactText: "",
     displayName: "Bobie",
+    getHelpRequestsUsed: () => 0,
     locale: "zh-CN",
+    onHelpRequestsUsedConfirmed: vi.fn(),
     studentId: "S001",
     waitForLearnerDataGeneration: () => 1,
   });
@@ -1493,6 +1495,58 @@ describe("AAIS LearningPage", () => {
     expect(a2Avatar.querySelector('[data-avatar-part="expert-spark"]')).toBeNull();
   });
 
+  it("sends the persisted task help count and updates it only from a successful server confirmation", async () => {
+    setCsrfCookie();
+    const session = createClientSessionFixture("");
+    session.tasks[0]!.scaffoldRequests = 3;
+    let guideAttempt = 0;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.startsWith("/api/learning/session") && (!init || init.method === "GET")) {
+        return Response.json({ session });
+      }
+      if (url === "/api/learning/ai-guide" && init?.method === "POST") {
+        guideAttempt += 1;
+        if (guideAttempt === 1) {
+          return Response.json({
+            error: {
+              code: "AAIS_GUIDE_REQUEST_FAILED",
+              message: "AAIS guide request failed.",
+            },
+          }, { status: 500 });
+        }
+        return Response.json({
+          message: { text: "AAIS 智能体已回复。" },
+          turns: [{
+            agentId: "A1",
+            label: "导学智能体",
+            content: `server-confirmed-${guideAttempt - 1}`,
+            actions: ["guide-flow", "scaffold"],
+          }],
+          workspaceState: { helpRequestsUsed: 4 },
+        });
+      }
+      return Response.json({ ok: true });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<LearningPage />);
+
+    submitGuidePrompt("first attempt fails");
+    await screen.findByText("智能服务暂时不可用，已保留你的问题。请稍后重试。");
+    submitGuidePrompt("retry succeeds");
+    await screen.findByText("server-confirmed-1");
+    submitGuidePrompt("next successful request");
+    await screen.findByText("server-confirmed-2");
+
+    const guideRequestCounts = fetchMock.mock.calls
+      .filter(([input, init]) =>
+        String(input) === "/api/learning/ai-guide" && init?.method === "POST"
+      )
+      .map(([, init]) => JSON.parse(String(init?.body)).workspaceState.helpRequestsUsed);
+    expect(guideRequestCounts).toEqual([3, 3, 4]);
+  });
+
   it("keeps processing-only stream events hidden until the final agent answer", async () => {
     setCsrfCookie();
     const encoder = new TextEncoder();
@@ -1749,6 +1803,13 @@ describe("AAIS LearningPage", () => {
     expect((screen.getByRole("button", {
       name: "社交媒体与大学生心理健康课程论文大纲，已锁定",
     }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByText(
+      "先导实验阶段，任务3暂不开放，完成任务2后，会自动进入任务4",
+    )).toBeTruthy();
+    expect(screen.getByRole("heading", {
+      name: "设计一份《大学生GenAI学习使用指南》",
+      level: 3,
+    })).toBeTruthy();
 
     fireEvent.click(screen.getByRole("button", { name: "返回内容展示" }));
     fireEvent.click(screen.getByRole("button", { name: "历史文档" }));
@@ -1797,7 +1858,7 @@ describe("AAIS LearningPage", () => {
       name: "社交媒体与大学生心理健康课程论文大纲，已锁定",
     }) as HTMLButtonElement).disabled).toBe(true);
     expect((screen.getByRole("button", {
-      name: "任务3：L2 挑战：执行与监控：暂不开放",
+      name: "L2 挑战：执行与监控，暂不开放",
     }) as HTMLButtonElement).disabled).toBe(true);
 
     fireEvent.click(screen.getByRole("button", {
@@ -1808,9 +1869,9 @@ describe("AAIS LearningPage", () => {
       name: "进入任务：社交媒体与大学生心理健康课程论文大纲",
     })).toBeTruthy();
     expect((screen.getByRole("button", {
-      name: "任务3：L2 挑战：执行与监控：暂不开放",
+      name: "L2 挑战：执行与监控，暂不开放",
     }) as HTMLButtonElement).disabled).toBe(true);
-    expect(screen.getByText("已完成 1/3 个任务")).toBeTruthy();
+    expect(screen.getByText("已完成 1/3 个开放任务")).toBeTruthy();
   });
 
   it("skips the pilot-closed Task 3 and activates Task 4 after Task 2 completes", async () => {
@@ -1846,14 +1907,22 @@ describe("AAIS LearningPage", () => {
       name: "完成任务：社交媒体与大学生心理健康课程论文大纲",
     }));
 
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "文档编辑" }).getAttribute("aria-pressed"))
+        .toBe("true");
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    fireEvent.click(screen.getByRole("button", { name: "内容展示" }));
+    fireEvent.click(screen.getByRole("button", { name: /任务卡片/ }));
     expect(await screen.findByRole("button", {
       name: "继续任务：设计一份《大学生GenAI学习使用指南》",
     })).toBeTruthy();
     expect(document.querySelector('[data-task-card="practice_task_3"]')?.getAttribute("data-task-status"))
       .toBe("active");
     expect((screen.getByRole("button", {
-      name: "任务3：L2 挑战：执行与监控：暂不开放",
+      name: "L2 挑战：执行与监控，暂不开放",
     }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByText("已完成 2/3 个开放任务")).toBeTruthy();
   });
 
   it("sends versioned Task 2 pilot evidence and a fresh mutation id", async () => {
@@ -2443,7 +2512,7 @@ describe("AAIS LearningPage", () => {
       ?.getAttribute("data-completion-outcome")).toBe("ended_incomplete");
     expect(document.querySelector('[data-task-card="practice_task_3"]')
       ?.getAttribute("data-task-status")).toBe("active");
-    expect(screen.getByText("已完成 1/3 个任务")).toBeTruthy();
+    expect(screen.getByText("已完成 1/3 个开放任务")).toBeTruthy();
   });
 
   it("keeps incomplete stale backend guide messages out of the learner transcript", async () => {
@@ -3273,6 +3342,7 @@ describe("AAIS LearningPage", () => {
 
     const guideInput = screen.getByLabelText("向智能导学输入你的想法");
     const inputShell = guideInput.closest("div");
+    const uploadButton = screen.getByRole("button", { name: "上传文件" });
     const sendButton = screen.getByRole("button", { name: "发送" });
 
     expect(inputShell?.className).toContain("w-full");
@@ -3281,6 +3351,10 @@ describe("AAIS LearningPage", () => {
     expect(inputShell?.className).toContain("rounded-[28px]");
     expect(guideInput.className).toContain("h-[72px]");
     expect(guideInput.className).toContain("text-base");
+    expect(uploadButton.className).toContain("size-11");
+    expect(uploadButton.querySelector("svg")?.getAttribute("width")).toBe("22");
+    expect(sendButton.className).toContain("size-11");
+    expect(sendButton.querySelector("svg")?.getAttribute("width")).toBe("22");
     expect(sendButton.className).toContain("bg-[#d7dbe3]");
 
     fireEvent.change(guideInput, {

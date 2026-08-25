@@ -164,6 +164,24 @@ describe("AAIS LoginPage", () => {
     expect(new URL(window.location.href).searchParams.get("lang")).toBe("en-US");
   });
 
+  it("keeps the language and password visibility controls at least 44 CSS pixels", () => {
+    render(<LoginPage />);
+
+    const languageSelector = screen.getByRole("combobox", { name: "语言" });
+    const languageTarget = languageSelector.closest("label");
+    const passwordInput = screen.getByLabelText("密码");
+    const passwordVisibility = screen.getByRole("button", { name: "显示密码" });
+
+    expect(languageTarget?.className).toContain("min-h-11");
+    expect(languageSelector.className).toContain("h-11");
+    expect(passwordVisibility.className).toContain("size-11");
+    expect(passwordVisibility.querySelector("svg")?.getAttribute("width")).toBe("20");
+    expect(passwordInput.className).toContain("pr-14");
+
+    fireEvent.click(passwordVisibility);
+    expect(screen.getByRole("button", { name: "隐藏密码" }).className).toContain("size-11");
+  });
+
   it("restores a previously selected login language when the URL has no language override", async () => {
     window.localStorage.setItem("aais_login_locale", "en-US");
 

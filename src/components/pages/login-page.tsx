@@ -362,14 +362,14 @@ export function LoginPage({
           className="relative mx-auto flex min-h-[100dvh] w-full max-w-[720px] items-center px-5 py-8 sm:px-8"
           aria-labelledby="aais-login-heading"
         >
-          <label className="absolute right-5 top-5 inline-flex h-10 items-center rounded-full text-sm font-semibold text-[#202640] transition hover:bg-[#eef4ff] focus-within:ring-2 focus-within:ring-[#1f6feb] sm:right-8 sm:top-8">
+          <label className="absolute right-5 top-5 inline-flex min-h-11 items-center rounded-full text-sm font-semibold text-[#202640] transition hover:bg-[#eef4ff] focus-within:ring-2 focus-within:ring-[#1f6feb] sm:right-8 sm:top-8">
             <span className="sr-only">{copy.languageLabel}</span>
             <select
               aria-label={copy.languageLabel}
               value={locale}
               onChange={handleLanguageChange}
               disabled={submitting}
-              className="h-10 cursor-pointer appearance-none rounded-full bg-transparent py-0 pl-3 pr-8 font-semibold outline-none disabled:cursor-not-allowed disabled:opacity-60"
+              className="h-11 cursor-pointer appearance-none rounded-full bg-transparent py-0 pl-3 pr-8 font-semibold outline-none disabled:cursor-not-allowed disabled:opacity-60"
             >
               <option value="zh-CN">中文</option>
               <option value="en-US">English</option>
@@ -619,7 +619,7 @@ export function LoginPage({
                       id="aais-login-password"
                       value={password}
                       onChange={(event) => setPassword(event.target.value)}
-                      className="h-14 w-full rounded-lg border border-[#c8d9f5] bg-white pl-12 pr-12 text-base font-medium text-[#18213a] outline-none transition placeholder:text-[#8794aa] focus:border-[#1f6feb] focus:ring-4 focus:ring-[#1f6feb]/15"
+                      className="h-14 w-full rounded-lg border border-[#c8d9f5] bg-white pl-12 pr-14 text-base font-medium text-[#18213a] outline-none transition placeholder:text-[#8794aa] focus:border-[#1f6feb] focus:ring-4 focus:ring-[#1f6feb]/15"
                       autoComplete="current-password"
                       placeholder={copy.passwordPlaceholder}
                       type={showPassword ? "text" : "password"}
@@ -627,7 +627,7 @@ export function LoginPage({
                     <button
                       type="button"
                       onClick={() => setShowPassword((current) => !current)}
-                      className="absolute right-3 top-1/2 inline-flex size-9 -translate-y-1/2 items-center justify-center rounded-full text-[#6a7892] outline-none transition hover:bg-[#eef4ff] hover:text-[#1f6feb] focus-visible:ring-2 focus-visible:ring-[#1f6feb]"
+                      className="absolute right-2 top-1/2 inline-flex size-11 -translate-y-1/2 items-center justify-center rounded-full text-[#6a7892] outline-none transition hover:bg-[#eef4ff] hover:text-[#1f6feb] focus-visible:ring-2 focus-visible:ring-[#1f6feb]"
                       aria-label={showPassword ? copy.hidePassword : copy.showPassword}
                     >
                       {showPassword ? (

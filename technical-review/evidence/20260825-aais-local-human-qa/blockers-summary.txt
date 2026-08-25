@@ -1,0 +1,40 @@
+schema=aais.local-human-qa.blockers.v1
+
+[native_file_picker]
+status=BLOCKED_ENVIRONMENT
+reason_code=BLOCKED_ENVIRONMENT_NATIVE_FILE_PICKER
+attempts=2/2
+unverified_scope=student Markdown entity save and learner privacy export entity save
+automated_download_event_expected=false
+product_defect_assigned=false
+retest_condition=frontmost headed Chromium with controllable operating-system save dialog and a verified external destination
+
+[voiceover]
+status=BLOCKED_ENVIRONMENT
+reason_code=BLOCKED_VOICEOVER_TARGETING
+attempts=2/2
+actual=operating-system accessibility target resolved another Chrome surface instead of the isolated headed test window
+unverified_scope=spoken main landmark heading live-region status alert and busy semantics on login learner and teacher pages
+separate_dom_keyboard_checks=PASS_WITH_RECORDED_PRODUCT_ISSUES
+product_defect_assigned=false
+retest_condition=VoiceOver application identity confirms the isolated Chromium window before the cursor enters page content
+
+[lrs_reconciliation]
+status=BLOCKED_EXTERNAL
+reason_code=BLOCKED_LRS_RECONCILIATION
+attempts=one authorized flush and one GET-only readback window
+actual=all eleven IDs individually readable but local attempt remains uncertain and actor collection consistency did not converge within sixty seconds
+second_flush_performed=false
+requeue_performed=false
+manual_post_performed=false
+admin_reconciliation_performed=false
+product_defect_assigned=false
+retest_condition=before Trash is emptied obtain explicit authorization restore the exact isolated database and perform non-redispatch reconciliation plus provider actor-index and statement-version clarification; otherwise preserve this blocker and do not substitute a new write
+
+[not_run_safety]
+learning_data_delete=false
+real_email_send=false
+admin_account_change=false
+recommendation_status_write=false
+main_run_lrs_flush=false
+main_run_lrs_flush_reason=two foreign teacher candidates were present in the global worker population

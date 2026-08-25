@@ -8,27 +8,39 @@ import { createInitialGuideMessages, getGuideAttachmentOnlyPrompt } from "@/comp
 import { getLearningCopy } from "@/components/pages/learning/learning-copy";
 import { pilotCopy } from "@/components/pages/learning/pilot-learning-copy";
 import { getGuideDailyBudgetFailurePresentation } from "@/components/pages/learning/guide-error-presentation";
-import { addReadAttachmentMetadataToGuideMessage, getControlledGuideAttachmentMimeType,
-  useHydratePersistedGuideMessages } from "@/components/pages/learning/guide-message-persistence";
+import { requestLearningGuideResponse } from "@/components/pages/learning/guide-response-request";
+import {
+  addReadAttachmentMetadataToGuideMessage,
+  getControlledGuideAttachmentMimeType,
+  useHydratePersistedGuideMessages,
+} from "@/components/pages/learning/guide-message-persistence";
 import { getVisibleGuideTurns, toGuideAttachmentPayload } from "@/components/pages/learning/guide-chat";
-import { fetchGuideRequest, getAaisCsrfHeader, clientNowMs } from "@/components/pages/learning/client-helpers";
+import { getAaisCsrfHeader, clientNowMs } from "@/components/pages/learning/client-helpers";
 import type { GuideClientAttachment, GuideMessage } from "@/components/pages/learning/learning-page-types";
 import type { GuideSubmissionOptions, UseLearningGuideInput } from "@/components/pages/learning/learning-guide-types";
-import { getCanonicalGuideExchange, isGuideEventStreamResponse, isUsableGuideBody,
-  readGuideJsonBody, readGuideStreamResponse, validateGuideResponse,
-  type GuideResponseBody } from "@/components/pages/learning/guide-stream";
-import { applyGuideResponseToMessages,
-  applyGuideStreamProgressToMessages } from "@/components/pages/learning/guide-message-updates";
-import { attachStableReplayMutation, clearStableReplayMutation, isExplicitClientRejection,
-  type PendingStableReplayMutation } from "@/components/pages/learning/learning-pilot-mutation";
+import {
+  getCanonicalGuideExchange,
+  readConfirmedHelpRequestsUsed,
+} from "@/components/pages/learning/guide-stream";
+import {
+  applyGuideResponseToMessages,
+} from "@/components/pages/learning/guide-message-updates";
+import {
+  attachStableReplayMutation,
+  clearStableReplayMutation,
+  isExplicitClientRejection,
+  type PendingStableReplayMutation,
+} from "@/components/pages/learning/learning-pilot-mutation";
 export function useLearningGuide({
   activeTaskId,
   activeTaskPhase = activeTaskId.startsWith("practice_") ? "practice" : "training",
   artifactText,
   displayName,
   isGuideSubmissionBlocked = () => false,
+  getHelpRequestsUsed,
   waitForLearnerDataGeneration,
   locale,
+  onHelpRequestsUsedConfirmed,
   persistedGuideMessages = [],
   studentId,
 }: UseLearningGuideInput) {
@@ -176,6 +188,7 @@ export function useLearningGuide({
       const dataGeneration = typeof generationResult === "number"
         ? generationResult
         : await generationResult;
+      const helpRequestsUsed = Math.min(4, Math.max(0, getHelpRequestsUsed(activeTaskId)));
       const requestInit = {
         method: "POST",
         headers: {
@@ -194,26 +207,35 @@ export function useLearningGuide({
             studentId,
             currentStep: "home",
             artifactText,
-            helpRequestsUsed: 0,
+            helpRequestsUsed,
             ...(boundedAttachments.length ? { attachments: boundedAttachments } : {}),
           },
         }),
       };
-      const body = await requestGuideResponse(requestInit, assistantId, () => {
-        attemptNumber = 2;
-        retryReason = "stream_protocol_fallback";
-        return admitAaisResearchAction({
-          eventName: "ai_guide_submit",
-          outcome: "retry",
-          actorGeneration: telemetryActorGeneration,
-          latencyMs: clientNowMs() - startedAt,
-          detail: {
-            ...baseEventDetail,
-            attempt_number: attemptNumber,
-            retry_reason: retryReason,
-          },
-        });
+      const body = await requestLearningGuideResponse({
+        abortControllerRef: guideRequestAbortControllerRef,
+        assistantId,
+        locale,
+        requestInit,
+        setGuideMessages,
+        onTransportRetry: () => {
+          attemptNumber = 2;
+          retryReason = "stream_protocol_fallback";
+          return admitAaisResearchAction({
+            eventName: "ai_guide_submit",
+            outcome: "retry",
+            actorGeneration: telemetryActorGeneration,
+            latencyMs: clientNowMs() - startedAt,
+            detail: {
+              ...baseEventDetail,
+              attempt_number: attemptNumber,
+              retry_reason: retryReason,
+            },
+          });
+        },
       });
+      const confirmedHelpRequestsUsed = readConfirmedHelpRequestsUsed(body);
+      if (confirmedHelpRequestsUsed !== null) onHelpRequestsUsedConfirmed(activeTaskId, confirmedHelpRequestsUsed);
       setGuideMessages((current) =>
         applyGuideResponseToMessages(current, { userId, assistantId }, body, locale),
       );
@@ -288,47 +310,6 @@ export function useLearningGuide({
       setPendingGuideAgentId(null);
       setGuideBusy(false);
     }
-  }
-  async function requestGuideResponse(
-    requestInit: RequestInit,
-    assistantId: string,
-    onTransportRetry: () => boolean,
-  ): Promise<GuideResponseBody> {
-    const streamAbortController = new AbortController();
-    guideRequestAbortControllerRef.current = streamAbortController;
-    try {
-      const streamResponse = await fetchGuideRequest(requestInit, {
-        stream: true,
-        signal: streamAbortController.signal,
-      });
-      if (isGuideEventStreamResponse(streamResponse)) {
-        return await readGuideStreamResponse(
-          streamResponse,
-          (progress) => setGuideMessages((current) =>
-            applyGuideStreamProgressToMessages(current, assistantId, progress),
-          ),
-          undefined,
-          locale,
-          () => streamAbortController.abort(),
-        );
-      }
-      const streamedJsonBody = await readGuideJsonBody(streamResponse);
-      if (!streamResponse.ok || isUsableGuideBody(streamedJsonBody)) {
-        validateGuideResponse(streamResponse, streamedJsonBody);
-        return streamedJsonBody;
-      }
-      if (!onTransportRetry()) {
-        throw new Error("AAIS research telemetry blocked the guide retry.");
-      }
-    } finally {
-      if (guideRequestAbortControllerRef.current === streamAbortController) {
-        guideRequestAbortControllerRef.current = null;
-      }
-    }
-    const response = await fetchGuideRequest(requestInit);
-    const body = await readGuideJsonBody(response);
-    validateGuideResponse(response, body);
-    return body;
   }
   function createGuideMessageId(prefix: string) {
     guideMessageIdRef.current += 1;
