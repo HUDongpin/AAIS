@@ -1,0 +1,17 @@
+schema=aais.local-human-qa.issue-evidence.v1
+issue=LOCAL-HQA-004
+status=OPEN
+severity=S2 Medium
+reproduction=2/2
+locale_selected_through_visible_login=en-US
+final_path=/dashboard
+document_html_lang=en-US
+dashboard_h1_language=zh-CN
+dashboard_primary_copy_language=zh-CN
+local_zh_lang_ancestor_count=0
+source_root_lang=src/app/layout.tsx:23
+source_dashboard_entry=src/app/dashboard/page.tsx:8
+source_dashboard_copy=src/components/pages/teacher-dashboard-page.tsx:273
+confirmed_causal_fact=root locale is English while the teacher page and shared header use Chinese copy without a local language declaration
+voiceover_pronunciation_claimed=false
+identity_text_retained=false
