@@ -13,12 +13,14 @@ import {
   ContentDisplay,
   getContentDisplayItems,
 } from "@/components/pages/learning/content-display";
+import type { PilotLearningActions } from "@/components/pages/learning/pilot-learning-loop";
 import { DocumentEditor } from "@/components/pages/learning/document-editor";
 import { getLearningCopy } from "@/components/pages/learning/learning-copy";
 import type {
   AaisClientTaskRecord,
   ContentItemId,
   ContentTab,
+  GuideMessage,
   SavedLearningDocument,
 } from "@/components/pages/learning/learning-page-types";
 import type { Locale } from "@/data/aais";
@@ -129,6 +131,7 @@ export function ContentSidePanel({
   documentArchiveBusy = false,
   documentNavigationLocked = false,
   flushPendingArtifactSave,
+  guideMessages = [],
   historyDocuments,
   locale = "zh-CN",
   onDocumentTitleChange,
@@ -141,6 +144,7 @@ export function ContentSidePanel({
   onSaveAndCloseDocument,
   onSaveAndClosePointerDown = () => undefined,
   onSelectTask = () => undefined,
+  pilotActions = fallbackPilotLearningActions,
   selectContentTab,
   taskActionBusy = false,
   taskActionError = "",
@@ -160,6 +164,7 @@ export function ContentSidePanel({
   documentArchiveBusy?: boolean;
   documentNavigationLocked?: boolean;
   flushPendingArtifactSave: () => void;
+  guideMessages?: GuideMessage[];
   historyDocuments: SavedLearningDocument[];
   locale?: Locale;
   onDocumentTitleChange: (value: string) => void;
@@ -172,6 +177,7 @@ export function ContentSidePanel({
   onSaveAndCloseDocument: () => void;
   onSaveAndClosePointerDown?: () => void;
   onSelectTask?: (taskId: string) => void;
+  pilotActions?: PilotLearningActions;
   selectContentTab: (nextTab: ContentTab) => void;
   taskActionBusy?: boolean;
   taskActionError?: string;
@@ -259,6 +265,8 @@ export function ContentSidePanel({
           <ContentDisplay
             activeContent={activeContent}
             activeTaskId={activeTaskId}
+            artifactText={artifactText}
+            guideMessages={guideMessages}
             historyDocuments={historyDocuments}
             locale={locale}
             navigationLocked={documentNavigationLocked}
@@ -267,6 +275,7 @@ export function ContentSidePanel({
             onOpen={onOpenContent}
             onOpenDocument={onOpenDocument}
             onSelectTask={onSelectTask}
+            pilotActions={pilotActions}
             taskActionBusy={taskActionBusy}
             taskActionError={taskActionError}
             tasks={tasks}
@@ -291,6 +300,17 @@ export function ContentSidePanel({
     </aside>
   );
 }
+
+const fallbackPilotLearningActions: PilotLearningActions = {
+  async onEndIncomplete() {},
+  async onRecordAiAcceptance() {},
+  async onRecordStageEvidence() {},
+  async onRequestScaffold() {
+    throw new Error("AAIS scaffold actions are unavailable.");
+  },
+  async onSaveAiUseMode() {},
+  async onSavePilotEvidence() {},
+};
 
 function TabButton({
   active,

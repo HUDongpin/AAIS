@@ -232,6 +232,231 @@ describe("AAIS learning API routes", () => {
     expect(body.session.studentId).toBe("Phoebe");
   });
 
+  it("opens Task 4 exploration on Task 2 completion and derives exploration guide mode", async () => {
+    const studentId = "route-task-two-to-four";
+    const csrf = createAaisCsrfToken(studentId);
+    const cookie = createAuthedCookie(studentId, "student", csrf);
+    await initializeLearnerSession(studentId, cookie, csrf);
+    const { getAaisLearningStore } = await import("@/lib/server/aais-learning-store");
+    const store = getAaisLearningStore();
+    await store.recordStageEvidence(
+      studentId,
+      "training_task_1",
+      "launch_import",
+      "orientation_acknowledged",
+    );
+    await store.recordStageEvidence(
+      studentId,
+      "training_task_1",
+      "modeling",
+      "expert_model_reviewed",
+    );
+    await store.completeTask(studentId, "training_task_1");
+    await store.selectTask(studentId, "practice_task_1");
+    await store.savePilotEvidence(studentId, "practice_task_1", {
+      diagnosisText: "原提示词缺少目标范围、证据标准和输出约束。",
+      revisedPromptText: "请按目标、范围、证据和格式约束生成课程论文大纲。",
+      outputEvaluationText: "结构基本完整，但证据范围仍需人工复核和修订。",
+      articulationText: "我先诊断，再修订提示词，最后按标准评价生成结果。",
+    }, {
+      expectedPilotEvidenceRevision: 0,
+      mutationId: "route-task-two-evidence",
+    });
+    await store.recordStageEvidence(
+      studentId,
+      "practice_task_1",
+      "coaching_scaffolding",
+      "guided_practice_completed",
+    );
+    await store.recordStageEvidence(
+      studentId,
+      "practice_task_1",
+      "articulation",
+      "strategy_articulated",
+    );
+
+    const sessionRoute = await import("@/app/api/learning/session/route");
+    const invalidSummary = await sessionRoute.PATCH(new Request(
+      "http://localhost/api/learning/session",
+      {
+        method: "PATCH",
+        headers: { cookie, "x-aais-csrf": csrf },
+        body: JSON.stringify({
+          action: "record-stage-evidence",
+          taskId: "practice_task_1",
+          stageId: "summary_completion",
+          evidenceKind: "summary_acknowledged",
+          dataGeneration: 1,
+          mutationId: "invalid-summary-stage-evidence",
+        }),
+      },
+    ));
+    expect(invalidSummary.status).toBe(400);
+    await expect(invalidSummary.json()).resolves.toMatchObject({
+      error: { code: "AAIS_STAGE_EVIDENCE_INVALID" },
+    });
+
+    const completedResponse = await sessionRoute.PATCH(new Request(
+      "http://localhost/api/learning/session",
+      {
+        method: "PATCH",
+        headers: { cookie, "x-aais-csrf": csrf },
+        body: JSON.stringify({
+          action: "complete-task",
+          taskId: "practice_task_1",
+          dataGeneration: 1,
+          mutationId: "complete-task-two-route",
+        }),
+      },
+    ));
+    expect(completedResponse.status).toBe(200);
+    const completedBody = await completedResponse.json();
+    const taskFour = completedBody.session.tasks.find((task: { taskId: string }) =>
+      task.taskId === "practice_task_3"
+    );
+    expect(completedBody.session.activeTaskId).toBe("practice_task_3");
+    expect(completedBody.session.activeStage).toBe("exploration");
+    expect(taskFour).toMatchObject({ status: "active", activeMilestone: "exploration" });
+    expect(taskFour.milestones.find((milestone: { id: string }) => milestone.id === "exploration"))
+      .toMatchObject({ status: "open", evidenceKinds: [] });
+    expect(completedBody.session.tasks.find((task: { taskId: string }) =>
+      task.taskId === "practice_task_2"
+    )).toMatchObject({ status: "locked" });
+
+    const graphMock = vi.fn(async (input: unknown) => {
+      void input;
+      return createMockGuideGraphResult();
+    });
+    vi.doMock("@/lib/ai/orchestration/aais-learning-guide-graph", () => ({
+      runAaisLearningGuideGraph: graphMock,
+    }));
+    const guideRoute = await import("@/app/api/learning/ai-guide/route");
+    const guideResponse = await guideRoute.POST(new Request(
+      "http://localhost/api/learning/ai-guide",
+      {
+        method: "POST",
+        headers: { cookie, "x-aais-csrf": csrf },
+        body: JSON.stringify({
+          dataGeneration: 1,
+          taskId: "practice_task_3",
+          learnerInput: "我准备开始独立探索。",
+          workspaceState: { currentStep: "modeling" },
+        }),
+      },
+    ));
+    expect(guideResponse.status).toBe(200);
+    expect(graphMock).toHaveBeenCalledTimes(1);
+    expect(graphMock.mock.calls[0]?.[0]).toMatchObject({
+      taskId: "practice_task_3",
+      workspaceState: {
+        currentStep: "exploration",
+        taskMode: "exploration",
+      },
+    });
+  });
+
+  it("refuses an incomplete Task 2 exit until all non-articulation evidence and milestones exist", async () => {
+    const studentId = "route-task-two-incomplete";
+    const csrf = createAaisCsrfToken(studentId);
+    const cookie = createAuthedCookie(studentId, "student", csrf);
+    await initializeLearnerSession(studentId, cookie, csrf);
+    const { getAaisLearningStore } = await import("@/lib/server/aais-learning-store");
+    const store = getAaisLearningStore();
+    await store.recordStageEvidence(
+      studentId,
+      "training_task_1",
+      "launch_import",
+      "orientation_acknowledged",
+    );
+    await store.recordStageEvidence(
+      studentId,
+      "training_task_1",
+      "modeling",
+      "expert_model_reviewed",
+    );
+    await store.completeTask(studentId, "training_task_1");
+    await store.selectTask(studentId, "practice_task_1");
+    const sessionRoute = await import("@/app/api/learning/session/route");
+    let stableActionCounter = 0;
+    const patch = (body: Record<string, unknown>) => sessionRoute.PATCH(new Request(
+      "http://localhost/api/learning/session",
+      {
+        method: "PATCH",
+        headers: { cookie, "x-aais-csrf": csrf },
+        body: JSON.stringify({
+          ...body,
+          dataGeneration: 1,
+          mutationId: body.mutationId ?? `route-stable-action-${++stableActionCounter}`,
+        }),
+      },
+    ));
+
+    const declinedOnly = await patch({
+      action: "save-pilot-evidence",
+      taskId: "practice_task_1",
+      pilotEvidence: {
+        articulationOutcome: "declined",
+        articulationDeclineReason: "本次暂不提交表达。",
+      },
+      expectedPilotEvidenceRevision: 0,
+      mutationId: "route-task-two-decline-only",
+    });
+    expect(declinedOnly.status).toBe(200);
+    const rejectedCompletion = await patch({
+      action: "complete-task",
+      taskId: "practice_task_1",
+      endIncomplete: true,
+    });
+    expect(rejectedCompletion.status).toBe(409);
+    await expect(rejectedCompletion.json()).resolves.toMatchObject({
+      error: {
+        code: "AAIS_TASK_COMPLETION_EVIDENCE_MISSING",
+      },
+      details: {
+        completionMissing: expect.arrayContaining([
+          "diagnose_original_prompt",
+          "submit_revised_prompt",
+          "evaluate_generated_outline",
+        ]),
+      },
+    });
+
+    const coreEvidence = await patch({
+      action: "save-pilot-evidence",
+      taskId: "practice_task_1",
+      pilotEvidence: {
+        diagnosisText: "原提示词缺少目标范围、证据标准和输出约束。",
+        revisedPromptText: "请按目标、范围、证据和格式约束生成课程论文大纲。",
+        outputEvaluationText: "结构基本完整，但证据范围仍需人工复核和修订。",
+        articulationOutcome: "declined",
+      },
+      expectedPilotEvidenceRevision: 1,
+      mutationId: "route-task-two-core-evidence",
+    });
+    expect(coreEvidence.status).toBe(200);
+    const coached = await patch({
+      action: "record-stage-evidence",
+      taskId: "practice_task_1",
+      stageId: "coaching_scaffolding",
+      evidenceKind: "guided_practice_completed",
+    });
+    expect(coached.status).toBe(200);
+    const ended = await patch({
+      action: "complete-task",
+      taskId: "practice_task_1",
+      endIncomplete: true,
+    });
+    expect(ended.status).toBe(200);
+    const endedBody = await ended.json();
+    expect(endedBody.session.tasks.find((task: { taskId: string }) =>
+      task.taskId === "practice_task_1"
+    )).toMatchObject({
+      status: "completed",
+      completionOutcome: "ended_incomplete",
+      completionMissing: ["articulate_task_two_process"],
+    });
+  });
+
   it("bounds session and scaffold response histories with explicit truncation metadata", async () => {
     const sessionRoute = await import("@/app/api/learning/session/route");
     const scaffoldRoute = await import("@/app/api/learning/scaffold/route");
@@ -261,7 +486,7 @@ describe("AAIS learning API routes", () => {
       ...eventTemplate,
       detail: { window_index: index },
     }));
-    persisted.guideMessages = Array.from({ length: 105 }, (_value, index) => ({
+    persisted.guideMessages = Array.from({ length: 106 }, (_value, index) => ({
       id: `api-window-message-${index}`,
       kind: index % 2 === 0 ? "user" : "assistant",
       text: `message-${index}`,
@@ -290,15 +515,15 @@ describe("AAIS learning API routes", () => {
     const sessionBody = await sessionResponse.json();
     expect(sessionResponse.status).toBe(200);
     expect(sessionBody.session.events).toHaveLength(100);
-    expect(sessionBody.session.events[0].detail.window_index).toBe(7);
+    expect(sessionBody.session.events[0].detail).toEqual({});
     expect(sessionBody.session.guideMessages).toHaveLength(100);
-    expect(sessionBody.session.guideMessages[0].id).toBe("api-window-message-5");
+    expect(sessionBody.session.guideMessages[0].id).toBe("api-window-message-6");
     expect(sessionBody.session.tasks.find(
       (task: { taskId: string }) => task.taskId === "practice_task_1",
     ).scaffoldHistory).toHaveLength(20);
     expect(sessionBody.session.truncation).toMatchObject({
       events: { total: 107, returned: 100, omitted: 7, truncated: true },
-      guideMessages: { total: 105, returned: 100, omitted: 5, truncated: true },
+      guideMessages: { total: 106, returned: 100, omitted: 6, truncated: true },
       scaffoldHistory: {
         total: 22,
         returned: 20,
@@ -317,6 +542,7 @@ describe("AAIS learning API routes", () => {
           dataGeneration: 1,
           taskId: "practice_task_1",
           toolId: "stage-checklist",
+          mutationId: "bounded-session-scaffold",
         }),
       },
     ));
@@ -329,7 +555,7 @@ describe("AAIS learning API routes", () => {
     ).scaffoldHistory).toHaveLength(20);
     expect(scaffoldBody.session.truncation).toMatchObject({
       events: { total: 109, returned: 100, omitted: 9, truncated: true },
-      guideMessages: { total: 105, returned: 100, omitted: 5, truncated: true },
+      guideMessages: { total: 106, returned: 100, omitted: 6, truncated: true },
       scaffoldHistory: {
         total: 23,
         returned: 20,
@@ -340,8 +566,98 @@ describe("AAIS learning API routes", () => {
     });
   });
 
+  it("returns and refreshes learner-local evidence-aware scaffold fading metadata", async () => {
+    const scaffoldRoute = await import("@/app/api/learning/scaffold/route");
+    const sessionRoute = await import("@/app/api/learning/session/route");
+    const { getAaisLearningStore } = await import("@/lib/server/aais-learning-store");
+    const studentId = "route-evidence-aware-fading";
+    const csrf = createAaisCsrfToken(studentId);
+    const cookie = createAuthedCookie(studentId, "student", csrf);
+    await initializeLearnerSession(studentId, cookie, csrf);
+    let scaffoldMutationCounter = 0;
+    const requestScaffold = () => scaffoldRoute.POST(new Request(
+      "http://localhost/api/learning/scaffold",
+      {
+        method: "POST",
+        headers: { cookie, "x-aais-csrf": csrf },
+        body: JSON.stringify({
+          dataGeneration: 1,
+          taskId: "training_task_1",
+          toolId: "stage-checklist",
+          mutationId: `evidence-aware-scaffold-${++scaffoldMutationCounter}`,
+        }),
+      },
+    ));
+
+    const firstResponse = await requestScaffold();
+    const firstBody = await firstResponse.json();
+    expect(firstResponse.status).toBe(200);
+    expect(firstBody).toMatchObject({
+      mode: "tool-list",
+      fading: false,
+      remainingDirectAssists: 3,
+      evidenceSnapshot: {
+        schemaVersion: 1,
+        completedMilestones: 0,
+        rawTextIncluded: false,
+      },
+    });
+    await getAaisLearningStore().recordStageEvidence(
+      studentId,
+      "training_task_1",
+      "launch_import",
+      "orientation_acknowledged",
+    );
+
+    const fadedResponse = await requestScaffold();
+    const fadedBody = await fadedResponse.json();
+    expect(fadedResponse.status).toBe(200);
+    expect(fadedBody).toMatchObject({
+      requestCount: 2,
+      mode: "self-check",
+      fading: true,
+      fadingReason: "evidence_improved",
+      remainingDirectAssists: 3,
+      evidenceSnapshot: {
+        completedMilestones: 1,
+        rawTextIncluded: false,
+      },
+    });
+    const refreshedResponse = await sessionRoute.GET(new Request(
+      "http://localhost/api/learning/session",
+      { headers: { cookie } },
+    ));
+    const refreshedBody = await refreshedResponse.json();
+    const refreshedTask = refreshedBody.session.tasks.find((task: { taskId: string }) =>
+      task.taskId === "training_task_1"
+    );
+    expect(refreshedTask).toMatchObject({
+      scaffoldState: { fading: true, remainingDirectAssists: 3 },
+      scaffoldHistory: expect.arrayContaining([
+        expect.objectContaining({
+          fadingReason: "evidence_improved",
+          evidenceSnapshot: {
+            schemaVersion: 1,
+            structuredFieldsCompleted: 0,
+            artifactVisibleCharacterBucket: "under_8",
+            completedMilestones: 1,
+            rawTextIncluded: false,
+          },
+        }),
+      ]),
+    });
+    const latestScaffoldEvent = fadedBody.session.events.filter((event: { event: string }) =>
+      event.event === "scaffold_request"
+    ).at(-1);
+    expect(latestScaffoldEvent.detail).not.toHaveProperty("evidenceSnapshot");
+    expect(latestScaffoldEvent.detail).not.toHaveProperty("fadingReason");
+  });
+
   it("rejects a full guide session before dispatching the graph or consuming quota", async () => {
-    const graphMock = vi.fn(async () => createMockGuideGraphResult());
+    const graphMock = vi.fn(async (input: unknown) => {
+      void input;
+      return createMockGuideGraphResult();
+    });
     vi.doMock("@/lib/ai/orchestration/aais-learning-guide-graph", () => ({
       runAaisLearningGuideGraph: graphMock,
     }));
@@ -385,7 +701,12 @@ describe("AAIS learning API routes", () => {
       { headers: { cookie } },
     ));
     const sessionBody = await sessionResponse.json();
-    expect(sessionBody.session.guideMessages).toHaveLength(100);
+    expect(sessionBody.session.guideMessages).toHaveLength(0);
+    expect(sessionBody.session.truncation.guideMessages).toMatchObject({
+      total: 0,
+      returned: 0,
+      truncated: false,
+    });
     expect(sessionBody.session).not.toHaveProperty("guideCapacityReservations");
 
     persisted.guideMessages = persisted.guideMessages.slice(0, 497);
@@ -485,6 +806,7 @@ describe("AAIS learning API routes", () => {
     ["null body", null, "AAIS_GUIDE_BODY_INVALID"],
     ["array body", [], "AAIS_GUIDE_BODY_INVALID"],
     ["non-string learner input", { learnerInput: 17 }, "AAIS_GUIDE_FIELD_INVALID"],
+    ["unrecognizable learner input", { learnerInput: "%%%%%%" }, "AAIS_GUIDE_INPUT_UNRECOGNIZABLE"],
     [
       "non-object workspace",
       { learnerInput: "valid", workspaceState: [] },
@@ -589,15 +911,16 @@ describe("AAIS learning API routes", () => {
           dataGeneration: 1,
           action: "select-task",
           taskId: "practice_task_2",
+          mutationId: "select-pilot-closed-task",
         }),
       }),
     );
     const lockedTaskBody = await lockedTaskResponse.json();
 
-    expect(lockedTaskResponse.status).toBe(400);
+    expect(lockedTaskResponse.status).toBe(409);
     expect(lockedTaskBody.error).toEqual({
-      code: "AAIS_TASK_LOCKED",
-      message: "AAIS task is locked.",
+      code: "AAIS_TASK_PILOT_CLOSED",
+      message: "AAIS task is closed for the current pilot.",
     });
     expect(JSON.stringify(lockedTaskBody)).not.toContain("practice_task_2");
 
@@ -612,6 +935,7 @@ describe("AAIS learning API routes", () => {
           dataGeneration: 1,
           taskId: "private-task-id",
           toolId: "stage-checklist",
+          mutationId: "unknown-scaffold-task",
         }),
       }),
     );
@@ -1300,6 +1624,12 @@ describe("AAIS learning API routes", () => {
     );
     const sessionBody = await sessionResponse.json();
 
+    expect(guideBody.exchange).toEqual({
+      userMessageId: sessionBody.session.guideMessages[0].id,
+      assistantMessageId: sessionBody.session.guideMessages[1].id,
+    });
+    expect(guideBody.exchange.userMessageId).toMatch(/^user-[0-9a-f-]{36}$/);
+    expect(guideBody.exchange.assistantMessageId).toMatch(/^assistant-[0-9a-f-]{36}$/);
     expect(sessionBody.session.guideMessages.map((message: { kind: string }) => message.kind)).toEqual([
       "user",
       "assistant",
@@ -1319,9 +1649,7 @@ describe("AAIS learning API routes", () => {
     expect(sessionBody.session.guideMessages[1].turns.map((turn: { agentId: string }) => turn.agentId)).toEqual([
       "A1",
     ]);
-    expect(sessionBody.session.guideMessages[1].orchestration.topologicalOrder).toEqual([
-      "A1",
-    ]);
+    expect(sessionBody.session.guideMessages[1]).not.toHaveProperty("orchestration");
     expect(JSON.stringify(guideBody)).not.toMatch(/"A3"|"A4"|监督智能体|反思智能体/);
     expect(JSON.stringify(sessionBody.session.guideMessages)).not.toMatch(/"A3"|"A4"/);
     expect(sessionBody.session.guideMessages[1].text).not.toContain("监督智能体");
@@ -1385,13 +1713,126 @@ describe("AAIS learning API routes", () => {
     expect(sessionBody.session.guideMessages[1].turns.map(
       (turn: { agentId: string }) => turn.agentId,
     )).toEqual(["A1"]);
-    expect(sessionBody.session.guideMessages[1].orchestration.topologicalOrder).toEqual(["A1"]);
+    expect(sessionBody.session.guideMessages[1]).not.toHaveProperty("orchestration");
+  });
+
+  it("accepts freshly returned canonical A1 and A2 message ids while rejecting them across tasks", async () => {
+    vi.stubEnv("AAIS_AI_PROVIDER", "");
+    vi.stubEnv("AAIS_AI_ENDPOINT", "");
+    vi.stubEnv("AAIS_AI_API_KEY", "");
+    vi.stubEnv("AAIS_AI_MODEL", "");
+    vi.stubEnv("AAIS_AI_FALLBACK_ENDPOINT", "");
+    vi.stubEnv("AAIS_AI_FALLBACK_API_KEY", "");
+    vi.stubEnv("AAIS_AI_FALLBACK_MODEL", "");
+    vi.resetModules();
+    const guideRoute = await import("@/app/api/learning/ai-guide/route");
+    const sessionRoute = await import("@/app/api/learning/session/route");
+    const { createAaisLearningStore } = await import("@/lib/server/aais-learning-store");
+    const studentId = "canonical-acceptance-route-learner";
+    const cookie = createAuthedCookie(studentId);
+    const csrf = createAaisCsrfToken(studentId);
+    await initializeLearnerSession(studentId, cookie, csrf);
+
+    const sendGuide = async (learnerInput: string) => {
+      const response = await guideRoute.POST(new Request("http://localhost/api/learning/ai-guide", {
+        method: "POST",
+        headers: { cookie, "x-aais-csrf": csrf },
+        body: JSON.stringify({
+          dataGeneration: 1,
+          phase: "training",
+          taskId: "training_task_1",
+          learnerInput,
+          workspaceState: { currentStep: "guide" },
+        }),
+      }));
+      expect(response.status).toBe(200);
+      return response.json();
+    };
+    const recordAcceptance = (input: {
+      accepted: boolean;
+      expectedPilotEvidenceRevision: number;
+      messageId: string;
+      mutationId: string;
+      taskId?: string;
+    }) => sessionRoute.PATCH(new Request("http://localhost/api/learning/session", {
+      method: "PATCH",
+      headers: { cookie, "x-aais-csrf": csrf },
+      body: JSON.stringify({
+        dataGeneration: 1,
+        action: "record-ai-acceptance",
+        reason: input.accepted ? "采纳导学建议" : "需要修订专家建议",
+        taskId: input.taskId ?? "training_task_1",
+        ...input,
+      }),
+    }));
+
+    const a1Body = await sendGuide("请帮我明确下一步目标。");
+    expect(a1Body.turns.map((turn: { agentId: string }) => turn.agentId)).toEqual(["A1"]);
+    expect(a1Body.exchange).toMatchObject({
+      userMessageId: expect.stringMatching(/^user-/),
+      assistantMessageId: expect.stringMatching(/^assistant-/),
+    });
+    const acceptedA1 = await recordAcceptance({
+      accepted: true,
+      expectedPilotEvidenceRevision: 0,
+      messageId: a1Body.exchange.assistantMessageId,
+      mutationId: "accept-returned-a1-message",
+    });
+    expect(acceptedA1.status).toBe(200);
+    const acceptedA1Body = await acceptedA1.json();
+    expect(acceptedA1Body.session.tasks.find(
+      (task: { taskId: string }) => task.taskId === "training_task_1",
+    )).toMatchObject({ pilotEvidenceRevision: 1 });
+
+    const a2Body = await sendGuide("@教授 请检查这个方案是否符合目标。");
+    expect(a2Body.turns.map((turn: { agentId: string }) => turn.agentId)).toEqual(["A2"]);
+    const rejectedA2 = await recordAcceptance({
+      accepted: false,
+      expectedPilotEvidenceRevision: 1,
+      messageId: a2Body.exchange.assistantMessageId,
+      mutationId: "reject-returned-a2-message",
+    });
+    expect(rejectedA2.status).toBe(200);
+    const rejectedA2Body = await rejectedA2.json();
+    expect(rejectedA2Body.session.tasks.find(
+      (task: { taskId: string }) => task.taskId === "training_task_1",
+    )).toMatchObject({
+      pilotEvidence: expect.objectContaining({ outputEvaluation: "revision_required" }),
+      pilotEvidenceRevision: 2,
+    });
+
+    const seedStore = createAaisLearningStore({ rootDir: tempDir });
+    await seedStore.recordStageEvidence(
+      studentId,
+      "training_task_1",
+      "launch_import",
+      "orientation_acknowledged",
+    );
+    await seedStore.recordStageEvidence(
+      studentId,
+      "training_task_1",
+      "modeling",
+      "expert_model_reviewed",
+    );
+    await seedStore.completeTask(studentId, "training_task_1");
+    await seedStore.selectTask(studentId, "practice_task_1");
+    const crossTask = await recordAcceptance({
+      accepted: true,
+      expectedPilotEvidenceRevision: 0,
+      messageId: a2Body.exchange.assistantMessageId,
+      mutationId: "reject-cross-task-returned-a2-message",
+      taskId: "practice_task_1",
+    });
+    expect(crossTask.status).toBe(400);
+    await expect(crossTask.json()).resolves.toMatchObject({
+      error: { code: "AAIS_AI_ACCEPTANCE_TARGET_INVALID" },
+    });
   });
 
   it("rejects fabricated, user, missing, and cross-task AI acceptance message ids", async () => {
     const { createAaisLearningStore } = await import("@/lib/server/aais-learning-store");
     const seedStore = createAaisLearningStore({ rootDir: tempDir });
-    const trainingSession = await seedStore.appendGuideExchange({
+    const trainingExchange = await seedStore.appendGuideExchange({
       studentId: "acceptance-route-learner",
       phase: "practice",
       taskId: "training_task_1",
@@ -1399,12 +1840,22 @@ describe("AAIS learning API routes", () => {
       answer: "training answer",
       orchestration: { graphId: "g", topologicalOrder: ["A2"], threadId: "training" },
     });
-    const trainingAssistantId = trainingSession.guideMessages.find(
-      (message) => message.kind === "assistant",
-    )?.id;
+    const trainingAssistantId = trainingExchange.exchange.assistantMessageId;
+    await seedStore.recordStageEvidence(
+      "acceptance-route-learner",
+      "training_task_1",
+      "launch_import",
+      "orientation_acknowledged",
+    );
+    await seedStore.recordStageEvidence(
+      "acceptance-route-learner",
+      "training_task_1",
+      "modeling",
+      "expert_model_reviewed",
+    );
     await seedStore.completeTask("acceptance-route-learner", "training_task_1");
     await seedStore.selectTask("acceptance-route-learner", "practice_task_1");
-    const practiceSession = await seedStore.appendGuideExchange({
+    const practiceExchange = await seedStore.appendGuideExchange({
       studentId: "acceptance-route-learner",
       phase: "training",
       taskId: "practice_task_1",
@@ -1412,12 +1863,8 @@ describe("AAIS learning API routes", () => {
       answer: "practice answer",
       orchestration: { graphId: "g", topologicalOrder: ["A2"], threadId: "practice" },
     });
-    const practiceUserId = practiceSession.guideMessages.findLast(
-      (message) => message.kind === "user",
-    )?.id;
-    const practiceAssistantId = practiceSession.guideMessages.findLast(
-      (message) => message.kind === "assistant",
-    )?.id;
+    const practiceUserId = practiceExchange.exchange.userMessageId;
+    const practiceAssistantId = practiceExchange.exchange.assistantMessageId;
     expect(trainingAssistantId).toBeTruthy();
     expect(practiceUserId).toBeTruthy();
     expect(practiceAssistantId).toBeTruthy();
@@ -1431,10 +1878,12 @@ describe("AAIS learning API routes", () => {
           method: "PATCH",
           headers: { cookie, "x-aais-csrf": csrf },
           body: JSON.stringify({
-          dataGeneration: 1,
+            dataGeneration: 1,
             action: "record-ai-acceptance",
             taskId: "practice_task_1",
             accepted: true,
+            expectedPilotEvidenceRevision: 0,
+            mutationId: `invalid-ai-target-${String(messageId)}`,
             ...(messageId ? { messageId } : {}),
           }),
         }),
@@ -1455,24 +1904,104 @@ describe("AAIS learning API routes", () => {
       (event: { event: string }) => event.event === "ai_acceptance_recorded",
     )).toEqual([]);
 
-    const validResponse = await sessionRoute.PATCH(
+    for (const { body: missingFenceBody, expectedCode, expectedStatus } of [
+      {
+        body: { expectedPilotEvidenceRevision: 0 },
+        expectedCode: "AAIS_SESSION_FIELD_INVALID",
+        expectedStatus: 400,
+      },
+      {
+        body: { mutationId: "missing-expected-ai-acceptance" },
+        expectedCode: "AAIS_SESSION_TEXT_REVISION_REQUIRED",
+        expectedStatus: 409,
+      },
+    ]) {
+      const missingFenceResponse = await sessionRoute.PATCH(
+        new Request("http://localhost/api/learning/session", {
+          method: "PATCH",
+          headers: { cookie, "x-aais-csrf": csrf },
+          body: JSON.stringify({
+            dataGeneration: 1,
+            action: "record-ai-acceptance",
+            taskId: "practice_task_1",
+            accepted: true,
+            messageId: practiceAssistantId,
+            ...missingFenceBody,
+          }),
+        }),
+      );
+      expect(missingFenceResponse.status).toBe(expectedStatus);
+      await expect(missingFenceResponse.json()).resolves.toMatchObject({
+        error: { code: expectedCode },
+      });
+    }
+
+    const validRequestBody = {
+      dataGeneration: 1,
+      action: "record-ai-acceptance",
+      taskId: "practice_task_1",
+      accepted: true,
+      expectedPilotEvidenceRevision: 0,
+      messageId: practiceAssistantId,
+      mutationId: "valid-ai-acceptance-route",
+    };
+    const sendAcceptance = (body: Record<string, unknown>) => sessionRoute.PATCH(
       new Request("http://localhost/api/learning/session", {
         method: "PATCH",
         headers: { cookie, "x-aais-csrf": csrf },
-        body: JSON.stringify({
-          dataGeneration: 1,
-          action: "record-ai-acceptance",
-          taskId: "practice_task_1",
-          accepted: true,
-          messageId: practiceAssistantId,
-        }),
+        body: JSON.stringify(body),
       }),
     );
+    const validResponse = await sendAcceptance(validRequestBody);
     const validBody = await validResponse.json();
     expect(validResponse.status).toBe(200);
+    expect(validBody.session.tasks.find(
+      (task: { taskId: string }) => task.taskId === "practice_task_1",
+    )?.pilotEvidenceRevision).toBe(1);
     expect(validBody.session.events.filter(
       (event: { event: string }) => event.event === "ai_acceptance_recorded",
     )).toHaveLength(1);
+
+    const replayResponse = await sendAcceptance(validRequestBody);
+    const replayBody = await replayResponse.json();
+    expect(replayResponse.status).toBe(200);
+    expect(replayBody.session.tasks.find(
+      (task: { taskId: string }) => task.taskId === "practice_task_1",
+    )?.pilotEvidenceRevision).toBe(1);
+    expect(replayBody.session.events.filter(
+      (event: { event: string }) => event.event === "ai_acceptance_recorded",
+    )).toHaveLength(1);
+
+    const changedReplayResponse = await sendAcceptance({
+      ...validRequestBody,
+      accepted: false,
+      expectedPilotEvidenceRevision: 1,
+    });
+    expect(changedReplayResponse.status).toBe(409);
+    await expect(changedReplayResponse.json()).resolves.toMatchObject({
+      error: { code: "AAIS_MUTATION_ID_CONFLICT" },
+    });
+
+    const lateStaleResponse = await sendAcceptance({
+      ...validRequestBody,
+      accepted: false,
+      mutationId: "late-stale-ai-acceptance-route",
+    });
+    expect(lateStaleResponse.status).toBe(409);
+    await expect(lateStaleResponse.json()).resolves.toMatchObject({
+      error: { code: "AAIS_PILOT_EVIDENCE_REVISION_CONFLICT" },
+    });
+    const currentResponse = await sessionRoute.GET(
+      new Request("http://localhost/api/learning/session", { headers: { cookie } }),
+    );
+    const currentBody = await currentResponse.json();
+    const currentTask = currentBody.session.tasks.find(
+      (task: { taskId: string }) => task.taskId === "practice_task_1",
+    );
+    expect(currentTask).toMatchObject({
+      pilotEvidence: { outputEvaluation: "accepted" },
+      pilotEvidenceRevision: 1,
+    });
   });
 
   it("carries persisted learner context and explicit English preference into later guide turns", async () => {
@@ -1535,6 +2064,18 @@ describe("AAIS learning API routes", () => {
       answer: "training-only answer",
       orchestration: { graphId: "g", topologicalOrder: ["A1"], threadId: "training" },
     });
+    await seedStore.recordStageEvidence(
+      "task-history-learner",
+      "training_task_1",
+      "launch_import",
+      "orientation_acknowledged",
+    );
+    await seedStore.recordStageEvidence(
+      "task-history-learner",
+      "training_task_1",
+      "modeling",
+      "expert_model_reviewed",
+    );
     await seedStore.completeTask("task-history-learner", "training_task_1");
     await seedStore.selectTask("task-history-learner", "practice_task_1");
     await seedStore.appendGuideExchange({
@@ -1593,6 +2134,125 @@ describe("AAIS learning API routes", () => {
     });
     expect(JSON.stringify(graphMock.mock.calls[0]?.[0])).not.toContain("training-only");
     expect(JSON.stringify(graphMock.mock.calls[0]?.[0])).not.toContain("legacy unbound");
+  });
+
+  it("passes an actionable A3 signal until one guide reply succeeds, then stops reusing it", async () => {
+    const { createAaisLearningStore } = await import("@/lib/server/aais-learning-store");
+    const studentId = "a3-one-shot-route-learner";
+    const cookie = createAuthedCookie(studentId);
+    const csrf = createAaisCsrfToken(studentId);
+    await initializeLearnerSession(studentId, cookie, csrf);
+    const seedStore = createAaisLearningStore({ rootDir: tempDir });
+    const signaled = await seedStore.saveArtifact(
+      studentId,
+      "training_task_1",
+      "目前只有初稿内容",
+    );
+    const signalIds = signaled.tasks[0]?.supervisionSignals.map((signal) => signal.id) ?? [];
+    expect(signalIds.length).toBeGreaterThan(0);
+
+    const graphMock = vi.fn()
+      .mockRejectedValueOnce(new Error("provider failed before persistence"))
+      .mockResolvedValue(createMockGuideGraphResult());
+    vi.doMock("@/lib/ai/orchestration/aais-learning-guide-graph", () => ({
+      runAaisLearningGuideGraph: graphMock,
+    }));
+    const guideRoute = await import("@/app/api/learning/ai-guide/route");
+    const send = (learnerInput: string) => guideRoute.POST(new Request(
+      "http://localhost/api/learning/ai-guide",
+      {
+        method: "POST",
+        headers: { cookie, "x-aais-csrf": csrf },
+        body: JSON.stringify({
+          dataGeneration: 1,
+          taskId: "training_task_1",
+          learnerInput,
+          workspaceState: { currentStep: "modeling" },
+        }),
+      },
+    ));
+
+    const failed = await send("我准备继续完善这份草稿。第一个请求会失败。");
+    expect(failed.status).toBe(500);
+    const succeeded = await send("我准备继续完善这份草稿。现在再试一次。");
+    expect(succeeded.status).toBe(200);
+    const afterConsumption = await send("我已经收到本轮回应，继续普通讨论。");
+    expect(afterConsumption.status).toBe(200);
+
+    const graphInputs = graphMock.mock.calls.map(([input]) => input as {
+      workspaceState: { supervisionSignals: Array<{ id: string }> };
+    });
+    expect(graphInputs[0]?.workspaceState.supervisionSignals.map((signal) => signal.id))
+      .toEqual(signalIds);
+    expect(graphInputs[1]?.workspaceState.supervisionSignals.map((signal) => signal.id))
+      .toEqual(signalIds);
+    expect(graphInputs[2]?.workspaceState.supervisionSignals).toEqual([]);
+
+    const persisted = await seedStore.readSession(studentId);
+    expect(persisted?.tasks[0]?.supervisionSignals.map((signal) => signal.id)).toEqual(signalIds);
+    vi.doUnmock("@/lib/ai/orchestration/aais-learning-guide-graph");
+  });
+
+  it("passes revision-required policy for one successful reply without clearing its audit history", async () => {
+    const { createAaisLearningStore } = await import("@/lib/server/aais-learning-store");
+    const studentId = "revision-one-shot-route-learner";
+    const cookie = createAuthedCookie(studentId);
+    const csrf = createAaisCsrfToken(studentId);
+    await initializeLearnerSession(studentId, cookie, csrf);
+    const seedStore = createAaisLearningStore({ rootDir: tempDir });
+    const original = await seedStore.appendGuideExchange({
+      studentId,
+      phase: "training",
+      taskId: "training_task_1",
+      question: "请评价目前这份输出。",
+      answer: "这是一份待学习者评价的输出。",
+      orchestration: { graphId: "g", topologicalOrder: ["A1"], threadId: "revision" },
+    });
+    await seedStore.recordAiAcceptance(studentId, "training_task_1", {
+      accepted: false,
+      messageId: original.exchange.assistantMessageId,
+      reason: "与课程目标不一致，需要修改。",
+      expectedPilotEvidenceRevision: 0,
+      mutationId: "revision-one-shot-decision",
+    });
+
+    const graphMock = vi.fn(async (input: unknown) => {
+      void input;
+      return createMockGuideGraphResult();
+    });
+    vi.doMock("@/lib/ai/orchestration/aais-learning-guide-graph", () => ({
+      runAaisLearningGuideGraph: graphMock,
+    }));
+    const guideRoute = await import("@/app/api/learning/ai-guide/route");
+    const send = (learnerInput: string) => guideRoute.POST(new Request(
+      "http://localhost/api/learning/ai-guide",
+      {
+        method: "POST",
+        headers: { cookie, "x-aais-csrf": csrf },
+        body: JSON.stringify({
+          dataGeneration: 1,
+          taskId: "training_task_1",
+          learnerInput,
+          workspaceState: { currentStep: "modeling" },
+        }),
+      },
+    ));
+
+    expect((await send("我会指出不一致并修改这一版。")).status).toBe(200);
+    expect((await send("修改后继续讨论下一步安排。")).status).toBe(200);
+    const graphInputs = graphMock.mock.calls.map(([input]) => input as {
+      workspaceState: { outputEvaluation: string };
+    });
+    expect(graphInputs.map((input) => input.workspaceState.outputEvaluation)).toEqual([
+      "revision_required",
+      "pending",
+    ]);
+
+    const persisted = await seedStore.readSession(studentId);
+    expect(persisted?.tasks[0]?.pilotEvidence.outputEvaluation).toBe("revision_required");
+    expect(persisted?.events.filter((event) => event.event === "ai_acceptance_recorded"))
+      .toHaveLength(1);
+    vi.doUnmock("@/lib/ai/orchestration/aais-learning-guide-graph");
   });
 
   it("bounds model conversation history by message count and total characters", async () => {
@@ -1785,6 +2445,129 @@ describe("AAIS learning API routes", () => {
     expect(JSON.stringify(auditEvents)).not.toContain("我今天第二次请求导学");
     expect(JSON.stringify(secondBody)).not.toContain("我今天第二次请求导学");
     expect(JSON.stringify(secondBody)).not.toContain("test-session-secret");
+  });
+
+  it("keeps persisted AI-free guide turns deterministic and outside the daily AI budget", async () => {
+    vi.stubEnv("AAIS_AI_DAILY_GUIDE_LIMIT", "1");
+    const graphMock = vi.fn(async (input: {
+      workspaceState: { aiUseMode?: string };
+    }) => {
+      void input;
+      return createMockGuideGraphResult();
+    });
+    vi.doMock("@/lib/ai/orchestration/aais-learning-guide-graph", () => ({
+      runAaisLearningGuideGraph: graphMock,
+    }));
+    const providerFetch = vi.fn<typeof fetch>();
+    vi.stubGlobal("fetch", providerFetch);
+    vi.resetModules();
+    const guideRoute = await import("@/app/api/learning/ai-guide/route");
+    const sessionRoute = await import("@/app/api/learning/session/route");
+    const analyticsRoute = await import("@/app/api/learning/analytics/route");
+    const { getAaisLearningStore } = await import("@/lib/server/aais-learning-store");
+    const studentId = "ai-free-budget-route";
+    const csrf = createAaisCsrfToken(studentId);
+    const cookie = createAuthedCookie(studentId, "student", csrf);
+    await initializeLearnerSession(studentId, cookie, csrf);
+    let guideMutationCounter = 0;
+    const guideRequest = (learnerInput: string, stream = false) => new Request(
+      `http://localhost/api/learning/ai-guide${stream ? "?stream=1" : ""}`,
+      {
+        method: "POST",
+        headers: {
+          ...(stream ? { accept: "text/event-stream" } : {}),
+          cookie,
+          "x-aais-csrf": csrf,
+        },
+        body: JSON.stringify({
+          dataGeneration: 1,
+          taskId: "training_task_1",
+          learnerInput,
+          mutationId: `ai-free-guide-${++guideMutationCounter}`,
+          workspaceState: { currentStep: "guide" },
+        }),
+      },
+    );
+
+    const meteredResponse = await guideRoute.POST(guideRequest("先使用一次 AI 支持。"));
+    expect(meteredResponse.status).toBe(200);
+    await expect(meteredResponse.json()).resolves.toMatchObject({
+      budget: { limit: 1, used: 1, remaining: 0 },
+    });
+
+    const modeResponse = await sessionRoute.PATCH(new Request(
+      "http://localhost/api/learning/session",
+      {
+        method: "PATCH",
+        headers: { cookie, "x-aais-csrf": csrf },
+        body: JSON.stringify({
+          action: "save-pilot-evidence",
+          dataGeneration: 1,
+          taskId: "training_task_1",
+          expectedPilotEvidenceRevision: 0,
+          mutationId: "persist-ai-free-before-guide",
+          pilotEvidence: { aiUseMode: "ai-free" },
+        }),
+      },
+    ));
+    expect(modeResponse.status).toBe(200);
+
+    const localResponse = await guideRoute.POST(guideRequest("使用本地量规提示我下一步。"));
+    expect(localResponse.status).toBe(200);
+    await expect(localResponse.json()).resolves.toMatchObject({
+      budget: { limit: 1, used: 1, remaining: 0 },
+    });
+
+    const localStreamResponse = await guideRoute.POST(
+      guideRequest("再给一次不使用外部 provider 的本地提示。", true),
+    );
+    expect(localStreamResponse.status).toBe(200);
+    const streamText = await localStreamResponse.text();
+    expect(streamText).toContain("event: done");
+    expect(streamText).toContain('\"budget\":{\"limit\":1,\"used\":1,\"remaining\":0');
+
+    const sessionResponse = await sessionRoute.GET(new Request(
+      "http://localhost/api/learning/session",
+      { headers: { cookie } },
+    ));
+    const sessionBody = await sessionResponse.json();
+    expect(sessionBody.session.events.filter((event: { event: string }) =>
+      event.event === "ai_prompt_submitted" || event.event === "ai_response_completed"
+    )).toHaveLength(2);
+    const localEvents = sessionBody.session.events.filter((event: { event: string }) =>
+      event.event === "deterministic_guide_prompt_submitted"
+      || event.event === "deterministic_guide_response_completed"
+    );
+    expect(localEvents).toHaveLength(0);
+    const rawLocalEvents = (await getAaisLearningStore().readSession(studentId))?.events.filter(
+      (event) => event.event === "deterministic_guide_prompt_submitted"
+        || event.event === "deterministic_guide_response_completed",
+    ) ?? [];
+    expect(rawLocalEvents).toHaveLength(4);
+    expect(rawLocalEvents.every((event) =>
+      event.detail.external_provider_contacted === false
+      && event.detail.raw_text_included === false
+      && event.detail.storage_scope === "learner_session_only"
+    )).toBe(true);
+    await expect(getAaisLearningStore().getDailyGuideUsage(studentId)).resolves.toMatchObject({
+      used: 1,
+    });
+    const analyticsResponse = await analyticsRoute.GET(new Request(
+      "http://localhost/api/learning/analytics",
+      { headers: { cookie } },
+    ));
+    await expect(analyticsResponse.json()).resolves.toMatchObject({
+      analytics: {
+        dashboard: {
+          coachingEffect: { aiInteractions: 2 },
+        },
+      },
+    });
+    expect(graphMock).toHaveBeenCalledTimes(3);
+    expect(graphMock.mock.calls.slice(1).every(([input]) =>
+      input.workspaceState.aiUseMode === "ai-free"
+    )).toBe(true);
+    expect(providerFetch).not.toHaveBeenCalled();
   });
 
   it("persists bounded guide attachment metadata without uploaded raw text", async () => {
@@ -2211,6 +2994,15 @@ describe("AAIS learning API routes", () => {
       }),
     );
     const sessionBody = await sessionResponse.json();
+    const acknowledgementBlock = streamText.match(/event: ack\ndata: ([^\n]+)\n\n/)?.[1];
+    const doneBlock = streamText.match(/event: done\ndata: ([^\n]+)\n\n/)?.[1];
+    expect(acknowledgementBlock).toBeTruthy();
+    expect(doneBlock).toBeTruthy();
+    expect(JSON.parse(acknowledgementBlock!)).not.toHaveProperty("exchange");
+    expect(JSON.parse(doneBlock!).exchange).toEqual({
+      userMessageId: sessionBody.session.guideMessages[0].id,
+      assistantMessageId: sessionBody.session.guideMessages[1].id,
+    });
     expect(sessionBody.session.guideMessages[0].attachments).toEqual([{
       name: "stream-notes.txt",
       mediaType: "text/plain",
@@ -2607,6 +3399,7 @@ describe("AAIS learning API routes", () => {
     }
     expect(remaining).toContain("event: error");
     expect(remaining).not.toContain("event: done");
+    expect(remaining).not.toContain('"exchange"');
     expect(remaining).not.toContain("Mocked final answer");
     const exportResponse = await privacyRoute.GET(new Request(
       "http://localhost/api/learning/privacy",
@@ -2936,6 +3729,36 @@ describe("AAIS learning API routes", () => {
       createAaisCsrfToken("S001"),
     );
 
+    let analyticsMutationCounter = 0;
+    for (const evidence of [
+      {
+        stageId: "launch_import",
+        evidenceKind: "orientation_acknowledged",
+      },
+      {
+        stageId: "modeling",
+        evidenceKind: "expert_model_reviewed",
+      },
+    ]) {
+      const evidenceResponse = await sessionRoute.PATCH(
+        new Request("http://localhost/api/learning/session", {
+          method: "PATCH",
+          headers: {
+            cookie: s001Cookie,
+            "x-aais-csrf": createAaisCsrfToken("S001"),
+          },
+          body: JSON.stringify({
+            dataGeneration: 1,
+            action: "record-stage-evidence",
+            taskId: "training_task_1",
+            ...evidence,
+            mutationId: `analytics-evidence-${++analyticsMutationCounter}`,
+          }),
+        }),
+      );
+      expect(evidenceResponse.status).toBe(200);
+    }
+
     await sessionRoute.PATCH(
       new Request("http://localhost/api/learning/session", {
         method: "PATCH",
@@ -2947,6 +3770,7 @@ describe("AAIS learning API routes", () => {
           dataGeneration: 1,
           action: "complete-task",
           taskId: "training_task_1",
+          mutationId: "analytics-complete-training",
         }),
       }),
     );
@@ -2999,6 +3823,7 @@ describe("AAIS learning API routes", () => {
           dataGeneration: 1,
           action: "complete-task",
           taskId: "practice_task_3",
+          mutationId: "complete-locked-task",
         }),
       }),
     );
@@ -3358,6 +4183,294 @@ describe("AAIS learning API routes", () => {
     expect(teacherExportBody.secrets).toBe("redacted");
     expect(JSON.stringify(teacherExportBody)).not.toContain("raw_dump");
   });
+
+  it("replays stable navigation and scaffold receipts without duplicate learner mutations", async () => {
+    const sessionRoute = await import("@/app/api/learning/session/route");
+    const scaffoldRoute = await import("@/app/api/learning/scaffold/route");
+    const { getAaisLearningStore } = await import("@/lib/server/aais-learning-store");
+    const studentId = "route-stable-replay-hardening";
+    const csrf = createAaisCsrfToken(studentId);
+    const cookie = createAuthedCookie(studentId, "student", csrf);
+    await initializeLearnerSession(studentId, cookie, csrf);
+    const store = getAaisLearningStore();
+    await store.recordStageEvidence(
+      studentId, "training_task_1", "launch_import", "orientation_acknowledged",
+    );
+    await store.recordStageEvidence(
+      studentId, "training_task_1", "modeling", "expert_model_reviewed",
+    );
+    await store.completeTask(studentId, "training_task_1");
+    const patch = (body: Record<string, unknown>) => sessionRoute.PATCH(new Request(
+      "http://localhost/api/learning/session",
+      {
+        method: "PATCH",
+        headers: { cookie, "x-aais-csrf": csrf },
+        body: JSON.stringify({ dataGeneration: 1, ...body }),
+      },
+    ));
+    const selection = {
+      action: "select-task",
+      taskId: "practice_task_1",
+      mutationId: "route-select-task-response-lost",
+    };
+    expect((await patch(selection)).status).toBe(200);
+    const selectionReplay = await patch(selection);
+    expect(selectionReplay.status).toBe(200);
+    const selectionBody = await selectionReplay.json();
+    expect(selectionBody.session.events.filter((event: { event: string }) =>
+      event.event === "task_selected"
+    )).toHaveLength(1);
+    const scaffold = (toolId: string, mutationId?: string) => scaffoldRoute.POST(new Request(
+      "http://localhost/api/learning/scaffold",
+      {
+        method: "POST",
+        headers: { cookie, "x-aais-csrf": csrf },
+        body: JSON.stringify({
+          dataGeneration: 1,
+          taskId: "practice_task_1",
+          toolId,
+          ...(mutationId ? { mutationId } : {}),
+        }),
+      },
+    ));
+    expect((await scaffold("stage-checklist", "route-scaffold-response-lost")).status).toBe(200);
+    const replayedScaffold = await scaffold("stage-checklist", "route-scaffold-response-lost");
+    const replayedBody = await replayedScaffold.json();
+    expect(replayedScaffold.status).toBe(200);
+    expect(replayedBody.requestCount).toBe(1);
+    expect(replayedBody.session.tasks.find((task: { taskId: string }) =>
+      task.taskId === "practice_task_1"
+    ).scaffoldRequests).toBe(1);
+    const conflict = await scaffold("sentence-starters", "route-scaffold-response-lost");
+    expect(conflict.status).toBe(409);
+    await expect(conflict.json()).resolves.toMatchObject({
+      error: { code: "AAIS_MUTATION_ID_CONFLICT" },
+    });
+    const legacyMissingFence = await scaffold("stage-checklist");
+    expect(legacyMissingFence.status).toBe(400);
+    await expect(legacyMissingFence.json()).resolves.toMatchObject({
+      error: { code: "AAIS_SCAFFOLD_MUTATION_ID_REQUIRED" },
+    });
+    expect((await patch({
+      action: "select-stage",
+      stageId: "coaching_scaffolding",
+      mutationId: "route-stage-payload-conflict",
+    })).status).toBe(200);
+    const stageConflict = await patch({
+      action: "select-stage",
+      stageId: "articulation",
+      mutationId: "route-stage-payload-conflict",
+    });
+    expect(stageConflict.status).toBe(409);
+    await expect(stageConflict.json()).resolves.toMatchObject({
+      error: { code: "AAIS_MUTATION_ID_CONFLICT" },
+    });
+
+    const graphMock = vi.fn(async () => createMockGuideGraphResult());
+    vi.doMock("@/lib/ai/orchestration/aais-learning-guide-graph", () => ({
+      runAaisLearningGuideGraph: graphMock,
+    }));
+    const guideRoute = await import("@/app/api/learning/ai-guide/route");
+    const scaffoldedGuideRequest = () => new Request(
+      "http://localhost/api/learning/ai-guide",
+      {
+        method: "POST",
+        headers: { cookie, "x-aais-csrf": csrf },
+        body: JSON.stringify({
+          dataGeneration: 1,
+          learnerInput: "我卡住了，想要一个支架提示。",
+          mutationId: "guide-explicit-help-response-lost",
+          taskId: "practice_task_1",
+          workspaceState: { currentStep: "coaching_scaffolding" },
+        }),
+      },
+    );
+    const firstGuide = await guideRoute.POST(scaffoldedGuideRequest());
+    expect(firstGuide.status).toBe(200);
+    const firstGuideBody = await firstGuide.json();
+    const replayedGuide = await guideRoute.POST(scaffoldedGuideRequest());
+    expect(replayedGuide.status).toBe(200);
+    const replayedGuideBody = await replayedGuide.json();
+    expect(replayedGuideBody).toEqual(firstGuideBody);
+    expect(graphMock).toHaveBeenCalledTimes(1);
+    const rawAfterGuideReplay = await getAaisLearningStore().readSession(studentId);
+    expect(rawAfterGuideReplay?.tasks.find((task) => task.taskId === "practice_task_1")
+      ?.scaffoldRequests).toBe(2);
+    expect(rawAfterGuideReplay?.events.filter((event) => event.event === "scaffold_request"))
+      .toHaveLength(2);
+    expect(rawAfterGuideReplay?.guideMessages).toHaveLength(2);
+    expect(rawAfterGuideReplay?.guideMutationReservations).toEqual([]);
+    expect((await getAaisLearningStore().getDailyGuideUsage(studentId)).used).toBe(1);
+    const learnerSession = await sessionRoute.GET(new Request(
+      "http://localhost/api/learning/session",
+      { headers: { cookie } },
+    ));
+    const learnerSessionBody = await learnerSession.json();
+    expect(learnerSessionBody.session).not.toHaveProperty("guideMutationReservations");
+    expect(JSON.stringify(learnerSessionBody.session)).not.toContain("guideMutation");
+  });
+
+  it("replays a completed SSE guide exchange without a second provider or budget use", async () => {
+    const studentId = "guide-sse-completed-replay";
+    const csrf = createAaisCsrfToken(studentId);
+    const cookie = createAuthedCookie(studentId, "student", csrf);
+    const store = await initializePracticeGuideLearner(studentId, cookie, csrf);
+    const graphMock = vi.fn(async () => createMockGuideGraphResult());
+    vi.doMock("@/lib/ai/orchestration/aais-learning-guide-graph", () => ({
+      runAaisLearningGuideGraph: graphMock,
+    }));
+    const guideRoute = await import("@/app/api/learning/ai-guide/route");
+    const request = () => new Request("http://localhost/api/learning/ai-guide?stream=1", {
+      method: "POST",
+      headers: {
+        accept: "text/event-stream",
+        cookie,
+        "x-aais-csrf": csrf,
+      },
+      body: JSON.stringify({
+        dataGeneration: 1,
+        learnerInput: "我卡住了，请给一个逐步提示。",
+        mutationId: "guide-sse-lost-done",
+        taskId: "practice_task_1",
+      }),
+    });
+
+    const first = await guideRoute.POST(request());
+    expect(first.status).toBe(200);
+    const firstStream = await first.text();
+    expect(firstStream).toContain("event: done");
+    const replayed = await guideRoute.POST(request());
+    expect(replayed.status).toBe(200);
+    const replayedStream = await replayed.text();
+    expect(replayedStream).toBe(firstStream);
+    expect(graphMock).toHaveBeenCalledTimes(1);
+    const raw = await store.readSession(studentId);
+    expect(raw?.guideMessages).toHaveLength(2);
+    expect(raw?.guideMutationReservations).toEqual([]);
+    expect(raw?.tasks.find((task) => task.taskId === "practice_task_1")?.scaffoldRequests)
+      .toBe(1);
+    expect((await store.getDailyGuideUsage(studentId)).used).toBe(1);
+  });
+
+  it("rejects an in-flight duplicate with retryable 503 and replays after completion", async () => {
+    const studentId = "guide-concurrent-mutation";
+    const csrf = createAaisCsrfToken(studentId);
+    const cookie = createAuthedCookie(studentId, "student", csrf);
+    const store = await initializePracticeGuideLearner(studentId, cookie, csrf);
+    const deferred = createDeferredGuideResult();
+    const graphMock = vi.fn(() => deferred.promise);
+    vi.doMock("@/lib/ai/orchestration/aais-learning-guide-graph", () => ({
+      runAaisLearningGuideGraph: graphMock,
+    }));
+    const guideRoute = await import("@/app/api/learning/ai-guide/route");
+    const request = () => new Request("http://localhost/api/learning/ai-guide", {
+      method: "POST",
+      headers: { cookie, "x-aais-csrf": csrf },
+      body: JSON.stringify({
+        dataGeneration: 1,
+        learnerInput: "我卡住了，请给我支架。",
+        mutationId: "guide-concurrent-once",
+        taskId: "practice_task_1",
+      }),
+    });
+
+    const firstPromise = guideRoute.POST(request());
+    await vi.waitFor(() => expect(graphMock).toHaveBeenCalledTimes(1));
+    const concurrent = await guideRoute.POST(request());
+    expect(concurrent.status).toBe(503);
+    expect(concurrent.headers.get("retry-after")).toMatch(/^\d+$/);
+    await expect(concurrent.json()).resolves.toMatchObject({
+      error: { code: "AAIS_GUIDE_MUTATION_IN_PROGRESS" },
+    });
+    const conflictingInFlight = await guideRoute.POST(new Request(
+      "http://localhost/api/learning/ai-guide",
+      {
+        method: "POST",
+        headers: { cookie, "x-aais-csrf": csrf },
+        body: JSON.stringify({
+          dataGeneration: 1,
+          learnerInput: "同一个 mutationId 的不同问题。",
+          mutationId: "guide-concurrent-once",
+          taskId: "practice_task_1",
+        }),
+      },
+    ));
+    expect(conflictingInFlight.status).toBe(409);
+    await expect(conflictingInFlight.json()).resolves.toMatchObject({
+      error: { code: "AAIS_MUTATION_ID_CONFLICT" },
+    });
+    expect(graphMock).toHaveBeenCalledTimes(1);
+    deferred.resolve(createMockGuideGraphResult());
+    const first = await firstPromise;
+    expect(first.status).toBe(200);
+    const firstBody = await first.json();
+    const replayed = await guideRoute.POST(request());
+    expect(replayed.status).toBe(200);
+    await expect(replayed.json()).resolves.toEqual(firstBody);
+    expect(graphMock).toHaveBeenCalledTimes(1);
+    const raw = await store.readSession(studentId);
+    expect(raw?.guideMessages).toHaveLength(2);
+    expect(raw?.tasks.find((task) => task.taskId === "practice_task_1")?.scaffoldRequests)
+      .toBe(1);
+  });
+
+  it("allows the same guide mutation to retry after failure but fences a changed attachment", async () => {
+    const studentId = "guide-failure-and-payload-fence";
+    const csrf = createAaisCsrfToken(studentId);
+    const cookie = createAuthedCookie(studentId, "student", csrf);
+    const store = await initializePracticeGuideLearner(studentId, cookie, csrf);
+    const graphMock = vi.fn()
+      .mockRejectedValueOnce(new Error("provider failed before completion"))
+      .mockResolvedValue(createMockGuideGraphResult());
+    vi.doMock("@/lib/ai/orchestration/aais-learning-guide-graph", () => ({
+      runAaisLearningGuideGraph: graphMock,
+    }));
+    const guideRoute = await import("@/app/api/learning/ai-guide/route");
+    const request = (extractedText: string) => new Request(
+      "http://localhost/api/learning/ai-guide",
+      {
+        method: "POST",
+        headers: { cookie, "x-aais-csrf": csrf },
+        body: JSON.stringify({
+          dataGeneration: 1,
+          learnerInput: "我卡住了，请结合资料给提示。",
+          mutationId: "guide-failure-retry-once",
+          taskId: "practice_task_1",
+          workspaceState: {
+            attachments: [{
+              name: "notes.txt",
+              mediaType: "text/plain",
+              sizeBytes: extractedText.length,
+              extractedText,
+            }],
+          },
+        }),
+      },
+    );
+
+    const failed = await guideRoute.POST(request("canonical attachment"));
+    expect(failed.status).toBe(500);
+    const afterFailure = await store.readSession(studentId);
+    expect(afterFailure?.guideMessages).toHaveLength(0);
+    expect(afterFailure?.guideMutationReservations).toMatchObject([
+      { status: "released" },
+    ]);
+    const retried = await guideRoute.POST(request("canonical attachment"));
+    expect(retried.status).toBe(200);
+    await retried.json();
+    expect(graphMock).toHaveBeenCalledTimes(2);
+    const conflict = await guideRoute.POST(request("changed attachment"));
+    expect(conflict.status).toBe(409);
+    await expect(conflict.json()).resolves.toMatchObject({
+      error: { code: "AAIS_MUTATION_ID_CONFLICT" },
+    });
+    expect(graphMock).toHaveBeenCalledTimes(2);
+    const raw = await store.readSession(studentId);
+    expect(raw?.guideMessages).toHaveLength(2);
+    expect(raw?.guideMutationReservations).toEqual([]);
+    expect(raw?.tasks.find((task) => task.taskId === "practice_task_1")?.scaffoldRequests)
+      .toBe(1);
+  });
 });
 
 function stubProductionWithoutDatabase() {
@@ -3458,6 +4571,31 @@ async function initializeLearnerSession(
   if (!response.ok) {
     throw new Error(`Failed to initialize test learner session: ${response.status}.`);
   }
+}
+
+async function initializePracticeGuideLearner(
+  actorId: string,
+  cookie: string,
+  csrfToken: string,
+) {
+  await initializeLearnerSession(actorId, cookie, csrfToken);
+  const { getAaisLearningStore } = await import("@/lib/server/aais-learning-store");
+  const store = getAaisLearningStore();
+  await store.recordStageEvidence(
+    actorId,
+    "training_task_1",
+    "launch_import",
+    "orientation_acknowledged",
+  );
+  await store.recordStageEvidence(
+    actorId,
+    "training_task_1",
+    "modeling",
+    "expert_model_reviewed",
+  );
+  await store.completeTask(actorId, "training_task_1");
+  await store.selectTask(actorId, "practice_task_1");
+  return store;
 }
 
 function extractCookieFromHeader(cookieHeader: string, name: string) {

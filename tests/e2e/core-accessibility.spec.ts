@@ -48,7 +48,7 @@ test("learning cockpit exposes a named main region and keyboard-operable content
   await page.keyboard.press("Enter");
   await expect(page.getByRole("heading", { name: "任务卡片" })).toBeVisible();
   await expect(page.getByRole("button", {
-    name: "L1 挑战：复述与计划，已锁定",
+    name: "社交媒体与大学生心理健康课程论文大纲，已锁定",
   })).toBeDisabled();
 
   await page.getByRole("button", { name: "文档编辑" }).focus();

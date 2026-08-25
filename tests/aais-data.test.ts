@@ -6,8 +6,22 @@ import {
   createAaisEvent,
   escapeAaisCsvField,
   exportAaisEventsAsCsv,
+  type LocalizedText,
 } from "@/data/aais";
+import {
+  aaisCoursePackages,
+  aaisPilotLearningMilestoneIds,
+  caasiPilotCoursePackage,
+  caasiPilotTaskAllowlist,
+  getAaisCoursePackage,
+  getCaasiPilotTaskDefinition,
+} from "@/data/aais-course-packages";
 import * as aaisData from "@/data/aais";
+
+function expectBilingualText(text: LocalizedText) {
+  expect(text["zh-CN"].trim().length).toBeGreaterThan(0);
+  expect(text["en-US"].trim().length).toBeGreaterThan(0);
+}
 
 describe("AAIS cognitive apprenticeship data", () => {
   it("keeps only the four agents from the platform requirements", () => {
@@ -181,6 +195,226 @@ describe("AAIS cognitive apprenticeship data", () => {
     ]);
   });
 
+  it("defines one versioned, teacher-review-gated pilot course package", () => {
+    expect(aaisCoursePackages).toHaveLength(1);
+    expect(getAaisCoursePackage(
+      "caasi-metacognition-pilot",
+      "0.1.0-pilot.1",
+    )).toBe(caasiPilotCoursePackage);
+    expect(getAaisCoursePackage("caasi-metacognition-pilot", "not-a-version"))
+      .toBeUndefined();
+    expect(caasiPilotCoursePackage).toMatchObject({
+      schemaVersion: "aais-course-package/v1",
+      version: "0.1.0-pilot.1",
+      locale: {
+        default: "zh-CN",
+        supported: ["zh-CN", "en-US"],
+      },
+      teacherReview: {
+        status: "pending",
+        requirement: "review-required",
+        reviewRequired: true,
+        reviewedAt: null,
+        reviewerId: null,
+      },
+      agentIds: ["A1", "A2", "A3", "A4"],
+    });
+    expectBilingualText(caasiPilotCoursePackage.course.title);
+    expectBilingualText(caasiPilotCoursePackage.course.description);
+    expectBilingualText(caasiPilotCoursePackage.course.audience);
+    expectBilingualText(caasiPilotCoursePackage.teacherReview.note);
+  });
+
+  it("uses the seven canonical internal learning milestone IDs without aliases", () => {
+    const milestoneIds: readonly string[] = caasiPilotCoursePackage.milestones.map(
+      (milestone) => milestone.id,
+    );
+    expect(aaisPilotLearningMilestoneIds).toEqual([
+      "launch_import",
+      "modeling",
+      "coaching_scaffolding",
+      "exploration",
+      "articulation",
+      "reflection",
+      "summary_completion",
+    ]);
+    expect(milestoneIds).toEqual(aaisPilotLearningMilestoneIds);
+    expect(caasiPilotCoursePackage.milestones.map((milestone) => milestone.order))
+      .toEqual([0, 1, 2, 3, 4, 5, 6]);
+    expect(caasiPilotCoursePackage.milestones.every((milestone) => milestone.internal))
+      .toBe(true);
+    expect(milestoneIds).not.toContain("modelling");
+    expect(milestoneIds).not.toContain("summary_close");
+    for (const milestone of caasiPilotCoursePackage.milestones) {
+      expectBilingualText(milestone.label);
+      expectBilingualText(milestone.description);
+      expect(milestone.ownerAgentIds.length).toBeGreaterThan(0);
+    }
+  });
+
+  it("provides a bilingual circle-area expert model with steps, monitoring, and rubric", () => {
+    const expertModel = caasiPilotCoursePackage.expertModel;
+
+    expect(expertModel).toMatchObject({
+      milestoneId: "modeling",
+      ownerAgentId: "A2",
+      role: {
+        "zh-CN": "具有小学数学教学与教育测量经验的专家",
+        "en-US": "An expert in primary mathematics teaching and educational measurement",
+      },
+      context: {
+        durationMinutes: 20,
+        totalPoints: 100,
+      },
+    });
+    expect(expertModel.learningDimensions.map((dimension) => dimension.id)).toEqual([
+      "concept_understanding",
+      "formula_application",
+      "derivation_reasoning",
+    ]);
+    expect(expertModel.steps.map((step) => step.id)).toEqual([
+      "analyze_task",
+      "set_learning_goals",
+      "draft_prompt",
+      "monitor_generation",
+      "evaluate_and_revise",
+    ]);
+    expect(expertModel.monitoringCheckpoints.map((checkpoint) => checkpoint.id)).toEqual([
+      "before_prompt",
+      "after_draft",
+      "before_acceptance",
+    ]);
+    expect(expertModel.rubric.map((criterion) => criterion.id)).toEqual([
+      "goal_alignment",
+      "mathematical_accuracy",
+      "cognitive_level",
+      "clarity",
+      "difficulty_balance",
+    ]);
+    expect(expertModel.promptTemplate["zh-CN"]).toContain("四年级");
+    expect(expertModel.promptTemplate["zh-CN"]).toContain("20 分钟");
+    expect(expertModel.promptTemplate["zh-CN"]).toContain("100 分");
+    expect(expertModel.promptTemplate["zh-CN"]).toContain("S = πr²");
+    expect(expertModel.promptTemplate["zh-CN"]).toContain("化曲为直");
+    expectBilingualText(expertModel.title);
+    expectBilingualText(expertModel.role);
+    expectBilingualText(expertModel.promptTemplate);
+    for (const dimension of expertModel.learningDimensions) {
+      expectBilingualText(dimension.label);
+      expectBilingualText(dimension.evidence);
+    }
+    for (const step of expertModel.steps) {
+      expectBilingualText(step.title);
+      expectBilingualText(step.thinkAloud);
+    }
+    for (const checkpoint of expertModel.monitoringCheckpoints) {
+      expectBilingualText(checkpoint.label);
+      checkpoint.checks.forEach(expectBilingualText);
+    }
+    for (const criterion of expertModel.rubric) {
+      expectBilingualText(criterion.label);
+      expectBilingualText(criterion.check);
+    }
+  });
+
+  it("absorbs only the approved Task 2-to-Task 4 pilot content", () => {
+    expect(caasiPilotTaskAllowlist).toEqual([
+      "practice_task_1",
+      "practice_task_2",
+      "practice_task_3",
+    ]);
+    expect(caasiPilotCoursePackage.taskAllowlist).toEqual(caasiPilotTaskAllowlist);
+    expect(caasiPilotCoursePackage.tasks.map((task) => [
+      task.taskId,
+      task.visibleTaskNumber,
+      task.availability,
+    ])).toEqual([
+      ["practice_task_1", 2, "available"],
+      ["practice_task_2", 3, "pilot-closed"],
+      ["practice_task_3", 4, "available"],
+    ]);
+
+    const taskTwo = getCaasiPilotTaskDefinition("practice_task_1");
+    const taskThree = getCaasiPilotTaskDefinition("practice_task_2");
+    const taskFour = getCaasiPilotTaskDefinition("practice_task_3");
+    const taskTwoContent = JSON.stringify(taskTwo?.cardSections);
+    const taskFourContent = JSON.stringify(taskFour?.cardSections);
+
+    expect(taskTwo?.exerciseIds).toEqual(["exercise_1", "exercise_2", "exercise_3"]);
+    expect(taskTwoContent).toContain("请指出这个提示词的不足并说明理由。");
+    expect(taskTwoContent).not.toContain("不足指出");
+    expect(taskTwo?.completionRequirements.map((requirement) => requirement.kind)).toEqual([
+      "prompt-diagnosis",
+      "prompt-revision",
+      "output-evaluation",
+      "articulation",
+    ]);
+
+    expect(taskThree).toMatchObject({
+      visibleTaskNumber: 3,
+      availability: "pilot-closed",
+      cardNote: {
+        "zh-CN": "先导实验阶段，任务3暂不开放，完成任务2后，会自动进入任务4",
+      },
+      exerciseIds: [],
+      milestoneIds: [],
+      completionRequirements: [],
+    });
+    expect(taskThree?.cardSections).toBeUndefined();
+
+    expect(taskFour?.exerciseIds).toEqual(["exercise_4"]);
+    expect(taskFourContent).toContain("不少于800字");
+    expect(taskFourContent).toContain("计划、监控、评价");
+    expect(taskFourContent).toContain("偏差、局限或错误");
+    expect(taskFour?.milestoneIds).toEqual([
+      "exploration",
+      "articulation",
+      "reflection",
+    ]);
+    expect(taskFour?.completionRequirements.map((requirement) => requirement.kind)).toEqual([
+      "artifact",
+      "planning",
+      "monitoring",
+      "evaluation",
+      "output-evaluation",
+      "articulation",
+      "reflection",
+    ]);
+
+    const packageText = JSON.stringify(caasiPilotCoursePackage);
+    expect(packageText).not.toContain("exercise_5");
+    expect(packageText).not.toContain("练习5");
+    expect(getCaasiPilotTaskDefinition("not-allowlisted")).toBeUndefined();
+  });
+
+  it("keeps articulation, reflection, and an equal-evidence AI-free path renderable", () => {
+    expect(caasiPilotCoursePackage.articulation).toMatchObject({
+      milestoneId: "articulation",
+      ownerAgentIds: ["A1", "A4"],
+      trigger: "after-each-open-task",
+    });
+    expect(caasiPilotCoursePackage.reflection).toMatchObject({
+      milestoneId: "reflection",
+      ownerAgentIds: ["A1", "A4"],
+      trigger: "after-exploration-task",
+    });
+    expect(caasiPilotCoursePackage.aiFree).toMatchObject({
+      available: true,
+      completionParity: "same-required-evidence",
+    });
+    expect(caasiPilotCoursePackage.aiFree.resources.map((resource) => resource.id)).toEqual([
+      "static-expert-model",
+      "static-rubric",
+      "learner-authored-artifact",
+    ]);
+    caasiPilotCoursePackage.articulation.prompts.forEach(expectBilingualText);
+    caasiPilotCoursePackage.reflection.prompts.forEach(expectBilingualText);
+    expectBilingualText(caasiPilotCoursePackage.aiFree.description);
+    for (const resource of caasiPilotCoursePackage.aiFree.resources) {
+      expectBilingualText(resource.label);
+    }
+  });
+
   it("records product-language events with learner, session, phase, task, agent, and detail fields", () => {
     const event = createAaisEvent({
       studentId: "S001",
@@ -260,6 +494,18 @@ describe("AAIS cognitive apprenticeship data", () => {
         agent: "platform",
         family: "PLATFORM",
         evidenceKind: "stage_navigation",
+      },
+      deterministic_guide_prompt_submitted: {
+        agent: "platform",
+        family: "PLATFORM",
+        evidenceKind: "session_lifecycle",
+        lrsEligible: false,
+      },
+      deterministic_guide_response_completed: {
+        agent: "platform",
+        family: "PLATFORM",
+        evidenceKind: "session_lifecycle",
+        lrsEligible: false,
       },
     });
   });

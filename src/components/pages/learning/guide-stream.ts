@@ -11,6 +11,7 @@ export type GuideResponseBody = {
   message?: {
     text?: string;
   };
+  exchange?: GuidePersistedExchange;
   turns?: GuideTurn[];
   orchestration?: {
     graph?: {
@@ -33,6 +34,11 @@ export type GuideResponseBody = {
     remaining?: number;
     resetsAt?: string;
   };
+};
+
+export type GuidePersistedExchange = {
+  userMessageId: string;
+  assistantMessageId: string;
 };
 
 export type GuideDailyBudgetExceededDetails = {
@@ -93,6 +99,7 @@ export async function readGuideStreamResponse(
   const turns: GuideTurn[] = [];
   let fallback = false;
   let graphId: string | undefined;
+  let exchange: GuidePersistedExchange | undefined;
   let buffer = "";
   let streamCompleted = false;
 
@@ -163,6 +170,7 @@ export async function readGuideStreamResponse(
     }
 
     if (streamEvent.event === "done" || streamEvent.event === "background_done") {
+      exchange = readCanonicalGuideExchange(streamEvent.data.exchange) ?? exchange;
       streamCompleted = true;
     }
   };
@@ -212,6 +220,7 @@ export async function readGuideStreamResponse(
       text: getGuideStreamDoneText(locale),
     },
     turns,
+    ...(exchange ? { exchange } : {}),
     orchestration: {
       graph: {
         graphId,
@@ -293,6 +302,14 @@ export function isUsableGuideBody(body: GuideResponseBody) {
   return Boolean(body.message?.text || body.turns?.length);
 }
 
+export function getCanonicalGuideExchange(body: GuideResponseBody) {
+  return readCanonicalGuideExchange(body.exchange);
+}
+
+export function isCanonicalGuideAssistantMessageId(value: unknown): value is string {
+  return isCanonicalGuideMessageId(value, "assistant");
+}
+
 export function isGuideEventStreamResponse(response: Response) {
   return response.headers.get("content-type")?.includes("text/event-stream") === true;
 }
@@ -303,6 +320,29 @@ function readGuideErrorCode(body: GuideResponseBody) {
     && typeof body.error.code === "string"
     ? body.error.code
     : null;
+}
+
+function readCanonicalGuideExchange(value: unknown): GuidePersistedExchange | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  const candidate = value as Record<string, unknown>;
+  if (
+    !isCanonicalGuideMessageId(candidate.userMessageId, "user")
+    || !isCanonicalGuideMessageId(candidate.assistantMessageId, "assistant")
+  ) {
+    return null;
+  }
+  return {
+    userMessageId: candidate.userMessageId,
+    assistantMessageId: candidate.assistantMessageId,
+  };
+}
+
+function isCanonicalGuideMessageId(value: unknown, kind: "user" | "assistant"): value is string {
+  return typeof value === "string"
+    && new RegExp(`^${kind}-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`, "i")
+      .test(value);
 }
 
 function upsertGuideStreamTurn(

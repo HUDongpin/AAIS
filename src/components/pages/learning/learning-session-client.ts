@@ -1,6 +1,10 @@
 import { getAaisApiErrorMessage } from "@/lib/client/aais-api-error";
 import { getAaisCsrfHeader } from "@/components/pages/learning/client-helpers";
-import type { AaisClientSession } from "@/components/pages/learning/learning-page-types";
+import type {
+  AaisClientScaffoldEvidenceSnapshot,
+  AaisClientScaffoldFadingReason,
+  AaisClientSession,
+} from "@/components/pages/learning/learning-page-types";
 import type { AaisResearchLogoutContext } from "@/lib/client/aais-research-telemetry";
 
 type LearningSessionResponseBody = {
@@ -8,12 +12,35 @@ type LearningSessionResponseBody = {
   error?: string | {
     code?: string;
     message?: string;
+    details?: {
+      taskId?: unknown;
+      completionMissing?: unknown;
+    };
   };
 };
 
 export type AaisLearningSessionClientError = Error & {
   code?: string;
   status?: number;
+  taskId?: string;
+  completionMissing?: string[];
+};
+
+export type AaisLearningScaffoldResult = {
+  session: AaisClientSession;
+  mode: "tool-list" | "self-check";
+  requestCount: number;
+  tool: {
+    id: string;
+    label: string;
+    body: string;
+  };
+  level?: 1 | 2 | 3 | 4;
+  intensity?: string;
+  remainingDirectAssists?: number;
+  fading?: boolean;
+  fadingReason?: AaisClientScaffoldFadingReason;
+  evidenceSnapshot?: AaisClientScaffoldEvidenceSnapshot;
 };
 
 type LearnerPrivacyResponseBody = {
@@ -57,6 +84,44 @@ export async function patchLearningSession(
     body: JSON.stringify(body),
   });
   return readLearningSessionResponse(response, "AAIS session update failed.");
+}
+
+export async function requestLearningScaffold(
+  input: {
+    dataGeneration: number;
+    mutationId: string;
+    taskId: string;
+    toolId: string;
+  },
+  fetchImpl: typeof fetch = fetch,
+): Promise<AaisLearningScaffoldResult> {
+  const response = await fetchImpl("/api/learning/scaffold", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      ...getAaisCsrfHeader(),
+    },
+    body: JSON.stringify(input),
+  });
+  const body = (await response.json()) as Partial<AaisLearningScaffoldResult> & {
+    error?: string | { code?: string; message?: string };
+  };
+  if (
+    !response.ok
+    || !body.session
+    || !Number.isSafeInteger(body.requestCount)
+    || (body.mode !== "tool-list" && body.mode !== "self-check")
+    || !body.tool
+    || typeof body.tool.id !== "string"
+    || typeof body.tool.label !== "string"
+    || typeof body.tool.body !== "string"
+  ) {
+    throw Object.assign(
+      new Error(getAaisApiErrorMessage(body, "AAIS scaffold request failed.")),
+      { status: response.status },
+    );
+  }
+  return body as AaisLearningScaffoldResult;
 }
 
 const aaisLearningKeepaliveBodyLimitBytes = 60 * 1024;
@@ -183,8 +248,16 @@ async function readLearningSessionResponse(response: Response, fallbackMessage: 
       && typeof body.error.code === "string"
       ? body.error.code
       : undefined;
+    const details = typeof body.error === "object" && body.error
+      ? body.error.details
+      : undefined;
+    const completionMissing = Array.isArray(details?.completionMissing)
+      ? details.completionMissing.filter((value): value is string => typeof value === "string")
+      : undefined;
     throw Object.assign(new Error(getAaisApiErrorMessage(body, fallbackMessage)), {
       ...(errorCode ? { code: errorCode } : {}),
+      ...(typeof details?.taskId === "string" ? { taskId: details.taskId } : {}),
+      ...(completionMissing ? { completionMissing } : {}),
       status: response.status,
     });
   }
@@ -196,7 +269,8 @@ export function isAaisTextRevisionConflictClientError(error: unknown) {
     ? (error as { code?: unknown }).code
     : null;
   return code === "AAIS_ARTIFACT_REVISION_CONFLICT"
-    || code === "AAIS_SELF_REPORT_REVISION_CONFLICT";
+    || code === "AAIS_SELF_REPORT_REVISION_CONFLICT"
+    || code === "AAIS_PILOT_EVIDENCE_REVISION_CONFLICT";
 }
 
 async function readLearnerPrivacyResponse(response: Response, fallbackMessage: string) {

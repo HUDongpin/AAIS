@@ -42,6 +42,7 @@ export async function POST(request: Request) {
           studentId?: string;
           taskId?: string;
           toolId?: string;
+          mutationId?: string;
           dataGeneration?: number;
         }
       | null;
@@ -54,6 +55,7 @@ export async function POST(request: Request) {
         status: 400,
       });
     }
+    const mutationId = requireScaffoldMutationId(body?.mutationId);
     const dataGeneration = requireDataGeneration(body?.dataGeneration);
     const store = getAaisLearningStore();
     if (!await store.readSession(studentId)) {
@@ -66,6 +68,7 @@ export async function POST(request: Request) {
         taskId,
         toolId,
         dataGeneration,
+        { mutationId },
       );
       return NextResponse.json({
         ...result,
@@ -103,6 +106,19 @@ function requireScaffoldTaskId(value: unknown) {
     invalid: {
       code: "AAIS_SCAFFOLD_FIELD_INVALID",
       message: "taskId is invalid.",
+    },
+  });
+}
+
+function requireScaffoldMutationId(value: unknown) {
+  return requireAaisLearningRequestId(value, {
+    required: {
+      code: "AAIS_SCAFFOLD_MUTATION_ID_REQUIRED",
+      message: "mutationId is required.",
+    },
+    invalid: {
+      code: "AAIS_SCAFFOLD_FIELD_INVALID",
+      message: "mutationId is invalid.",
     },
   });
 }
@@ -162,27 +178,37 @@ function getErrorResponseInput(error: unknown) {
     };
   }
   if (isAaisLearnerMutationError(error)) {
-    const code = error.reason === "scaffold_practice_only"
+    const code = error.reason === "mutation_replay_conflict"
+      ? "AAIS_MUTATION_ID_CONFLICT"
+      : error.reason === "scaffold_practice_only"
       ? "AAIS_SCAFFOLD_PRACTICE_ONLY"
       : error.reason === "scaffold_tool_invalid"
         ? "AAIS_SCAFFOLD_TOOL_INVALID"
         : error.reason === "task_locked"
           ? "AAIS_TASK_LOCKED"
+          : error.reason === "task_pilot_closed"
+            ? "AAIS_TASK_PILOT_CLOSED"
           : error.reason === "task_unknown"
             ? "AAIS_TASK_UNKNOWN"
             : null;
     if (code) {
-      const message = error.reason === "task_unknown"
+      const message = error.reason === "mutation_replay_conflict"
+        ? "AAIS mutation id is already bound to different content."
+        : error.reason === "task_unknown"
         ? "AAIS task was not found."
         : error.reason === "task_locked"
           ? "AAIS task is locked."
+          : error.reason === "task_pilot_closed"
+            ? "AAIS task is closed for the current pilot."
           : error.reason === "scaffold_tool_invalid"
             ? "AAIS scaffold tool is invalid."
             : "AAIS scaffolding is available only for practice tasks.";
       return {
         code,
         message,
-        status: 400,
+        status: error.reason === "task_pilot_closed" || error.reason === "mutation_replay_conflict"
+          ? 409
+          : 400,
       };
     }
   }
