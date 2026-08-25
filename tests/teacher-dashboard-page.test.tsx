@@ -6,6 +6,7 @@ afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
   document.cookie = "aais_csrf=; Max-Age=0; path=/";
+  document.documentElement.lang = "zh-CN";
 });
 
 describe("AAIS TeacherDashboardPage", () => {
@@ -138,6 +139,89 @@ describe("AAIS TeacherDashboardPage", () => {
     expect(screen.getByText("lrs")).toBeTruthy();
     expect(screen.queryByText("不能出现在教师看板的原始学习文本")).toBeNull();
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+  });
+
+  it("renders a complete English dashboard and English language semantics for en-US", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "/api/learning/analytics?scope=cohort&limit=25&offset=0") {
+        return Response.json({ analytics: createAnalyticsFixture() });
+      }
+      if (url === "/api/learning/recommendations?scope=cohort") {
+        return Response.json({
+          recommendations: [{
+            id: "recommendation-abcdef123456",
+            learnerKey: "learner-abcdef123456",
+            sessionKey: "session-abcdef123456",
+            ruleId: "complete_reflection",
+            priority: "high",
+            targetTaskId: "practice_task_1",
+            title: "补齐反思证据",
+            actionLabel: "提示学生提交反思",
+            reasonCodes: ["reflection_missing"],
+            reasons: ["缺少反思证据。"],
+          }],
+          secrets: "redacted",
+        });
+      }
+      return Response.json(
+        { error: { code: "AAIS_TEST_UNEXPECTED", message: "unexpected" } },
+        { status: 500 },
+      );
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { container } = render(<TeacherDashboardPage locale="en-US" />);
+
+    expect(await screen.findByRole("heading", { name: "Teacher dashboard" })).toBeTruthy();
+    expect(screen.getByRole("main", { name: "Teacher dashboard" })).toBeTruthy();
+    expect(document.documentElement.lang).toBe("en-US");
+    expect(container.firstElementChild?.getAttribute("lang")).toBe("en-US");
+    expect(screen.getByRole("navigation", { name: "Primary navigation" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Sign out" })).toBeTruthy();
+    expect(screen.getAllByRole("option", { name: "All" })).toHaveLength(3);
+    expect(screen.getByRole("option", { name: "Guide Zhang" })).toBeTruthy();
+    expect(screen.getByRole("option", { name: "Professor" })).toBeTruthy();
+    expect(screen.getByRole("region", { name: "Learner risk queue table" })).toBeTruthy();
+    expect(screen.getByText("Complete reflection evidence")).toBeTruthy();
+    expect(screen.getByText(/Self-report or expert-path comparison evidence is missing/)).toBeTruthy();
+    expect(screen.getByText("Reflection missing")).toBeTruthy();
+    expect(screen.getByText("Risk bands")).toBeTruthy();
+    expect(screen.getByText("Data boundary")).toBeTruthy();
+    expect(screen.queryByText("补齐反思证据")).toBeNull();
+    expect(document.body.textContent).not.toMatch(/[\u3400-\u9fff]/u);
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+  });
+
+  it("contains the 820px learner table inside shrinkable grid tracks and an inner scroller", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).startsWith("/api/learning/analytics")) {
+        return Response.json({ analytics: createAnalyticsFixture() });
+      }
+      return Response.json({ recommendations: [], secrets: "redacted" });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { container } = render(<TeacherDashboardPage />);
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+
+    const main = screen.getByRole("main");
+    const table = container.querySelector("table");
+    const scroller = table?.parentElement;
+    const tableCard = scroller?.parentElement;
+    const queueLayout = tableCard?.parentElement;
+
+    expect(main.className).toContain("min-w-0");
+    expect(queueLayout?.className).toContain("min-w-0");
+    expect(tableCard?.className).toContain("min-w-0");
+    expect(tableCard?.className).toContain("max-w-full");
+    expect(scroller?.className).toContain("w-full");
+    expect(scroller?.className).toContain("max-w-full");
+    expect(scroller?.className).toContain("overflow-x-auto");
+    expect(scroller?.className).toContain("focus-visible:ring-2");
+    expect(scroller?.getAttribute("role")).toBe("region");
+    expect(scroller?.tabIndex).toBe(0);
+    expect(table?.className).toContain("min-w-[820px]");
   });
 
   it("shows an educator authorization message when cohort analytics is forbidden", async () => {

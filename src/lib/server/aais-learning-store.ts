@@ -2711,6 +2711,7 @@ export function createAaisLearningStore(input: StoreInput = {}) {
     question: string;
     answer: string;
     interactionMode?: AaisGuideInteractionMode;
+    expectedScaffoldRequests?: number;
     budgetReservationId?: string;
     capacityReservationId?: string;
     dataGeneration?: number;
@@ -2752,6 +2753,14 @@ export function createAaisLearningStore(input: StoreInput = {}) {
             exchange: completed.exchange,
           } satisfies AaisAppendGuideExchangeResult;
         }
+      }
+      const consumedA1Help = input.turns?.some((turn) => turn.agentId === "A1") === true;
+      if (
+        consumedA1Help
+        && input.expectedScaffoldRequests !== undefined
+        && task.scaffoldRequests !== input.expectedScaffoldRequests
+      ) {
+        throw new AaisSessionWriteConflictError();
       }
       const existingUserMessage = session.guideMessages.some((message) =>
         message.id === userMessageId
@@ -2827,6 +2836,24 @@ export function createAaisLearningStore(input: StoreInput = {}) {
             }
           : {}),
       };
+      const scaffoldRequestCount = consumedA1Help
+        ? task.scaffoldRequests + 1
+        : task.scaffoldRequests;
+      const scaffoldState = consumedA1Help
+        ? deriveAaisScaffoldState(scaffoldRequestCount)
+        : task.scaffoldState;
+      const scaffoldMode: AaisTaskRecord["scaffoldHistory"][number]["mode"] =
+        scaffoldState.fading ? "self-check" : "tool-list";
+      const scaffoldFadingReason: AaisScaffoldFadingReason | undefined =
+        scaffoldState.fading ? "direct_assists_exhausted" : undefined;
+      const scaffoldEvidenceSnapshot = consumedA1Help
+        ? createAaisScaffoldEvidenceSnapshot({
+            taskId: task.taskId,
+            artifactText: task.artifactText,
+            pilotEvidence: task.pilotEvidence,
+            milestones: task.milestones,
+          })
+        : null;
       const inputClassification = classifyAaisLearnerInput(input.question);
       const supervisionSignals = inputClassification.explicitHelpRequested
         ? createStoredA3Signals(task, createAaisSignalDrafts({
@@ -2904,19 +2931,88 @@ export function createAaisLearningStore(input: StoreInput = {}) {
           now: () => new Date(now),
         }),
       ];
+      const scaffoldEvents = consumedA1Help
+        ? [
+            createAaisEvent({
+              studentId: session.studentId,
+              sessionId: session.sessionId,
+              phase: task.phase,
+              task: task.taskId,
+              agent: "A1",
+              event: "scaffold_request",
+              detail: {
+                request_count: scaffoldRequestCount,
+                tool_id: "ai-guide",
+                mode: scaffoldMode,
+                scaffold_level: scaffoldState.currentLevel,
+                intensity: scaffoldState.intensity,
+                remaining_direct_assists: scaffoldState.remainingDirectAssists,
+                ...(scaffoldFadingReason
+                  ? { fading_reason: scaffoldFadingReason }
+                  : {}),
+                origin: "ai_guide_response",
+              },
+              now: () => new Date(now),
+            }),
+            ...(scaffoldMode === "self-check"
+              ? [
+                  createAaisEvent({
+                    studentId: session.studentId,
+                    sessionId: session.sessionId,
+                    phase: task.phase,
+                    task: task.taskId,
+                    agent: "A1",
+                    event: "scaffold_self_check_started",
+                    detail: {
+                      request_count: scaffoldRequestCount,
+                      tool_id: "ai-guide",
+                      origin: "ai_guide_response",
+                    },
+                    now: () => new Date(now),
+                  }),
+                ]
+              : []),
+          ]
+        : [];
       const newEvents = [
         ...guideEvents,
+        ...scaffoldEvents,
         // Explicit-help signals are intentionally appended after the response
         // event so the request that created them cannot consume them itself.
         ...createA3SignalEvents(session, task, supervisionSignals, now),
       ];
       const updated = touch({
         ...session,
-        tasks: session.tasks.map((candidate): AaisTaskRecord =>
-          candidate.taskId === task.taskId
-            ? refreshTaskCompletion(appendTaskSignals(candidate, supervisionSignals))
-            : candidate
-        ),
+        tasks: session.tasks.map((candidate): AaisTaskRecord => {
+          if (candidate.taskId !== task.taskId) {
+            return candidate;
+          }
+          const taskWithSignals = appendTaskSignals(candidate, supervisionSignals);
+          const taskWithScaffold = consumedA1Help && scaffoldEvidenceSnapshot
+            ? {
+                ...taskWithSignals,
+                scaffoldRequests: scaffoldRequestCount,
+                scaffoldState,
+                scaffoldHistory: [
+                  ...taskWithSignals.scaffoldHistory,
+                  {
+                    toolId: "ai-guide",
+                    mode: scaffoldMode,
+                    time: now,
+                    level: scaffoldState.currentLevel,
+                    intensity: scaffoldState.intensity,
+                    fading: scaffoldState.fading,
+                    remainingDirectAssists: scaffoldState.remainingDirectAssists,
+                    ...(scaffoldFadingReason
+                      ? { fadingReason: scaffoldFadingReason }
+                      : {}),
+                    evidenceSnapshot: scaffoldEvidenceSnapshot,
+                  },
+                ],
+              }
+            : taskWithSignals;
+          return refreshTaskCompletion(taskWithScaffold);
+        }),
         guideMessages: [...session.guideMessages, userMessage, assistantMessage],
         guideCapacityReservations: input.capacityReservationId
           ? capacityReservations.filter((reservation) =>

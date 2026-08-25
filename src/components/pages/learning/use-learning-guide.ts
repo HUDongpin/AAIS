@@ -8,27 +8,45 @@ import { createInitialGuideMessages, getGuideAttachmentOnlyPrompt } from "@/comp
 import { getLearningCopy } from "@/components/pages/learning/learning-copy";
 import { pilotCopy } from "@/components/pages/learning/pilot-learning-copy";
 import { getGuideDailyBudgetFailurePresentation } from "@/components/pages/learning/guide-error-presentation";
-import { addReadAttachmentMetadataToGuideMessage, getControlledGuideAttachmentMimeType,
-  useHydratePersistedGuideMessages } from "@/components/pages/learning/guide-message-persistence";
+import {
+  addReadAttachmentMetadataToGuideMessage,
+  getControlledGuideAttachmentMimeType,
+  useHydratePersistedGuideMessages,
+} from "@/components/pages/learning/guide-message-persistence";
 import { getVisibleGuideTurns, toGuideAttachmentPayload } from "@/components/pages/learning/guide-chat";
 import { fetchGuideRequest, getAaisCsrfHeader, clientNowMs } from "@/components/pages/learning/client-helpers";
 import type { GuideClientAttachment, GuideMessage } from "@/components/pages/learning/learning-page-types";
 import type { GuideSubmissionOptions, UseLearningGuideInput } from "@/components/pages/learning/learning-guide-types";
-import { getCanonicalGuideExchange, isGuideEventStreamResponse, isUsableGuideBody,
-  readGuideJsonBody, readGuideStreamResponse, validateGuideResponse,
-  type GuideResponseBody } from "@/components/pages/learning/guide-stream";
-import { applyGuideResponseToMessages,
-  applyGuideStreamProgressToMessages } from "@/components/pages/learning/guide-message-updates";
-import { attachStableReplayMutation, clearStableReplayMutation, isExplicitClientRejection,
-  type PendingStableReplayMutation } from "@/components/pages/learning/learning-pilot-mutation";
+import {
+  getCanonicalGuideExchange,
+  isGuideEventStreamResponse,
+  isUsableGuideBody,
+  readConfirmedHelpRequestsUsed,
+  readGuideJsonBody,
+  readGuideStreamResponse,
+  validateGuideResponse,
+  type GuideResponseBody,
+} from "@/components/pages/learning/guide-stream";
+import {
+  applyGuideResponseToMessages,
+  applyGuideStreamProgressToMessages,
+} from "@/components/pages/learning/guide-message-updates";
+import {
+  attachStableReplayMutation,
+  clearStableReplayMutation,
+  isExplicitClientRejection,
+  type PendingStableReplayMutation,
+} from "@/components/pages/learning/learning-pilot-mutation";
 export function useLearningGuide({
   activeTaskId,
   activeTaskPhase = activeTaskId.startsWith("practice_") ? "practice" : "training",
   artifactText,
   displayName,
   isGuideSubmissionBlocked = () => false,
+  getHelpRequestsUsed,
   waitForLearnerDataGeneration,
   locale,
+  onHelpRequestsUsedConfirmed,
   persistedGuideMessages = [],
   studentId,
 }: UseLearningGuideInput) {
@@ -176,6 +194,7 @@ export function useLearningGuide({
       const dataGeneration = typeof generationResult === "number"
         ? generationResult
         : await generationResult;
+      const helpRequestsUsed = Math.min(4, Math.max(0, getHelpRequestsUsed(activeTaskId)));
       const requestInit = {
         method: "POST",
         headers: {
@@ -194,7 +213,7 @@ export function useLearningGuide({
             studentId,
             currentStep: "home",
             artifactText,
-            helpRequestsUsed: 0,
+            helpRequestsUsed,
             ...(boundedAttachments.length ? { attachments: boundedAttachments } : {}),
           },
         }),
@@ -214,6 +233,8 @@ export function useLearningGuide({
           },
         });
       });
+      const confirmedHelpRequestsUsed = readConfirmedHelpRequestsUsed(body);
+      if (confirmedHelpRequestsUsed !== null) onHelpRequestsUsedConfirmed(activeTaskId, confirmedHelpRequestsUsed);
       setGuideMessages((current) =>
         applyGuideResponseToMessages(current, { userId, assistantId }, body, locale),
       );

@@ -1659,6 +1659,149 @@ describe("AAIS learning API routes", () => {
     );
   });
 
+  it("uses the durable per-task A1 help count and does not consume a failed request", async () => {
+    const observedHelpCounts: number[] = [];
+    let failNext = true;
+    const graphMock = vi.fn(async (input: { workspaceState: { helpRequestsUsed?: number } }) => {
+      observedHelpCounts.push(input.workspaceState.helpRequestsUsed ?? -1);
+      if (failNext) {
+        failNext = false;
+        throw new Error("provider failed before persistence");
+      }
+      return createMockGuideGraphResult();
+    });
+    vi.doMock("@/lib/ai/orchestration/aais-learning-guide-graph", () => ({
+      runAaisLearningGuideGraph: graphMock,
+    }));
+    const guideRoute = await import("@/app/api/learning/ai-guide/route");
+    const sessionRoute = await import("@/app/api/learning/session/route");
+    const studentId = "durable-guide-help-counter";
+    const csrf = createAaisCsrfToken(studentId);
+    const cookie = createAuthedCookie(studentId, "student", csrf);
+    await initializeLearnerSession(studentId, cookie, csrf);
+
+    const sendHelp = () => guideRoute.POST(new Request(
+      "http://localhost/api/learning/ai-guide",
+      {
+        method: "POST",
+        headers: { cookie, "x-aais-csrf": csrf },
+        body: JSON.stringify({
+          dataGeneration: 1,
+          taskId: "training_task_1",
+          learnerInput: "请给我一个下一步提示",
+          workspaceState: {
+            currentStep: "guide",
+            // The server must not trust a stale or forged client counter.
+            helpRequestsUsed: 4,
+          },
+        }),
+      },
+    ));
+
+    const failedResponse = await sendHelp();
+    expect(failedResponse.status).toBe(500);
+    const afterFailure = await sessionRoute.GET(new Request(
+      "http://localhost/api/learning/session",
+      { headers: { cookie } },
+    ));
+    const afterFailureBody = await afterFailure.json();
+    expect(afterFailureBody.session.tasks[0].scaffoldRequests).toBe(0);
+
+    const confirmedCounts: number[] = [];
+    for (let ordinal = 0; ordinal < 5; ordinal += 1) {
+      const response = await sendHelp();
+      const body = await response.json();
+      expect(response.status).toBe(200);
+      confirmedCounts.push(body.workspaceState.helpRequestsUsed);
+    }
+
+    expect(observedHelpCounts).toEqual([0, 0, 1, 2, 3, 4]);
+    expect(confirmedCounts).toEqual([1, 2, 3, 4, 4]);
+
+    const sessionResponse = await sessionRoute.GET(new Request(
+      "http://localhost/api/learning/session",
+      { headers: { cookie } },
+    ));
+    const sessionBody = await sessionResponse.json();
+    expect(sessionBody.session.tasks[0].scaffoldRequests).toBe(5);
+    expect(sessionBody.session.events.filter(
+      (event: { event: string }) => event.event === "scaffold_request",
+    )).toHaveLength(5);
+    expect(sessionBody.session.events.filter(
+      (event: { event: string }) => event.event === "scaffold_self_check_started",
+    )).toHaveLength(1);
+    vi.doUnmock("@/lib/ai/orchestration/aais-learning-guide-graph");
+  });
+
+  it("rejects a concurrently stale A1 result before it can consume the next scaffold slot", async () => {
+    const firstGraph = createDeferredGuideResult();
+    const secondGraph = createDeferredGuideResult();
+    const observedHelpCounts: number[] = [];
+    const graphMock = vi.fn((input: { workspaceState: { helpRequestsUsed?: number } }) => {
+      observedHelpCounts.push(input.workspaceState.helpRequestsUsed ?? -1);
+      if (observedHelpCounts.length === 1) {
+        return firstGraph.promise;
+      }
+      if (observedHelpCounts.length === 2) {
+        return secondGraph.promise;
+      }
+      return Promise.resolve(createMockGuideGraphResult());
+    });
+    vi.doMock("@/lib/ai/orchestration/aais-learning-guide-graph", () => ({
+      runAaisLearningGuideGraph: graphMock,
+    }));
+    const guideRoute = await import("@/app/api/learning/ai-guide/route");
+    const sessionRoute = await import("@/app/api/learning/session/route");
+    const studentId = "concurrent-guide-help-counter";
+    const csrf = createAaisCsrfToken(studentId);
+    const cookie = createAuthedCookie(studentId, "student", csrf);
+    await initializeLearnerSession(studentId, cookie, csrf);
+
+    const sendHelp = (learnerInput: string) => guideRoute.POST(new Request(
+      "http://localhost/api/learning/ai-guide",
+      {
+        method: "POST",
+        headers: { cookie, "x-aais-csrf": csrf },
+        body: JSON.stringify({
+          dataGeneration: 1,
+          taskId: "training_task_1",
+          learnerInput,
+          workspaceState: { currentStep: "guide" },
+        }),
+      },
+    ));
+
+    const firstResponsePromise = sendHelp("first concurrent request");
+    await vi.waitFor(() => expect(graphMock).toHaveBeenCalledTimes(1));
+    const secondResponsePromise = sendHelp("second concurrent request");
+    await vi.waitFor(() => expect(graphMock).toHaveBeenCalledTimes(2));
+    expect(observedHelpCounts).toEqual([0, 0]);
+
+    firstGraph.resolve(createMockGuideGraphResult());
+    const firstResponse = await firstResponsePromise;
+    expect(firstResponse.status).toBe(200);
+
+    secondGraph.resolve(createMockGuideGraphResult());
+    const secondResponse = await secondResponsePromise;
+    expect(secondResponse.status).toBe(409);
+    await expect(secondResponse.json()).resolves.toMatchObject({
+      error: { code: "AAIS_SESSION_WRITE_CONFLICT" },
+    });
+
+    const afterConflict = await sessionRoute.GET(new Request(
+      "http://localhost/api/learning/session",
+      { headers: { cookie } },
+    ));
+    const afterConflictBody = await afterConflict.json();
+    expect(afterConflictBody.session.tasks[0].scaffoldRequests).toBe(1);
+    expect(afterConflictBody.session.guideMessages).toHaveLength(2);
+
+    const retryResponse = await sendHelp("retry after stale result");
+    expect(retryResponse.status).toBe(200);
+    expect(observedHelpCounts).toEqual([0, 0, 1]);
+    vi.doUnmock("@/lib/ai/orchestration/aais-learning-guide-graph");
+  });
+
   it("canonicalizes a forged A2 target without a Professor mention back to A1", async () => {
     vi.stubEnv("AAIS_AI_PROVIDER", "");
     vi.stubEnv("AAIS_AI_ENDPOINT", "");

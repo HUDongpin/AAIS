@@ -66,6 +66,7 @@ export function useLearningWorkspaceSession(
   const [historyDocuments, setHistoryDocuments] = useState<SavedLearningDocument[]>([]);
   const [persistedGuideMessages, setPersistedGuideMessages] = useState<GuideMessage[]>([]);
   const [tasks, setTasks] = useState<AaisClientTaskRecord[]>([]);
+  const tasksRef = useRef<AaisClientTaskRecord[]>([]);
   const [learnerDataGeneration, setLearnerDataGeneration] = useState<number | null>(null);
   const [backendError, setBackendError] = useState("");
   const artifactRevisionRef = useRef(0);
@@ -129,7 +130,9 @@ export function useLearningWorkspaceSession(
       throw new Error("AAIS learner data generation is unavailable.");
     }
     taskTextRevisionsRef.current = nextTaskTextRevisions;
-    setTasks(session.tasks ?? []);
+    const nextTasks = session.tasks ?? [];
+    tasksRef.current = nextTasks;
+    setTasks(nextTasks);
     learnerDataGenerationRef.current = session.dataGeneration;
     setLearnerDataGeneration(session.dataGeneration);
     for (const resolve of learnerDataGenerationWaitersRef.current.splice(0)) {
@@ -358,6 +361,24 @@ export function useLearningWorkspaceSession(
     return aiUseModeMutationsRef.current.get(taskId)?.status ?? null;
   }
 
+  const getTaskScaffoldRequests = useCallback((taskId: string) => {
+    const count = tasksRef.current.find((task) => task.taskId === taskId)?.scaffoldRequests;
+    return Number.isSafeInteger(count) && Number(count) >= 0 ? Number(count) : 0;
+  }, []);
+
+  const confirmTaskScaffoldRequests = useCallback((taskId: string, count: number) => {
+    if (!Number.isSafeInteger(count) || count < 0) {
+      return;
+    }
+    const nextTasks = tasksRef.current.map((task) =>
+      task.taskId === taskId
+        ? { ...task, scaffoldRequests: count }
+        : task
+    );
+    tasksRef.current = nextTasks;
+    setTasks(nextTasks);
+  }, []);
+
   function waitForLearnerDataGeneration() {
     const current = learnerDataGenerationRef.current;
     if (current !== null) {
@@ -391,6 +412,7 @@ export function useLearningWorkspaceSession(
     setActiveHistoryDocumentId(null);
     setHistoryDocuments([]);
     setPersistedGuideMessages([]);
+    tasksRef.current = [];
     setTasks([]);
     learnerDataGenerationRef.current = nextDataGeneration;
     setLearnerDataGeneration(nextDataGeneration);
@@ -476,6 +498,7 @@ export function useLearningWorkspaceSession(
     historyDocuments,
     getArtifactRevision,
     getAiUseModeMutationStatus,
+    getTaskScaffoldRequests,
     documentTitle,
     lastSavedArtifactLengthRef,
     learnerDataGeneration,
@@ -483,6 +506,7 @@ export function useLearningWorkspaceSession(
     persistedGuideMessages,
     requestScaffold,
     tasks,
+    confirmTaskScaffoldRequests,
     resetWorkspaceSession,
     setArtifactText,
     setActiveHistoryDocumentId,

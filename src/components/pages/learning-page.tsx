@@ -76,6 +76,7 @@ function LearningWorkbenchState({
     documentTitle,
     getArtifactRevision,
     getAiUseModeMutationStatus,
+    getTaskScaffoldRequests,
     historyDocuments,
     lastSavedArtifactLengthRef,
     learnerDataGeneration,
@@ -88,8 +89,7 @@ function LearningWorkbenchState({
     setBackendError,
     setDocumentTitle,
     setHistoryDocuments,
-    waitForLearnerDataGeneration,
-    tasks,
+    waitForLearnerDataGeneration, tasks, confirmTaskScaffoldRequests,
   } = useLearningWorkspaceSession(
     locale,
     {
@@ -162,8 +162,10 @@ function LearningWorkbenchState({
     artifactText,
     displayName: actor.displayName,
     isGuideSubmissionBlocked: () => getAiUseModeMutationStatus(editingTaskId) !== null,
+    getHelpRequestsUsed: getTaskScaffoldRequests,
     waitForLearnerDataGeneration,
     locale,
+    onHelpRequestsUsedConfirmed: confirmTaskScaffoldRequests,
     persistedGuideMessages,
     studentId,
   });

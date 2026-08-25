@@ -38,7 +38,9 @@ function LearningGuideResetHarness() {
     activeTaskId: "training_task_1",
     artifactText: "",
     displayName: "Bobie",
+    getHelpRequestsUsed: () => 0,
     locale: "zh-CN",
+    onHelpRequestsUsedConfirmed: vi.fn(),
     studentId: "S001",
     waitForLearnerDataGeneration: () => 1,
   });
@@ -1491,6 +1493,58 @@ describe("AAIS LearningPage", () => {
     expect(a2Avatar.querySelector('[data-avatar-part="lecture-pointer"]')).toBeTruthy();
     expect(a2Avatar.querySelector('[data-avatar-part="research-chart"]')).toBeTruthy();
     expect(a2Avatar.querySelector('[data-avatar-part="expert-spark"]')).toBeNull();
+  });
+
+  it("sends the persisted task help count and updates it only from a successful server confirmation", async () => {
+    setCsrfCookie();
+    const session = createClientSessionFixture("");
+    session.tasks[0]!.scaffoldRequests = 3;
+    let guideAttempt = 0;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.startsWith("/api/learning/session") && (!init || init.method === "GET")) {
+        return Response.json({ session });
+      }
+      if (url === "/api/learning/ai-guide" && init?.method === "POST") {
+        guideAttempt += 1;
+        if (guideAttempt === 1) {
+          return Response.json({
+            error: {
+              code: "AAIS_GUIDE_REQUEST_FAILED",
+              message: "AAIS guide request failed.",
+            },
+          }, { status: 500 });
+        }
+        return Response.json({
+          message: { text: "AAIS 智能体已回复。" },
+          turns: [{
+            agentId: "A1",
+            label: "导学智能体",
+            content: `server-confirmed-${guideAttempt - 1}`,
+            actions: ["guide-flow", "scaffold"],
+          }],
+          workspaceState: { helpRequestsUsed: 4 },
+        });
+      }
+      return Response.json({ ok: true });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<LearningPage />);
+
+    submitGuidePrompt("first attempt fails");
+    await screen.findByText("智能服务暂时不可用，已保留你的问题。请稍后重试。");
+    submitGuidePrompt("retry succeeds");
+    await screen.findByText("server-confirmed-1");
+    submitGuidePrompt("next successful request");
+    await screen.findByText("server-confirmed-2");
+
+    const guideRequestCounts = fetchMock.mock.calls
+      .filter(([input, init]) =>
+        String(input) === "/api/learning/ai-guide" && init?.method === "POST"
+      )
+      .map(([, init]) => JSON.parse(String(init?.body)).workspaceState.helpRequestsUsed);
+    expect(guideRequestCounts).toEqual([3, 3, 4]);
   });
 
   it("keeps processing-only stream events hidden until the final agent answer", async () => {
@@ -3288,6 +3342,7 @@ describe("AAIS LearningPage", () => {
 
     const guideInput = screen.getByLabelText("向智能导学输入你的想法");
     const inputShell = guideInput.closest("div");
+    const uploadButton = screen.getByRole("button", { name: "上传文件" });
     const sendButton = screen.getByRole("button", { name: "发送" });
 
     expect(inputShell?.className).toContain("w-full");
@@ -3296,6 +3351,10 @@ describe("AAIS LearningPage", () => {
     expect(inputShell?.className).toContain("rounded-[28px]");
     expect(guideInput.className).toContain("h-[72px]");
     expect(guideInput.className).toContain("text-base");
+    expect(uploadButton.className).toContain("size-11");
+    expect(uploadButton.querySelector("svg")?.getAttribute("width")).toBe("22");
+    expect(sendButton.className).toContain("size-11");
+    expect(sendButton.querySelector("svg")?.getAttribute("width")).toBe("22");
     expect(sendButton.className).toContain("bg-[#d7dbe3]");
 
     fireEvent.change(guideInput, {

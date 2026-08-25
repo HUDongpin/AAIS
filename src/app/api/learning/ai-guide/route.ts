@@ -22,6 +22,7 @@ import {
   type AaisGuideMutationReceipt,
   type AaisGuideMutationRuntimeSummary,
   type AaisCompletedGuideMutationReplay,
+  type AaisAppendGuideExchangeResult,
   type AaisPersistedGuideExchange,
 } from "@/lib/server/aais-learning-store";
 import { isAaisCsrfError, requireAaisCsrf } from "@/lib/server/aais-csrf";
@@ -270,7 +271,7 @@ export async function POST(request: Request) {
         workspaceState: {
           currentStep: task.activeMilestone ?? body.workspaceState?.currentStep ?? "smart-guide",
           artifactText: task.artifactText,
-          helpRequestsUsed: task.scaffoldRequests,
+          helpRequestsUsed: normalizeGuideHelpRequestsUsed(task.scaffoldRequests),
           aiUseMode: task.pilotEvidence.aiUseMode,
           outputEvaluation: revisionPolicyActionable
             ? "revision_required"
@@ -307,6 +308,7 @@ export async function POST(request: Request) {
           metered: guideBudgetReservation.metered,
           dataGeneration: body.dataGeneration,
           guideMutationReceipt,
+          expectedScaffoldRequests: task.scaffoldRequests,
         });
         guideRunDeadline = null;
         rawTextWriteLease = null;
@@ -334,6 +336,7 @@ export async function POST(request: Request) {
         question: body.learnerInput,
         answer: result.messageText,
         interactionMode,
+        expectedScaffoldRequests: task.scaffoldRequests,
         ...(attachmentMetadata.length ? { attachments: attachmentMetadata } : {}),
         turns: result.visibleTurns,
         orchestration: createPersistedGuideOrchestration(result),
@@ -366,7 +369,11 @@ export async function POST(request: Request) {
 
       return NextResponse.json(
         {
-          ...createGuideJsonBody(result, persistedExchange.exchange),
+          ...createGuideJsonBody(
+            result,
+            persistedExchange.exchange,
+            readPersistedGuideHelpRequestsUsed(persistedExchange.session, task.taskId),
+          ),
           budget,
         },
         {
@@ -816,6 +823,7 @@ function getErrorResponseInput(error: unknown) {
 function createGuideJsonBody(
   result: Awaited<ReturnType<typeof runAaisLearningGuideGraph>>,
   exchange: AaisPersistedGuideExchange,
+  helpRequestsUsed?: number,
 ) {
   const runtime = createGuideMutationRuntimeSummary(result);
   return {
@@ -840,6 +848,9 @@ function createGuideJsonBody(
         },
       },
     },
+    ...(helpRequestsUsed !== undefined
+      ? { workspaceState: { helpRequestsUsed } }
+      : {}),
   };
 }
 
@@ -907,6 +918,18 @@ function createGuideMutationRuntimeSummary(
     timeoutReason: typeof timeoutReason === "string" ? timeoutReason : null,
     agentStatuses,
   };
+}
+
+function normalizeGuideHelpRequestsUsed(value: number) {
+  return Math.min(maxGuideHelpRequests, Math.max(0, Math.floor(value)));
+}
+
+function readPersistedGuideHelpRequestsUsed(
+  session: AaisAppendGuideExchangeResult["session"],
+  taskId: string,
+) {
+  const task = session.tasks.find((candidate) => candidate.taskId === taskId);
+  return normalizeGuideHelpRequestsUsed(task?.scaffoldRequests ?? 0);
 }
 
 function getVisibleGuideTimings(
@@ -1071,6 +1094,7 @@ function createGuideStreamResponse(input: {
   metered: boolean;
   dataGeneration: number;
   guideMutationReceipt: AaisGuideMutationReceipt | null;
+  expectedScaffoldRequests: number;
 }) {
   const encoder = new TextEncoder();
   const runDeadline = input.runDeadline;
@@ -1134,6 +1158,7 @@ function createGuideStreamResponse(input: {
           question: input.question,
           answer: result.messageText,
           interactionMode: input.interactionMode,
+          expectedScaffoldRequests: input.expectedScaffoldRequests,
           ...(input.attachmentMetadata.length
             ? { attachments: input.attachmentMetadata }
             : {}),
@@ -1186,6 +1211,12 @@ function createGuideStreamResponse(input: {
         send("done", {
           status: "completed",
           exchange: persistedExchange.exchange,
+          workspaceState: {
+            helpRequestsUsed: readPersistedGuideHelpRequestsUsed(
+              persistedExchange.session,
+              input.input.taskId,
+            ),
+          },
         });
       } catch {
         if (!runDeadline.signal.aborted && !downstreamCancelled) {
