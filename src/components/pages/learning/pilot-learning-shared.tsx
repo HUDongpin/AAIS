@@ -35,6 +35,29 @@ export type PilotTextRequirement = AaisTaskCompletionRequirement & {
   field: PilotEvidenceTextKey;
 };
 
+export type ScaffoldTaskSnapshot = {
+  requestCount: number;
+  remainingDirectAssists?: number;
+};
+
+export function getScaffoldTaskSnapshot(
+  task: AaisClientTaskRecord | undefined,
+): ScaffoldTaskSnapshot {
+  return {
+    requestCount: task?.scaffoldRequests ?? 0,
+    remainingDirectAssists: task?.scaffoldState?.remainingDirectAssists
+      ?? task?.scaffoldHistory?.at(-1)?.remainingDirectAssists,
+  };
+}
+
+export function matchesScaffoldTaskSnapshot(
+  left: ScaffoldTaskSnapshot,
+  right: ScaffoldTaskSnapshot,
+) {
+  return left.requestCount === right.requestCount
+    && left.remainingDirectAssists === right.remainingDirectAssists;
+}
+
 export const stageEvidenceKinds: Record<AaisPilotLearningMilestoneId, string> = {
   launch_import: "orientation_acknowledged",
   modeling: "expert_model_reviewed",

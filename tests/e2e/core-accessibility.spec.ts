@@ -72,6 +72,7 @@ test("legacy theory accessible name still opens the renamed task-card surface", 
   });
 
   await page.goto("/learning");
+  await waitForAaisLearningClientReady(page);
 
   await page.getByRole("button", { name: "理论知识" }).focus();
   await page.keyboard.press("Enter");

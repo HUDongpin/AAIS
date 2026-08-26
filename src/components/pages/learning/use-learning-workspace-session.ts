@@ -1,5 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { defaultTaskId } from "@/components/pages/learning/learning-page-constants";
+import {
+  defaultTaskId,
+  learningSessionLoadTimeoutMs,
+} from "@/components/pages/learning/learning-page-constants";
 import { getLearningCopy } from "@/components/pages/learning/learning-copy";
 import {
   fetchLearningSession,
@@ -39,9 +42,15 @@ import {
 
 type AiUseModeMutationStatus = "pending" | "unsaved";
 
+export type LearningSessionLoadState = "loading" | "ready" | "error";
+
 type AiUseModeMutationHandle = {
   taskId: string;
   token: string;
+};
+
+type LearningSessionPatchOptions = {
+  validateResponse?: (session: AaisClientSession) => void;
 };
 
 export function useLearningWorkspaceSession(
@@ -51,6 +60,7 @@ export function useLearningWorkspaceSession(
     artifactText?: string;
     documentTitle?: string;
   } = {},
+  loadEnabled = true,
 ) {
   const initialArtifactText = initialDocument.artifactText ?? "";
   const initialDocumentTitle = initialDocument.documentTitle ?? "";
@@ -68,6 +78,8 @@ export function useLearningWorkspaceSession(
   const [persistedGuideMessages, setPersistedGuideMessages] = useState<GuideMessage[]>([]);
   const [tasks, setTasks] = useState<AaisClientTaskRecord[]>([]);
   const tasksRef = useRef<AaisClientTaskRecord[]>([]);
+  const [sessionLoadState, setSessionLoadState] = useState<LearningSessionLoadState>("loading");
+  const [sessionLoadAttempt, setSessionLoadAttempt] = useState(0);
   const [learnerDataGeneration, setLearnerDataGeneration] = useState<number | null>(null);
   const [backendError, setBackendError] = useState("");
   const artifactRevisionRef = useRef(0);
@@ -158,7 +170,10 @@ export function useLearningWorkspaceSession(
     setArtifactTextState(value);
   }
 
-  async function patchSession(body: LearningSessionPatchBody) {
+  async function patchSession(
+    body: LearningSessionPatchBody,
+    options: LearningSessionPatchOptions = {},
+  ) {
     const aiUseModeMutation = beginAiUseModeMutation(body);
     const sessionGeneration = sessionGenerationRef.current;
     let requestBody = body;
@@ -180,6 +195,7 @@ export function useLearningWorkspaceSession(
         ...requestBody,
         dataGeneration,
       });
+      options.validateResponse?.(session);
       clearPendingPilotMutation(requestBody, pendingPilotMutationsRef.current);
       clearStableReplayMutation(requestBody, pendingStableMutationsRef.current);
       settleAiUseModeMutation(aiUseModeMutation, null);
@@ -285,17 +301,37 @@ export function useLearningWorkspaceSession(
     return Number.isSafeInteger(count) && Number(count) >= 0 ? Number(count) : 0;
   }, []);
 
-  const confirmTaskScaffoldRequests = useCallback((taskId: string, count: number) => {
+  const confirmTaskScaffoldRequests = useCallback((
+    taskId: string,
+    count: number,
+    consumedA1Help = false,
+  ) => {
     if (!Number.isSafeInteger(count) || count < 0) {
       return;
     }
     const nextTasks = tasksRef.current.map((task) =>
       task.taskId === taskId
-        ? { ...task, scaffoldRequests: count }
+        ? {
+            ...task,
+            scaffoldRequests: count,
+            ...(task.scaffoldState && consumedA1Help
+              ? {
+                  scaffoldState: {
+                    ...task.scaffoldState,
+                    remainingDirectAssists: Math.max(0, 4 - Math.min(4, count)),
+                  },
+                }
+              : {}),
+          }
         : task
     );
     tasksRef.current = nextTasks;
     setTasks(nextTasks);
+  }, []);
+
+  const retrySessionLoad = useCallback(() => {
+    setSessionLoadState("loading");
+    setSessionLoadAttempt((attempt) => attempt + 1);
   }, []);
 
   function waitForLearnerDataGeneration() {
@@ -344,9 +380,18 @@ export function useLearningWorkspaceSession(
   }
 
   useEffect(() => {
+    if (!loadEnabled) {
+      return;
+    }
     let cancelled = false;
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(
+      () => controller.abort(),
+      learningSessionLoadTimeoutMs,
+    );
     const sessionGeneration = sessionGenerationRef.current;
     const artifactRevision = artifactRevisionRef.current;
+    const trigger = sessionLoadAttempt > 0 ? "retry" : "page_mount";
 
     async function loadSession() {
       const telemetryActorGeneration = captureAaisResearchActorGeneration();
@@ -358,19 +403,24 @@ export function useLearningWorkspaceSession(
         outcome: "attempted",
         detail: {
           operation_id: operationId,
-          trigger: "page_mount",
+          trigger,
           task_id: defaultTaskId,
         },
       })) {
+        window.clearTimeout(timeoutId);
+        if (!cancelled && sessionGeneration === sessionGenerationRef.current) {
+          setSessionLoadState("error");
+        }
         return;
       }
       try {
-        const session = await fetchLearningSession();
+        const session = await fetchLearningSession(fetch, { signal: controller.signal });
         if (!cancelled && sessionGeneration === sessionGenerationRef.current) {
           applySession(session, {
             preserveArtifactText: hasInitialDocumentDraft
               || artifactRevision !== artifactRevisionRef.current,
           });
+          setSessionLoadState("ready");
           setBackendError("");
           recordAaisResearchEvent({
             actorGeneration: telemetryActorGeneration,
@@ -379,13 +429,14 @@ export function useLearningWorkspaceSession(
             latencyMs: clientNowMs() - startedAt,
             detail: {
               operation_id: operationId,
-              trigger: "page_mount",
+              trigger,
               task_id: session.activeTaskId || defaultTaskId,
             },
           });
         }
       } catch (error) {
         if (!cancelled && sessionGeneration === sessionGenerationRef.current) {
+          setSessionLoadState("error");
           setBackendError(getLearningCopy(localeRef.current).workspace.sessionUnavailable);
           recordAaisResearchEvent({
             actorGeneration: telemetryActorGeneration,
@@ -394,11 +445,13 @@ export function useLearningWorkspaceSession(
             latencyMs: clientNowMs() - startedAt,
             detail: {
               operation_id: operationId,
-              trigger: "page_mount",
+              trigger,
               error_kind: classifyAaisResearchClientError(error),
             },
           });
         }
+      } finally {
+        window.clearTimeout(timeoutId);
       }
     }
 
@@ -406,8 +459,10 @@ export function useLearningWorkspaceSession(
 
     return () => {
       cancelled = true;
+      window.clearTimeout(timeoutId);
+      controller.abort();
     };
-  }, [hasInitialDocumentDraft, initialArtifactText]);
+  }, [hasInitialDocumentDraft, initialArtifactText, loadEnabled, sessionLoadAttempt]);
 
   return {
     activeTaskId,
@@ -424,6 +479,8 @@ export function useLearningWorkspaceSession(
     patchSession,
     persistedGuideMessages,
     requestScaffold,
+    retrySessionLoad,
+    sessionLoadState,
     tasks,
     confirmTaskScaffoldRequests,
     resetWorkspaceSession,

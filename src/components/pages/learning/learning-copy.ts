@@ -113,9 +113,7 @@ export type LearningCopy = {
     justSaved: string;
     untitled: string;
   };
-  workspace: {
-    sessionUnavailable: string;
-  };
+  workspace: { sessionLoading: string; sessionUnavailable: string; retrySessionLoad: string };
   account: {
     waitForOperation: string;
     waitForExportOperation: string;
@@ -287,7 +285,9 @@ export const learningCopyByLocale: Record<Locale, LearningCopy> = {
       untitled: "未命名文档",
     },
     workspace: {
+      sessionLoading: "正在加载服务器学习记录...",
       sessionUnavailable: "学习记录服务暂时不可用，本页会保留当前输入但不会完成持久化。",
+      retrySessionLoad: "重新加载学习记录",
     },
     account: {
       waitForOperation: "请等待当前保存、下载或智能体操作完成后再退出。",
@@ -458,7 +458,9 @@ export const learningCopyByLocale: Record<Locale, LearningCopy> = {
       untitled: "Untitled document",
     },
     workspace: {
+      sessionLoading: "Loading your server learning record...",
       sessionUnavailable: "The learning-record service is temporarily unavailable. This page will retain your input, but it cannot be saved yet.",
+      retrySessionLoad: "Reload learning record",
     },
     account: {
       waitForOperation: "Wait for the current save, download, or AI operation to finish before signing out.",

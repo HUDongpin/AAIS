@@ -78,13 +78,18 @@ describe("AAIS learning API routes", () => {
           action: "save-artifact",
           taskId: "training_task_1",
           artifactText: "训练任务过程记录",
+          documentTitle: "合成训练记录",
           expectedArtifactRevision: 0,
           mutationId: "route-artifact-save-initial",
         }),
       }),
     );
     body = await response.json();
-    expect(body.session.tasks[0].artifactText).toBe("训练任务过程记录");
+    expect(body.session.tasks[0]).toMatchObject({
+      artifactText: "训练任务过程记录",
+      artifactRevision: 1,
+      documentTitle: "合成训练记录",
+    });
 
     response = await sessionRoute.PATCH(
       new Request("http://localhost/api/learning/session", {
@@ -114,7 +119,11 @@ describe("AAIS learning API routes", () => {
       }),
     );
     body = await response.json();
-    expect(body.session.tasks[0].artifactText).toBe("训练任务过程记录");
+    expect(body.session.tasks[0]).toMatchObject({
+      artifactText: "训练任务过程记录",
+      artifactRevision: 1,
+      documentTitle: "合成训练记录",
+    });
     expect(body.session.historyDocuments).toEqual([]);
 
     response = await sessionRoute.PATCH(

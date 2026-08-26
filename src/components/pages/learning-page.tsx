@@ -4,6 +4,7 @@ import { ContentResizeSeparator, ContentSidePanel } from "@/components/pages/lea
 import { GuidePanel } from "@/components/pages/learning/guide-panel";
 import { LearningAccountFeedback, LearningTopBar } from "@/components/pages/learning/learning-top-bar";
 import { getLearningCopy } from "@/components/pages/learning/learning-copy";
+import { LearningSessionStatus } from "@/components/pages/learning/learning-session-status";
 import { useLearningAccount } from "@/components/pages/learning/use-learning-account";
 import { useContentPanelResize } from "@/components/pages/learning/use-content-panel-resize";
 import { useLearningArtifactSave } from "@/components/pages/learning/use-learning-artifact-save";
@@ -82,8 +83,7 @@ function LearningWorkbenchState({
     learnerDataGeneration,
     patchSession,
     persistedGuideMessages,
-    requestScaffold,
-    resetWorkspaceSession,
+    requestScaffold, retrySessionLoad, resetWorkspaceSession, sessionLoadState,
     setArtifactText,
     setActiveHistoryDocumentId,
     setBackendError,
@@ -96,8 +96,9 @@ function LearningWorkbenchState({
       activeDocumentId: initialDraftJournal?.activeDocumentId ?? null,
       artifactText: initialDraftJournal?.value ?? "",
       documentTitle: initialDraftJournal?.title ?? "",
-    },
-  );
+    }, hydrationReady);
+  const sessionReady = sessionLoadState === "ready";
+  const workspaceReady = hydrationReady && sessionReady;
   const editingTaskId = documentTaskId ?? activeTaskId;
   const aiUseModeMutationStatus = getAiUseModeMutationStatus(editingTaskId);
   const activeTaskPhase = tasks.find((task) => task.taskId === editingTaskId)?.phase
@@ -204,7 +205,7 @@ function LearningWorkbenchState({
     accountStatus,
     handleDeleteLearnerData,
     handleExportLearnerData,
-    handleLogout,
+    handleLogout, handleSessionFailureLogout,
     learnerDeleteBusy,
     loggingOut,
     privacyBusy,
@@ -387,13 +388,16 @@ function LearningWorkbenchState({
       data-locale={locale}
       lang={locale}
     >
+      {!workspaceReady ? <LearningSessionStatus
+        copy={copy.workspace} logoutError={accountError} loggingOut={loggingOut} onLogout={handleSessionFailureLogout}
+        onRetry={retrySessionLoad} signingOutLabel={copy.account.signingOut} signOutLabel={copy.brand.signOut} state={sessionLoadState}
+      /> : null}
       <main
         data-testid="learning-shell"
         data-client-ready={hydrationReady ? "true" : "false"}
-        aria-busy={!hydrationReady || undefined}
-        aria-hidden={!hydrationReady || undefined}
-        inert={!hydrationReady || undefined}
-        className="flex min-h-[100dvh] w-full max-w-none flex-col bg-[#fcfcfc] text-[#0e0e0e] lg:h-[100dvh] lg:overflow-hidden"
+        data-session-ready={sessionReady ? "true" : "false"} data-session-load-state={sessionLoadState}
+        aria-busy={!workspaceReady || undefined} inert={!workspaceReady || undefined}
+        className={`flex min-h-[100dvh] w-full max-w-none flex-col bg-[#fcfcfc] text-[#0e0e0e] lg:h-[100dvh] lg:overflow-hidden ${workspaceReady ? "" : "pointer-events-none opacity-0"}`}
         aria-labelledby="aais-learning-heading"
         aria-describedby="aais-learning-description"
       >

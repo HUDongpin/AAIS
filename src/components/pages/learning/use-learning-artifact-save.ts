@@ -22,6 +22,7 @@ import {
   createAaisResearchOperationId,
   recordAaisResearchEvent,
 } from "@/lib/client/aais-research-telemetry";
+import type { AaisClientSession } from "@/components/pages/learning/learning-page-types";
 
 type UseLearningArtifactSaveOptions = {
   activeHistoryDocumentId: string | null;
@@ -31,7 +32,10 @@ type UseLearningArtifactSaveOptions = {
   initialDraftJournal: ArtifactDraftJournal | null;
   lastSavedArtifactLengthRef: { current: number };
   learnerDataGeneration: number | null;
-  patchSession: (body: LearningSessionPatchBody) => Promise<unknown>;
+  patchSession: (
+    body: LearningSessionPatchBody,
+    options?: { validateResponse?: (session: AaisClientSession) => void },
+  ) => Promise<AaisClientSession>;
   researchRequired: boolean;
   setBackendError: (value: string) => void;
   studentId: string;
@@ -157,15 +161,26 @@ export function useLearningArtifactSave({
     setArtifactSaveBusy(true);
     setArtifactSaveStatus(copy.document.saving);
     setArtifactSaveError("");
-    void patchSession({
-      action: "save-artifact",
-      activeDocumentId: pending.activeDocumentId,
-      documentTitle: pending.documentTitle,
-      expectedArtifactRevision,
-      mutationId: pending.mutationId,
-      taskId: pending.taskId,
-      artifactText: pending.value,
-    })
+    void patchSession(
+      {
+        action: "save-artifact",
+        activeDocumentId: pending.activeDocumentId,
+        documentTitle: pending.documentTitle,
+        expectedArtifactRevision,
+        mutationId: pending.mutationId,
+        taskId: pending.taskId,
+        artifactText: pending.value,
+      },
+      {
+        validateResponse(session) {
+          if (!matchesArtifactSaveAcknowledgement(session, pending)) {
+            throw new Error(
+              "AAIS artifact save acknowledgement did not match the submitted draft.",
+            );
+          }
+        },
+      },
+    )
       .then(() => {
         if (!workbenchMountedRef.current) {
           return;
@@ -459,4 +474,21 @@ export function useLearningArtifactSave({
     setArtifactSaveError,
     setArtifactSaveStatus,
   };
+}
+
+function matchesArtifactSaveAcknowledgement(
+  session: AaisClientSession,
+  pending: PendingArtifactSave,
+) {
+  const task = session.tasks?.find((candidate) => candidate.taskId === pending.taskId);
+  const expectedRevision = pending.expectedArtifactRevision;
+  return Boolean(
+    task
+    && expectedRevision !== null
+    && Number.isSafeInteger(task.artifactRevision)
+    && task.artifactRevision > expectedRevision
+    && task.artifactText === pending.value
+    && (task.documentTitle ?? "") === pending.documentTitle
+    && (task.activeDocumentId ?? null) === pending.activeDocumentId
+  );
 }

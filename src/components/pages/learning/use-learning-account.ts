@@ -46,11 +46,11 @@ export function useLearningAccount({
   const [accountStatus, setAccountStatus] = useState("");
   const [accountError, setAccountError] = useState("");
 
-  async function handleLogout() {
+  async function performLogout(allowOperationBusy: boolean) {
     if (loggingOut) {
       return;
     }
-    if (operationBusy || privacyBusy) {
+    if ((!allowOperationBusy && operationBusy) || privacyBusy) {
       setAccountError(copy.account.waitForOperation);
       return;
     }
@@ -131,6 +131,14 @@ export function useLearningAccount({
         : "/login",
     );
     setLoggingOut(false);
+  }
+
+  function handleLogout() {
+    return performLogout(false);
+  }
+
+  function handleSessionFailureLogout() {
+    return performLogout(true);
   }
 
   async function handleExportLearnerData() {
@@ -298,6 +306,7 @@ export function useLearningAccount({
     handleDeleteLearnerData,
     handleExportLearnerData,
     handleLogout,
+    handleSessionFailureLogout,
     loggingOut,
     learnerDeleteBusy,
     privacyBusy,

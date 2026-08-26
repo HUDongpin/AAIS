@@ -235,7 +235,11 @@ export function useLearningGuide({
         },
       });
       const confirmedHelpRequestsUsed = readConfirmedHelpRequestsUsed(body);
-      if (confirmedHelpRequestsUsed !== null) onHelpRequestsUsedConfirmed(activeTaskId, confirmedHelpRequestsUsed);
+      if (confirmedHelpRequestsUsed !== null) {
+        const consumedA1Help = getVisibleGuideTurns(body.turns)
+          .some((turn) => turn.agentId === "A1");
+        onHelpRequestsUsedConfirmed(activeTaskId, confirmedHelpRequestsUsed, consumedA1Help);
+      }
       setGuideMessages((current) =>
         applyGuideResponseToMessages(current, { userId, assistantId }, body, locale),
       );

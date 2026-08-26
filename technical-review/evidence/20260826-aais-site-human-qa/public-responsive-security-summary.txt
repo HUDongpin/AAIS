@@ -1,0 +1,33 @@
+AAIS Production Human QA — public, responsive and security summary
+
+Run ID: PROD-HQA-20260826-015548
+
+Public/browser checks:
+- /, /login, /terms and /privacy were reachable through the browser flow.
+- Anonymous /learning, /dashboard and /admin/users navigated to /login with encoded from parameters and exposed no protected workspace.
+- Chinese and English login/legal flows updated visible copy and html.lang.
+- Consent unchecked: Login was truly disabled. Consent checked: Login became enabled.
+- Password visibility toggle worked.
+- Forgot-password empty and obviously invalid email validation ran locally; no valid email was submitted.
+- Public-flow console: 0 warnings, 0 errors; no Next error overlay observed.
+- Authenticated learner access to /dashboard and /admin/users returned to /learning.
+- Authenticated apex /learning canonicalized to www and retained the student session.
+
+Responsive learning layout:
+- Requested viewports: 1440x900, 390x844, 375x812, 320x700 and 812x375.
+- No document/body page-level horizontal overflow was detected in any requested viewport.
+- One main landmark, one H1 and the skip link were present in all five checks.
+- Account menu measured 79x44 CSS px; Upload 44x44; Send 44x44.
+- These are viewport simulations, not real-device certification.
+
+Accessibility/environment boundary:
+- Login keyboard/consent path and public skip-link/focus checks passed earlier in the same run.
+- Reduced-motion preference was successfully emulated; two running Web Animations remained, but no obstructed operation was observed. This is not a motion-compliance certification.
+- Playwright page-key shortcuts did not change Chrome Page Zoom. A macOS Chrome shortcut could not be proven to target the isolated window; 200% Page Zoom is BLOCKED_ENVIRONMENT.
+- VoiceOver was not run because OS focus could not be safely locked to the isolated browser.
+
+End security/readiness headers:
+- GET /api/system/readiness: HTTP 200 application/json, status ready, cache-control no-store.
+- HSTS max-age 63072000 with includeSubDomains/preload.
+- CSP present with default-src self, object-src none, frame-ancestors none, base-uri self, form-action self and upgrade-insecure-requests.
+- X-Frame-Options DENY; X-Content-Type-Options nosniff; Permissions Policy disables camera, microphone, geolocation and payment; Referrer Policy strict-origin-when-cross-origin; COOP same-origin.

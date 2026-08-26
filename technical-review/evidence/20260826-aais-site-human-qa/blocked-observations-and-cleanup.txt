@@ -1,0 +1,35 @@
+AAIS Production Human QA — blocked scope, observations and cleanup
+
+Run ID: PROD-HQA-20260826-015548
+
+Blocked or stopped:
+- Teacher login/dashboard/export: BLOCKED_CREDENTIALS. A separate protected historical teacher environment file existed, but it was outside the explicitly authorized historical Codex-record source and was not read or used.
+- Task 4 artifact, reflection report, summary and completion: NOT_VERIFIED after PROD-HQA-20260826-001 reset Task 2 completion and locked Task 4.
+- Personal learning-data export: NOT_VERIFIED after the core reset; the legacy learner account was not globally fresh, and no raw export was created.
+- Markdown download: OBS-001 / NEEDS_REPRO. One visible click after a 200 save response displayed a download failure and opened no verifiable save event. OS-level second confirmation could not be safely targeted to the isolated Chrome window, so this is not a numbered product defect.
+- 200% real Chrome Page Zoom and VoiceOver: BLOCKED_ENVIRONMENT.
+- Teacher responsive table, filters, exports and logout: BLOCKED_CREDENTIALS.
+
+Intentionally not run:
+- Learning-data deletion.
+- Valid-address password-reset email.
+- Admin role/account changes.
+- Teacher recommendation writes.
+- Real cohort viewing/export.
+- Manual LRS flush, retry, reconcile or archive.
+- Provider contract, research readiness or Owner acceptance.
+
+Student logout:
+- Exactly one DELETE /api/auth/app-session was observed; response HTTP 200.
+- Navigation reached /login.
+- Refresh remained at /login.
+- Direct /learning reached /login?from=%2Flearning with no learning shell.
+- The response-body revoke/absent booleans were not retained, so this gate is PASS_LIMITED rather than an expanded server-contract claim.
+
+Temporary-data disposal:
+- The headed browser was closed before cleanup.
+- /private/tmp/aais-prod-hqa-20260826-VhznUG was verified as the exact isolated target (profile, attachments, downloads and raw automation artifacts only).
+- Approximately 19 MB was permanently removed with the entire exact directory.
+- The directory no longer exists.
+- No raw download was delivered; no browser profile, screenshot, HTML, HAR, trace, prompt/reply, export or xAPI body remains in the repository.
+- Cloud-side synthetic data was not manually deleted. Any residual record remains tagged by the Run ID for the Owner’s normal test-account cleanup policy.

@@ -18,12 +18,15 @@ import {
   getArtifactCharacterCount,
   getCompletionRequirementLabel,
   getRemainingDirectAssists,
+  getScaffoldTaskSnapshot,
   getValidReflectionReport,
   InlineMessage,
   isPilotEvidenceConflict,
   localize,
+  matchesScaffoldTaskSnapshot,
   type PilotEvidenceDraft,
   type PilotTextRequirement,
+  type ScaffoldTaskSnapshot,
   requirementFieldByKind,
   shouldRecordMilestone,
   stageEvidenceKinds,
@@ -38,6 +41,13 @@ import {
 import type { PilotLearningActions } from "@/components/pages/learning/pilot-learning-types";
 import { caasiPilotCoursePackage, type AaisCoursePackageTask } from "@/data/aais-course-packages";
 import type { Locale } from "@/data/aais";
+
+type ScaffoldDelivery = {
+  after: ScaffoldTaskSnapshot;
+  before: ScaffoldTaskSnapshot;
+  result: AaisLearningScaffoldResult;
+  taskId: string;
+};
 
 export function PilotTaskExperience({
   actions,
@@ -63,7 +73,7 @@ export function PilotTaskExperience({
   const [error, setError] = useState("");
   const [status, setStatus] = useState("");
   const [touchedFields, setTouchedFields] = useState<Set<string>>(() => new Set());
-  const [scaffoldResult, setScaffoldResult] = useState<AaisLearningScaffoldResult | null>(null);
+  const [scaffoldDelivery, setScaffoldDelivery] = useState<ScaffoldDelivery | null>(null);
   const [showIncompleteExit, setShowIncompleteExit] = useState(false);
   const [incompleteReason, setIncompleteReason] = useState("");
 
@@ -82,17 +92,27 @@ export function PilotTaskExperience({
   const reflectionRequirements = textRequirements.filter((requirement) => requirement.kind === "reflection");
   const visibleTextRequirements = reflectionUnlocked ? textRequirements : preReflectionRequirements;
   const hasArticulationRequirement = textRequirements.some((requirement) => requirement.kind === "articulation");
-  const remainingDirectAssists = getRemainingDirectAssists(task, scaffoldResult);
+  const currentScaffoldSnapshot = getScaffoldTaskSnapshot(task);
+  const currentScaffoldResult = scaffoldDelivery
+    && task?.taskId === scaffoldDelivery.taskId
+    && (
+      matchesScaffoldTaskSnapshot(currentScaffoldSnapshot, scaffoldDelivery.before)
+      || matchesScaffoldTaskSnapshot(currentScaffoldSnapshot, scaffoldDelivery.after)
+    )
+    ? scaffoldDelivery.result
+    : null;
+  const remainingDirectAssists = getRemainingDirectAssists(task, currentScaffoldResult);
   const latestScaffold = task?.scaffoldHistory?.at(-1);
   const nextScaffoldLevel = Math.min(4, Math.max(1, 5 - remainingDirectAssists));
-  const deliveredScaffoldFading = scaffoldResult
-    ? scaffoldResult.fading === true
+  const deliveredScaffoldFading = currentScaffoldResult
+    ? currentScaffoldResult.fading === true
     : latestScaffold?.fading === true;
-  const deliveredFadingReason = scaffoldResult
-    ? scaffoldResult.fadingReason
+  const deliveredFadingReason = currentScaffoldResult
+    ? currentScaffoldResult.fadingReason
     : latestScaffold?.fadingReason;
-  const fadingReason = deliveredFadingReason
-    ?? (remainingDirectAssists === 0 ? "direct_assists_exhausted" as const : undefined);
+  const fadingReason = remainingDirectAssists === 0
+    ? "direct_assists_exhausted" as const
+    : deliveredFadingReason;
   const fading = deliveredScaffoldFading || remainingDirectAssists === 0;
   const incompleteOutcome = courseTask.taskId === "practice_task_1" ? "articulation" as const : "reflection" as const;
   const allowedIncompleteRequirement = incompleteOutcome === "articulation"
@@ -279,12 +299,24 @@ export function PilotTaskExperience({
 
   async function requestScaffold() {
     if (!task || busy) return;
+    const before = getScaffoldTaskSnapshot(task);
     setBusy(true);
     setError("");
     setStatus("");
     try {
       const result = await actions.onRequestScaffold({ taskId: task.taskId, toolId: "stage-checklist" });
-      setScaffoldResult(result);
+      const resultTask = result.session.tasks?.find((candidate) => candidate.taskId === task.taskId);
+      setScaffoldDelivery({
+        after: resultTask
+          ? getScaffoldTaskSnapshot(resultTask)
+          : {
+              requestCount: result.requestCount,
+              remainingDirectAssists: result.remainingDirectAssists,
+            },
+        before,
+        result,
+        taskId: task.taskId,
+      });
       setStatus(copy.scaffoldReady(result.tool.label));
     } catch {
       setError(copy.actionFailed);
@@ -334,7 +366,7 @@ export function PilotTaskExperience({
           nextScaffoldLevel={nextScaffoldLevel}
           onRequest={() => { void requestScaffold(); }}
           remainingDirectAssists={remainingDirectAssists}
-          result={scaffoldResult}
+          result={currentScaffoldResult}
           taskId={task.taskId}
         />
       ) : null}
