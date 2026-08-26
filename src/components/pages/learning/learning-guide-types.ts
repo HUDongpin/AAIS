@@ -13,7 +13,11 @@ export type UseLearningGuideInput = {
   getHelpRequestsUsed: (taskId: string) => number;
   waitForLearnerDataGeneration: () => number | Promise<number>;
   locale: Locale;
-  onHelpRequestsUsedConfirmed: (taskId: string, count: number) => void;
+  onHelpRequestsUsedConfirmed: (
+    taskId: string,
+    count: number,
+    consumedA1Help: boolean,
+  ) => void;
   persistedGuideMessages?: GuideMessage[];
   studentId: string;
 };

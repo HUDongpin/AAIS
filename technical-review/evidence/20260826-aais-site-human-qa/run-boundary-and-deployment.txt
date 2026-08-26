@@ -1,0 +1,27 @@
+AAIS Production Human QA — run boundary and deployment identity
+
+Run ID: PROD-HQA-20260826-015548
+Execution window: 2026-08-26 01:55:48–03:23:48 CST (Asia/Shanghai)
+Browser: Google Chrome 151.0.7922.174, headed, isolated persistent profile
+Driver: Playwright 1.62.1
+
+Write boundary:
+- Real visible form login, clicks, keyboard input, refresh, Back/Forward and responsive viewport checks.
+- No session/cookie injection, API mocking, route interception, localStorage fabrication, product fix, deployment, database operation or LRS maintenance.
+- Student credentials were read only in process memory from an explicitly authorized historical Codex record and were never printed, retained or copied here.
+- A separate protected historical teacher environment file was not read or used because it was outside the authorized credential source.
+
+Production identity at start and end:
+- origin/main: ed00b8de29e1a7d3b26b0bd3e8604d91af0fb46e
+- GitHub Production deployment: 6085217834
+- Deployment SHA: ed00b8de29e1a7d3b26b0bd3e8604d91af0fb46e
+- Immutable Vercel URL: https://aais-ia5je38zf-peter-dongpin-hu-s-projects.vercel.app
+- No newer Production deployment appeared during the run.
+
+Readiness and canonical host:
+- Start: GET https://www.aais.site/api/system/readiness -> 200 application/json, status ready.
+- End: GET https://www.aais.site/api/system/readiness -> 200 application/json, status ready.
+- Apex /api/system/readiness and /learning with query strings returned 308 to the equivalent www path/query.
+
+Privacy boundary:
+No account name, password, email, cookie, CSRF value, token, actor identifier, cohort identifier, raw learner text, AI prompt/reply, export body or xAPI body is present in this artifact.

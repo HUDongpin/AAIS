@@ -1,0 +1,23 @@
+PROD-HQA-20260826-003 — A1 completion does not refresh the visible direct-scaffold counter
+
+Deployment SHA: ed00b8de29e1a7d3b26b0bd3e8604d91af0fb46e
+Run ID: PROD-HQA-20260826-015548
+
+Signal 1:
+- Initial Task 2 UI displayed 4 direct assists remaining and next action L1.
+- One A1-targeted guide turn and one explicit A2-targeted turn completed.
+- Immediately before a single explicit scaffold POST, the current page still displayed 4 remaining.
+- Exactly one POST /api/learning/scaffold returned 200, but the rendered state changed directly to 2 remaining / visible level L2 / next action L3.
+- The single network request rules out a double-click or duplicate scaffold POST in this signal.
+
+Signal 2:
+- Before a later A1 turn, the UI displayed 1 remaining / level L3 / next action L4.
+- One A1-targeted POST /api/learning/ai-guide returned 200 text/event-stream; input and send were disabled during processing; the response was attributed to 小张.
+- After completion and before reload, the UI still displayed 1 remaining / L3 / next L4.
+- After reload, it displayed direct assists exhausted / level L4 / self-check action.
+
+Impact boundary:
+- The persisted server state advanced, but the current page did not present the confirmed A1 scaffold count until another mutation or reload.
+- Explicit A2 targeting did not produce a learner-visible A1 responder label.
+
+No prompt text, reply text, identity or response body is retained.

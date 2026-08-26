@@ -71,8 +71,9 @@ export async function stubLocalAaisCohortExport(page: Page) {
 }
 
 export async function waitForAaisLearningClientReady(page: Page) {
-  await expect(page.getByTestId("learning-shell"))
-    .toHaveAttribute("data-client-ready", "true");
+  const shell = page.getByTestId("learning-shell");
+  await expect(shell).toHaveAttribute("data-client-ready", "true");
+  await expect(shell).toHaveAttribute("data-session-ready", "true");
 }
 
 export async function seedAaisSession(page: Page, actor: AaisE2eActor) {

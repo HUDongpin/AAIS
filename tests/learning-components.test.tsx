@@ -1134,6 +1134,28 @@ describe("learning page components", () => {
     expect(screen.getByRole("button", {
       name: "继续直接求助（L2，剩余 3 次）",
     })).toBeTruthy();
+
+    view.rerender(
+      <PilotTaskExperience
+        actions={actions}
+        artifactText=""
+        courseTask={courseTask}
+        latestAssistantMessageId={null}
+        locale="zh-CN"
+        task={createPilotTaskRecord({
+          ...baselineTask,
+          scaffoldRequests: 3,
+          scaffoldState: {
+            currentLevel: 3,
+            intensity: "evaluation-cue",
+            fading: false,
+            remainingDirectAssists: 1,
+          },
+        })}
+      />,
+    );
+    expect(screen.getByText("还可直接求助 1 次")).toBeTruthy();
+    expect(screen.queryByText(/仍保留 3 次直接辅助/)).toBeNull();
     view.unmount();
 
     render(
@@ -1172,6 +1194,87 @@ describe("learning page components", () => {
     expect(screen.getByRole("button", {
       name: "继续直接求助（L2，剩余 3 次）",
     })).toBeTruthy();
+  });
+
+  it("drops a capped manual scaffold result when A1 authoritatively exhausts direct assists", async () => {
+    const courseTask = getCaasiPilotTaskDefinition("practice_task_1")!;
+    const staleToolBody = "旧的证据感知自检卡片。";
+    const actions = createPilotActions({
+      onRequestScaffold: vi.fn(async () => ({
+        fading: true,
+        fadingReason: "evidence_improved" as const,
+        intensity: "prompt-question",
+        level: 1 as const,
+        mode: "self-check" as const,
+        remainingDirectAssists: 3,
+        requestCount: 4,
+        session: createPilotClientSession(),
+        tool: {
+          id: "stage-checklist",
+          label: "独立自检",
+          body: staleToolBody,
+        },
+      })),
+    });
+    const evidenceAwareTask = createPilotTaskRecord({
+      taskId: "practice_task_1",
+      scaffoldRequests: 3,
+      scaffoldState: {
+        currentLevel: 1,
+        intensity: "prompt-question",
+        fading: true,
+        remainingDirectAssists: 3,
+      },
+      scaffoldHistory: [{
+        toolId: "stage-checklist",
+        mode: "self-check",
+        time: "2026-08-25T00:02:00.000Z",
+        level: 1,
+        fading: true,
+        fadingReason: "evidence_improved",
+        remainingDirectAssists: 3,
+      }],
+    });
+    const view = render(
+      <PilotTaskExperience
+        actions={actions}
+        artifactText=""
+        courseTask={courseTask}
+        latestAssistantMessageId={null}
+        locale="zh-CN"
+        task={evidenceAwareTask}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", {
+      name: "继续直接求助（L2，剩余 3 次）",
+    }));
+    expect(await screen.findByText(staleToolBody)).toBeTruthy();
+
+    view.rerender(
+      <PilotTaskExperience
+        actions={actions}
+        artifactText=""
+        courseTask={courseTask}
+        latestAssistantMessageId={null}
+        locale="zh-CN"
+        task={createPilotTaskRecord({
+          ...evidenceAwareTask,
+          scaffoldRequests: 4,
+          scaffoldState: {
+            currentLevel: 1,
+            intensity: "prompt-question",
+            fading: true,
+            remainingDirectAssists: 0,
+          },
+        })}
+      />,
+    );
+
+    expect(screen.getByText(/直接支架已用完/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "进入自检式帮助" })).toBeTruthy();
+    expect(screen.queryByText(staleToolBody)).toBeNull();
+    expect(screen.queryByText(/仍保留 3 次直接辅助/)).toBeNull();
   });
 
   it("offers an explicit Task 4 incomplete exit and never presents it as evidence-complete", async () => {

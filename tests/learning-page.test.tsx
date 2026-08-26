@@ -7,6 +7,7 @@ import {
   type LearningPageResearchBoundary,
 } from "@/components/pages/learning-page";
 import { useLearningGuide } from "@/components/pages/learning/use-learning-guide";
+import { learningSessionLoadTimeoutMs } from "@/components/pages/learning/learning-page-constants";
 import type {
   AaisResearchLogoutContext,
   AaisResearchTelemetryBoundaryState,
@@ -191,10 +192,14 @@ describe("AAIS LearningPage", () => {
     );
   });
 
-  it("renders the simplified CAAIS learning shell with the content display menu", () => {
+  it("renders the simplified CAAIS learning shell with the content display menu", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({
+      session: createClientSessionFixture(""),
+    })));
     render(<LearningPage />);
 
     const main = screen.getByRole("main", { name: "CAAIS 学习工作台" });
+    await waitFor(() => expect(main.getAttribute("data-session-ready")).toBe("true"));
     expect(main.getAttribute("aria-describedby")).toBe("aais-learning-description");
     expect(main.getAttribute("data-client-ready")).toBe("true");
     expect(main.hasAttribute("inert")).toBe(false);
@@ -1113,15 +1118,7 @@ describe("AAIS LearningPage", () => {
       const url = String(input);
       if (url.startsWith("/api/learning/session") && (!init || init.method === "GET")) {
         return Response.json({
-          session: {
-            dataGeneration: 1,
-            studentId: "S001",
-            activeStage: "training",
-            activeTaskId: "training_task_1",
-            tasks: [],
-            guideMessages: [],
-            events: [],
-          },
+          session: createClientSessionFixture(""),
         });
       }
       if (url === "/api/auth/app-session" && init?.method === "DELETE") {
@@ -1429,15 +1426,21 @@ describe("AAIS LearningPage", () => {
       const url = String(input);
       if (url.startsWith("/api/learning/session") && (!init || init.method === "GET")) {
         return Response.json({
-          session: {
-            dataGeneration: 1,
-            studentId: "S001",
-            activeStage: "training",
-            activeTaskId: "training_task_1",
-            tasks: [],
-            guideMessages: [],
-            events: [],
-          },
+          session: createPilotTaskFlowSession(
+            "practice_task_1",
+            ["completed", "active", "locked", "locked"],
+            {
+              practice_task_1: {
+                scaffoldRequests: 3,
+                scaffoldState: {
+                  currentLevel: 3,
+                  intensity: "evaluation-cue",
+                  fading: false,
+                  remainingDirectAssists: 1,
+                },
+              },
+            },
+          ),
         });
       }
       if (url === "/api/learning/ai-guide" && init?.method === "POST") {
@@ -1497,8 +1500,21 @@ describe("AAIS LearningPage", () => {
 
   it("sends the persisted task help count and updates it only from a successful server confirmation", async () => {
     setCsrfCookie();
-    const session = createClientSessionFixture("");
-    session.tasks[0]!.scaffoldRequests = 3;
+    const session = createPilotTaskFlowSession(
+      "practice_task_1",
+      ["completed", "active", "locked", "locked"],
+      {
+        practice_task_1: {
+          scaffoldRequests: 3,
+          scaffoldState: {
+            currentLevel: 3,
+            intensity: "evaluation-cue",
+            fading: false,
+            remainingDirectAssists: 1,
+          },
+        },
+      },
+    );
     let guideAttempt = 0;
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
@@ -1531,11 +1547,17 @@ describe("AAIS LearningPage", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     render(<LearningPage />);
+    await waitFor(() => expect(screen.getByTestId("learning-shell")
+      .getAttribute("data-session-ready")).toBe("true"));
 
     submitGuidePrompt("first attempt fails");
     await screen.findByText("智能服务暂时不可用，已保留你的问题。请稍后重试。");
     submitGuidePrompt("retry succeeds");
     await screen.findByText("server-confirmed-1");
+    fireEvent.click(screen.getByRole("button", { name: /任务卡片/ }));
+    expect(screen.getByText(/直接支架已用完/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "进入自检式帮助" })).toBeTruthy();
+    expect(screen.queryByText("还可直接求助 1 次")).toBeNull();
     submitGuidePrompt("next successful request");
     await screen.findByText("server-confirmed-2");
 
@@ -1545,6 +1567,10 @@ describe("AAIS LearningPage", () => {
       )
       .map(([, init]) => JSON.parse(String(init?.body)).workspaceState.helpRequestsUsed);
     expect(guideRequestCounts).toEqual([3, 3, 4]);
+
+    expect(screen.getByText(/直接支架已用完/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "进入自检式帮助" })).toBeTruthy();
+    expect(screen.queryByText("还可直接求助 1 次")).toBeNull();
   });
 
   it("keeps processing-only stream events hidden until the final agent answer", async () => {
@@ -1566,15 +1592,21 @@ describe("AAIS LearningPage", () => {
       const url = String(input);
       if (url.startsWith("/api/learning/session") && (!init || init.method === "GET")) {
         return Response.json({
-          session: {
-            dataGeneration: 1,
-            studentId: "S001",
-            activeStage: "training",
-            activeTaskId: "training_task_1",
-            tasks: [],
-            guideMessages: [],
-            events: [],
-          },
+          session: createPilotTaskFlowSession(
+            "practice_task_1",
+            ["completed", "active", "locked", "locked"],
+            {
+              practice_task_1: {
+                scaffoldRequests: 3,
+                scaffoldState: {
+                  currentLevel: 3,
+                  intensity: "evaluation-cue",
+                  fading: false,
+                  remainingDirectAssists: 1,
+                },
+              },
+            },
+          ),
         });
       }
       if (url === "/api/learning/ai-guide" && init?.method === "POST") {
@@ -1591,6 +1623,8 @@ describe("AAIS LearningPage", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     render(<LearningPage />);
+    await waitFor(() => expect(screen.getByTestId("learning-shell")
+      .getAttribute("data-session-ready")).toBe("true"));
 
     submitGuidePrompt("请帮我明确这个学习任务的目标，并拆成下一步。");
 
@@ -1609,13 +1643,17 @@ describe("AAIS LearningPage", () => {
         'event: fallback\ndata: {"timeoutReason":"abort-timeout"}\n\n',
       ));
       streamController?.enqueue(encoder.encode(
-        'event: done\ndata: {"status":"completed"}\n\n',
+        'event: done\ndata: {"status":"completed","workspaceState":{"helpRequestsUsed":4}}\n\n',
       ));
       streamController?.close();
     });
 
     expect(await screen.findByText("小张已给出分步支架。")).toBeTruthy();
     expect(screen.getByText("离线支架模式")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /任务卡片/ }));
+    expect(screen.getByText(/直接支架已用完/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "进入自检式帮助" })).toBeTruthy();
+    expect(screen.queryByText("还可直接求助 1 次")).toBeNull();
   });
 
   it("keeps one Professor thinking bubble through hidden SSE progress and replaces it in place", async () => {
@@ -1644,15 +1682,29 @@ describe("AAIS LearningPage", () => {
       const url = String(input);
       if (url.startsWith("/api/learning/session") && (!init || init.method === "GET")) {
         return Response.json({
-          session: {
-            dataGeneration: 1,
-            studentId: "S001",
-            activeStage: "training",
-            activeTaskId: "training_task_1",
-            tasks: [],
-            guideMessages: [],
-            events: [],
-          },
+          session: createPilotTaskFlowSession(
+            "practice_task_1",
+            ["completed", "active", "locked", "locked"],
+            {
+              practice_task_1: {
+                scaffoldRequests: 2,
+                scaffoldHistory: [{
+                  toolId: "reflection-check",
+                  mode: "self-check",
+                  time: "2026-08-25T00:00:00.000Z",
+                  fading: true,
+                  fadingReason: "evidence_improved",
+                  remainingDirectAssists: 3,
+                }],
+                scaffoldState: {
+                  currentLevel: 1,
+                  intensity: "prompt-question",
+                  fading: true,
+                  remainingDirectAssists: 3,
+                },
+              },
+            },
+          ),
         });
       }
       if (url === "/api/learning/ai-guide" && init?.method === "POST") {
@@ -1668,6 +1720,8 @@ describe("AAIS LearningPage", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     render(<LearningPage />);
+    await waitFor(() => expect(screen.getByTestId("learning-shell")
+      .getAttribute("data-session-ready")).toBe("true"));
     const submittedPrompt = "@Professor 请检查我的下一步。";
     submitGuidePrompt(submittedPrompt);
 
@@ -1688,7 +1742,11 @@ describe("AAIS LearningPage", () => {
         'event: agent_delta\ndata: {"agentId":"A2","content":"教授已完成下一步检查。"}\n\n',
       ));
       streamController?.enqueue(encoder.encode(
-        `event: done\ndata: ${JSON.stringify({ status: "completed", exchange: canonicalExchange })}\n\n`,
+        `event: done\ndata: ${JSON.stringify({
+          status: "completed",
+          exchange: canonicalExchange,
+          workspaceState: { helpRequestsUsed: 2 },
+        })}\n\n`,
       ));
       streamController?.close();
     });
@@ -1706,6 +1764,9 @@ describe("AAIS LearningPage", () => {
       .toBe(canonicalExchange.userMessageId);
     expect(screen.getAllByText("教授已完成下一步检查。")).toHaveLength(1);
     expect((screen.getByLabelText("向智能导学输入你的想法") as HTMLInputElement).disabled).toBe(false);
+    fireEvent.click(screen.getByRole("button", { name: /任务卡片/ }));
+    expect(screen.getByText(/仍保留 3 次直接辅助/)).toBeTruthy();
+    expect(screen.queryByText(/仍保留 2 次直接辅助/)).toBeNull();
   });
 
   it("does not open the file picker when admission is rejected and exposes no quick starts", () => {
@@ -1850,7 +1911,7 @@ describe("AAIS LearningPage", () => {
 
     render(<LearningPage />);
     await waitFor(() => {
-      expect(fetchMock).toHaveBeenCalledWith("/api/learning/session");
+      expectLearningSessionGet(fetchMock);
     });
     fireEvent.click(screen.getByRole("button", { name: /任务卡片/ }));
 
@@ -1901,7 +1962,7 @@ describe("AAIS LearningPage", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     render(<LearningPage />);
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/learning/session"));
+    await waitFor(() => expectLearningSessionGet(fetchMock));
     fireEvent.click(screen.getByRole("button", { name: /任务卡片/ }));
     fireEvent.click(screen.getByRole("button", {
       name: "完成任务：社交媒体与大学生心理健康课程论文大纲",
@@ -1981,7 +2042,7 @@ describe("AAIS LearningPage", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     render(<LearningPage />);
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/learning/session"));
+    await waitFor(() => expectLearningSessionGet(fetchMock));
     fireEvent.click(screen.getByRole("button", { name: /任务卡片/ }));
     fillTaskTwoEvidence();
     fireEvent.click(screen.getByLabelText("不使用实时 GenAI"));
@@ -2092,7 +2153,7 @@ describe("AAIS LearningPage", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     render(<LearningPage />);
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/learning/session"));
+    await waitFor(() => expectLearningSessionGet(fetchMock));
     submitGuidePrompt("请帮我检查生成的大纲。");
     expect(await screen.findByText("请先按任务约束评价结构和依据。")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: /任务卡片/ }));
@@ -2183,7 +2244,7 @@ describe("AAIS LearningPage", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     render(<LearningPage />);
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/learning/session"));
+    await waitFor(() => expectLearningSessionGet(fetchMock));
     fireEvent.click(screen.getByRole("button", { name: /任务卡片/ }));
     fillTaskTwoEvidence();
     fireEvent.click(screen.getByLabelText("不使用实时 GenAI"));
@@ -2244,7 +2305,7 @@ describe("AAIS LearningPage", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     render(<LearningPage />);
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/learning/session"));
+    await waitFor(() => expectLearningSessionGet(fetchMock));
     fireEvent.click(screen.getByRole("button", { name: /任务卡片/ }));
     fireEvent.click(screen.getByRole("button", { name: "获取下一步支架（L1）" }));
 
@@ -2325,7 +2386,7 @@ describe("AAIS LearningPage", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     render(<LearningPage />);
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/learning/session"));
+    await waitFor(() => expectLearningSessionGet(fetchMock));
     fireEvent.click(screen.getByRole("button", { name: /任务卡片/ }));
     fireEvent.click(screen.getByRole("button", { name: "获取下一步支架（L4）" }));
 
@@ -2399,7 +2460,7 @@ describe("AAIS LearningPage", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     render(<LearningPage />);
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/learning/session"));
+    await waitFor(() => expectLearningSessionGet(fetchMock));
     fireEvent.click(screen.getByRole("button", { name: /任务卡片/ }));
     fireEvent.click(screen.getByRole("button", { name: "结束但标记未完成" }));
     fireEvent.change(screen.getByLabelText("如愿意，可说明为什么暂不完成反思"), {
@@ -2481,7 +2542,7 @@ describe("AAIS LearningPage", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     render(<LearningPage />);
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/learning/session"));
+    await waitFor(() => expectLearningSessionGet(fetchMock));
     fireEvent.click(screen.getByRole("button", { name: /任务卡片/ }));
     fireEvent.click(screen.getByRole("button", { name: "结束但标记未完成" }));
     expect(screen.getByText(/任务2会标记为未完成，然后继续进入任务4/)).toBeTruthy();
@@ -3998,8 +4059,27 @@ describe("AAIS LearningPage", () => {
     });
   });
 
-  it("does not replace document input when the initial session load finishes late", async () => {
+  it("keeps the workspace inert until the authoritative learner session finishes loading", async () => {
     const initialSessionResponse = createDeferred<Response>();
+    const persistedGuideMessages = Array.from({ length: 17 }, (_, index) => ([
+      {
+        id: `persisted-user-after-reload-${index}`,
+        kind: "user" as const,
+        text: index === 0 ? "刷新前已经提交的合成问题" : `刷新前合成问题 ${index + 1}`,
+      },
+      {
+        id: `persisted-assistant-after-reload-${index}`,
+        kind: "assistant" as const,
+        text: index === 0 ? "刷新前已经完成的合成回复" : `刷新前合成回复 ${index + 1}`,
+      },
+    ])).flat();
+    const persistedSession = {
+      ...createPilotTaskFlowSession(
+        "practice_task_3",
+        ["completed", "completed", "locked", "active"],
+      ),
+      guideMessages: persistedGuideMessages,
+    };
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url.startsWith("/api/learning/session") && (!init || init.method === "GET")) {
@@ -4010,20 +4090,128 @@ describe("AAIS LearningPage", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     render(<LearningPage />);
-    fireEvent.click(screen.getByRole("button", { name: "文档编辑" }));
-    const artifactInput = screen.getByRole("textbox", {
-      name: "在这里写下任务理解、计划、执行过程或最终产出。",
-    });
-    setRichEditorContent(artifactInput, "学习者已经开始输入");
+    const shell = screen.getByTestId("learning-shell");
+
+    await waitFor(() => expect(shell.getAttribute("data-client-ready")).toBe("true"));
+    expect(shell.getAttribute("data-session-ready")).toBe("false");
+    expect(shell.getAttribute("data-session-load-state")).toBe("loading");
+    expect(shell.hasAttribute("inert")).toBe(true);
+    expect(shell.getAttribute("aria-busy")).toBe("true");
+    expect(shell.className).toContain("pointer-events-none");
+    expect(shell.className).toContain("opacity-0");
+    expect(screen.getByTestId("learning-session-status").textContent)
+      .toContain("正在加载服务器学习记录");
 
     initialSessionResponse.resolve(Response.json({
-      session: createClientSessionFixture("后端较旧的文档内容"),
+      session: persistedSession,
     }));
 
-    await waitFor(() => {
-      expect(getLastResearchEvent("workspace_session_load")?.outcome).toBe("success");
+    await waitFor(() => expect(shell.getAttribute("data-session-ready")).toBe("true"));
+    expect(shell.getAttribute("data-session-load-state")).toBe("ready");
+    expect(shell.hasAttribute("inert")).toBe(false);
+    expect(shell.hasAttribute("aria-busy")).toBe(false);
+    expect(shell.className).not.toContain("pointer-events-none");
+    expect(shell.className).not.toContain("opacity-0");
+    expect(screen.queryByTestId("learning-session-status")).toBeNull();
+    expect(await screen.findByText("刷新前已经提交的合成问题")).toBeTruthy();
+    expect(screen.getByText("刷新前已经完成的合成回复")).toBeTruthy();
+    expect(document.querySelectorAll("[data-guide-message-id]")).toHaveLength(35);
+
+    fireEvent.click(screen.getByRole("button", { name: /任务卡片/ }));
+    expect(document.querySelector('[data-task-card="practice_task_1"]')
+      ?.getAttribute("data-task-status")).toBe("completed");
+    expect(document.querySelector('[data-task-card="practice_task_3"]')
+      ?.getAttribute("data-task-status")).toBe("active");
+    expect(getLastResearchEvent("workspace_session_load")?.outcome).toBe("success");
+  });
+
+  it("times out a hung session load and recovers through the visible retry", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    let responseMode: "pending" | "healthy" = "pending";
+    let firstSignal: AbortSignal | undefined;
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).startsWith("/api/learning/session") && (!init?.method || init.method === "GET")) {
+        if (responseMode === "healthy") {
+          return Promise.resolve(Response.json({ session: createClientSessionFixture("") }));
+        }
+        firstSignal = init?.signal ?? undefined;
+        return new Promise<Response>((_resolve, reject) => {
+          firstSignal?.addEventListener("abort", () => {
+            reject(new DOMException("session load timed out", "AbortError"));
+          }, { once: true });
+        });
+      }
+      return Promise.resolve(Response.json({ ok: true }));
     });
-    expect(artifactInput.textContent).toBe("学习者已经开始输入");
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<LearningPage />);
+    await waitFor(() => expect(firstSignal).toBeTruthy());
+    const shell = screen.getByTestId("learning-shell");
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(learningSessionLoadTimeoutMs);
+    });
+
+    await waitFor(() => expect(shell.getAttribute("data-session-load-state")).toBe("error"));
+    expect(firstSignal?.aborted).toBe(true);
+    expect(shell.hasAttribute("inert")).toBe(true);
+    expect(screen.getByRole("button", { name: "重新加载学习记录" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "退出" })).toBeTruthy();
+
+    responseMode = "healthy";
+    fireEvent.click(screen.getByRole("button", { name: "重新加载学习记录" }));
+    await waitFor(() => expect(shell.getAttribute("data-session-ready")).toBe("true"));
+    expect(getLastResearchEvent("workspace_session_load")?.detail.trigger).toBe("retry");
+  });
+
+  it("preserves a recovered draft while failure-safe logout revokes an unusable session", async () => {
+    const journalKey = "aais_artifact_draft_v1:Bobie";
+    const journal = JSON.stringify({
+      revision: 1,
+      taskId: "training_task_1",
+      title: "故障恢复草稿",
+      value: "仅保存在浏览器中的合成草稿",
+    });
+    window.sessionStorage.setItem(journalKey, journal);
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.startsWith("/api/learning/session") && (!init?.method || init.method === "GET")) {
+        return Response.json({ error: "session unavailable" }, { status: 503 });
+      }
+      if (url === "/api/auth/app-session" && init?.method === "DELETE") {
+        return Response.json({ ok: true, sessionAbsent: false, sessionRevoked: true });
+      }
+      return Response.json({ ok: true });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<LearningPage />);
+    const shell = screen.getByTestId("learning-shell");
+    await waitFor(() => expect(shell.getAttribute("data-session-load-state")).toBe("error"));
+
+    fireEvent.click(screen.getByRole("button", { name: "退出" }));
+
+    await waitFor(() => expect(fetchMock.mock.calls.some(([input, init]) => (
+      String(input) === "/api/auth/app-session" && init?.method === "DELETE"
+    ))).toBe(true));
+    await waitFor(() => expect(browserNavigationMocks.replace).toHaveBeenCalledWith("/login"));
+    expect(window.sessionStorage.getItem(journalKey)).toBe(journal);
+  });
+
+  it("aborts an in-flight session load when the learning page unmounts", async () => {
+    let loadSignal: AbortSignal | undefined;
+    vi.stubGlobal("fetch", vi.fn((_input: RequestInfo | URL, init?: RequestInit) => {
+      loadSignal = init?.signal ?? undefined;
+      return new Promise<Response>(() => undefined);
+    }));
+
+    const view = render(<LearningPage />);
+    await waitFor(() => expect(loadSignal).toBeTruthy());
+    expect(loadSignal?.aborted).toBe(false);
+
+    view.unmount();
+    expect(loadSignal?.aborted).toBe(true);
   });
 
   it("hydrates persisted learner session and saves artifacts through the backend", async () => {
@@ -4141,29 +4329,8 @@ describe("AAIS LearningPage", () => {
         });
       }
       if (url === "/api/learning/session" && init?.method === "PATCH") {
-        const body = JSON.parse(String(init.body)) as {
-          artifactText: string;
-        };
         return Response.json({
-          session: {
-            dataGeneration: 1,
-            studentId: "S001",
-            activeStage: "training",
-            activeTaskId: "training_task_1",
-            tasks: [
-              {
-                taskId: "training_task_1",
-                phase: "training",
-                status: "active",
-                artifactText: body.artifactText,
-                selfReport: "",
-                scaffoldRequests: 0,
-                scaffoldHistory: [],
-              },
-            ],
-            guideMessages: [],
-            events: [],
-          },
+          session: createAcknowledgedArtifactSession(JSON.parse(String(init.body))),
         });
       }
       return Response.json({ ok: true });
@@ -4288,29 +4455,8 @@ describe("AAIS LearningPage", () => {
         });
       }
       if (url === "/api/learning/session" && init?.method === "PATCH") {
-        const body = JSON.parse(String(init.body)) as {
-          artifactText: string;
-        };
         return Response.json({
-          session: {
-            dataGeneration: 1,
-            studentId: "S001",
-            activeStage: "training",
-            activeTaskId: "training_task_1",
-            tasks: [
-              {
-                taskId: "training_task_1",
-                phase: "training",
-                status: "active",
-                artifactText: body.artifactText,
-                selfReport: "",
-                scaffoldRequests: 0,
-                scaffoldHistory: [],
-              },
-            ],
-            guideMessages: [],
-            events: [],
-          },
+          session: createAcknowledgedArtifactSession(JSON.parse(String(init.body))),
         });
       }
       return Response.json({ ok: true });
@@ -4703,6 +4849,9 @@ describe("AAIS LearningPage", () => {
       savedAt: "2026-08-19T00:00:00.000Z",
     }];
     let taskOneArtifactRevision = 7;
+    let taskOneArtifactText = "";
+    let taskOneDocumentTitle = "";
+    let taskOneActiveDocumentId: string | null = null;
     const patchBodies: Array<Record<string, unknown>> = [];
     const createCrossTaskSession = () => ({
       dataGeneration: 1,
@@ -4714,10 +4863,10 @@ describe("AAIS LearningPage", () => {
           taskId: "training_task_1",
           phase: "training",
           status: "completed",
-          artifactText: "",
+          artifactText: taskOneArtifactText,
           artifactRevision: taskOneArtifactRevision,
-          documentTitle: "",
-          activeDocumentId: null,
+          documentTitle: taskOneDocumentTitle,
+          activeDocumentId: taskOneActiveDocumentId,
           selfReport: "",
           selfReportRevision: 0,
           scaffoldRequests: 0,
@@ -4751,6 +4900,17 @@ describe("AAIS LearningPage", () => {
         patchBodies.push(body);
         if (body.taskId === "training_task_1") {
           taskOneArtifactRevision += 1;
+          if (body.action === "save-artifact") {
+            taskOneArtifactText = typeof body.artifactText === "string"
+              ? body.artifactText
+              : taskOneArtifactText;
+            taskOneDocumentTitle = typeof body.documentTitle === "string"
+              ? body.documentTitle
+              : taskOneDocumentTitle;
+            taskOneActiveDocumentId = typeof body.activeDocumentId === "string"
+              ? body.activeDocumentId
+              : null;
+          }
         }
         if (body.action === "archive-artifact") {
           const document = body.document as (typeof persistedHistory)[number];
@@ -4759,6 +4919,9 @@ describe("AAIS LearningPage", () => {
             id: "history-task-one",
             taskId: "training_task_1",
           }];
+          taskOneArtifactText = "";
+          taskOneDocumentTitle = "";
+          taskOneActiveDocumentId = null;
         }
         return Response.json({ session: createCrossTaskSession() });
       }
@@ -5132,6 +5295,103 @@ describe("AAIS LearningPage", () => {
     expect(await screen.findByText("文档已保存。")).toBeTruthy();
   });
 
+  it("accepts an idempotent autosave replay after the committed response is lost", async () => {
+    setCsrfCookie();
+    let committedSession: ReturnType<typeof createAcknowledgedArtifactSession> | null = null;
+    const patchBodies: Array<Record<string, unknown>> = [];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.startsWith("/api/learning/session") && (!init || init.method === "GET")) {
+        return Response.json({ session: createClientSessionFixture("") });
+      }
+      if (url === "/api/learning/session" && init?.method === "PATCH") {
+        const body = JSON.parse(String(init.body)) as Record<string, unknown>;
+        patchBodies.push(body);
+        committedSession ??= createAcknowledgedArtifactSession(body);
+        if (patchBodies.length === 1) {
+          throw new TypeError("response lost after durable commit");
+        }
+        return Response.json({ session: committedSession });
+      }
+      return Response.json({ ok: true });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<LearningPage />);
+
+    fireEvent.click(screen.getByRole("button", { name: "文档编辑" }));
+    const editor = await screen.findByLabelText(
+      "在这里写下任务理解、计划、执行过程或最终产出。",
+    );
+    setRichEditorContent(editor, "响应丢失后幂等确认的合成草稿");
+    fireEvent.blur(editor);
+
+    await waitFor(() => expect(patchBodies).toHaveLength(2));
+    expect(patchBodies[1]).toMatchObject({
+      artifactText: patchBodies[0].artifactText,
+      expectedArtifactRevision: patchBodies[0].expectedArtifactRevision,
+      mutationId: patchBodies[0].mutationId,
+    });
+    expect(await screen.findByText("文档已保存。")).toBeTruthy();
+    expect(window.sessionStorage.getItem("aais_artifact_draft_v1:Bobie")).toBeNull();
+  });
+
+  it("rejects a 200 autosave response that does not acknowledge the submitted draft", async () => {
+    setCsrfCookie();
+    let patchAttempt = 0;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.startsWith("/api/learning/session") && (!init || init.method === "GET")) {
+        return Response.json({ session: createClientSessionFixture("") });
+      }
+      if (url === "/api/learning/session" && init?.method === "PATCH") {
+        patchAttempt += 1;
+        if (patchAttempt > 2) {
+          return Response.json({
+            session: createAcknowledgedArtifactSession(JSON.parse(String(init.body))),
+          });
+        }
+        return Response.json({
+          session: createClientSessionFixture("", [], 10),
+        });
+      }
+      return Response.json({ ok: true });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<LearningPage />);
+
+    fireEvent.click(screen.getByRole("button", { name: "文档编辑" }));
+    const editor = await screen.findByLabelText(
+      "在这里写下任务理解、计划、执行过程或最终产出。",
+    );
+    setRichEditorContent(editor, "服务端没有确认的合成草稿");
+    fireEvent.blur(editor);
+
+    await waitFor(() => expect(getPatchCalls(fetchMock)).toHaveLength(2));
+    expect(await screen.findAllByText("任务过程记录未能保存到后端。"))
+      .not.toHaveLength(0);
+    expect(screen.queryByText("文档已保存。")).toBeNull();
+    expect(window.sessionStorage.getItem("aais_artifact_draft_v1:Bobie"))
+      .toContain("服务端没有确认的合成草稿");
+    let bodies = getPatchCalls(fetchMock).map(([, init]) => JSON.parse(String(init?.body)));
+    expect(bodies[1]).toMatchObject({
+      artifactText: "服务端没有确认的合成草稿",
+      expectedArtifactRevision: 0,
+      mutationId: bodies[0].mutationId,
+    });
+
+    setRichEditorContent(editor, "错误确认后继续编辑的新合成草稿");
+    fireEvent.blur(editor);
+    await waitFor(() => expect(getPatchCalls(fetchMock)).toHaveLength(3));
+    bodies = getPatchCalls(fetchMock).map(([, init]) => JSON.parse(String(init?.body)));
+    expect(bodies[2]).toMatchObject({
+      artifactText: "错误确认后继续编辑的新合成草稿",
+      expectedArtifactRevision: 0,
+    });
+    expect(bodies[2].mutationId).not.toBe(bodies[0].mutationId);
+    expect(await screen.findByText("文档已保存。")).toBeTruthy();
+    expect(window.sessionStorage.getItem("aais_artifact_draft_v1:Bobie")).toBeNull();
+  });
+
   it("does not retry a rejected 4xx autosave", async () => {
     setCsrfCookie();
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -5254,8 +5514,9 @@ describe("AAIS LearningPage", () => {
         return Response.json({ session: createClientSessionFixture("") });
       }
       if (String(input) === "/api/learning/session" && init?.method === "PATCH") {
-        const body = JSON.parse(String(init.body)) as { artifactText?: string };
-        return Response.json({ session: createClientSessionFixture(body.artifactText ?? "") });
+        return Response.json({
+          session: createAcknowledgedArtifactSession(JSON.parse(String(init.body))),
+        });
       }
       return Response.json({ session: createClientSessionFixture("") });
     });
@@ -5309,7 +5570,9 @@ describe("AAIS LearningPage", () => {
         return Response.json({ session: createClientSessionFixture("") });
       }
       if (String(input) === "/api/learning/session" && init?.method === "PATCH") {
-        return Response.json({ session: createClientSessionFixture("") });
+        return Response.json({
+          session: createAcknowledgedArtifactSession(JSON.parse(String(init.body))),
+        });
       }
       return Response.json({ ok: true });
     });
@@ -5628,6 +5891,14 @@ function getPatchCalls(fetchMock: ReturnType<typeof vi.fn>) {
   );
 }
 
+function expectLearningSessionGet(fetchMock: ReturnType<typeof vi.fn>) {
+  expect(fetchMock.mock.calls.some(([input, init]) =>
+    String(input) === "/api/learning/session"
+    && init?.method === "GET"
+    && init.signal instanceof AbortSignal
+  )).toBe(true);
+}
+
 function getLastResearchEvent(eventName: string) {
   return telemetryMocks.record.mock.calls
     .map(([event]) => event)
@@ -5670,7 +5941,7 @@ function createClientSessionFixture(
     html: string;
     savedAt: string;
   }> = [],
-  artifactRevision = 0,
+  artifactRevision = artifactText ? 1 : 0,
 ) {
   return {
     dataGeneration: 1,
@@ -5693,6 +5964,28 @@ function createClientSessionFixture(
     historyDocuments,
     guideMessages: [],
     events: [],
+  };
+}
+
+function createAcknowledgedArtifactSession(body: Record<string, unknown>) {
+  const expectedRevision = Number.isSafeInteger(body.expectedArtifactRevision)
+    ? Number(body.expectedArtifactRevision)
+    : 0;
+  const session = createClientSessionFixture(
+    typeof body.artifactText === "string" ? body.artifactText : "",
+    [],
+    expectedRevision + 1,
+  );
+  const task = session.tasks[0]!;
+  return {
+    ...session,
+    tasks: [{
+      ...task,
+      documentTitle: typeof body.documentTitle === "string" ? body.documentTitle : "",
+      activeDocumentId: typeof body.activeDocumentId === "string"
+        ? body.activeDocumentId
+        : null,
+    }],
   };
 }
 

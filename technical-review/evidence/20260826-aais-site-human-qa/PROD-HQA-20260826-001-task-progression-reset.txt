@@ -1,0 +1,34 @@
+PROD-HQA-20260826-001 — Task 2 completion state resets after reload
+
+Deployment SHA: ed00b8de29e1a7d3b26b0bd3e8604d91af0fb46e
+Run ID: PROD-HQA-20260826-015548
+Evidence form: redacted structural state only
+
+Pre-completion state:
+- training_task_1: completed / evidence_complete
+- practice_task_1 (visible Task 2): active, server completion gate confirmed
+- practice_task_2 (visible Task 3): locked / pilot-closed
+- practice_task_3 (visible Task 4): locked
+- Persisted guide message count before completion: 35; duplicate message IDs: 0
+
+Immediate result after one visible Task 2 completion click:
+- Production session mutation returned HTTP 200.
+- training_task_1: completed / evidence_complete
+- practice_task_1: completed / evidence_complete
+- practice_task_2: locked / pilot-closed
+- practice_task_3: active / in_progress
+- Guide count did not change during completion.
+
+First independent reload signal:
+- training_task_1 became active with no completion outcome.
+- practice_task_1 became locked with no completion outcome.
+- practice_task_2 remained locked / pilot-closed.
+- practice_task_3 became locked with no completion outcome.
+- Guide message count changed from 35 to 1.
+
+Navigation and second reload signals:
+- Privacy navigation followed by Back/Forward/Back retained the reset state.
+- A second independent reload again showed training_task_1 active, Task 2/Task 4 locked, and guide count 1.
+- The Production deployment SHA and readiness did not change during these observations.
+
+No raw task text, AI message text, identity or network body is retained here.

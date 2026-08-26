@@ -60,6 +60,26 @@ describe("learning session client", () => {
     });
   });
 
+  it("propagates abort state and never initializes after an abandoned GET resolves 404", async () => {
+    let resolveGet!: (response: Response) => void;
+    const fetchImpl = vi.fn((_input: RequestInfo | URL, init?: RequestInit) => {
+      expect(init?.signal).toBeTruthy();
+      return new Promise<Response>((resolve) => {
+        resolveGet = resolve;
+      });
+    });
+    const controller = new AbortController();
+    const pending = fetchLearningSession(fetchImpl as unknown as typeof fetch, {
+      signal: controller.signal,
+    });
+
+    controller.abort();
+    resolveGet(jsonResponse({ error: "not found" }, { status: 404 }));
+
+    await expect(pending).rejects.toMatchObject({ name: "AbortError" });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
   it("patches the learner session with the actor-bound CSRF header", async () => {
     document.cookie = "aais_csrf=csrf-123; path=/";
     const fetchImpl = vi.fn(async () => jsonResponse({

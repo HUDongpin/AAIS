@@ -1,0 +1,17 @@
+AAIS Production Human QA — sensitive text scan
+
+Scan time: 2026-08-26 03:29:29 CST
+Scope:
+- technical-review/20260826-AAIS-Production-Human-QA-Report.md
+- technical-review/evidence/20260826-aais-site-human-qa/
+
+High-risk pattern classes:
+- Email-address syntax
+- JWT-like three-part values
+- Authorization-header credential syntax
+- Assignment-like password, secret, token, cookie, CSRF, API-key or account values
+- AAIS E2E, VERIFY, TRIAL, OIDC or SEED credential-key names
+
+Result: 0 matches
+
+This scan is a defense-in-depth pattern check, not a claim that arbitrary semantic sensitive data can be detected perfectly. The evidence was also authored from structural counts/statuses only; no raw browser/profile/trace/export/AI body was copied into the repository.

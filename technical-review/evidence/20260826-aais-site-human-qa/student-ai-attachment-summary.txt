@@ -1,0 +1,30 @@
+AAIS Production Human QA — student AI and attachment summary
+
+Run ID: PROD-HQA-20260826-015548
+Deployment SHA: ed00b8de29e1a7d3b26b0bd3e8604d91af0fb46e
+
+Credential and starting-state boundary:
+- The authorized historical Production learner login succeeded through the visible form (HTTP 200, final /learning).
+- Initial task cards were clean for progression: Task 1 active; Task 2/3/4 locked; Task 3 pilot-closed.
+- Global guide history was not fresh: 21 existing messages (10 user, 11 assistant). Assertions used deltas only.
+
+New AI turns:
+- User-initiated turns: 7 total; 5 A1-targeted and 2 explicit A2-targeted.
+- Every request returned HTTP 200 with text/event-stream.
+- Durations in milliseconds: 12959, 7837, 16965, 12151, 8090, 10447, 9319.
+- Median: 10447 ms; range: 7837–16965 ms.
+- Explicit @教授 and @Professor produced Professor responder labels and a visible A2 thinking state.
+- Bare 教授, bare Professor, ordinary input and @小张 produced 小张 responder labels.
+- Input and Send were disabled during observed submissions.
+- Two of seven replies displayed the deterministic fallback marker; five did not.
+- Before the later progression reset, total messages were 35 with 0 duplicate IDs and no permanent busy state.
+- No A3 or A4 learner-visible responder label was observed.
+
+Attachment:
+- One Run-ID synthetic unsupported .exe was rejected client-side; no pending attachment and no AI request followed selection.
+- One Run-ID synthetic .txt could be selected, removed, reselected and sent.
+- The sent user message displayed one attachment receipt with the “uploaded/read” state.
+- No real document, personal file, large file or boundary-pressure file was used.
+
+Privacy boundary:
+No prompt, reply, extracted attachment text, account value, cookie, token, actor ID or raw SSE content is included.

@@ -1,0 +1,25 @@
+PROD-HQA-20260826-002 — Editor reports saved but title/body disappear after reload
+
+Deployment SHA: ed00b8de29e1a7d3b26b0bd3e8604d91af0fb46e
+Run ID: PROD-HQA-20260826-015548
+Reproduction: 2/2 independent page loads
+
+Reproduction A — formatted synthetic document:
+- Before reload: editor HTML length 245; visible text length 169.
+- SHA-256 of in-browser HTML before reload: 1c8d73be6fc04cf35247fbcd9350c5b467d7399eb9dd252fdfdfd949ce6e53bd
+- H1, H2 and H3 controls each produced the selected heading tag when exercised; list and center formatting were present before reload.
+- The save mutation returned HTTP 200 and the UI displayed “文档已保存。”.
+- After reload: title length 0; HTML length 0; visible text length 0; Run ID absent.
+
+Reproduction B — minimum plain-text document:
+- Before reload: title length 31; body visible-text length 50; Run ID present in both.
+- The save mutation returned HTTP 200 application/json and the UI displayed “文档已保存。”.
+- An additional two-second stability wait completed before reload.
+- After reload: title length 0; body visible-text length 0; Run ID absent from both.
+
+Restricted workaround observation:
+- “保存并关闭” returned HTTP 200, created exactly one history item with the Run ID, and reopening it restored title/body.
+- After a visible re-edit, a second “保存并关闭” persisted the REOPEN marker.
+- This is not a Task 4 workaround because archiving clears the active working artifact used by the completion gate.
+
+Only lengths, a one-way summary hash and structural booleans are retained. No document body is present.

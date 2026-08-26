@@ -148,15 +148,15 @@ test.describe("CAAIS pilot learning loop", () => {
     const aiFreeAssistantCount = await page.locator(
       '[data-guide-message-kind="assistant"]',
     ).count();
-    const aiFreeResponsePromise = waitForGuideResponse(
+    const aiFreeResponsePromise = waitForGuideBudgetResponse(
       page,
       "我正在用静态量规核对目标、约束与评价依据。",
     );
     await aiFreeGuideInput.fill("我正在用静态量规核对目标、约束与评价依据。");
     await page.getByRole("button", { name: "发送" }).click();
     const aiFreeResponse = await aiFreeResponsePromise;
-    expect(aiFreeResponse.status()).toBe(200);
-    const aiFreeBudget = await readGuideResponseBudget(aiFreeResponse);
+    expect(aiFreeResponse.status).toBe(200);
+    const aiFreeBudget = aiFreeResponse.budget;
     await expect(page.locator('[data-guide-message-kind="assistant"]'))
       .toHaveCount(aiFreeAssistantCount + 1);
     await expect(aiFreeGuideInput).toBeEnabled();
@@ -435,13 +435,14 @@ test.describe("CAAIS pilot learning loop", () => {
     expect(await hasNextErrorOverlay(page)).toBe(false);
   });
 
-  test("recovers from empty and malformed session responses without losing the UI", async ({
+  test("fails closed on invalid session responses and recovers through the visible retry", async ({
     page,
   }) => {
     const studentId = "caasi-pilot-recovery-" + Date.now();
     const serviceUnavailable =
       "学习记录服务暂时不可用，本页会保留当前输入但不会完成持久化。";
     let responseMode: "empty" | "malformed" | "healthy" = "empty";
+    let interceptedFailureCount = 0;
     const pageErrors: string[] = [];
     page.on("pageerror", (error) => pageErrors.push(error.message));
 
@@ -450,6 +451,7 @@ test.describe("CAAIS pilot learning loop", () => {
         await route.fallback();
         return;
       }
+      interceptedFailureCount += 1;
       await route.fulfill({
         status: 200,
         contentType: "application/json",
@@ -463,20 +465,26 @@ test.describe("CAAIS pilot learning loop", () => {
     });
 
     await page.goto("/learning");
-    await waitForAaisLearningClientReady(page);
-    await expect(page.getByText(serviceUnavailable, { exact: true })).toBeVisible();
-    await expect(page.getByRole("button", { name: "平台介绍" })).toBeVisible();
+    const shell = page.getByTestId("learning-shell");
+    const sessionStatus = page.getByTestId("learning-session-status");
+    await expect(shell).toHaveAttribute("data-session-load-state", "error");
+    await expect(shell).toHaveAttribute("inert", "");
+    await expect(sessionStatus.getByText(serviceUnavailable, { exact: true })).toBeVisible();
+    await expect(sessionStatus.getByRole("button", { name: "退出" })).toBeVisible();
+    const retry = sessionStatus.getByRole("button", { name: "重新加载学习记录" });
+    await expect(retry).toBeVisible();
+    const emptyResponseFailures = interceptedFailureCount;
 
     responseMode = "malformed";
-    await page.reload();
-    await waitForAaisLearningClientReady(page);
-    await expect(page.getByText(serviceUnavailable, { exact: true })).toBeVisible();
-    await expect(page.getByRole("button", { name: "任务卡片" })).toBeVisible();
+    await retry.click();
+    await expect.poll(() => interceptedFailureCount).toBeGreaterThan(emptyResponseFailures);
+    await expect(shell).toHaveAttribute("data-session-load-state", "error");
+    await expect(sessionStatus.getByText(serviceUnavailable, { exact: true })).toBeVisible();
 
     responseMode = "healthy";
-    await page.reload();
+    await retry.click();
     await waitForAaisLearningClientReady(page);
-    await expect(page.getByText(serviceUnavailable, { exact: true })).toHaveCount(0);
+    await expect(sessionStatus).toHaveCount(0);
     await page.getByRole("button", { name: "平台介绍" }).click();
     await expect(page.getByRole("heading", {
       name: "从专家示范到独立总结",
@@ -484,6 +492,54 @@ test.describe("CAAIS pilot learning loop", () => {
     await expect(page.locator("[data-pilot-milestone]")).toHaveCount(7);
     expect(pageErrors).toEqual([]);
     expect(await hasNextErrorOverlay(page)).toBe(false);
+  });
+
+  test("revokes the app session from the failure gate while preserving a recovered draft", async ({
+    page,
+  }) => {
+    const studentId = "caasi-pilot-failure-logout-" + Date.now();
+    const journalKey = `aais_artifact_draft_v1:${studentId}`;
+    const journal = JSON.stringify({
+      revision: 1,
+      taskId: taskIds.training,
+      title: "故障恢复草稿",
+      value: "仅保存在浏览器中的合成草稿",
+    });
+    await authenticateAaisE2eActor(page, {
+      id: studentId,
+      role: "student",
+      displayName: "故障退出测试学生",
+    });
+    await page.goto("/privacy");
+    await page.evaluate(({ key, value }) => {
+      window.sessionStorage.setItem(key, value);
+    }, { key: journalKey, value: journal });
+    await page.route("**/api/learning/session", async (route) => {
+      if (route.request().method() === "GET") {
+        await route.fulfill({
+          status: 503,
+          contentType: "application/json",
+          body: JSON.stringify({ error: "session unavailable" }),
+        });
+        return;
+      }
+      await route.fallback();
+    });
+
+    await page.goto("/learning");
+    await expect(page.getByTestId("learning-shell"))
+      .toHaveAttribute("data-session-load-state", "error");
+    const logoutResponsePromise = page.waitForResponse((response) => (
+      response.url().includes("/api/auth/app-session")
+      && response.request().method() === "DELETE"
+    ));
+    await page.getByTestId("learning-session-status")
+      .getByRole("button", { name: "退出" })
+      .click();
+    expect((await logoutResponsePromise).status()).toBe(200);
+    await expect(page).toHaveURL(/\/login$/);
+    expect(await page.evaluate((key) => window.sessionStorage.getItem(key), journalKey))
+      .toBe(journal);
   });
 
   test("recovers a failed guide draft, rejects a persisted AI reply, retries, and exits Task 2 incomplete", async ({
@@ -1205,4 +1261,11 @@ function waitForGuideResponse(page: Page, learnerInput: string) {
       return false;
     }
   });
+}
+
+function waitForGuideBudgetResponse(page: Page, learnerInput: string) {
+  return waitForGuideResponse(page, learnerInput).then(async (response) => ({
+    budget: await readGuideResponseBudget(response),
+    status: response.status(),
+  }));
 }

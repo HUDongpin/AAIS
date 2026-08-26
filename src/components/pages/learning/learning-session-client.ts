@@ -59,12 +59,19 @@ type AaisAppSessionDeleteResult = {
 
 export type LearningSessionPatchBody = Record<string, unknown>;
 
-export async function fetchLearningSession(fetchImpl: typeof fetch = fetch) {
-  const response = await fetchImpl("/api/learning/session");
+export async function fetchLearningSession(
+  fetchImpl: typeof fetch = fetch,
+  options: { signal?: AbortSignal } = {},
+) {
+  const response = options.signal
+    ? await fetchImpl("/api/learning/session", { method: "GET", signal: options.signal })
+    : await fetchImpl("/api/learning/session");
   if (response.status === 404) {
+    options.signal?.throwIfAborted();
     const initialized = await fetchImpl("/api/learning/session", {
       method: "POST",
       headers: getAaisCsrfHeader(),
+      ...(options.signal ? { signal: options.signal } : {}),
     });
     return readLearningSessionResponse(initialized, "AAIS session initialization failed.");
   }
