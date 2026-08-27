@@ -172,12 +172,20 @@ npm run accounts:test-batch -- generate \
 Do not inspect the rows to validate generation. Check only metadata that cannot reveal contents:
 
 ```bash
+file_mode() {
+  if stat -c '%a' -- "$1" >/dev/null 2>&1; then
+    stat -c '%a' -- "$1"
+  else
+    stat -f '%Lp' "$1"
+  fi
+}
 git check-ignore -q "${AAIS_TEST_CSV}"
-test "$(stat -f '%Lp' "${AAIS_TEST_CSV}")" = "600"
-test "$(stat -f '%Lp' "$(dirname "${AAIS_TEST_CSV}")")" = "700"
+test "$(file_mode "${AAIS_TEST_CSV}")" = "600"
+test "$(file_mode "$(dirname "${AAIS_TEST_CSV}")")" = "700"
+unset -f file_mode
 ```
 
-If generation or either metadata check fails, stop. Do not weaken permissions, add an ignore exception after the fact, move the file into a tracked path, or rerun with an overwrite option.
+The helper uses GNU `stat -c` when available and otherwise falls back to BSD/macOS `stat -f`. If generation or either metadata check fails, stop. Do not weaken permissions, add an ignore exception after the fact, move the file into a tracked path, or rerun with an overwrite option.
 
 #### 2. Audit Git before any push
 

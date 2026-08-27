@@ -435,6 +435,51 @@ describe("AAIS login rate limiting", () => {
     expect(database.rows.size).toBe(6);
   });
 
+  it("releases each successful client-global admission while preserving unrelated failures", async () => {
+    process.env.AAIS_TRUSTED_PROXY_IP_HEADER = "x-forwarded-for";
+    process.env.AAIS_LOGIN_RATE_LIMIT_MAX_FAILURES = "100";
+    process.env.AAIS_LOGIN_RATE_LIMIT_CLIENT_MAX_ATTEMPTS = "3";
+    const now = Date.now();
+    const request = createRequest("203.0.113.191");
+
+    for (const database of [null, new FakeRateLimitDatabase()] as const) {
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        await expect(admitAaisLoginAttempt({
+          accountId: `persistent-failure-${attempt}`,
+          request,
+          now,
+          database,
+        })).resolves.toEqual({ status: "allowed" });
+      }
+
+      for (let run = 0; run < 2; run += 1) {
+        for (let account = 0; account < 42; account += 1) {
+          const accountId = `successful-${run}-${account}`;
+          await expect(admitAaisLoginAttempt({
+            accountId,
+            request,
+            now,
+            database,
+          })).resolves.toEqual({ status: "allowed" });
+          await clearAaisLoginFailures({ accountId, request, database });
+        }
+      }
+
+      await expect(admitAaisLoginAttempt({
+        accountId: "persistent-failure-2",
+        request,
+        now,
+        database,
+      })).resolves.toEqual({ status: "allowed" });
+      await expect(admitAaisLoginAttempt({
+        accountId: "persistent-failure-3",
+        request,
+        now,
+        database,
+      })).resolves.toEqual({ status: "blocked", retryAfterSeconds: 900 });
+    }
+  });
+
   it("supports bounded env-configured lockout thresholds", async () => {
     const request = createRequest("203.0.113.99");
     const now = Date.UTC(2026, 6, 8, 12, 0, 0);
@@ -784,6 +829,26 @@ class FakeRateLimitDatabase {
         }
       }
       return { rows: lockedUntil.map((value) => ({ locked_until: value })) };
+    }
+    if (normalized.startsWith("with released_client_global as")) {
+      const accountKey = String(params[0] ?? "");
+      const clientGlobalKey = params[1] === null ? null : String(params[1]);
+      const maxClientAttempts = Number(params[2]);
+      if (clientGlobalKey) {
+        const row = this.rows.get(clientGlobalKey);
+        if (row) {
+          row.failures = Math.max(row.failures - 1, 0);
+          if (row.failures <= maxClientAttempts) {
+            row.locked_until = null;
+          }
+        }
+      }
+      for (const [key, row] of this.rows) {
+        if (row.account_key === accountKey) {
+          this.rows.delete(key);
+        }
+      }
+      return { rows: [] };
     }
     if (normalized.startsWith("insert into aais_login_rate_limits")) {
       if (params.length === 11) {
