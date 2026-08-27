@@ -114,21 +114,6 @@ export function getAaisOidcStateCookieName() {
   return oidcStateCookieName;
 }
 
-export function getAaisOidcConfig(): AaisOidcConfig | null {
-  const baseConfig = getAaisOidcBaseConfig();
-  if (!baseConfig) {
-    return null;
-  }
-  const endpoints = getAaisOidcExplicitEndpoints();
-  if (!endpoints || endpoints === invalidOidcEndpointConfig) {
-    return null;
-  }
-  return {
-    ...baseConfig,
-    ...endpoints,
-  };
-}
-
 export function getAaisOidcConfigurationStatus(): AaisOidcConfigurationStatus {
   const baseConfig = getAaisOidcBaseConfig();
   if (!baseConfig) {

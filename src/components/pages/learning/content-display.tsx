@@ -45,9 +45,6 @@ export function getContentDisplayItems(locale: Locale): ContentDisplayItem[] {
   }));
 }
 
-// The default remains available for callers that deliberately render Chinese.
-export const contentDisplayItems = getContentDisplayItems("zh-CN");
-
 function getContentDisplayAccessibleLabel(
   item: ContentDisplayItem,
   locale: Locale,

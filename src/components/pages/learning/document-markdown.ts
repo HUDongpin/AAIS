@@ -145,17 +145,6 @@ export async function saveMarkdownDocumentToLocal({
   downloadBlob(fileName, blob);
 }
 
-export async function saveJsonDocumentToLocal({
-  fileName,
-  data,
-}: {
-  fileName: string;
-  data: unknown;
-}) {
-  const saveDocument = await prepareJsonDocumentSaveToLocal({ fileName });
-  await saveDocument(data);
-}
-
 export async function prepareJsonDocumentSaveToLocal({
   fileName,
 }: {

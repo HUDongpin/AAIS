@@ -10,8 +10,6 @@ import type { AaisSessionActor } from "@/lib/server/aais-session";
 export const AAIS_RESEARCH_PROJECT_ID = "aais" as const;
 export const AAIS_RESEARCH_SCHEMA_VERSION = 1 as const;
 export const AAIS_RESEARCH_MAX_PARTICIPANTS = 30 as const;
-export const AAIS_RESEARCH_DEFAULT_LRS_NAMESPACE =
-  "https://www.aais.site/xapi/studies/aais-ca-pilot/research/v1";
 
 export const aaisResearchEventNames = [
   "workspace_session_load",
