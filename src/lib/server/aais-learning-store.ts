@@ -157,12 +157,6 @@ export class AaisLearnerDataIntegrityError extends Error {
   }
 }
 
-export function isAaisLearnerDataIntegrityError(
-  error: unknown,
-): error is AaisLearnerDataIntegrityError {
-  return error instanceof AaisLearnerDataIntegrityError;
-}
-
 export class AaisLegacyResearchDataAccessDisabledError extends Error {
   constructor() {
     super("Legacy product analytics and event exports are disabled on an AAIS research deployment.");
@@ -849,9 +843,6 @@ export type AaisAgentEvidenceCapability = {
   };
   redaction: "raw-learner-text-excluded";
 };
-
-export type AaisA3SupervisionCapability = AaisAgentEvidenceCapability;
-export type AaisA2MonitoringCapability = AaisAgentEvidenceCapability;
 
 const aaisLrsOutboxCoalescingPolicy = {
   windowSeconds: 30,
@@ -4436,14 +4427,6 @@ export function getAaisAgentEvidenceCapability(): AaisAgentEvidenceCapability {
     },
     redaction: "raw-learner-text-excluded",
   };
-}
-
-export function getAaisA3SupervisionCapability(): AaisA3SupervisionCapability {
-  return getAaisAgentEvidenceCapability();
-}
-
-export function getAaisA2MonitoringCapability(): AaisA2MonitoringCapability {
-  return getAaisAgentEvidenceCapability();
 }
 
 export function summarizeAaisCohortAnalytics(

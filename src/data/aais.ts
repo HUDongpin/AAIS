@@ -713,13 +713,6 @@ export const aaisLearningProgram: AaisLearningProgram = {
   },
 };
 
-export const articulationPrompts = [
-  "用自己的话说明任务要求是什么？有什么不确定的？",
-  "你打算怎么做？哪些步骤用 AI 帮你？",
-  "回顾已完成部分：有没有偏离规划？AI 的输出你评估了吗？",
-  "通读你的成果：满分 10 分给自己几分？哪里可以改进？",
-];
-
 export const scaffoldTools = [
   {
     id: "stage-checklist",

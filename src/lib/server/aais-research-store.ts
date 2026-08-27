@@ -1780,11 +1780,6 @@ export function getAaisResearchStore() {
   return cachedStore;
 }
 
-export function resetAaisResearchStoreForTests() {
-  cachedStore = null;
-  cachedStoreKey = "";
-}
-
 async function findVisitForActor(
   database: AaisResearchDatabaseClient,
   configuration: AaisResearchConfiguration,
@@ -2400,11 +2395,4 @@ function getDatabaseErrorCode(error: unknown) {
     return "";
   }
   return typeof error.code === "string" ? error.code : "";
-}
-
-export function deriveAaisResearchEventCounters(event: AaisResearchEventInput) {
-  return {
-    retryCount: event.retryCount,
-    disconnectCount: event.disconnectCount,
-  };
 }

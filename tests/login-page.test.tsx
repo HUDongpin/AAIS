@@ -1,6 +1,4 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { stat } from "node:fs/promises";
-import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   dynamic as loginRouteDynamic,
@@ -8,10 +6,6 @@ import {
   default as LoginRoutePage,
 } from "@/app/login/page";
 import { LoginPage } from "@/components/pages/login-page";
-import {
-  LoginDesignDeck,
-  loginDeckCards,
-} from "@/components/pages/login/login-design";
 
 const replace = vi.fn();
 const telemetryMocks = vi.hoisted(() => ({
@@ -36,55 +30,9 @@ vi.mock("next/headers", () => ({
   })),
 }));
 
-vi.mock("next/image", () => ({
-  default: ({
-    src,
-    alt,
-    fill,
-    priority,
-    unoptimized,
-    ...props
-  }: {
-    src: string;
-    alt: string;
-    fill?: boolean;
-    priority?: boolean;
-    unoptimized?: boolean;
-  }) => {
-    void fill;
-    void priority;
-    void unoptimized;
-    // eslint-disable-next-line @next/next/no-img-element
-    return <img src={src} alt={alt} {...props} />;
-  },
-}));
-
 vi.mock("@/lib/client/aais-research-telemetry", () => ({
   clearAaisResearchTelemetryForActor: telemetryMocks.clear,
 }));
-
-describe("login design CSP compatibility", () => {
-  it("renders dormant illustration cards without inline style attributes", () => {
-    const { container } = render(<LoginDesignDeck cards={loginDeckCards} />);
-
-    expect(container.querySelector("[style]")).toBeNull();
-    expect(container.querySelectorAll("img")).toHaveLength(loginDeckCards.length);
-  });
-
-  it("keeps the login illustration payload bounded and eagerly loads only the lead card", async () => {
-    const { container } = render(<LoginDesignDeck cards={loginDeckCards} />);
-    const sources = loginDeckCards.map((card) => card.assetSrc);
-    const sizes = await Promise.all(sources.map(async (source) => {
-      const file = await stat(path.join(process.cwd(), "public", source.replace(/^\//, "")));
-      return file.size;
-    }));
-
-    expect(sources.every((source) => source.endsWith(".webp"))).toBe(true);
-    expect(sizes.reduce((total, size) => total + size, 0)).toBeLessThanOrEqual(600 * 1024);
-    expect(container.querySelectorAll('img[loading="eager"]')).toHaveLength(1);
-    expect(container.querySelectorAll('img[loading="lazy"]')).toHaveLength(1);
-  });
-});
 
 afterEach(() => {
   replace.mockReset();

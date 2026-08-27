@@ -757,9 +757,6 @@ function isTerminalResearchBoundary(value: unknown, status?: number) {
     && status !== 429;
 }
 
-/** @deprecated Clear the whole actor-scoped telemetry state instead. */
-export const clearAaisResearchVisit = clearAaisResearchTelemetryForActor;
-
 export function classifyAaisResearchClientError(error: unknown) {
   if (typeof navigator !== "undefined" && navigator.onLine === false) {
     return "offline";

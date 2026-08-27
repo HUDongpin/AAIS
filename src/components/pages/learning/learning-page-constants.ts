@@ -1,7 +1,4 @@
-import type {
-  GuideMessage,
-  GuideQuickStart,
-} from "@/components/pages/learning/learning-page-types";
+import type { GuideMessage } from "@/components/pages/learning/learning-page-types";
 import type { Locale } from "@/data/aais";
 
 export const artifactSaveDebounceMs = 600;
@@ -17,8 +14,6 @@ export const minGuidePanelWidth = 420;
 export const contentPanelResizeStep = 24;
 export const anthropicLearningFontFamily =
   '"Anthropic Serif", "Tiempos Text", Georgia, "Times New Roman", "Songti SC", "SimSun", serif';
-export const anthropicNavigationFontFamily =
-  '"Anthropic Sans", Arial, "Helvetica Neue", "PingFang SC", "Microsoft YaHei", sans-serif';
 export const visibleGuideAgentIds = ["A1", "A2"] as const;
 
 export function getGuideAttachmentOnlyPrompt(locale: Locale) {
@@ -26,58 +21,6 @@ export function getGuideAttachmentOnlyPrompt(locale: Locale) {
     ? "Please read the files I uploaded, identify the key ideas, and suggest my next learning step."
     : "请阅读我上传的文件，并帮我提炼关键内容和下一步学习建议。";
 }
-
-export function getGuideQuickStarts(locale: Locale): GuideQuickStart[] {
-  if (locale === "en-US") {
-    return [
-      {
-        id: "clarify_goal",
-        label: "Clarify my learning goal",
-        prompt: "Help me clarify this learning task's goal and break it into a next step.",
-      },
-      {
-        id: "expert_model",
-        label: "See an expert model",
-        prompt: "@Professor Please model one metacognitive thinking process.",
-      },
-      {
-        id: "request_scaffold",
-        label: "I am stuck—give me a scaffold",
-        prompt: "I am stuck and would like one scaffolded hint.",
-      },
-      {
-        id: "organize_reflection",
-        label: "Organize my reflection",
-        prompt: "Help me organize the learning process just completed into a reflection record.",
-      },
-    ];
-  }
-  return [
-    {
-      id: "clarify_goal",
-      label: "明确学习目标",
-      prompt: "请帮我明确这个学习任务的目标，并拆成下一步。",
-    },
-    {
-      id: "expert_model",
-      label: "开始示范",
-      prompt: "@教授 请示范一次元认知思考过程。",
-    },
-    {
-      id: "request_scaffold",
-      label: "我卡住了，给我支架",
-      prompt: "我卡住了，想要一个支架提示。",
-    },
-    {
-      id: "organize_reflection",
-      label: "整理反思记录",
-      prompt: "请帮我把刚才的学习过程整理成反思记录。",
-    },
-  ];
-}
-
-// Retained for consumers that use the default Chinese workspace.
-export const guideQuickStarts = getGuideQuickStarts("zh-CN");
 
 export function createInitialGuideMessages(
   displayName: string,

@@ -19,13 +19,6 @@ type LearningSessionResponseBody = {
   };
 };
 
-export type AaisLearningSessionClientError = Error & {
-  code?: string;
-  status?: number;
-  taskId?: string;
-  completionMissing?: string[];
-};
-
 export type AaisLearningScaffoldResult = {
   session: AaisClientSession;
   mode: "tool-list" | "self-check";

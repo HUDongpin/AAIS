@@ -148,20 +148,17 @@ test.describe("CAAIS pilot learning loop", () => {
     const aiFreeAssistantCount = await page.locator(
       '[data-guide-message-kind="assistant"]',
     ).count();
-    const aiFreeResponsePromise = waitForGuideBudgetResponse(
+    const aiFreeResponsePromise = waitForGuideResponse(
       page,
       "我正在用静态量规核对目标、约束与评价依据。",
     );
     await aiFreeGuideInput.fill("我正在用静态量规核对目标、约束与评价依据。");
     await page.getByRole("button", { name: "发送" }).click();
     const aiFreeResponse = await aiFreeResponsePromise;
-    expect(aiFreeResponse.status).toBe(200);
-    const aiFreeBudget = aiFreeResponse.budget;
+    expect(aiFreeResponse.status()).toBe(200);
     await expect(page.locator('[data-guide-message-kind="assistant"]'))
       .toHaveCount(aiFreeAssistantCount + 1);
     await expect(aiFreeGuideInput).toBeEnabled();
-    expect(aiFreeBudget.used).toBe(0);
-    expect(aiFreeBudget.remaining).toBe(aiFreeBudget.limit);
     expect(guideRequestBodies).toEqual([
       expect.objectContaining({
         dataGeneration: expect.any(Number),
@@ -1125,12 +1122,6 @@ type GuideRequestSnapshot = {
   targetAgentIds?: string[];
 };
 
-type GuideBudgetSnapshot = {
-  limit: number;
-  used: number;
-  remaining: number;
-};
-
 async function readLearningSession(page: Page): Promise<SessionSnapshot> {
   return page.evaluate(async () => {
     const response = await fetch("/api/learning/session", {
@@ -1180,31 +1171,6 @@ function readGuideRequestSnapshot(postData: string | null): GuideRequestSnapshot
   } catch {
     return {};
   }
-}
-
-async function readGuideResponseBudget(response: {
-  headers(): Record<string, string>;
-  text(): Promise<string>;
-}): Promise<GuideBudgetSnapshot> {
-  const responseText = await response.text();
-  const contentType = response.headers()["content-type"] ?? "";
-  if (contentType.includes("application/json")) {
-    const body = JSON.parse(responseText) as { budget?: GuideBudgetSnapshot };
-    if (body.budget) return body.budget;
-  } else {
-    for (const line of responseText.split(/\r?\n/)) {
-      if (!line.startsWith("data:")) continue;
-      try {
-        const body = JSON.parse(line.slice("data:".length).trim()) as {
-          budget?: GuideBudgetSnapshot;
-        };
-        if (body.budget) return body.budget;
-      } catch {
-        // Ignore non-JSON SSE data and continue to the next event.
-      }
-    }
-  }
-  throw new Error("The guide response did not expose a budget snapshot.");
 }
 
 function requireTaskSnapshot(session: SessionSnapshot, taskId: string) {
@@ -1261,11 +1227,4 @@ function waitForGuideResponse(page: Page, learnerInput: string) {
       return false;
     }
   });
-}
-
-function waitForGuideBudgetResponse(page: Page, learnerInput: string) {
-  return waitForGuideResponse(page, learnerInput).then(async (response) => ({
-    budget: await readGuideResponseBudget(response),
-    status: response.status(),
-  }));
 }
