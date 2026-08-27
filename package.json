@@ -37,13 +37,13 @@
     "load:staging": "node -- scripts/run-staging-load-sanity.mjs"
   },
   "dependencies": {
-    "@langchain/langgraph": "^1.4.10",
+    "@langchain/langgraph": "^1.4.12",
     "@neondatabase/serverless": "^1.1.0",
     "@phosphor-icons/react": "^2.1.10",
     "@sentry/nextjs": "^10.70.0",
     "@vercel/analytics": "^2.0.1",
     "fflate": "0.8.3",
-    "jose": "^6.2.9",
+    "jose": "^6.2.10",
     "katex": "0.18.4",
     "next": "16.3.0",
     "pdfjs-dist": "^6.1.200",
