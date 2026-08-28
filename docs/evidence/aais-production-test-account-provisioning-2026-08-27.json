@@ -1,0 +1,162 @@
+{
+  "schema": "aais-test-account-provisioning/v1",
+  "schemaVersion": 1,
+  "status": "pass",
+  "observedAt": "2026-08-28T07:20:10Z",
+  "batchId": "AAIS-PROD-QA-20260827-40S-2T",
+  "environment": {
+    "name": "production",
+    "baseUrl": "https://www.aais.site"
+  },
+  "courseId": "cognitive-apprenticeship",
+  "cohort": "qa-20260827-40s-2t",
+  "requested": {
+    "count": 42,
+    "roles": {
+      "student": 40,
+      "teacher": 2,
+      "admin": 0
+    }
+  },
+  "actual": {
+    "activeUsers": 42,
+    "activeEnrollments": 42,
+    "roles": {
+      "student": 40,
+      "teacher": 2,
+      "admin": 0
+    },
+    "passwordRecords": {
+      "algorithm": "scrypt",
+      "valid": 42
+    },
+    "authVersionOne": 42
+  },
+  "provisioning": {
+    "created": 42,
+    "updated": 0,
+    "collisions": 0,
+    "enrollments": 42,
+    "atomicTransaction": true,
+    "advisoryLock": true,
+    "preCommitAggregate": "passed"
+  },
+  "verification": {
+    "concurrency": 2,
+    "requestTimeoutMs": 15000,
+    "expected": 42,
+    "attempted": 42,
+    "passed": 42,
+    "failed": 0,
+    "roles": {
+      "student": {
+        "expected": 40,
+        "passed": 40,
+        "failed": 0
+      },
+      "teacher": {
+        "expected": 2,
+        "passed": 2,
+        "failed": 0
+      },
+      "admin": {
+        "expected": 0,
+        "passed": 0,
+        "failed": 0
+      }
+    },
+    "checks": {
+      "login": {
+        "expected": 42,
+        "passed": 42,
+        "failed": 0
+      },
+      "role": {
+        "expected": 42,
+        "passed": 42,
+        "failed": 0
+      },
+      "learningAllowed": {
+        "expected": 42,
+        "passed": 42,
+        "failed": 0
+      },
+      "studentDashboardDenied": {
+        "expected": 40,
+        "passed": 40,
+        "failed": 0
+      },
+      "teacherDashboardAllowed": {
+        "expected": 2,
+        "passed": 2,
+        "failed": 0
+      },
+      "teacherAdminDenied": {
+        "expected": 2,
+        "passed": 2,
+        "failed": 0
+      },
+      "logout": {
+        "expected": 42,
+        "passed": 42,
+        "failed": 0
+      }
+    },
+    "negativeAuthentication": {
+      "expected": 3,
+      "attempted": 3,
+      "passed": 3,
+      "failed": 0,
+      "sessionCookiesSet": 0,
+      "cleanup": {
+        "attempted": 0,
+        "passed": 0
+      }
+    },
+    "researchIsolation": "non-research",
+    "reAttestedAfterVerification": true
+  },
+  "source": {
+    "toolMergeSha": "caac8f3fd8fc90749eb08cf0ddb517a5d19b1eda",
+    "githubMainShaAtProvisioning": "caac8f3fd8fc90749eb08cf0ddb517a5d19b1eda"
+  },
+  "deployment": {
+    "vercelProjectId": "prj_sKF9lhawVQyjxnv3jLyZvQH95Z1c",
+    "vercelCliVersion": "59.7.0",
+    "vercelDeploymentId": "dpl_6WciZanXxGBjtVsy27LnFfQJi9Ra",
+    "vercelDeploymentStatus": "READY",
+    "githubDeploymentId": 6136568318,
+    "githubDeploymentStatusId": 17447512686,
+    "githubDeploymentState": "success",
+    "gitSha": "caac8f3fd8fc90749eb08cf0ddb517a5d19b1eda"
+  },
+  "gitAudit": {
+    "head": {
+      "expected": 456,
+      "scanned": 456
+    },
+    "index": {
+      "expected": 456,
+      "scanned": 456
+    },
+    "valuesScanned": {
+      "accounts": 42,
+      "passwords": 42,
+      "userIds": 42
+    },
+    "matchedValues": {
+      "accounts": 0,
+      "passwords": 0,
+      "userIds": 0
+    },
+    "totalOccurrences": 0
+  },
+  "credentials": "omitted",
+  "accountIdentifiers": "omitted",
+  "databaseUrl": "omitted",
+  "privateCsvDigest": "omitted",
+  "cookies": "omitted",
+  "csrf": "omitted",
+  "passwordHashes": "omitted",
+  "passwordSalts": "omitted"
+}
