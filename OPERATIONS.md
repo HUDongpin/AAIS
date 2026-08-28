@@ -132,6 +132,182 @@ Admin-created users are enrolled into `AAIS_DEFAULT_COURSE_ID` and `AAIS_DEFAULT
 
 Staging and preview smoke users may be bootstrapped with `npm run db:seed-users -- --approved --output ./aais-user-seed-report.json`. Configure `AAIS_SEED_USERS_JSON` with one entry per user and prefer `passwordEnv` references so raw passwords live only in ignored local env files, Vercel environment variables, or the password manager. The seed report hashes email addresses and omits raw passwords, cookies, database URLs, and setup links.
 
+### Controlled Test-Account Batches
+
+Use the controlled batch workflow when an operator needs the fixed acceptance batch of 40 students and 2 teachers. These are database-backed test users, not Vercel trial accounts. A batch is bound to one batch ID, course, cohort, Git commit, Vercel project, private credential CSV, and lifecycle from generation through disablement. Do not mix rows from different batches or reuse a credential file under a new batch ID.
+
+The private CSV contract is exactly:
+
+```text
+batch_id,role,display_name,account,password,course_id,cohort,user_id
+```
+
+It must contain exactly 42 data rows: 40 `student` rows followed by 2 `teacher` rows. The file is a private operator artifact, not repository content or release evidence. Keep its parent directory mode `0700` and the CSV mode `0600`; the generator refuses symlinks, overwrites, and paths that are not ignored by Git. Store it only below an ignored private root such as the fictional `output/private-account-batches/example-qa-batch-20990101/`. Never paste, print, `cat`, preview, attach, screenshot, stage, commit, upload as an Actions artifact, or copy any account, password, or `user_id` into GitHub, Vercel logs, shell tracing, tickets, chat, or receipts. Keep shell tracing and Vercel CLI debug output disabled. Non-generation commands emit aggregate JSON to stdout and do not write receipt files; only that redacted aggregate may be retained in the controlled operator record.
+
+The examples below use fictional batch and cohort names and intentionally do not satisfy the fixed Production batch binding. Set the variables once in a dedicated operator shell and replace them with the approved binding before running any command; do not paste the fictional block into a Production run unchanged:
+
+```bash
+AAIS_TEST_BATCH_ID="example-qa-batch-20990101"
+AAIS_TEST_COHORT="example-qa-cohort-20990101"
+AAIS_TEST_COURSE_ID="cognitive-apprenticeship"
+AAIS_TEST_CSV="output/private-account-batches/${AAIS_TEST_BATCH_ID}/credentials.csv"
+AAIS_TEST_EXPECTED_COUNT="42"
+AAIS_TEST_VERCEL_PROJECT_ID="prj_example000000000000000000000000"
+```
+
+For the approved Production batch, the manager accepts only the exact relative custody path printed by `npm run accounts:test-batch -- --help`, ending in `AAIS-PROD-QA-20260827-40S-2T/credentials.csv`; any alternate filename or directory fails before file or database access.
+
+#### 1. Generate the private batch
+
+Run generation locally. It creates the directory and CSV with restrictive permissions, gives every row a unique 24-character base64url password from a cryptographically secure random source, and fails rather than replacing an existing file:
+
+```bash
+npm run accounts:test-batch -- generate \
+  --output "${AAIS_TEST_CSV}" \
+  --batch-id "${AAIS_TEST_BATCH_ID}" \
+  --course-id "${AAIS_TEST_COURSE_ID}" \
+  --cohort "${AAIS_TEST_COHORT}"
+```
+
+Do not inspect the rows to validate generation. Check only metadata that cannot reveal contents:
+
+```bash
+file_mode() {
+  if stat -c '%a' -- "$1" >/dev/null 2>&1; then
+    stat -c '%a' -- "$1"
+  else
+    stat -f '%Lp' "$1"
+  fi
+}
+git check-ignore -q "${AAIS_TEST_CSV}"
+test "$(file_mode "${AAIS_TEST_CSV}")" = "600"
+test "$(file_mode "$(dirname "${AAIS_TEST_CSV}")")" = "700"
+unset -f file_mode
+```
+
+The helper uses GNU `stat -c` when available and otherwise falls back to BSD/macOS `stat -f`. If generation or either metadata check fails, stop. Do not weaken permissions, add an ignore exception after the fact, move the file into a tracked path, or rerun with an overwrite option.
+
+#### 2. Audit Git before any push
+
+The Git audit compares the private CSV values against tracked `HEAD` blobs and the current index without emitting a value or matching path. Run it before staging, after staging, after provisioning, and once more before closing the batch:
+
+```bash
+npm run accounts:test-batch -- audit-git \
+  --input "${AAIS_TEST_CSV}" \
+  --batch-id "${AAIS_TEST_BATCH_ID}" \
+  --expected-count "${AAIS_TEST_EXPECTED_COUNT}" \
+  --course-id "${AAIS_TEST_COURSE_ID}" \
+  --cohort "${AAIS_TEST_COHORT}"
+```
+
+The only passing result is zero occurrences and zero matched values for every audited credential category. Any match is a release stop: do not push, do not waive the check, and do not try to identify the leaked value through command output. Remove the staged or tracked exposure safely, rotate the affected batch credentials, regenerate a fresh batch, and rerun the audit.
+
+#### 3. Merge code and bind the Production SHA
+
+The private CSV never travels through the PR. A PR may contain only the reviewed batch CLI, tests, package wiring, documentation, and other non-secret source changes. Before merge, require all of the following:
+
+- `git diff --check`, the focused batch tests, `npm run ci`, and `npm run e2e` pass.
+- The staged-file inventory contains no private batch path, account list, generated receipt with identifiers, local env file, or credential document.
+- `audit-git` passes against both `HEAD` and the final staged index.
+- GitHub `verify` and Vercel Preview checks pass for the exact PR head. If Preview E2E is required, the Owner approves that exact head with `/aais-preview-e2e approve <sha>` and the resulting workflow passes.
+- The reviewed PR is merged to `main`; Vercel creates Production from the Git-connected `main` flow, and the GitHub Production deployment, Vercel deployment, immutable URL, and production aliases all resolve to the same merge SHA.
+
+After checking out the exact deployed merge, bind the operator run to it:
+
+```bash
+AAIS_TEST_EXPECTED_SHA="$(git rev-parse HEAD)"
+test "$(git branch --show-current)" = "main"
+test -z "$(git status --porcelain)"
+```
+
+Account provisioning is a data operation and must not trigger or substitute for a deployment. Never run `vercel deploy`, `vercel deploy --prod`, or an equivalent direct Production upload. Production code must continue to arrive only through the Git-connected `main` deployment guarded by `scripts/guard-vercel-production-deploy.mjs`.
+
+#### 4. Provision Production with create-only semantics
+
+Invoke every Production account command (`provision`, `verify`, and `disable`) through the single `npm run accounts:test-batch -- ...` entry below. That entry first executes the official `vercel --version` check against the exact package `vercel@59.7.0`, then internally launches the manager through `npx --yes vercel@59.7.0 env run -e production -- ...`; the manager rejects a missing or mismatched wrapper attestation. The wrapper never invokes `env pull` or writes an environment file. It independently requires both `VERCEL_ENV=production` and `VERCEL_TARGET_ENV=production`, and it fails closed if `AAIS_RESEARCH_MODE=true`, `AAIS_RESEARCH_REQUIRED=true`, or `AAIS_RESEARCH_ENVIRONMENT=research`; this batch is outside formal research and its page checks must not create research visits or study data. Record the attested CLI version and non-research isolation result in the aggregate operator receipt. Do not prepend a second Vercel command, invoke the internal manager directly, inject Production values locally, use a copied database URL or locally sourced secret file, or perform a direct Vercel deployment. If Vercel cannot provide a required Production-only sensitive integration value to the child process, stop at the resulting no-connection error; do not weaken the integration or substitute a stale local value.
+
+Before any database or authentication operation, the same entry uses pinned, read-only `vercel inspect https://www.aais.site --json` and the GitHub Deployment API. It requires the canonical alias to resolve to one `READY` Vercel `production` deployment and requires the matching immutable deployment URL to have a Vercel-bot-authored GitHub `Production` deployment status of `success` for the exact expected SHA. Local `HEAD`, tracking `origin/main`, and live `origin/main` must all equal that SHA. A pending, failed, superseded, differently aliased, or differently versioned deployment stops before opening a database connection or sending an authentication request; a locally inherited `VERCEL_GIT_COMMIT_SHA` is not accepted as deployment evidence. After the 42-account verifier has logged out every session, it repeats this complete attestation and requires the immutable Vercel deployment ID/URL, deployed SHA, and GitHub deployment/status IDs to remain unchanged; an alias movement or redeployment invalidates the run.
+
+Immediately before provisioning, use the Vercel project dashboard or an equivalently authoritative read-only project inspection to verify that the linked project is exactly `aais`, its Production Storage integration is named exactly `aais-neon`, and the Production database binding resolves to that Neon project. Record only the resource name and non-secret project/deployment identifiers in the private operator evidence. The CLI project-link gate does not prove the database resource name; if this independent resource check is missing or mismatched, stop before opening a database transaction. Never print or record the database URL while performing this check.
+
+```bash
+npm run accounts:test-batch -- provision \
+  --input "${AAIS_TEST_CSV}" \
+  --target production \
+  --approved \
+  --expected-sha "${AAIS_TEST_EXPECTED_SHA}" \
+  --project-id "${AAIS_TEST_VERCEL_PROJECT_ID}" \
+  --batch-id "${AAIS_TEST_BATCH_ID}" \
+  --expected-count "${AAIS_TEST_EXPECTED_COUNT}" \
+  --course-id "${AAIS_TEST_COURSE_ID}" \
+  --cohort "${AAIS_TEST_COHORT}"
+```
+
+The manager must invoke the seed capability in `create-only` mode. Its Production Postgres pool uses the same bounded settings as the application pool: a `5,000 ms` connection timeout, `30,000 ms` statement timeout, `35,000 ms` query timeout, and `30,000 ms` idle-transaction timeout. The lower-level supported seed form is `npm run db:seed-users -- --approved --mode create-only --batch-id <safe-id> --output <private-redacted-receipt.json>`; do not invoke its default `upsert` mode for a new controlled batch. Before the first write, the same transaction requires the six runtime tables used by account creation, login-rate limiting, and session revocation; the required login-rate-limit column; migrations `0002`, `0005`, `0006`, `0007`, `0010`, and `0026`; and the exact active course row held under a share lock through commit. Create-only provisioning then takes the batch transaction lock, checks the entire set for account/email/user-ID collisions, uses race-safe insert checks, creates the matching enrollments, and commits only after all 42 users and the exact in-transaction aggregate succeed. Any missing auth-runtime dependency, preflight collision, concurrent collision, count mismatch, enrollment mismatch, or intermediate error normally rolls back the whole batch. `AAIS_TEST_ACCOUNT_PROVISION_ROLLBACK_FAILED` means rollback could not be confirmed and database state is unknown. `AAIS_TEST_ACCOUNT_PROVISION_COMMITTED_UNVERIFIED` instead means the transaction committed but the separate post-commit aggregate could not be confirmed; it explicitly reports `committed=true` and `retryProvisioning=forbidden`. For either code, stop, preserve the fixed aggregate-only evidence, and require authorized read-only reconciliation; never rerun create-only provisioning, because a committed batch will correctly collide. Never convert a collision into an update, delete an existing user to make room, or claim a partial batch.
+
+Provisioning passes only when the redacted aggregate JSON reports:
+
+- `status="pass"`, `seed.created=42`, and `seed.enrollments=42`;
+- `seed.upserted=42`, `seed.updated=0`, and `seed.collisions=0`;
+- `preflight.requiredTables=6`, `preflight.requiredMigrations=6`, `preflight.authRuntime="ready"`, and `preflight.course="active"`;
+- `transactionValidation.beforeWrite="passed"`, `transactionValidation.beforeCommit="passed"`, and the transaction aggregate contains exactly 42 users plus 42 enrollments before commit;
+- both the transaction and post-commit aggregates report 40 active students, 2 active teachers, and 0 admins in the exact course and cohort;
+- no partial commit and no secret, raw account, `user_id`, database URL, or password in stdout or stderr.
+
+#### 5. Verify all 42 accounts on the canonical domain
+
+A readiness response or database count is not authenticated acceptance. Run the bounded Production verifier through the same Vercel Production environment:
+
+```bash
+npm run accounts:test-batch -- verify \
+  --input "${AAIS_TEST_CSV}" \
+  --target production \
+  --approved \
+  --base-url https://www.aais.site \
+  --expected-sha "${AAIS_TEST_EXPECTED_SHA}" \
+  --project-id "${AAIS_TEST_VERCEL_PROJECT_ID}" \
+  --batch-id "${AAIS_TEST_BATCH_ID}" \
+  --expected-count "${AAIS_TEST_EXPECTED_COUNT}" \
+  --course-id "${AAIS_TEST_COURSE_ID}" \
+  --cohort "${AAIS_TEST_COHORT}"
+```
+
+The verifier uses concurrency `2`, applies a fixed `15,000 ms` deadline to every connection, response-header, and response-body operation, and must authenticate and log out every row. A timed-out request is reported as a failed aggregate check; if its response already exposed a session and CSRF cookie, the verifier makes a separately bounded best-effort logout before continuing. For each of the 40 students it confirms the actor role/ID, `/learning` access, and denial or redirect from `/dashboard`. For each of the 2 teachers it confirms the actor role/ID, `/dashboard` access, and denial or redirect from `/admin/users`. Acceptance is exactly `results.attempted=42`, `results.passed=42`, `results.failed=0`, `results.roles.student.passed=40`, `results.roles.teacher.passed=2`, `results.roles.admin.expected=0`, `results.checks.logout.passed=42`, and `deployment.reAttestedAfterVerification=true`. The three negative authentication cases must also report `passed=3`, `failed=0`, `sessionCookiesSet=0`, and no cleanup attempt; an unexpected session is a failure even if its immediate best-effort logout succeeds. Any single failure keeps the whole batch at `NO_GO`. Retain only the aggregate result and the bound batch ID, deployed SHA, Vercel/GitHub deployment IDs, course, cohort, timestamps, and operator approval reference.
+
+#### 6. Disable the exact batch
+
+Use the same private CSV and all original bindings. Never disable by email pattern, cohort-wide wildcard, display-name prefix, guessed range, or a newly generated list:
+
+```bash
+npm run accounts:test-batch -- disable \
+  --input "${AAIS_TEST_CSV}" \
+  --target production \
+  --approved \
+  --expected-sha "${AAIS_TEST_EXPECTED_SHA}" \
+  --project-id "${AAIS_TEST_VERCEL_PROJECT_ID}" \
+  --batch-id "${AAIS_TEST_BATCH_ID}" \
+  --expected-count "${AAIS_TEST_EXPECTED_COUNT}" \
+  --course-id "${AAIS_TEST_COURSE_ID}" \
+  --cohort "${AAIS_TEST_COHORT}"
+```
+
+Disablement transactionally resolves the exact 42 `user_id` and enrollment pairs, changes active users to `disabled`, increments each changed user's `auth_version` once, and changes their matching `active` or `completed` enrollments to `withdrawn`. A repeat run is idempotent: users already disabled with withdrawn enrollments remain unchanged and must not receive another auth-version increment. The command passes only when its aggregate postcondition reports `users.matched=42` and `enrollments.matched=42`, each newly/already-disabled or withdrawn pair sums to 42, `users.authVersionsIncremented` equals `users.newlyDisabled`, and no out-of-scope row changed.
+
+After disablement, rerun `audit-git`, retain the aggregate disable receipt, and handle the private CSV under the approved retention and destruction decision. Do not destroy the only exact-batch binding before disablement and its postcondition are proven; do not retain it indefinitely merely because Git ignores it.
+
+#### PR, CI, and Vercel monitoring checklist
+
+- [ ] Private CSV is under an ignored path with directory `0700` and file `0600`; it has never entered Git, logs, screenshots, artifacts, or chat.
+- [ ] Pre-stage and post-stage `audit-git` results are zero, and the PR contains only non-secret source changes.
+- [ ] Focused tests, `git diff --check`, `npm run ci`, `npm run e2e`, GitHub `verify`, Vercel Preview, and any Owner-approved Preview E2E are green for the exact PR head.
+- [ ] Remote `main`, the merge commit, GitHub Production deployment, Vercel Production deployment, immutable URL, and `www.aais.site` aliases are bound to one exact SHA.
+- [ ] An independent authoritative read-only check records that linked project `aais` uses the Production Storage integration `aais-neon` and that its Production database binding resolves to that Neon project; the evidence contains no database URL.
+- [ ] Production environment attestation proves this is a non-research run: research mode and research-required are not enabled, the environment is not `research`, and the 42/42 verifier will not create research visits or study data.
+- [ ] Production provisioning, verification, and disablement used the single npm entry whose receipt proves pinned Vercel CLI `59.7.0`, exact live Production deployment SHA/status/IDs, and canonical alias binding; verification also proves the same immutable deployment remained bound after all 42 logouts. No env pull, copied database URL, internal-manager bypass, or direct Production deploy was used.
+- [ ] Create-only receipt is `42/42` with zero updates/collisions, both database aggregates have the 40/2/0 role split, authenticated verification is `42/42` with the 40/2/0 role split and 42 logouts, all three negative cases set zero sessions, and final Git audit remains zero.
+- [ ] Disablement, if due, targets the original exact 42 IDs and proves 42 disabled users plus 42 withdrawn enrollments without a second auth-version increment.
+- [ ] Only aggregate receipts, exact source/deployment identifiers, timestamps, approvals, and remaining blockers are recorded; readiness, deployment, database counts, and authenticated acceptance remain separately labelled.
+
 ## Teacher Recommendations
 
 The dashboard consumes deterministic rule-based recommendations from `/api/learning/recommendations`. The policy is documented in `docs/teacher-recommendation-rules.md`; keep that file aligned with `aaisRecommendationPolicy.rules` whenever recommendation rules change. Teacher/admin override decisions are recorded as redacted `recommendation_override_recorded` events and must not include raw learner text in the override note.

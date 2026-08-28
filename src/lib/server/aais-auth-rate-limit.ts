@@ -131,17 +131,48 @@ export async function clearAaisLoginFailures(input: {
 }) {
   const database = resolveRateLimitDatabase(input.database);
   const keys = createLoginRateLimitKeys(input.accountId, input.request);
+  const now = Date.now();
   if (database) {
+    const config = readAaisLoginRateLimitConfig();
     await database.query(
-      "delete from aais_login_rate_limits where account_key = $1",
-      [keys.accountKey],
+      `with released_client_global as (
+         update aais_login_rate_limits
+            set failures = greatest(failures - 1, 0),
+                locked_until = case
+                  when greatest(failures - 1, 0) <= $3::integer then null
+                  else locked_until
+                end,
+                updated_at = $4::timestamptz
+          where $2::text is not null
+            and rate_limit_key = $2::text
+       )
+       delete from aais_login_rate_limits
+        where account_key = $1::text`,
+      [keys.accountKey, keys.clientGlobal, config.maxClientAttempts, new Date(now)],
     );
     return;
   }
-  prepareMemoryAttempts(Date.now());
+  prepareMemoryAttempts(now);
   for (const [key, record] of attempts) {
     if (record.accountKey === keys.accountKey) {
       attempts.delete(key);
+    }
+  }
+  if (keys.clientGlobal) {
+    const record = attempts.get(keys.clientGlobal);
+    if (record) {
+      const failures = Math.max(record.failures - 1, 0);
+      if (failures === 0) {
+        attempts.delete(keys.clientGlobal);
+      } else {
+        touchMemoryAttempt(keys.clientGlobal, {
+          ...record,
+          failures,
+          lockedUntil: failures <= readAaisLoginRateLimitConfig().maxClientAttempts
+            ? null
+            : record.lockedUntil,
+        });
+      }
     }
   }
 }

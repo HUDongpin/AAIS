@@ -34,7 +34,8 @@
     "smoke:prod": "node -- scripts/smoke-prod.mjs",
     "release:evaluate-ai": "tsx scripts/run-aais-ai-formal-eval.ts",
     "release:sign-ai-manifest": "node -- scripts/sign-aais-ai-eval-manifest.mjs",
-    "load:staging": "node -- scripts/run-staging-load-sanity.mjs"
+    "load:staging": "node -- scripts/run-staging-load-sanity.mjs",
+    "accounts:test-batch": "node -- scripts/manage-aais-test-accounts.mjs"
   },
   "dependencies": {
     "@langchain/langgraph": "^1.4.10",
