@@ -479,6 +479,8 @@ export async function verifyAaisTestAccountBatch(input) {
     && negativeAuth.failed === 0
     ? "pass"
     : "failed";
+  const postVerificationAttestation = await readPostVerificationAttestation(input, binding);
+  assertStableProductionDeployment(input.productionAttestation, postVerificationAttestation);
   return {
     schema: AAIS_TEST_ACCOUNT_REPORT_SCHEMA,
     schemaVersion: 1,
@@ -486,7 +488,10 @@ export async function verifyAaisTestAccountBatch(input) {
     command: "verify",
     target: "production",
     batchId: binding.batchId,
-    deployment: productionDeploymentReceipt(input, { baseUrl }),
+    deployment: productionDeploymentReceipt(input, {
+      baseUrl,
+      reAttestedAfterVerification: true,
+    }),
     concurrency: AAIS_TEST_ACCOUNT_VERIFY_CONCURRENCY,
     requestTimeoutMs,
     results: {
@@ -925,6 +930,8 @@ export async function runAaisTestAccountManagerCli(argv, input = {}) {
       ...options,
       rows: loaded.rows,
       productionAttestation,
+      readPostVerificationAttestation: () =>
+        readProductionAttestation(loaded.gitRoot, options.expectedSha),
     });
     return { report, failed: report.status !== "pass" };
   }
@@ -1431,6 +1438,38 @@ function assertProductionGate(input, binding) {
     || input?.cohort !== binding.cohort
   ) {
     throw managerError("AAIS_TEST_ACCOUNT_BATCH_BINDING_MISMATCH");
+  }
+}
+
+async function readPostVerificationAttestation(input, binding) {
+  if (typeof input?.readPostVerificationAttestation !== "function") {
+    throw managerError("AAIS_TEST_ACCOUNT_PRODUCTION_REATTESTATION_REQUIRED");
+  }
+  try {
+    const attestation = await input.readPostVerificationAttestation();
+    assertProductionGate({ ...input, productionAttestation: attestation }, binding);
+    return attestation;
+  } catch (error) {
+    if (error?.code === "AAIS_TEST_ACCOUNT_PRODUCTION_DEPLOYMENT_CHANGED") {
+      throw error;
+    }
+    throw managerError("AAIS_TEST_ACCOUNT_PRODUCTION_REATTESTATION_FAILED");
+  }
+}
+
+function assertStableProductionDeployment(before, after) {
+  const fields = [
+    "deployedGitSha",
+    "vercelDeploymentId",
+    "vercelDeploymentUrl",
+    "vercelDeploymentReadyState",
+    "vercelDeploymentTarget",
+    "githubDeploymentId",
+    "githubDeploymentStatusId",
+    "githubDeploymentState",
+  ];
+  if (fields.some((field) => before?.[field] !== after?.[field])) {
+    throw managerError("AAIS_TEST_ACCOUNT_PRODUCTION_DEPLOYMENT_CHANGED");
   }
 }
 

@@ -513,7 +513,10 @@ describe("AAIS production test-account batch manager", () => {
       schema: AAIS_TEST_ACCOUNT_REPORT_SCHEMA,
       status: "pass",
       command: "verify",
-      deployment: { researchIsolation: "non-research" },
+      deployment: {
+        researchIsolation: "non-research",
+        reAttestedAfterVerification: true,
+      },
       concurrency: 2,
       requestTimeoutMs: AAIS_TEST_ACCOUNT_REQUEST_TIMEOUT_MS,
       results: {
@@ -552,6 +555,33 @@ describe("AAIS production test-account batch manager", () => {
     assertNoCredentialValues(report, rows);
     expect(JSON.stringify(report)).not.toContain("aais_session");
     expect(JSON.stringify(report)).not.toContain("aais_csrf");
+  });
+
+  it("rejects a Production deployment change after all verification sessions are revoked", async () => {
+    const rows = createRows();
+    const fakeHttp = makeVerificationFetch(rows);
+    let reattestations = 0;
+
+    await expect(verifyAaisTestAccountBatch({
+      ...productionInput(rows),
+      baseUrl: AAIS_TEST_ACCOUNT_PRODUCTION_BASE_URL,
+      fetchImpl: fakeHttp.fetchImpl,
+      readPostVerificationAttestation: async () => {
+        reattestations += 1;
+        expect(fakeHttp.logoutCount).toBe(42);
+        expect(fakeHttp.activeSessionCount).toBe(0);
+        return {
+          ...productionAttestation(),
+          vercelDeploymentId: "dpl_AaisProduction2",
+        };
+      },
+    })).rejects.toMatchObject({
+      code: "AAIS_TEST_ACCOUNT_PRODUCTION_DEPLOYMENT_CHANGED",
+    });
+
+    expect(reattestations).toBe(1);
+    expect(fakeHttp.logoutCount).toBe(42);
+    expect(fakeHttp.activeSessionCount).toBe(0);
   });
 
   it("bounds a stalled production request and logs out its known session", async () => {
@@ -1095,6 +1125,7 @@ function productionInput(rows) {
     expectedCount: 42,
     projectId: AAIS_TEST_ACCOUNT_PRODUCTION_PROJECT_ID,
     productionAttestation: productionAttestation(),
+    readPostVerificationAttestation: async () => productionAttestation(),
   };
 }
 
