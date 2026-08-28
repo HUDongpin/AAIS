@@ -12,7 +12,7 @@ import {
 } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const execFileAsync = promisify(execFile);
 
@@ -34,6 +34,7 @@ export const AAIS_TEST_ACCOUNT_REPORT_SCHEMA = "aais-test-account-provisioning/v
 export const AAIS_TEST_ACCOUNT_PRODUCTION_PROJECT_ID = "prj_sKF9lhawVQyjxnv3jLyZvQH95Z1c";
 export const AAIS_TEST_ACCOUNT_PRODUCTION_BASE_URL = "https://www.aais.site";
 export const AAIS_TEST_ACCOUNT_VERCEL_CLI_VERSION = "59.7.0";
+export const AAIS_TEST_ACCOUNT_REQUEST_TIMEOUT_MS = 15_000;
 export const AAIS_TEST_ACCOUNT_BATCH_ID = "AAIS-PROD-QA-20260827-40S-2T";
 export const AAIS_TEST_ACCOUNT_COURSE_ID = "cognitive-apprenticeship";
 export const AAIS_TEST_ACCOUNT_COHORT = "qa-20260827-40s-2t";
@@ -45,7 +46,17 @@ const passwordPattern = /^[A-Za-z0-9_-]{24}$/;
 const courseIdPattern = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const cohortPattern = /^[A-Za-z0-9][A-Za-z0-9._: -]{0,127}$/;
 const commitShaPattern = /^[a-f0-9]{40}$/;
+const vercelDeploymentIdPattern = /^dpl_[A-Za-z0-9]+$/;
 const redirectStatuses = new Set([302, 303, 307, 308]);
+const productionManagerCommands = new Set(["provision", "verify", "disable"]);
+const pinnedVercelCliVersionEnv = "AAIS_TEST_ACCOUNT_PINNED_VERCEL_CLI_VERSION";
+const githubRepository = "HUDongpin/AAIS";
+const vercelBotAccount = Object.freeze({
+  login: "vercel[bot]",
+  id: 35613825,
+  node_id: "MDM6Qm90MzU2MTM4MjU=",
+  type: "Bot",
+});
 
 export class AaisTestAccountManagerError extends Error {
   constructor(code, details = {}) {
@@ -377,17 +388,27 @@ export async function provisionAaisTestAccountBatch(input) {
       ? {}
       : { collisions });
   }
-  assertCreateOnlySeedReport(seedReport, binding.count);
-  if (!preflight || !transactionalDatabase) {
-    throw managerError("AAIS_TEST_ACCOUNT_SEED_VALIDATION_HOOK_MISSING");
+  let database;
+  try {
+    assertCreateOnlySeedReport(seedReport, binding.count);
+    if (!preflight || !transactionalDatabase) {
+      throw managerError("AAIS_TEST_ACCOUNT_SEED_VALIDATION_HOOK_MISSING");
+    }
+    database = await readDatabaseBatchAggregate({
+      database: input.database,
+      rows: input.rows,
+      courseId: binding.courseId,
+      cohort: binding.cohort,
+    });
+    assertExpectedDatabaseAggregate(database);
+  } catch {
+    throw managerError("AAIS_TEST_ACCOUNT_PROVISION_COMMITTED_UNVERIFIED", {
+      committed: true,
+      transactionValidation: preflight && transactionalDatabase ? "passed" : "unconfirmed",
+      postCommitVerification: "failed",
+      retryProvisioning: "forbidden",
+    });
   }
-  const database = await readDatabaseBatchAggregate({
-    database: input.database,
-    rows: input.rows,
-    courseId: binding.courseId,
-    cohort: binding.cohort,
-  });
-  assertExpectedDatabaseAggregate(database);
 
   return {
     schema: AAIS_TEST_ACCOUNT_REPORT_SCHEMA,
@@ -396,12 +417,7 @@ export async function provisionAaisTestAccountBatch(input) {
     command: "provision",
     target: "production",
     batchId: binding.batchId,
-    deployment: {
-      gitSha: input.expectedSha,
-      projectId: input.projectId,
-      vercelCliVersion: AAIS_TEST_ACCOUNT_VERCEL_CLI_VERSION,
-      researchIsolation: "non-research",
-    },
+    deployment: productionDeploymentReceipt(input),
     sourceEnv: String(input.sourceEnv ?? "unknown"),
     preflight,
     transactionValidation: {
@@ -427,7 +443,8 @@ export async function verifyAaisTestAccountBatch(input) {
   const binding = validateAaisTestAccountRows(input?.rows, input);
   assertProductionGate(input, binding);
   const baseUrl = requireProductionBaseUrl(input?.baseUrl);
-  const fetchImpl = input?.fetchImpl ?? fetch;
+  const requestTimeoutMs = requireRequestTimeoutMs(input?.requestTimeoutMs);
+  const fetchImpl = createBoundedProductionFetch(input?.fetchImpl ?? fetch, requestTimeoutMs);
   const negativeAuth = await verifyNegativeAuthenticationCases({
     rows: input.rows,
     baseUrl,
@@ -459,14 +476,9 @@ export async function verifyAaisTestAccountBatch(input) {
     command: "verify",
     target: "production",
     batchId: binding.batchId,
-    deployment: {
-      gitSha: input.expectedSha,
-      projectId: input.projectId,
-      baseUrl,
-      vercelCliVersion: AAIS_TEST_ACCOUNT_VERCEL_CLI_VERSION,
-      researchIsolation: "non-research",
-    },
+    deployment: productionDeploymentReceipt(input, { baseUrl }),
     concurrency: AAIS_TEST_ACCOUNT_VERIFY_CONCURRENCY,
+    requestTimeoutMs,
     results: {
       expected: binding.count,
       attempted: results.length,
@@ -660,12 +672,7 @@ export async function disableAaisTestAccountBatch(input) {
       command: "disable",
       target: "production",
       batchId: binding.batchId,
-      deployment: {
-        gitSha: input.expectedSha,
-        projectId: input.projectId,
-        vercelCliVersion: AAIS_TEST_ACCOUNT_VERCEL_CLI_VERSION,
-        researchIsolation: "non-research",
-      },
+      deployment: productionDeploymentReceipt(input),
       users: {
         matched: postUsers.length,
         newlyDisabled: activeIds.length,
@@ -785,7 +792,7 @@ export function parseAaisTestAccountManagerArgs(argv) {
 export function getAaisTestAccountManagerUsage() {
   const fixedBinding = `--batch-id ${AAIS_TEST_ACCOUNT_BATCH_ID} --course-id ${AAIS_TEST_ACCOUNT_COURSE_ID} --cohort ${AAIS_TEST_ACCOUNT_COHORT}`;
   const privateCsv = AAIS_TEST_ACCOUNT_CUSTODY_PATH;
-  const productionPrefix = `npx --yes vercel@${AAIS_TEST_ACCOUNT_VERCEL_CLI_VERSION} env run -e production -- npm run accounts:test-batch --`;
+  const productionPrefix = "npm run accounts:test-batch --";
   return [
     "Usage:",
     `  npm run accounts:test-batch -- generate --output ${privateCsv} ${fixedBinding}`,
@@ -796,8 +803,73 @@ export function getAaisTestAccountManagerUsage() {
     "",
     "Credential values are read only from the ignored mode-0600 CSV and are never printed.",
     "All non-generate commands emit aggregate JSON only; no receipt file is written.",
+    `Production commands automatically use the pinned Vercel CLI ${AAIS_TEST_ACCOUNT_VERCEL_CLI_VERSION} wrapper.`,
     "",
   ].join("\n");
+}
+
+export async function runAaisTestAccountPinnedProductionCommand(argv, input = {}) {
+  if (!productionManagerCommands.has(argv?.[0])) {
+    throw managerError("AAIS_TEST_ACCOUNT_COMMAND_INVALID");
+  }
+  const execFileImpl = input.execFileImpl ?? execFileAsync;
+  const cwd = input.cwd ?? process.cwd();
+  const env = input.env ?? process.env;
+  const commandOptions = {
+    cwd,
+    encoding: "utf8",
+    maxBuffer: 16 * 1024 * 1024,
+    env,
+  };
+  let versionResult;
+  try {
+    versionResult = await execFileImpl("npx", [
+      "--yes",
+      `vercel@${AAIS_TEST_ACCOUNT_VERCEL_CLI_VERSION}`,
+      "--version",
+    ], commandOptions);
+  } catch {
+    throw managerError("AAIS_TEST_ACCOUNT_VERCEL_CLI_ATTESTATION_FAILED");
+  }
+  if (String(versionResult.stdout ?? "").trim() !== AAIS_TEST_ACCOUNT_VERCEL_CLI_VERSION) {
+    throw managerError("AAIS_TEST_ACCOUNT_VERCEL_CLI_ATTESTATION_FAILED");
+  }
+
+  const managerPath = fileURLToPath(import.meta.url);
+  try {
+    const result = await execFileImpl("npx", [
+      "--yes",
+      `vercel@${AAIS_TEST_ACCOUNT_VERCEL_CLI_VERSION}`,
+      "env",
+      "run",
+      "-e",
+      "production",
+      "--",
+      process.execPath,
+      managerPath,
+      ...argv,
+    ], {
+      ...commandOptions,
+      env: {
+        ...env,
+        [pinnedVercelCliVersionEnv]: AAIS_TEST_ACCOUNT_VERCEL_CLI_VERSION,
+      },
+    });
+    return {
+      exitCode: 0,
+      stdout: String(result.stdout ?? ""),
+      stderr: String(result.stderr ?? ""),
+    };
+  } catch (error) {
+    if (!Number.isInteger(error?.code)) {
+      throw managerError("AAIS_TEST_ACCOUNT_VERCEL_ENV_RUN_FAILED");
+    }
+    return {
+      exitCode: Number(error.code),
+      stdout: String(error.stdout ?? ""),
+      stderr: String(error.stderr ?? ""),
+    };
+  }
 }
 
 export async function runAaisTestAccountManagerCli(argv, input = {}) {
@@ -837,7 +909,7 @@ export async function runAaisTestAccountManagerCli(argv, input = {}) {
   }
 
   requireProductionOptions(options);
-  const productionAttestation = await readProductionAttestation(loaded.gitRoot);
+  const productionAttestation = await readProductionAttestation(loaded.gitRoot, options.expectedSha);
   if (options.command === "verify") {
     const report = await verifyAaisTestAccountBatch({
       ...options,
@@ -1138,9 +1210,114 @@ async function runGit(args, cwd, options = {}) {
   });
 }
 
-async function readProductionAttestation(gitRoot) {
+export function attestAaisProductionDeployment(input) {
+  const expectedSha = String(input?.expectedSha ?? "");
+  const inspect = input?.vercelInspect;
+  const aliases = Array.isArray(inspect?.aliases) ? inspect.aliases : [];
+  const inspectedOrigin = normalizeVercelDeploymentOrigin(inspect?.url);
+  if (
+    !commitShaPattern.test(expectedSha)
+    || !vercelDeploymentIdPattern.test(String(inspect?.id ?? ""))
+    || inspect?.name !== "aais"
+    || inspect?.readyState !== "READY"
+    || inspect?.target !== "production"
+    || !aliases.includes("aais.site")
+    || !aliases.includes("www.aais.site")
+  ) {
+    throw managerError("AAIS_TEST_ACCOUNT_PRODUCTION_DEPLOYMENT_INVALID");
+  }
+
+  const matches = [];
+  for (const deployment of input?.githubDeployments ?? []) {
+    if (
+      !isPositiveInteger(deployment?.id)
+      || deployment?.sha !== expectedSha
+      || deployment?.ref !== expectedSha
+      || deployment?.task !== "deploy"
+      || deployment?.environment !== "Production"
+      || !isExactVercelBot(deployment?.creator)
+    ) {
+      continue;
+    }
+    const statuses = input?.githubStatusesByDeploymentId?.[String(deployment.id)];
+    const [latestStatus] = Array.isArray(statuses)
+      ? statuses
+        .filter((status) => isPositiveInteger(status?.id) && isExactVercelBot(status?.creator))
+        .sort((left, right) => Number(right.id) - Number(left.id))
+      : [];
+    if (
+      latestStatus?.state !== "success"
+      || normalizeVercelDeploymentOrigin(latestStatus?.target_url) !== inspectedOrigin
+      || normalizeVercelDeploymentOrigin(latestStatus?.environment_url) !== inspectedOrigin
+    ) {
+      continue;
+    }
+    matches.push({ deployment, status: latestStatus });
+  }
+  if (matches.length !== 1) {
+    throw managerError("AAIS_TEST_ACCOUNT_PRODUCTION_DEPLOYMENT_INVALID");
+  }
+  const [{ deployment, status }] = matches;
+  return {
+    deployedGitSha: deployment.sha,
+    vercelDeploymentId: inspect.id,
+    vercelDeploymentUrl: new URL(inspectedOrigin).hostname,
+    vercelDeploymentReadyState: inspect.readyState,
+    vercelDeploymentTarget: inspect.target,
+    githubDeploymentId: Number(deployment.id),
+    githubDeploymentStatusId: Number(status.id),
+    githubDeploymentState: status.state,
+  };
+}
+
+async function readProductionDeploymentAttestation(gitRoot, expectedSha) {
+  const commandOptions = {
+    cwd: gitRoot,
+    encoding: "utf8",
+    maxBuffer: 16 * 1024 * 1024,
+  };
+  const inspectResult = await execFileAsync("npx", [
+    "--yes",
+    `vercel@${AAIS_TEST_ACCOUNT_VERCEL_CLI_VERSION}`,
+    "inspect",
+    AAIS_TEST_ACCOUNT_PRODUCTION_BASE_URL,
+    "--json",
+    "--no-color",
+    "--non-interactive",
+  ], commandOptions);
+  const deploymentsResult = await execFileAsync("gh", [
+    "api",
+    `repos/${githubRepository}/deployments?sha=${expectedSha}&environment=Production&per_page=100`,
+  ], commandOptions);
+  const vercelInspect = JSON.parse(inspectResult.stdout);
+  const githubDeployments = JSON.parse(deploymentsResult.stdout);
+  if (!Array.isArray(githubDeployments)) {
+    throw managerError("AAIS_TEST_ACCOUNT_PRODUCTION_DEPLOYMENT_INVALID");
+  }
+  const candidateIds = githubDeployments
+    .filter((deployment) => deployment?.sha === expectedSha && isPositiveInteger(deployment?.id))
+    .map((deployment) => Number(deployment.id));
+  const statusEntries = await Promise.all(candidateIds.map(async (deploymentId) => {
+    const result = await execFileAsync("gh", [
+      "api",
+      `repos/${githubRepository}/deployments/${deploymentId}/statuses?per_page=100`,
+    ], commandOptions);
+    return [String(deploymentId), JSON.parse(result.stdout)];
+  }));
+  return attestAaisProductionDeployment({
+    expectedSha,
+    vercelInspect,
+    githubDeployments,
+    githubStatusesByDeploymentId: Object.fromEntries(statusEntries),
+  });
+}
+
+async function readProductionAttestation(gitRoot, expectedSha) {
   try {
-    const [head, branch, status, remoteTracking, liveOriginMain] = await Promise.all([
+    if (!commitShaPattern.test(String(expectedSha ?? ""))) {
+      throw managerError("AAIS_TEST_ACCOUNT_EXPECTED_SHA_INVALID");
+    }
+    const [head, branch, status, remoteTracking, liveOriginMain, deployment] = await Promise.all([
       runGit(["rev-parse", "HEAD"], gitRoot),
       runGit(["branch", "--show-current"], gitRoot),
       runGit(["status", "--porcelain=v1"], gitRoot),
@@ -1151,6 +1328,7 @@ async function readProductionAttestation(gitRoot) {
         "origin",
         "refs/heads/main",
       ], gitRoot),
+      readProductionDeploymentAttestation(gitRoot, expectedSha),
     ]);
     const projectPath = path.join(gitRoot, ".vercel", "project.json");
     await assertNoSymlinkComponents(gitRoot, projectPath);
@@ -1169,12 +1347,17 @@ async function readProductionAttestation(gitRoot) {
       projectName: String(project?.projectName ?? ""),
       vercelEnv: String(process.env.VERCEL_ENV ?? ""),
       vercelTargetEnv: String(process.env.VERCEL_TARGET_ENV ?? ""),
+      vercelCliVersion: String(process.env[pinnedVercelCliVersionEnv] ?? ""),
       researchModeEnabled: isLiteralTrue(process.env.AAIS_RESEARCH_MODE),
       researchRequiredEnabled: isLiteralTrue(process.env.AAIS_RESEARCH_REQUIRED),
       researchEnvironmentIsResearch:
         String(process.env.AAIS_RESEARCH_ENVIRONMENT ?? "").trim().toLowerCase() === "research",
+      ...deployment,
     };
-  } catch {
+  } catch (error) {
+    if (isManagerError(error)) {
+      throw error;
+    }
     throw managerError("AAIS_TEST_ACCOUNT_PRODUCTION_ATTESTATION_UNAVAILABLE");
   }
 }
@@ -1214,6 +1397,21 @@ function assertProductionGate(input, binding) {
   ) {
     throw managerError("AAIS_TEST_ACCOUNT_VERCEL_LINK_INVALID");
   }
+  if (attestation?.vercelCliVersion !== AAIS_TEST_ACCOUNT_VERCEL_CLI_VERSION) {
+    throw managerError("AAIS_TEST_ACCOUNT_VERCEL_CLI_ATTESTATION_FAILED");
+  }
+  if (
+    attestation?.deployedGitSha !== input.expectedSha
+    || !vercelDeploymentIdPattern.test(String(attestation?.vercelDeploymentId ?? ""))
+    || !normalizeVercelDeploymentOrigin(attestation?.vercelDeploymentUrl)
+    || attestation?.vercelDeploymentReadyState !== "READY"
+    || attestation?.vercelDeploymentTarget !== "production"
+    || !isPositiveInteger(attestation?.githubDeploymentId)
+    || !isPositiveInteger(attestation?.githubDeploymentStatusId)
+    || attestation?.githubDeploymentState !== "success"
+  ) {
+    throw managerError("AAIS_TEST_ACCOUNT_PRODUCTION_DEPLOYMENT_INVALID");
+  }
   if (Number(input?.expectedCount) !== AAIS_TEST_ACCOUNT_EXPECTED_COUNT) {
     throw managerError("AAIS_TEST_ACCOUNT_EXPECTED_COUNT_INVALID");
   }
@@ -1224,6 +1422,22 @@ function assertProductionGate(input, binding) {
   ) {
     throw managerError("AAIS_TEST_ACCOUNT_BATCH_BINDING_MISMATCH");
   }
+}
+
+function productionDeploymentReceipt(input, extra = {}) {
+  const attestation = input.productionAttestation;
+  return {
+    gitSha: input.expectedSha,
+    projectId: input.projectId,
+    vercelCliVersion: attestation.vercelCliVersion,
+    vercelDeploymentId: attestation.vercelDeploymentId,
+    vercelDeploymentStatus: attestation.vercelDeploymentReadyState,
+    githubDeploymentId: attestation.githubDeploymentId,
+    githubDeploymentStatusId: attestation.githubDeploymentStatusId,
+    githubDeploymentState: attestation.githubDeploymentState,
+    researchIsolation: "non-research",
+    ...extra,
+  };
 }
 
 function assertCreateOnlySeedReport(report, expectedCount) {
@@ -1418,8 +1632,8 @@ async function verifyOneAccount(input) {
       redirect: "manual",
       cache: "no-store",
     });
-    const loginBody = await readJson(login);
     cookieJar = extractCookieJar(login.headers);
+    const loginBody = await readJson(login);
     checks.login = login.status === 200 && cookieJar.hasSession && Boolean(cookieJar.csrfToken);
     if (!checks.login) {
       return cookieJar.hasSession && cookieJar.csrfToken
@@ -1482,16 +1696,18 @@ async function verifyOneAccount(input) {
       }
     }
     return await finishVerificationWithLogout(input, row, checks, cookieJar, null);
-  } catch {
+  } catch (error) {
+    const requestFailure = isRequestTimeoutError(error) ? `${failure}-timeout` : "network";
     if (cookieJar) {
-      return finishVerificationWithLogout(input, row, checks, cookieJar, "network");
+      return finishVerificationWithLogout(input, row, checks, cookieJar, requestFailure);
     }
-    return verificationResult(row.role, checks, "network");
+    return verificationResult(row.role, checks, requestFailure);
   }
 }
 
 async function finishVerificationWithLogout(input, row, checks, cookieJar, priorFailure) {
   let logoutFailed = false;
+  let logoutFailure = "logout";
   try {
     const logout = await input.fetchImpl(`${input.baseUrl}/api/auth/app-session`, {
       method: "DELETE",
@@ -1505,10 +1721,11 @@ async function finishVerificationWithLogout(input, row, checks, cookieJar, prior
     const body = await readJson(logout);
     checks.logout = logout.status === 200 && body?.sessionRevoked === true;
     logoutFailed = !checks.logout;
-  } catch {
+  } catch (error) {
     logoutFailed = true;
+    logoutFailure = isRequestTimeoutError(error) ? "logout-timeout" : "logout";
   }
-  return verificationResult(row.role, checks, priorFailure ?? (logoutFailed ? "logout" : null));
+  return verificationResult(row.role, checks, priorFailure ?? (logoutFailed ? logoutFailure : null));
 }
 
 async function verifyNegativeAuthenticationCases(input) {
@@ -1607,6 +1824,60 @@ async function verifyNegativeAuthenticationCases(input) {
   };
 }
 
+function createBoundedProductionFetch(fetchImpl, requestTimeoutMs) {
+  return async (url, request = {}) => {
+    const controller = new AbortController();
+    const response = await runWithProductionDeadline(
+      fetchImpl(url, { ...request, signal: controller.signal }),
+      requestTimeoutMs,
+      controller,
+    );
+    const json = typeof response?.json === "function" ? response.json.bind(response) : null;
+    if (!json) {
+      return response;
+    }
+    return new Proxy(response, {
+      get(target, property) {
+        if (property === "json") {
+          return () => runWithProductionDeadline(
+            Promise.resolve().then(() => json()),
+            requestTimeoutMs,
+            controller,
+          );
+        }
+        const value = Reflect.get(target, property, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+  };
+}
+
+async function runWithProductionDeadline(operation, requestTimeoutMs, controller) {
+  let timeoutId;
+  const deadline = new Promise((_resolve, reject) => {
+    timeoutId = setTimeout(() => {
+      reject(new AaisTestAccountRequestTimeoutError());
+      controller.abort();
+    }, requestTimeoutMs);
+  });
+  try {
+    return await Promise.race([operation, deadline]);
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+class AaisTestAccountRequestTimeoutError extends Error {
+  constructor() {
+    super("AAIS_TEST_ACCOUNT_REQUEST_TIMEOUT");
+    this.name = "AaisTestAccountRequestTimeoutError";
+  }
+}
+
+function isRequestTimeoutError(error) {
+  return error instanceof AaisTestAccountRequestTimeoutError;
+}
+
 function verificationResult(role, checks, failure) {
   const passed = Object.values(checks).every(Boolean) && !failure;
   return {
@@ -1694,7 +1965,10 @@ function splitSetCookieHeader(value) {
 async function readJson(response) {
   try {
     return await response.json();
-  } catch {
+  } catch (error) {
+    if (isRequestTimeoutError(error)) {
+      throw error;
+    }
     return null;
   }
 }
@@ -1734,6 +2008,16 @@ function requireProductionBaseUrl(value) {
     throw managerError("AAIS_TEST_ACCOUNT_BASE_URL_INVALID");
   }
   return AAIS_TEST_ACCOUNT_PRODUCTION_BASE_URL;
+}
+
+function requireRequestTimeoutMs(value) {
+  const timeoutMs = value === undefined
+    ? AAIS_TEST_ACCOUNT_REQUEST_TIMEOUT_MS
+    : Number(value);
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 60_000) {
+    throw managerError("AAIS_TEST_ACCOUNT_REQUEST_TIMEOUT_INVALID");
+  }
+  return timeoutMs;
 }
 
 function scanExactValues(contents, exactValues) {
@@ -1894,6 +2178,41 @@ function parseExactRemoteMainSha(output) {
   return sha;
 }
 
+function normalizeVercelDeploymentOrigin(value) {
+  const text = String(value ?? "").trim();
+  let url;
+  try {
+    url = new URL(text.includes("://") ? text : `https://${text}`);
+  } catch {
+    throw managerError("AAIS_TEST_ACCOUNT_PRODUCTION_DEPLOYMENT_INVALID");
+  }
+  if (
+    url.protocol !== "https:"
+    || url.port
+    || url.username
+    || url.password
+    || url.pathname !== "/"
+    || url.search
+    || url.hash
+    || !url.hostname.endsWith(".vercel.app")
+  ) {
+    throw managerError("AAIS_TEST_ACCOUNT_PRODUCTION_DEPLOYMENT_INVALID");
+  }
+  return url.origin;
+}
+
+function isPositiveInteger(value) {
+  return Number.isSafeInteger(Number(value)) && Number(value) > 0;
+}
+
+function isExactVercelBot(actor) {
+  return actor
+    && actor.login === vercelBotAccount.login
+    && actor.id === vercelBotAccount.id
+    && actor.node_id === vercelBotAccount.node_id
+    && actor.type === vercelBotAccount.type;
+}
+
 function requireGenerateOptions(options) {
   if (!options.outputPath || !options.batchId || !options.courseId || !options.cohort) {
     throw managerError("AAIS_TEST_ACCOUNT_GENERATE_ARGUMENTS_REQUIRED");
@@ -2009,7 +2328,18 @@ function isManagerError(error) {
 
 async function main() {
   try {
-    const result = await runAaisTestAccountManagerCli(process.argv.slice(2));
+    const argv = process.argv.slice(2);
+    if (
+      productionManagerCommands.has(argv[0])
+      && process.env[pinnedVercelCliVersionEnv] !== AAIS_TEST_ACCOUNT_VERCEL_CLI_VERSION
+    ) {
+      const wrapped = await runAaisTestAccountPinnedProductionCommand(argv);
+      process.stdout.write(wrapped.stdout);
+      process.stderr.write(wrapped.stderr);
+      process.exitCode = wrapped.exitCode;
+      return;
+    }
+    const result = await runAaisTestAccountManagerCli(argv);
     if (result.usage) {
       process.stdout.write(result.usage);
       return;

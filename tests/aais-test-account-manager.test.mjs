@@ -23,9 +23,11 @@ import {
   AAIS_TEST_ACCOUNT_PRODUCTION_BASE_URL,
   AAIS_TEST_ACCOUNT_PRODUCTION_PROJECT_ID,
   AAIS_TEST_ACCOUNT_REPORT_SCHEMA,
+  AAIS_TEST_ACCOUNT_REQUEST_TIMEOUT_MS,
   AAIS_TEST_ACCOUNT_STUDENT_COUNT,
   AAIS_TEST_ACCOUNT_TEACHER_COUNT,
   AAIS_TEST_ACCOUNT_VERCEL_CLI_VERSION,
+  attestAaisProductionDeployment,
   auditAaisTestAccountsInGit,
   collectAaisGitContents,
   createAaisTestAccountRows,
@@ -36,6 +38,7 @@ import {
   parseAaisTestAccountCsv,
   parseAaisTestAccountManagerArgs,
   provisionAaisTestAccountBatch,
+  runAaisTestAccountPinnedProductionCommand,
   serializeAaisTestAccountCsv,
   validateAaisTestAccountRows,
   verifyAaisTestAccountBatch,
@@ -436,6 +439,30 @@ describe("AAIS production test-account batch manager", () => {
     assertNoCredentialValues(failure, rows);
   });
 
+  it("reports a committed-but-unverified state when post-commit aggregation fails", async () => {
+    const rows = createRows();
+    const seedModule = makeSeedModule();
+
+    const failure = await provisionAaisTestAccountBatch({
+      ...productionInput(rows),
+      database: makeProvisionDatabase({ failPostCommitAggregate: true }),
+      seedModule,
+    }).then(() => null, (error) => error);
+
+    expect(failure).toMatchObject({
+      code: "AAIS_TEST_ACCOUNT_PROVISION_COMMITTED_UNVERIFIED",
+      details: {
+        committed: true,
+        transactionValidation: "passed",
+        postCommitVerification: "failed",
+        retryProvisioning: "forbidden",
+      },
+    });
+    expect(seedModule.writes).toBe(42);
+    expect(seedModule.rolledBack).toBe(0);
+    assertNoCredentialValues(failure, rows);
+  });
+
   it("rejects unbound local or remote production state before database or HTTP work", async () => {
     const rows = createRows();
     const database = makeProvisionDatabase();
@@ -447,6 +474,11 @@ describe("AAIS production test-account batch manager", () => {
       { liveOriginMainSha: "b".repeat(40) },
       { vercelEnv: "preview" },
       { vercelTargetEnv: "preview" },
+      { vercelCliVersion: "59.6.0" },
+      { deployedGitSha: "b".repeat(40) },
+      { vercelDeploymentReadyState: "ERROR" },
+      { vercelDeploymentTarget: "preview" },
+      { githubDeploymentState: "failure" },
       { researchModeEnabled: true },
       { researchRequiredEnabled: true },
       { researchEnvironmentIsResearch: true },
@@ -482,6 +514,7 @@ describe("AAIS production test-account batch manager", () => {
       command: "verify",
       deployment: { researchIsolation: "non-research" },
       concurrency: 2,
+      requestTimeoutMs: AAIS_TEST_ACCOUNT_REQUEST_TIMEOUT_MS,
       results: {
         expected: 42,
         attempted: 42,
@@ -518,6 +551,135 @@ describe("AAIS production test-account batch manager", () => {
     assertNoCredentialValues(report, rows);
     expect(JSON.stringify(report)).not.toContain("aais_session");
     expect(JSON.stringify(report)).not.toContain("aais_csrf");
+  });
+
+  it("bounds a stalled production request and logs out its known session", async () => {
+    const rows = createRows();
+    const fakeHttp = makeVerificationFetch(rows);
+    let stalled = false;
+    const fetchImpl = async (urlValue, request = {}) => {
+      const url = new URL(urlValue);
+      if (!stalled && url.pathname === "/learning") {
+        stalled = true;
+        return new Promise((_resolve, reject) => {
+          const fallback = setTimeout(() => reject(new Error("unbounded synthetic request")), 100);
+          request.signal?.addEventListener("abort", () => {
+            clearTimeout(fallback);
+            reject(new Error("synthetic abort"));
+          }, { once: true });
+        });
+      }
+      return fakeHttp.fetchImpl(urlValue, request);
+    };
+
+    const report = await verifyAaisTestAccountBatch({
+      ...productionInput(rows),
+      baseUrl: AAIS_TEST_ACCOUNT_PRODUCTION_BASE_URL,
+      fetchImpl,
+      requestTimeoutMs: 10,
+    });
+
+    expect(report).toMatchObject({
+      status: "failed",
+      requestTimeoutMs: 10,
+      results: {
+        attempted: 42,
+        passed: 41,
+        failed: 1,
+        checks: {
+          learningAllowed: { expected: 42, passed: 41, failed: 1 },
+          logout: { expected: 42, passed: 42, failed: 0 },
+        },
+        failures: { "learning-page-timeout": 1 },
+      },
+    });
+    expect(fakeHttp.logoutCount).toBe(42);
+    expect(fakeHttp.activeSessionCount).toBe(0);
+    assertNoCredentialValues(report, rows);
+  });
+
+  it("bounds a stalled login response body after capturing cookies for cleanup", async () => {
+    const rows = createRows();
+    const fakeHttp = makeVerificationFetch(rows);
+    let stalled = false;
+    const fetchImpl = async (urlValue, request = {}) => {
+      const response = await fakeHttp.fetchImpl(urlValue, request);
+      const url = new URL(urlValue);
+      if (
+        !stalled
+        && url.pathname === "/api/auth/app-session"
+        && request.method === "POST"
+        && response.status === 200
+      ) {
+        stalled = true;
+        return {
+          ...response,
+          json: () => new Promise((_resolve, reject) => {
+            const fallback = setTimeout(() => reject(new Error("unbounded synthetic body")), 100);
+            request.signal?.addEventListener("abort", () => {
+              clearTimeout(fallback);
+              reject(new Error("synthetic body abort"));
+            }, { once: true });
+          }),
+        };
+      }
+      return response;
+    };
+
+    const report = await verifyAaisTestAccountBatch({
+      ...productionInput(rows),
+      baseUrl: AAIS_TEST_ACCOUNT_PRODUCTION_BASE_URL,
+      fetchImpl,
+      requestTimeoutMs: 10,
+    });
+
+    expect(report).toMatchObject({
+      status: "failed",
+      results: {
+        attempted: 42,
+        passed: 41,
+        failed: 1,
+        checks: {
+          login: { expected: 42, passed: 41, failed: 1 },
+          logout: { expected: 42, passed: 42, failed: 0 },
+        },
+        failures: { "login-timeout": 1 },
+      },
+    });
+    expect(fakeHttp.logoutCount).toBe(42);
+    expect(fakeHttp.activeSessionCount).toBe(0);
+    assertNoCredentialValues(report, rows);
+  });
+
+  it("binds the canonical alias to one READY Vercel and successful GitHub deployment", () => {
+    const evidence = productionDeploymentEvidence();
+
+    expect(attestAaisProductionDeployment({
+      expectedSha,
+      ...evidence,
+    })).toEqual({
+      deployedGitSha: expectedSha,
+      vercelDeploymentId: "dpl_AaisProduction1",
+      vercelDeploymentUrl: "aais-production.example-team.vercel.app",
+      vercelDeploymentReadyState: "READY",
+      vercelDeploymentTarget: "production",
+      githubDeploymentId: 12345,
+      githubDeploymentStatusId: 67890,
+      githubDeploymentState: "success",
+    });
+
+    expect(() => attestAaisProductionDeployment({
+      expectedSha,
+      ...productionDeploymentEvidence({ deploymentSha: "b".repeat(40) }),
+    })).toThrow(expect.objectContaining({
+      code: "AAIS_TEST_ACCOUNT_PRODUCTION_DEPLOYMENT_INVALID",
+    }));
+    expect(() => attestAaisProductionDeployment({
+      expectedSha,
+      ...productionDeploymentEvidence({ inspectedUrl: "older-build.example-team.vercel.app" }),
+    })).toThrow(expect.objectContaining({
+      code: "AAIS_TEST_ACCOUNT_PRODUCTION_DEPLOYMENT_INVALID",
+    }));
   });
 
   it("immediately revokes an unexpected negative-auth session and reports counts only", async () => {
@@ -789,9 +951,8 @@ describe("AAIS production test-account batch manager", () => {
     expect(usage).toContain(`--batch-id ${AAIS_TEST_ACCOUNT_BATCH_ID}`);
     expect(usage).toContain(`--course-id ${AAIS_TEST_ACCOUNT_COURSE_ID}`);
     expect(usage).toContain(`--cohort ${AAIS_TEST_ACCOUNT_COHORT}`);
-    expect(usage).toContain(
-      `npx --yes vercel@${AAIS_TEST_ACCOUNT_VERCEL_CLI_VERSION} env run -e production --`,
-    );
+    expect(usage).toContain("npm run accounts:test-batch -- provision");
+    expect(usage).toContain(`pinned Vercel CLI ${AAIS_TEST_ACCOUNT_VERCEL_CLI_VERSION}`);
     expect(usage).toContain(AAIS_TEST_ACCOUNT_PRODUCTION_PROJECT_ID);
     expect(usage).toContain(AAIS_TEST_ACCOUNT_PRODUCTION_BASE_URL);
     expect(parseAaisTestAccountManagerArgs(["--help"])).toEqual({ command: "help" });
@@ -809,6 +970,56 @@ describe("AAIS production test-account batch manager", () => {
       "--target",
       "production",
     ])).toThrow(expect.objectContaining({ code: "AAIS_TEST_ACCOUNT_ARGUMENT_NOT_ALLOWED" }));
+  });
+
+  it("uses the pinned Vercel CLI wrapper for every production command", async () => {
+    const calls = [];
+    const result = await runAaisTestAccountPinnedProductionCommand([
+      "verify",
+      "--expected-sha",
+      expectedSha,
+    ], {
+      cwd: "/synthetic/aais",
+      env: { SYNTHETIC_PARENT: "present" },
+      execFileImpl: async (file, args, options) => {
+        calls.push({ file, args, options });
+        return calls.length === 1
+          ? { stdout: `${AAIS_TEST_ACCOUNT_VERCEL_CLI_VERSION}\n`, stderr: "" }
+          : { stdout: "synthetic aggregate\n", stderr: "", exitCode: 0 };
+      },
+    });
+
+    expect(calls).toHaveLength(2);
+    expect(calls[0]).toMatchObject({
+      file: "npx",
+      args: ["--yes", `vercel@${AAIS_TEST_ACCOUNT_VERCEL_CLI_VERSION}`, "--version"],
+    });
+    expect(calls[1].file).toBe("npx");
+    expect(calls[1].args.slice(0, 7)).toEqual([
+      "--yes",
+      `vercel@${AAIS_TEST_ACCOUNT_VERCEL_CLI_VERSION}`,
+      "env",
+      "run",
+      "-e",
+      "production",
+      "--",
+    ]);
+    expect(calls[1].args.slice(-3)).toEqual(["verify", "--expected-sha", expectedSha]);
+    expect(calls[1].options.env).toMatchObject({
+      SYNTHETIC_PARENT: "present",
+      AAIS_TEST_ACCOUNT_PINNED_VERCEL_CLI_VERSION: AAIS_TEST_ACCOUNT_VERCEL_CLI_VERSION,
+    });
+    expect(result).toEqual({
+      exitCode: 0,
+      stdout: "synthetic aggregate\n",
+      stderr: "",
+    });
+
+    await expect(runAaisTestAccountPinnedProductionCommand(["provision"], {
+      execFileImpl: async () => ({ stdout: "59.6.0\n", stderr: "" }),
+    })).rejects.toMatchObject({
+      code: "AAIS_TEST_ACCOUNT_VERCEL_CLI_ATTESTATION_FAILED",
+    });
   });
 });
 
@@ -848,6 +1059,15 @@ function productionAttestation() {
     projectName: "aais",
     vercelEnv: "production",
     vercelTargetEnv: "production",
+    vercelCliVersion: AAIS_TEST_ACCOUNT_VERCEL_CLI_VERSION,
+    deployedGitSha: expectedSha,
+    vercelDeploymentId: "dpl_AaisProduction1",
+    vercelDeploymentUrl: "aais-production.example-team.vercel.app",
+    vercelDeploymentReadyState: "READY",
+    vercelDeploymentTarget: "production",
+    githubDeploymentId: 12345,
+    githubDeploymentStatusId: 67890,
+    githubDeploymentState: "success",
     researchModeEnabled: false,
     researchRequiredEnabled: false,
     researchEnvironmentIsResearch: false,
@@ -914,6 +1134,7 @@ function makeSeedModule(capabilityChanges = {}) {
 }
 
 function makeProvisionDatabase(options = {}) {
+  let aggregateReads = 0;
   return {
     queries: [],
     async query(sql, params = []) {
@@ -940,6 +1161,10 @@ function makeProvisionDatabase(options = {}) {
         return { rows: [{ id: AAIS_TEST_ACCOUNT_COURSE_ID, status: "active" }] };
       }
       if (sql.includes("provision-users-aggregate")) {
+        aggregateReads += 1;
+        if (options.failPostCommitAggregate && aggregateReads > 2) {
+          throw new Error("synthetic post-commit database failure");
+        }
         return {
           rows: [
             { role: "student", status: "active", count: options.studentCount ?? 40 },
@@ -948,6 +1173,10 @@ function makeProvisionDatabase(options = {}) {
         };
       }
       if (sql.includes("provision-enrollments-aggregate")) {
+        aggregateReads += 1;
+        if (options.failPostCommitAggregate && aggregateReads > 2) {
+          throw new Error("synthetic post-commit database failure");
+        }
         return {
           rows: [
             { role: "student", status: "active", count: 40 },
@@ -956,6 +1185,45 @@ function makeProvisionDatabase(options = {}) {
         };
       }
       throw new Error("Unexpected synthetic provision query");
+    },
+  };
+}
+
+function productionDeploymentEvidence(changes = {}) {
+  const deploymentUrl = "aais-production.example-team.vercel.app";
+  const inspectedUrl = changes.inspectedUrl ?? deploymentUrl;
+  const deploymentSha = changes.deploymentSha ?? expectedSha;
+  const actor = {
+    login: "vercel[bot]",
+    id: 35613825,
+    node_id: "MDM6Qm90MzU2MTM4MjU=",
+    type: "Bot",
+  };
+  return {
+    vercelInspect: {
+      id: "dpl_AaisProduction1",
+      name: "aais",
+      url: inspectedUrl,
+      readyState: "READY",
+      target: "production",
+      aliases: ["aais.site", "www.aais.site", "aais-six.vercel.app"],
+    },
+    githubDeployments: [{
+      id: 12345,
+      sha: deploymentSha,
+      ref: deploymentSha,
+      task: "deploy",
+      environment: "Production",
+      creator: actor,
+    }],
+    githubStatusesByDeploymentId: {
+      12345: [{
+        id: 67890,
+        state: "success",
+        target_url: `https://${deploymentUrl}`,
+        environment_url: `https://${deploymentUrl}`,
+        creator: actor,
+      }],
     },
   };
 }
