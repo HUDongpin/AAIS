@@ -34,6 +34,7 @@ import {
   createAaisTestUserId,
   disableAaisTestAccountBatch,
   generateAaisTestAccountBatch,
+  getAaisTestAccountDatabasePoolConfig,
   getAaisTestAccountManagerUsage,
   parseAaisTestAccountCsv,
   parseAaisTestAccountManagerArgs,
@@ -1019,6 +1020,16 @@ describe("AAIS production test-account batch manager", () => {
       execFileImpl: async () => ({ stdout: "59.6.0\n", stderr: "" }),
     })).rejects.toMatchObject({
       code: "AAIS_TEST_ACCOUNT_VERCEL_CLI_ATTESTATION_FAILED",
+    });
+  });
+
+  it("applies the standard bounded Postgres pool settings to Production operations", () => {
+    expect(getAaisTestAccountDatabasePoolConfig("postgres://synthetic.example/aais")).toEqual({
+      connectionString: "postgres://synthetic.example/aais",
+      connectionTimeoutMillis: 5_000,
+      statement_timeout: 30_000,
+      query_timeout: 35_000,
+      idle_in_transaction_session_timeout: 30_000,
     });
   });
 });

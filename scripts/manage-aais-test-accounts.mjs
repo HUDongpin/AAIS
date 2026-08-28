@@ -67,6 +67,16 @@ export class AaisTestAccountManagerError extends Error {
   }
 }
 
+export function getAaisTestAccountDatabasePoolConfig(connectionString) {
+  return {
+    connectionString,
+    connectionTimeoutMillis: 5_000,
+    statement_timeout: 30_000,
+    query_timeout: 35_000,
+    idle_in_transaction_session_timeout: 30_000,
+  };
+}
+
 export function createAaisTestAccountRows(input) {
   const batchId = requireBatchId(input?.batchId);
   const courseId = requireCourseId(input?.courseId);
@@ -2289,7 +2299,7 @@ async function withAaisDatabaseClient(callback) {
   if (!configuration) {
     throw managerError("AAIS_TEST_ACCOUNT_DATABASE_NOT_CONFIGURED");
   }
-  const pool = new Pool({ connectionString: configuration.url });
+  const pool = new Pool(getAaisTestAccountDatabasePoolConfig(configuration.url));
   let client;
   try {
     client = await pool.connect();
