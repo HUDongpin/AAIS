@@ -291,6 +291,10 @@ vi.mock("pg", () => ({
               && databaseProbeMode !== "missing_admin_invariant",
             user_auth_tokens_table: databaseProbeMode === "missing_schema" ? null : "aais_user_auth_tokens",
             session_revocations_table: databaseProbeMode === "missing_schema" ? null : "aais_session_revocations",
+            runtime_leases_table: databaseProbeMode === "missing_schema" ? null : "aais_runtime_leases",
+            runtime_leases_columns: databaseProbeMode !== "missing_schema",
+            runtime_identity_table: databaseProbeMode === "missing_schema" ? null : "aais_runtime_identity",
+            runtime_identity_columns: databaseProbeMode !== "missing_schema",
             courses_table: databaseProbeMode === "missing_schema" ? null : "aais_courses",
             course_tasks_table: databaseProbeMode === "missing_schema" ? null : "aais_course_tasks",
             enrollments_table: databaseProbeMode === "missing_schema" ? null : "aais_enrollments",
@@ -407,6 +411,7 @@ const enterpriseEnv = [
   "QWEN_API_KEY",
   "QWEN_MODEL",
   "AAIS_RELEASE_ID",
+  "AAIS_DEPLOYMENT_PROVIDER",
   "AAIS_DEPLOYMENT_GIT_COMMIT_SHA",
   "AAIS_READINESS_MODE",
   "AAIS_READINESS_BEARER_TOKEN",
@@ -577,6 +582,9 @@ beforeEach(async () => {
   vi.stubEnv("AAIS_APP_BASE_URL", "https://aais.example.test");
   vi.stubEnv("RESEND_API_KEY", "re_1234567890abcdefghijklmnopqrstuvwxyzABCD");
   vi.stubEnv("AAIS_AUTH_EMAIL_FROM", "AAIS <no-reply@example.test>");
+  vi.stubEnv("AAIS_DEPLOYMENT_PROVIDER", "vercel");
+  vi.stubEnv("AAIS_RELEASE_ID", "0123456789abcdef0123456789abcdef01234567");
+  vi.stubEnv("AAIS_DEPLOYMENT_GIT_COMMIT_SHA", "0123456789abcdef0123456789abcdef01234567");
   vi.stubEnv(
     "AAIS_AUTH_EMAIL_OUTBOX_FLUSH_TOKEN",
     "auth-email-outbox-token-with-at-least-32-characters",
@@ -2005,7 +2013,7 @@ describe("AAIS readiness route", () => {
     expect(JSON.stringify(body)).not.toContain("database-secret");
   });
 
-  it("fails closed when the scheduled auth-email worker secret is missing in traffic mode", async () => {
+  it("accepts the dedicated auth-email worker token without requiring Vercel Cron", async () => {
     vi.stubEnv("AAIS_SESSION_SECRET", "session-secret-that-must-not-leak");
     vi.stubEnv("AAIS_TRIAL_ACCOUNTS_JSON", trialAccountConfig);
     vi.stubEnv("DATABASE_URL", "postgres://aais:database-secret@ep-prod.us-east-1.aws.neon.tech/aais");
@@ -2015,9 +2023,9 @@ describe("AAIS readiness route", () => {
     const response = await GET(createAuthorizedReadinessRequest());
     const body = await response.json();
 
-    expect(response.status).toBe(503);
+    expect(response.status).toBe(200);
     expect(body).toMatchObject({
-      status: "not_ready",
+      status: "ready",
       readinessMode: "traffic",
       checks: {
         monitoring: {
@@ -2041,15 +2049,13 @@ describe("AAIS readiness route", () => {
           },
         },
         authDelivery: {
-          status: "invalid",
-          operatorAuthorized: false,
+          status: "ok",
+          operatorAuthorized: true,
           schema: "current",
         },
       },
     });
-    expect(body.issues).toEqual(expect.arrayContaining([
-      "AAIS_AUTH_EMAIL_OUTBOX_OPERATOR_SECRET",
-    ]));
+    expect(body.issues).not.toContain("AAIS_AUTH_EMAIL_OUTBOX_OPERATOR_SECRET");
     expect(body.warnings).toEqual(
       expect.arrayContaining([
         "LRS_ENDPOINT/LRS_USERNAME/LRS_PASSWORD",

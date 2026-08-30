@@ -203,6 +203,7 @@ describe("AAIS authentication email outbox", () => {
     });
     database.seed(message);
     const idempotencyKeys: string[] = [];
+    const beforeDispatch = vi.fn(async () => undefined);
     const fetchMock = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
       idempotencyKeys.push(String((init?.headers as Record<string, string>)["idempotency-key"]));
       if (idempotencyKeys.length === 1) {
@@ -216,17 +217,20 @@ describe("AAIS authentication email outbox", () => {
       env: configuredEnv,
       fetchImpl: fetchMock as typeof fetch,
       now: () => new Date("2026-08-20T00:00:00.000Z"),
+      beforeDispatch,
     });
     const second = await flushAaisAuthEmailOutbox({
       database,
       env: configuredEnv,
       fetchImpl: fetchMock as typeof fetch,
       now: () => new Date("2026-08-20T00:10:00.000Z"),
+      beforeDispatch,
     });
 
     expect(first).toMatchObject({ retry: 1, sent: 0 });
     expect(second).toMatchObject({ retry: 0, sent: 1 });
     expect(idempotencyKeys).toEqual([message.idempotencyKey, message.idempotencyKey]);
+    expect(beforeDispatch).toHaveBeenCalledTimes(2);
     expect(database.rows.get(message.id)).toMatchObject({
       status: "sent",
       attempt_count: 2,
@@ -262,6 +266,33 @@ describe("AAIS authentication email outbox", () => {
     expect(report).toMatchObject({ sent: 0, retry: 0, deadLetter: 1 });
     expect(database.rows.get(message.id)?.status).toBe("dead");
     expect(database.tokens.get(message.authTokenId)?.deliveryState).toBe("idle");
+  });
+
+  it("does not call Resend after the runtime leadership fence is lost", async () => {
+    const database = new FakeAuthEmailOutboxDatabase();
+    const message = createAaisAuthEmailOutboxMessage({
+      configuration: requireAaisAuthDeliveryConfiguration(configuredEnv),
+      id: "10000000-0000-4000-8000-000000000008",
+      purpose: "invite",
+      authTokenId: inviteTokenId,
+      authTokenHash: tokenHash,
+      recipient: "teacher@example.test",
+      subject: "AAIS account invitation",
+      text: "fenced delivery body",
+    });
+    database.seed(message);
+    const fetchMock = vi.fn<typeof fetch>();
+
+    await expect(flushAaisAuthEmailOutbox({
+      database,
+      env: configuredEnv,
+      fetchImpl: fetchMock,
+      beforeDispatch: async () => {
+        throw new Error("leadership lost");
+      },
+      now: () => new Date("2026-08-20T00:00:00.000Z"),
+    })).rejects.toThrow("leadership lost");
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("retries concurrent idempotent requests with the same stable key", async () => {

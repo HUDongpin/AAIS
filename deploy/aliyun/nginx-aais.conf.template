@@ -1,0 +1,83 @@
+log_format aais_redacted escape=json
+    'time=$time_iso8601 request_id=$request_id host=$host '
+    'method=$request_method uri=$uri status=$status bytes=$body_bytes_sent '
+    'request_time=$request_time upstream_time=$upstream_response_time';
+
+upstream aais_app {
+    include /opt/aais/nginx/upstream-active.conf;
+    keepalive 16;
+}
+
+server {
+    listen 80;
+    listen [::]:80;
+    server_name aais.site www.aais.site origin-hk.aais.site;
+    access_log /www/wwwlogs/aais.site.access.log aais_redacted;
+    error_log /dev/null crit;
+    return 308 https://www.aais.site$request_uri;
+}
+
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    server_name aais.site;
+    access_log /www/wwwlogs/aais.site.access.log aais_redacted;
+    error_log /dev/null crit;
+
+    ssl_certificate /etc/aais/tls/fullchain.pem;
+    ssl_certificate_key /etc/aais/tls/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    return 308 https://www.aais.site$request_uri;
+}
+
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    server_name www.aais.site origin-hk.aais.site;
+    access_log /www/wwwlogs/aais.site.access.log aais_redacted;
+    error_log /dev/null crit;
+
+    ssl_certificate /etc/aais/tls/fullchain.pem;
+    ssl_certificate_key /etc/aais/tls/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    client_max_body_size 20m;
+    error_page 503 @aais_maintenance;
+
+    # The root-owned flag is checked for every request, so a database migration
+    # write freeze does not depend on rebuilding or restarting the container.
+    if (-f /opt/aais/state/maintenance.enabled) {
+        return 503;
+    }
+
+    location @aais_maintenance {
+        add_header Cache-Control "no-store" always;
+        add_header Retry-After "300" always;
+        default_type text/html;
+        return 503 '<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="robots" content="noindex"><title>AAIS maintenance</title><body><main><h1>AAIS 正在进行维护</h1><p>写入已安全暂停，请稍后重试。</p></main></body></html>';
+    }
+
+    location /api/learning/ai-guide {
+        proxy_http_version 1.1;
+        proxy_buffering off;
+        proxy_cache off;
+        proxy_read_timeout 300s;
+        proxy_send_timeout 300s;
+        proxy_set_header Connection "";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_pass http://aais_app;
+    }
+
+    location / {
+        proxy_http_version 1.1;
+        proxy_buffering on;
+        proxy_read_timeout 120s;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_pass http://aais_app;
+    }
+}

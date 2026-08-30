@@ -40,6 +40,10 @@ import {
   createAaisNeonQueryClient,
   createAaisPostgresPool,
 } from "@/lib/server/aais-postgres-pool";
+import {
+  getAaisReleaseMetadata,
+  type AaisReleaseMetadata,
+} from "@/lib/server/aais-deployment-metadata";
 
 type AaisReadinessCheckStatus = "ok" | "missing" | "blocked" | "invalid" | "disabled";
 
@@ -72,18 +76,7 @@ export type AaisReadinessReport = {
   runtime: "production" | "development";
   readinessMode: "traffic" | "enterprise";
   checkedAt: string;
-  release: {
-    id: string | null;
-    source: "AAIS_RELEASE_ID" | "missing";
-    deployment: {
-      provider: "vercel" | "unknown";
-      gitCommit: {
-        present: boolean;
-        shortSha: string | null;
-        source: "VERCEL_GIT_COMMIT_SHA" | "AAIS_DEPLOYMENT_GIT_COMMIT_SHA" | "missing";
-      };
-    };
-  };
+  release: AaisReleaseMetadata;
   checks: {
     session: AaisReadinessCheck;
     productPseudonym: AaisReadinessCheck & {
@@ -344,6 +337,13 @@ export async function getAaisReadinessReport(now = new Date()): Promise<AaisRead
   const persistentOutboxHealthy = persistentOutbox.available
     && persistentOutbox.deadLetter === 0;
   const researchIsolationRequired = requiresAaisResearchDataPlaneIsolation();
+
+  if (production && release.deployment.provider === "unknown") {
+    issues.push("AAIS_DEPLOYMENT_PROVIDER");
+  }
+  if (production && (!release.id || !release.deployment.gitCommit.present)) {
+    issues.push("AAIS_RELEASE_METADATA");
+  }
 
   if (production && !sessionSecret.valid) {
     issues.push("AAIS_SESSION_SECRET");
@@ -1616,14 +1616,18 @@ function getAaisProductOperatorSecretStatus() {
     readinessToken,
     sessionSecret,
   ]);
+  const cronSecretValid = isAaisStrongOpaqueSecret(cronSecret);
+  const lrsWorkerAuthorized = cronSecretValid || isAaisStrongOpaqueSecret(outboxToken);
+  const authEmailWorkerAuthorized = cronSecretValid
+    || isAaisStrongOpaqueSecret(authEmailOutboxToken);
   return {
-    cronSecretValid: isAaisStrongOpaqueSecret(cronSecret),
+    cronSecretValid,
     outboxTokenValid: !outboxToken || isAaisStrongOpaqueSecret(outboxToken),
     authEmailOutboxTokenValid: !authEmailOutboxToken
       || isAaisStrongOpaqueSecret(authEmailOutboxToken),
-    // Vercel Cron injects only CRON_SECRET. A dedicated token remains useful
-    // for manual/private workers, but cannot make the deployed schedule ready.
-    authEmailWorkerAuthorized: isAaisStrongOpaqueSecret(cronSecret) && distinct,
+    lrsWorkerAuthorized: lrsWorkerAuthorized && distinct,
+    authEmailWorkerAuthorized: authEmailWorkerAuthorized && distinct,
+    schedulerAuthorized: lrsWorkerAuthorized && authEmailWorkerAuthorized && distinct,
     readinessTokenValid: !readinessToken || isAaisStrongOpaqueSecret(readinessToken),
     distinct,
   };
@@ -1653,7 +1657,7 @@ function getAaisMonitoringConfigurationStatus(
     },
     cron: {
       scheduleConfigured: true,
-      secretConfigured: operatorSecrets.cronSecretValid && operatorSecrets.distinct,
+      secretConfigured: operatorSecrets.schedulerAuthorized,
       alertsConfigured: process.env.AAIS_CRON_FAILURE_ALERTS_CONFIGURED === "true",
     },
   } as const;
@@ -1737,39 +1741,6 @@ function getOidcStatus(input: {
     return "blocked";
   }
   return "ok";
-}
-
-function getAaisReleaseMetadata(): AaisReadinessReport["release"] {
-  const releaseId = readSafeReleaseId(process.env.AAIS_RELEASE_ID);
-  const vercelGitCommitShortSha = readSafeGitCommitShortSha(process.env.VERCEL_GIT_COMMIT_SHA);
-  const explicitGitCommitShortSha = readSafeGitCommitShortSha(process.env.AAIS_DEPLOYMENT_GIT_COMMIT_SHA);
-  const gitCommitShortSha = vercelGitCommitShortSha ?? explicitGitCommitShortSha;
-  return {
-    id: releaseId,
-    source: releaseId ? "AAIS_RELEASE_ID" : "missing",
-    deployment: {
-      provider: process.env.VERCEL ? "vercel" : "unknown",
-      gitCommit: {
-        present: Boolean(gitCommitShortSha),
-        shortSha: gitCommitShortSha,
-        source: vercelGitCommitShortSha
-          ? "VERCEL_GIT_COMMIT_SHA"
-          : explicitGitCommitShortSha
-            ? "AAIS_DEPLOYMENT_GIT_COMMIT_SHA"
-            : "missing",
-      },
-    },
-  };
-}
-
-function readSafeReleaseId(value: string | undefined) {
-  const trimmed = String(value ?? "").trim();
-  return /^[A-Za-z0-9][A-Za-z0-9._:-]{2,127}$/.test(trimmed) ? trimmed : null;
-}
-
-function readSafeGitCommitShortSha(value: string | undefined) {
-  const trimmed = String(value ?? "").trim().toLowerCase();
-  return /^[a-f0-9]{7,40}$/.test(trimmed) ? trimmed.slice(0, 12) : null;
 }
 
 async function readPersistentOutboxStatus() {

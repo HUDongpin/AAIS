@@ -13,7 +13,7 @@ import { isAaisStrongOpaqueSecret } from "@/lib/server/aais-opaque-secret";
 import { readAaisBoundedResponseJson } from "@/lib/server/aais-bounded-response";
 import {
   createAaisNeonQueryClient,
-  createAaisPostgresPool,
+  getAaisSharedPostgresPool,
 } from "@/lib/server/aais-postgres-pool";
 
 export type AaisAuthDeliveryConfigurationStatus = {
@@ -124,6 +124,7 @@ type FlushInput = {
   timeoutMs?: number;
   maxAttempts?: number;
   runtimeBudgetMs?: number;
+  beforeDispatch?: () => Promise<void>;
 };
 
 const authEmailKeySalt = Buffer.from("aais-auth-email-outbox:key-derivation:v1", "utf8");
@@ -632,6 +633,20 @@ export async function flushAaisAuthEmailOutbox(
         releasedAt: dispatchAt,
       });
       break;
+    }
+
+    if (input.beforeDispatch) {
+      try {
+        await input.beforeDispatch();
+      } catch (error) {
+        await releaseUnstartedAuthEmailRowsAndUpdateReport(database, {
+          claimId,
+          rawRows: claimResult.rows.slice(rowIndex),
+          report,
+          releasedAt: dispatchAt,
+        });
+        throw error;
+      }
     }
 
     const delivery = await deliverAuthEmail({
@@ -1689,9 +1704,6 @@ function getConfiguredAuthEmailOutboxDatabase(
     return null;
   }
   if (!cachedOutboxDatabase || cachedOutboxDatabase.url !== configuration.url) {
-    if (cachedOutboxDatabase?.client.end) {
-      void cachedOutboxDatabase.client.end().catch(() => undefined);
-    }
     cachedOutboxDatabase = {
       url: configuration.url,
       client: createAuthEmailOutboxDatabase(configuration.url, env),
@@ -1707,7 +1719,7 @@ function createAuthEmailOutboxDatabase(
   if (shouldUseNeonServerlessDriver(databaseUrl, env)) {
     return createAaisNeonQueryClient(databaseUrl);
   }
-  return createAaisPostgresPool(databaseUrl) as AaisDatabaseClient;
+  return getAaisSharedPostgresPool(databaseUrl, env) as AaisDatabaseClient;
 }
 
 function shouldUseNeonServerlessDriver(

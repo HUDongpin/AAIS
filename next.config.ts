@@ -3,6 +3,8 @@ import { withSentryConfig } from "@sentry/nextjs";
 export { createAaisContentSecurityPolicy } from "./src/lib/server/aais-csp";
 
 const nextConfig: NextConfig = {
+  output: "standalone",
+  deploymentId: readAaisBuildDeploymentId(),
   // Preserve the project-owned agents.md instead of letting Next dev rewrite it.
   agentRules: false,
   turbopack: {
@@ -57,6 +59,17 @@ const nextConfig: NextConfig = {
     ];
   },
 };
+
+function readAaisBuildDeploymentId() {
+  const candidate = [
+    process.env.AAIS_DEPLOYMENT_GIT_COMMIT_SHA,
+    process.env.VERCEL_GIT_COMMIT_SHA,
+    process.env.NEXT_DEPLOYMENT_ID,
+  ]
+    .map((value) => value?.trim().toLowerCase() ?? "")
+    .find((value) => /^[a-f0-9]{40}$/.test(value));
+  return candidate || undefined;
+}
 
 const sentryBuildConfigured = Boolean(
   process.env.SENTRY_AUTH_TOKEN && process.env.SENTRY_ORG && process.env.SENTRY_PROJECT,

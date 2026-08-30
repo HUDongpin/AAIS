@@ -5,10 +5,7 @@ import {
   runAaisLearningGuideGraph,
   type AaisGuideInput,
 } from "@/lib/ai/orchestration/aais-learning-guide-graph";
-import {
-  studentRuntimeMaxRetries,
-  studentRuntimeMaxTimeoutMs,
-} from "@/lib/ai/aais-ai-runtime-config";
+import { guideRouteTotalDeadlineMs } from "@/lib/server/aais-guide-route-deadlines";
 import {
   AaisLearnerDataGenerationConflictError,
   getAaisLearningStore,
@@ -101,20 +98,6 @@ const maxGuideTargetAgents = 1;
 const maxGuideRequestBodyBytes = 16 * 1024 * 1024;
 const maxGuideConversationHistoryMessages = 12;
 const maxGuideConversationHistoryCharacters = 16_000;
-// Exactly one learner-visible agent runs per request and may traverse the
-// primary and fallback providers serially, so the route needs one complete
-// two-provider retry chain.
-const maxGuideLiveProviderCandidates = 2;
-const guideRouteFinalizeGuardMs = 10_000;
-export const guideProviderMaximumRetryBudgetMs = studentRuntimeMaxTimeoutMs
-  * (studentRuntimeMaxRetries + 1)
-  * maxGuideLiveProviderCandidates;
-export const guideRouteMaximumDeadlineMs = 250_000;
-export const guideRouteTotalDeadlineMs = Math.min(
-  guideRouteMaximumDeadlineMs,
-  guideProviderMaximumRetryBudgetMs + guideRouteFinalizeGuardMs,
-);
-
 export async function POST(request: Request) {
   let guideRunDeadline: AaisGuideRunDeadline | null = createGuideRunDeadline(request.signal);
   try {

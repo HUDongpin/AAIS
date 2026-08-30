@@ -34,6 +34,15 @@ npm run verify:postgres-restore -- --env-file ./.env.postgres-restore.local --ou
 
 ## Deploy
 
+The target provider shape is Aliyun Hong Kong primary plus a zero-extra-cost
+Vercel cold application backup. Vercel Static IPs are deliberately not enabled,
+so Vercel has no RDS or product-worker authority after migration. Provider
+bootstrap, exact-digest deployment, RDS rehearsal/cutover, DNS,
+rollback, capacity, and failure-drill procedures are frozen in
+[docs/aliyun-primary-runbook.md](./docs/aliyun-primary-runbook.md). Compute and
+database cutovers are separate windows; production DNS must not change during
+the database restore window.
+
 The intended release path is Git-based:
 
 1. Merge a reviewed PR to `main`.
@@ -41,7 +50,23 @@ The intended release path is Git-based:
 3. Confirm the deployment is ready in Vercel.
 4. Run the deployed smoke check against staging first, then production when appropriate.
 
-Do not run `vercel deploy --prod` from a laptop. `vercel.json` runs `scripts/guard-vercel-production-deploy.mjs` before production builds; the guard requires `VERCEL_ENV=production` builds to carry Vercel Git metadata for the `main` branch. Provider-side Vercel project permissions and token cleanup still need to be enforced outside the repo.
+Do not run `vercel deploy --prod` from a laptop. `vercel.json` runs
+`scripts/guard-vercel-production-deploy.mjs` before production builds; the
+guard requires `VERCEL_ENV=production` builds to carry Vercel Git metadata for
+the `main` branch. The portability commit retains the existing Vercel product
+Cron schedules so its lease-aware runtime can reach both providers first. The
+guard requires `AAIS_RUNTIME_LEASE_SCHEMA_CONFIRMED=true` after migrations
+0028/0029 and the bound target identity are verified, before that first
+lease-aware production build. A separate transition commit removes the
+schedules only after the Aliyun candidate and disabled timer units are ready;
+the guard rejects either schedule being absent until
+`AAIS_ALIYUN_PRIMARY_SCHEDULERS_CONFIRMED=true`; after that flag is true, the
+guard rejects either schedule being restored. The Aliyun timers remain
+disabled until the new Vercel deployment is confirmed to have no product cron
+schedules; only then may the Aliyun timers be enabled. Before the later RDS
+dump, revoke the distinct Vercel source-database role at the database so old
+immutable deployments cannot write the stale source. Provider-side Vercel
+permissions and token cleanup still need to be enforced outside the repo.
 
 ```bash
 AAIS_SMOKE_BASE_URL=https://www.aais.site \
@@ -395,7 +420,7 @@ Required deployment configuration:
 - `AAIS_RESEARCH_LRS_OUTBOX_FLUSH_TOKEN` for the research-only delivery/deletion worker. Do not reuse product or MAIS operations tokens.
 - `AAIS_RESEARCH_EXPORT_ACTOR_IDS` for the signed per-event export grant. A generic `researcher` role without this allowlist is denied.
 - `AAIS_RESEARCH_RETENTION_TOKEN` for the scheduled research-retention worker. Do not reuse the LRS flush token or any browser session.
-- Three distinct external POST scheduler ids: `AAIS_RESEARCH_LRS_EVENT_FLUSH_SCHEDULE_ID`, `AAIS_RESEARCH_LRS_DELETION_SCHEDULE_ID`, and `AAIS_RESEARCH_RETENTION_SCHEDULE_ID`. The existing product Vercel GET cron is not a research scheduler.
+- Three distinct external POST scheduler ids: `AAIS_RESEARCH_LRS_EVENT_FLUSH_SCHEDULE_ID`, `AAIS_RESEARCH_LRS_DELETION_SCHEDULE_ID`, and `AAIS_RESEARCH_RETENTION_SCHEDULE_ID`. The product Vercel cron schedule is disabled in the Aliyun-primary topology and is never a research scheduler.
 - Fourteen pairwise-distinct SHA-256 evidence digests. The existing infrastructure/provider digests are `AAIS_RESEARCH_DATABASE_ISOLATION_RECEIPT_SHA256`, `AAIS_RESEARCH_LRS_ISOLATION_RECEIPT_SHA256`, `AAIS_RESEARCH_LRS_ZERO_BASELINE_RECEIPT_SHA256`, `AAIS_RESEARCH_LRS_PUT_DELETE_RECEIPT_SHA256`, `AAIS_RESEARCH_BACKUP_POLICY_RECEIPT_SHA256`, `AAIS_RESEARCH_RESTORE_RECEIPT_SHA256`, and `AAIS_RESEARCH_LEGACY_ARCHIVE_RECEIPT_SHA256`. The explicit governance/operations digests are `AAIS_RESEARCH_ACCESS_REGISTER_RECEIPT_SHA256`, `AAIS_RESEARCH_CONSENT_LEGAL_BASIS_RECEIPT_SHA256`, `AAIS_RESEARCH_DPA_RECEIPT_SHA256`, `AAIS_RESEARCH_DATA_REGION_RECEIPT_SHA256`, `AAIS_RESEARCH_DAILY_BACKUP_RECEIPT_SHA256`, `AAIS_RESEARCH_BACKUP_DESTRUCTION_RECEIPT_SHA256`, and `AAIS_RESEARCH_GOVERNANCE_MANIFEST_RECEIPT_SHA256`. Every source digest points to a different redacted, signed file in the restricted operations register; the manifest digest points to the verifier's sanitized successful report. Never reuse one receipt or digest for multiple gates.
 - Freshness values copied only from the successful governance verifier report: `AAIS_RESEARCH_GOVERNANCE_MANIFEST_VERIFIED_AT`, `AAIS_RESEARCH_GOVERNANCE_MANIFEST_VALID_UNTIL`, `AAIS_RESEARCH_DAILY_BACKUP_COMPLETED_AT`, and `AAIS_RESEARCH_BACKUP_DESTRUCTION_OBSERVED_AT`. Formal readiness requires verification and daily backup no more than 36 hours old, a still-current manifest, and 35-day destruction evidence no more than 45 days old.
 - `AAIS_APP_VERSION` and `VERCEL_GIT_COMMIT_SHA`; `AAIS_COMMIT_SHA` is allowed only as an approved non-Vercel fallback.

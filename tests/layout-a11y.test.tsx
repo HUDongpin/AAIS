@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { metadata, shouldEnableAaisVercelAnalytics } from "@/app/layout";
+import { metadata } from "@/app/layout";
+import { shouldEnableAaisVercelAnalytics } from "@/lib/aais-vercel-analytics";
 
 describe("AAIS root accessibility affordances", () => {
   it("uses CAAIS as the browser-tab title", () => {
@@ -20,17 +21,30 @@ describe("AAIS root accessibility affordances", () => {
   });
 
   it("disables Vercel Web Analytics for every research activation signal", () => {
-    expect(shouldEnableAaisVercelAnalytics({})).toBe(true);
-    expect(shouldEnableAaisVercelAnalytics({ AAIS_RESEARCH_MODE: "true" }))
-      .toBe(false);
-    expect(shouldEnableAaisVercelAnalytics({ AAIS_RESEARCH_REQUIRED: "TRUE" }))
-      .toBe(false);
-    expect(shouldEnableAaisVercelAnalytics({ AAIS_RESEARCH_ENVIRONMENT: "research" }))
+    expect(shouldEnableAaisVercelAnalytics({})).toBe(false);
+    expect(shouldEnableAaisVercelAnalytics({
+      VERCEL: "1",
+      AAIS_RESEARCH_MODE: "true",
+    }))
       .toBe(false);
     expect(shouldEnableAaisVercelAnalytics({
+      AAIS_DEPLOYMENT_PROVIDER: "vercel",
+      AAIS_RESEARCH_REQUIRED: "TRUE",
+    }))
+      .toBe(false);
+    expect(shouldEnableAaisVercelAnalytics({
+      VERCEL: "1",
+      AAIS_RESEARCH_ENVIRONMENT: "research",
+    }))
+      .toBe(false);
+    expect(shouldEnableAaisVercelAnalytics({
+      AAIS_DEPLOYMENT_PROVIDER: "vercel",
       AAIS_RESEARCH_MODE: "false",
       AAIS_RESEARCH_REQUIRED: "false",
       AAIS_RESEARCH_ENVIRONMENT: "production",
     })).toBe(true);
+    expect(shouldEnableAaisVercelAnalytics({
+      AAIS_DEPLOYMENT_PROVIDER: "aliyun",
+    })).toBe(false);
   });
 });

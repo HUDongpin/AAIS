@@ -9,6 +9,7 @@ const eslintConfig = defineConfig([
     ".next/**",
     ".worktrees/**",
     "output/**",
+    "tmp/**",
     "out/**",
     "build/**",
     "tools/release-legacy/**",

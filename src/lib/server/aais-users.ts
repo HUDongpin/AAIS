@@ -13,7 +13,7 @@ import {
   createAaisAuthEmailOutboxMessage,
   requireAaisAuthDeliveryConfiguration,
 } from "@/lib/server/aais-auth-delivery";
-import { createAaisPostgresPool } from "@/lib/server/aais-postgres-pool";
+import { getAaisSharedPostgresPool } from "@/lib/server/aais-postgres-pool";
 
 type PasswordRecord = AaisPasswordRecord;
 
@@ -1027,12 +1027,9 @@ function getConfiguredUserDatabaseClient() {
     return null;
   }
   if (!cachedDatabase || cachedDatabase.url !== config.url) {
-    if (cachedDatabase?.client.end) {
-      void cachedDatabase.client.end().catch(() => undefined);
-    }
     cachedDatabase = {
       url: config.url,
-      client: createAaisPostgresPool(config.url) as AaisDatabaseClient,
+      client: getAaisSharedPostgresPool(config.url) as AaisDatabaseClient,
     };
   }
   return cachedDatabase.client;

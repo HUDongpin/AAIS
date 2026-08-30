@@ -21,7 +21,7 @@ afterEach(() => {
 
 describe("AAIS legal notice pages", () => {
   it("renders the Chinese privacy page linked from login", async () => {
-    render(await PrivacyPage());
+    render(await PrivacyPage({}));
 
     expect(privacyMetadata.title).toBe("Privacy | CAAIS");
     expect(screen.getByRole("heading", { name: "隐私与学习数据说明" })).toBeTruthy();
@@ -39,7 +39,7 @@ describe("AAIS legal notice pages", () => {
   });
 
   it("renders the Chinese terms page linked from login", async () => {
-    render(await TermsPage());
+    render(await TermsPage({}));
 
     expect(termsMetadata.title).toBe("Terms | CAAIS");
     expect(screen.getByRole("heading", { name: "使用条款" })).toBeTruthy();
@@ -64,7 +64,7 @@ describe("AAIS legal notice pages", () => {
 
   it("uses the locale cookie for direct legal visits but lets a valid query override it", async () => {
     headersMocks.locale = "en-US";
-    const { unmount } = render(await TermsPage());
+    const { unmount } = render(await TermsPage({}));
 
     expect(screen.getByRole("heading", { name: "Terms of Use" })).toBeTruthy();
     expect(screen.getByText(/Xiao Zhang provides learning scaffolds/)).toBeTruthy();

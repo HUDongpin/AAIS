@@ -18,7 +18,7 @@ type PrivacyPageProps = {
   searchParams?: Promise<{ lang?: string | string[] }>;
 };
 
-export default async function Page({ searchParams }: PrivacyPageProps = {}) {
+export default async function Page({ searchParams }: PrivacyPageProps) {
   const params = await searchParams;
   const requestedLocale = parseAaisLocale(
     typeof params?.lang === "string" ? params.lang : undefined,

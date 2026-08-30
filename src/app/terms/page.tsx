@@ -18,7 +18,7 @@ type TermsPageProps = {
   searchParams?: Promise<{ lang?: string | string[] }>;
 };
 
-export default async function Page({ searchParams }: TermsPageProps = {}) {
+export default async function Page({ searchParams }: TermsPageProps) {
   const params = await searchParams;
   const requestedLocale = parseAaisLocale(
     typeof params?.lang === "string" ? params.lang : undefined,

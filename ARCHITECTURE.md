@@ -2,7 +2,10 @@
 
 ## Runtime Shape
 
-AAIS is a single Next.js App Router application deployed on Vercel. It uses:
+AAIS is a single Next.js App Router application. The repository supports an
+Aliyun Hong Kong container primary with Vercel as a same-SHA cold application backup;
+until provider and domain acceptance closes, the live domain remains Vercel.
+It uses:
 
 - React client components for the learner cockpit, login, and teacher dashboard.
 - Next.js route handlers under `src/app/api/` for auth, learner sessions, AI guide turns, exports, analytics, LRS health, and readiness.
@@ -16,10 +19,11 @@ flowchart LR
   Pages --> Api["Next.js route handlers under src/app/api"]
   Api --> Auth["Signed session cookie + CSRF + revocation"]
   Api --> Store["AAIS learning store"]
-  Store --> Postgres["Neon/Postgres tables"]
+  Store --> Postgres["Neon/Postgres tables; one authoritative target, migrating to Hong Kong RDS"]
   Store --> LocalFiles["Local .aais-data files in development"]
   Store --> LrsOutbox["aais_lrs_outbox"]
   LrsOutbox --> ExternalLrs["External LRS"]
+  LrsOutbox --> Lease["aais_runtime_leases fencing"]
   Api --> GuideGraph["LangGraph A1-A4 guide orchestration"]
   GuideGraph --> Provider["Live AI provider or deterministic fallback"]
   Api --> Sentry["Sentry monitoring when configured"]
@@ -64,6 +68,8 @@ Current production persistence is:
 - `aais_course_tasks`: ordered task catalog rows with localized titles, briefs, difficulty, lock rules, and expert traces.
 - `aais_enrollments`: user-to-course membership rows with cohort labels for real-account pilots.
 - `aais_schema_migrations`: migration ledger.
+- `aais_runtime_leases`: provider-neutral worker leadership and fencing generation. The Aliyun-primary topology schedules product workers only on Aliyun; Vercel cron is disabled.
+- `aais_runtime_identity`: one non-secret database-resident target identifier used by traffic readiness to reject a schema-compatible but incorrect source, rehearsal, or RDS database.
 
 Schema changes must be made through `migrations/postgres/` and applied with `npm run db:migrate`. Runtime request handlers must not issue DDL.
 

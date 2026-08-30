@@ -13,6 +13,7 @@ import {
   getAaisPersistentLrsOutboxStatus,
   getAaisDatabaseConfiguration,
   probeAaisLearningStorage,
+  probeAaisTrafficStorage,
   reconcileAaisLrsDeliveryAttempt,
   requeueAaisPersistentLrsDeadLetters,
   summarizeAaisCohortAnalytics,
@@ -2897,6 +2898,43 @@ describe("AAIS backend learning store", () => {
     expect(missingUsersDatabase.queries.map((query) => query.sql).join("\n")).not.toMatch(/create table|alter table/i);
   });
 
+  it("uses a cheap database-resident identity probe for traffic readiness", async () => {
+    const queries: Array<{ sql: string; params: unknown[] }> = [];
+    const database: AaisDatabaseClient = {
+      async query(sql, params = []) {
+        queries.push({ sql, params });
+        if (params[0] !== "aais-source-production") {
+          return { rows: [] };
+        }
+        return {
+          rows: [{
+            target_id: "aais-source-production",
+            database_name: "aais",
+            in_recovery: false,
+            transaction_writable: true,
+            runtime_lease_writable: true,
+            learner_sessions_table: "aais_learner_sessions",
+            users_table: "aais_users",
+            runtime_leases_table: "aais_runtime_leases",
+            runtime_identity_table: "aais_runtime_identity",
+            migration_current: true,
+          }],
+        };
+      },
+    };
+
+    await expect(probeAaisTrafficStorage({
+      database,
+      expectedTargetId: "aais-source-production",
+    })).resolves.toEqual({ mode: "postgres", status: "connected" });
+    await expect(probeAaisTrafficStorage({
+      database,
+      expectedTargetId: "wrong-target",
+    })).resolves.toEqual({ mode: "postgres", status: "failed" });
+    expect(queries[0].sql).toContain("aais_runtime_identity");
+    expect(queries[0].sql).not.toContain("aais_lrs_delivery_attempts_consistent");
+  });
+
   it("atomically reserves the durable daily guide budget and rejects once exhausted", async () => {
     const database = createFakeDatabaseClient();
     const store = createAaisLearningStore({ database });
@@ -3567,6 +3605,7 @@ describe("AAIS backend learning store", () => {
   it("persists LRS outbox rows in Postgres storage and can replay them", async () => {
     const database = createFakeDatabaseClient();
     const fetchMock = vi.fn<typeof fetch>(async () => new Response(null, { status: 204 }));
+    const beforeDispatch = vi.fn(async () => undefined);
     const store = createAaisLearningStore({ database });
 
     await store.getOrCreateSession("S001");
@@ -3585,6 +3624,7 @@ describe("AAIS backend learning store", () => {
         password: "test-password",
       },
       fetchImpl: fetchMock as unknown as typeof fetch,
+      beforeDispatch,
     });
 
     expect(result).toMatchObject({
@@ -3594,6 +3634,7 @@ describe("AAIS backend learning store", () => {
     });
     expect(database.outboxRows.every((row) => row.status === "sent")).toBe(true);
     expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(beforeDispatch.mock.calls.length).toBeGreaterThanOrEqual(3);
     const postedStatements = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
     expect(postedStatements).toHaveLength(database.outboxRows.length);
     expect(JSON.stringify(result)).not.toContain("test-password");
@@ -3617,6 +3658,27 @@ describe("AAIS backend learning store", () => {
     )).toBe(false);
     expect(database.outboxRows.length).toBeGreaterThan(0);
     expect(database.outboxRows.every((row) => row.status === "pending")).toBe(true);
+  });
+
+  it("does not call the LRS after the runtime leadership fence is lost", async () => {
+    const database = createFakeDatabaseClient();
+    const store = createAaisLearningStore({ database });
+    await store.saveArtifact("S001", "training_task_1", "fenced LRS delivery");
+    const fetchMock = vi.fn<typeof fetch>();
+
+    await expect(flushAaisPersistentLrsOutbox({
+      database,
+      config: {
+        endpoint: "https://lrs.example.test/xapi",
+        username: "test-user",
+        password: "test-password",
+      },
+      fetchImpl: fetchMock,
+      beforeDispatch: async () => {
+        throw new Error("leadership lost");
+      },
+    })).rejects.toThrow("leadership lost");
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("claims each persistent outbox row only once across concurrent flushers", async () => {
@@ -5386,6 +5448,34 @@ describe("AAIS backend learning store", () => {
     });
   });
 
+  it("fails closed when production database aliases point at different targets", () => {
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("AAIS_DATABASE_URL", "postgres://aais:primary-secret@primary.example.test/aais");
+    vi.stubEnv("DATABASE_URL", "postgres://aais:fallback-secret@fallback.example.test/aais");
+
+    expect(() => getAaisDatabaseConfiguration()).toThrow(
+      "AAIS production database configuration is ambiguous (AAIS_DATABASE_URL, DATABASE_URL).",
+    );
+    try {
+      getAaisDatabaseConfiguration();
+    } catch (error) {
+      expect(String(error)).not.toContain("primary-secret");
+      expect(String(error)).not.toContain("fallback-secret");
+    }
+  });
+
+  it("accepts duplicate production aliases when they resolve to the same URL", () => {
+    vi.stubEnv("NODE_ENV", "production");
+    const databaseUrl = "postgres://aais:shared-secret@example.test/aais?sslmode=require";
+    vi.stubEnv("AAIS_DATABASE_URL", databaseUrl);
+    vi.stubEnv("DATABASE_URL", databaseUrl);
+
+    expect(getAaisDatabaseConfiguration()).toMatchObject({
+      sourceEnv: "AAIS_DATABASE_URL",
+      url: databaseUrl,
+    });
+  });
+
   it("uses legacy Vercel Postgres Neon URL aliases as fallback database variables", () => {
     vi.stubEnv("POSTGRES_URL_NON_POOLING", "postgres://aais:legacy@legacy.neon.tech/aais");
 
@@ -7042,6 +7132,10 @@ function createProbeDatabaseClient(input: {
             active_admin_delete_trigger: input.activeAdminInvariant !== false,
             user_auth_tokens_table: input.userAuthTokensTable ? "aais_user_auth_tokens" : null,
             session_revocations_table: input.sessionRevocationsTable ? "aais_session_revocations" : null,
+        runtime_leases_table: "aais_runtime_leases",
+        runtime_leases_columns: true,
+        runtime_identity_table: "aais_runtime_identity",
+        runtime_identity_columns: true,
             courses_table: input.coursesTable === false ? null : "aais_courses",
             course_tasks_table: input.courseTasksTable === false ? null : "aais_course_tasks",
             enrollments_table: input.enrollmentsTable === false ? null : "aais_enrollments",

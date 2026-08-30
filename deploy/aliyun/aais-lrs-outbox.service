@@ -1,0 +1,19 @@
+[Unit]
+Description=AAIS product LRS outbox worker
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=aais-secrets-bootstrap.service
+After=aais-secrets-bootstrap.service
+
+[Service]
+Type=oneshot
+User=aais-worker
+Group=aais-worker
+ExecStart=/opt/aais/bin/aais-worker.sh lrs
+TimeoutStartSec=100
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadOnlyPaths=/opt/aais
+ReadOnlyPaths=/run/aais/current/worker.env

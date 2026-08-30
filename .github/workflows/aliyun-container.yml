@@ -1,0 +1,179 @@
+name: Aliyun container candidate
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: aais-aliyun-container-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-and-push:
+    name: Test, build, and push immutable ACR candidate
+    if: github.ref == 'refs/heads/main'
+    # A short-lived, separately sized runner in the Aliyun VPC reaches the
+    # Enterprise ACR VPC endpoint without opening a dynamic GitHub IP range.
+    # Never place this runner on the shared production ECS.
+    runs-on: [self-hosted, linux, x64, aais-aliyun-build]
+    environment: aliyun-production
+    timeout-minutes: 45
+    env:
+      DOCKER_CONFIG: ${{ runner.temp }}/aais-docker-${{ github.run_id }}
+      ACR_INSTANCE_ID: ${{ vars.ALIYUN_ACR_INSTANCE_ID }}
+      ACR_API_ENDPOINT: ${{ vars.ALIYUN_ACR_API_ENDPOINT }}
+      ACR_LOGIN_SERVER: ${{ vars.ALIYUN_ACR_LOGIN_SERVER }}
+      ACR_REPOSITORY: ${{ vars.ALIYUN_ACR_REPOSITORY }}
+
+    steps:
+      - name: Validate non-secret provider bindings
+        shell: bash
+        run: |
+          set -euo pipefail
+          for binding in \
+            "${{ vars.ALIYUN_OIDC_PROVIDER_ARN }}" \
+            "${{ vars.ALIYUN_BUILD_ROLE_ARN }}" \
+            "$ACR_INSTANCE_ID" \
+            "$ACR_API_ENDPOINT" \
+            "$ACR_LOGIN_SERVER" \
+            "$ACR_REPOSITORY"
+          do
+            test -n "$binding"
+          done
+          case "$ACR_REPOSITORY" in
+            "$ACR_LOGIN_SERVER"/*) ;;
+            *) exit 1 ;;
+          esac
+
+      - name: Check out exact source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Record immutable source metadata
+        id: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${{ github.sha }}"
+          printf 'build_timestamp=%s\n' "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Node 24
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Run product gates
+        run: |
+          npm ci
+          npm audit --audit-level=high
+          npm run hygiene:check
+          npm run ci
+
+      - name: Exchange GitHub OIDC for short-lived Alibaba Cloud STS
+        uses: aliyun/configure-aliyun-credentials-action@1e5248c8d5d93a8781ac344a68e19a43341e79e6 # v1.1.0
+        with:
+          oidc-provider-arn: ${{ vars.ALIYUN_OIDC_PROVIDER_ARN }}
+          role-to-assume: ${{ vars.ALIYUN_BUILD_ROLE_ARN }}
+          role-session-name: aais-acr-${{ github.run_id }}
+          role-session-expiration: 1800
+          audience: github-actions
+
+      - name: Install pinned Alibaba Cloud CLI
+        uses: aliyun/setup-aliyun-cli-action@09a5f86915bb556e27bf050e9a5e339aeb073df5 # v1
+        with:
+          version: 3.4.11
+
+      - name: Obtain a one-hour ACR login token
+        shell: bash
+        run: |
+          set -euo pipefail
+          install -d -m 0700 "$DOCKER_CONFIG"
+          response="$(aliyun cr GetAuthorizationToken \
+            --endpoint "$ACR_API_ENDPOINT" \
+            --InstanceId "$ACR_INSTANCE_ID")"
+          username="$(jq -er '.TempUsername' <<<"$response")"
+          token="$(jq -er '.AuthorizationToken' <<<"$response")"
+          echo "::add-mask::$username"
+          echo "::add-mask::$token"
+          printf '%s' "$token" | docker login "$ACR_LOGIN_SERVER" \
+            --username "$username" \
+            --password-stdin
+          unset response username token
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+
+      - name: Build and push exact-SHA image
+        id: image
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ${{ vars.ALIYUN_ACR_REPOSITORY }}:${{ github.sha }}
+          build-args: |
+            AAIS_GIT_SHA=${{ github.sha }}
+            AAIS_BUILD_TIMESTAMP=${{ steps.source.outputs.build_timestamp }}
+            AAIS_REQUIRE_STABLE_SERVER_ACTIONS_KEY=true
+          secrets: |
+            NEXT_SERVER_ACTIONS_ENCRYPTION_KEY=${{ secrets.AAIS_NEXT_SERVER_ACTIONS_ENCRYPTION_KEY }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          provenance: mode=max
+          sbom: true
+          cache-from: type=gha,scope=aais-aliyun
+          cache-to: type=gha,mode=max,scope=aais-aliyun
+
+      - name: Write non-secret candidate receipt
+        env:
+          IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(printf '%s' "$IMAGE_DIGEST" | grep -Ec '^sha256:[a-f0-9]{64}$')" -eq 1
+          mkdir -p output/aliyun
+          jq -n \
+            --arg gitSha "${{ github.sha }}" \
+            --arg imageRepository "$ACR_REPOSITORY" \
+            --arg imageDigest "$IMAGE_DIGEST" \
+            --arg runId "${{ github.run_id }}" \
+            '{
+              schemaVersion: 1,
+              provider: "aliyun",
+              stage: "acr_candidate",
+              gitSha: $gitSha,
+              imageRepository: $imageRepository,
+              imageDigest: $imageDigest,
+              githubRunId: $runId,
+              secrets: "redacted"
+            }' > output/aliyun/acr-candidate-receipt.json
+
+      - name: Preserve candidate receipt
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: aais-aliyun-acr-${{ github.sha }}
+          path: output/aliyun/acr-candidate-receipt.json
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Remove temporary ACR client credentials
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$DOCKER_CONFIG" in
+            "$RUNNER_TEMP"/aais-docker-*) ;;
+            *) exit 1 ;;
+          esac
+          docker logout "$ACR_LOGIN_SERVER" >/dev/null 2>&1 || true
+          if [ -d "$DOCKER_CONFIG" ]; then
+            find "$DOCKER_CONFIG" -mindepth 1 -delete
+            rmdir "$DOCKER_CONFIG"
+          fi

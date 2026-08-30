@@ -37,7 +37,7 @@ Production Qwen uses a dated immutable snapshot and a signed, source-bound A1-A4
 
 ## Deploy
 
-AAIS should deploy from reviewed Git changes through Vercel, not from a laptop-only release path.
+AAIS now has a provider-neutral container release path for an Aliyun Hong Kong primary while Vercel remains a same-SHA cold application backup. The production domain is still considered Vercel-owned until the RDS, candidate, DNS, recovery, and Owner acceptance gates are separately evidenced. Do not treat repository support as provider cutover proof.
 
 1. Merge a reviewed PR to `main`.
 2. Let Vercel create the preview or production deployment.
@@ -45,7 +45,9 @@ AAIS should deploy from reviewed Git changes through Vercel, not from a laptop-o
 4. Run `npm run smoke:prod` against staging first, then production.
 5. Before a real cohort pilot, run `npm run load:staging` against staging/preview with dedicated student accounts.
 
-Production Vercel builds run `scripts/guard-vercel-production-deploy.mjs`, which requires Git metadata for `main` and fails local-style production uploads without it.
+Production Vercel builds run `scripts/guard-vercel-production-deploy.mjs`, which requires Git metadata for `main` and rejects local-style production uploads. This portability commit retains the two existing Vercel product schedules so the lease-aware exact-SHA build can reach Vercel and ACR before any handoff. The guard blocks that first lease-aware production build until migrations 0028/0029 and the bound database identity are evidenced. A later, separately reviewed transition commit removes the schedules; the guard requires both exact schedules before handoff and none afterward, so partial removal or later reintroduction fails closed. The Aliyun timers are enabled only after Vercel confirms that both product cron schedules are absent.
+
+The Aliyun workflow builds a Node 24 standalone image, exchanges GitHub OIDC for short-lived Alibaba Cloud STS, obtains a temporary ACR login, and preserves the exact image digest. The shared ECS deploy wrapper accepts only that configured ACR repository plus a digest and binds AAIS to loopback ports 3101/3102. See [the Aliyun primary runbook](./docs/aliyun-primary-runbook.md) before creating billable resources, migrating data, or changing DNS.
 
 Production trial accounts are learner-only smoke accounts. Teacher/admin access must use database users or OIDC identities.
 
@@ -81,6 +83,7 @@ Formal visit creation and event ingestion are runtime-gated by the approved acce
 - [OPERATIONS.md](./OPERATIONS.md): deploy, smoke, migration, rollback, restore, monitoring, and staging load sanity.
 - [CONTRIBUTING.md](./CONTRIBUTING.md): branch, review, verification, database, and secret rules.
 - [docs/release-checklist.md](./docs/release-checklist.md): one-page release checklist.
+- [docs/aliyun-primary-runbook.md](./docs/aliyun-primary-runbook.md): Aliyun primary, private RDS migration, zero-extra-cost Vercel cold backup, rollback, and evidence gates.
 - [docs/research-data-governance.md](./docs/research-data-governance.md): enforceable research event, identity, access, retention, backup, export, and withdrawal contract.
 - [docs/mainland-caa-is-test-profile.md](./docs/mainland-caa-is-test-profile.md): lightweight adult, low-risk, mainland-only CAAIS rehearsal profile and its evidence limits.
 - [docs/teacher-recommendation-rules.md](./docs/teacher-recommendation-rules.md): teacher-facing recommendation policy.

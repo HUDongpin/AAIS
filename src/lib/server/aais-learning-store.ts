@@ -24,7 +24,7 @@ import {
 import { requiresAaisResearchDataPlaneIsolation } from "@/lib/server/aais-research-contract";
 import {
   createAaisNeonQueryClient,
-  createAaisPostgresPool,
+  getAaisSharedPostgresPool,
 } from "@/lib/server/aais-postgres-pool";
 import {
   aaisRecommendationPolicy,
@@ -5671,6 +5671,7 @@ export async function flushAaisPersistentLrsOutbox(input: {
   finalizeGuardMs?: number;
   requestTimeoutMs?: number;
   now?: () => number;
+  beforeDispatch?: () => Promise<void>;
 } = {}) {
   const runtime = createAaisProductLrsRuntimeBudget({
     runtimeBudgetMs: input.runtimeBudgetMs,
@@ -5731,6 +5732,9 @@ export async function flushAaisPersistentLrsOutbox(input: {
   let stoppedReason: "budget_exhausted" | "drained" | "limit_reached" | "not_configured" | null = null;
   let hasMore = false;
   while (selected < limit) {
+    if (input.beforeDispatch) {
+      await input.beforeDispatch();
+    }
     if (!canStartAaisProductLrsRequest(runtime)) {
       stoppedReason = "budget_exhausted";
       hasMore = true;
@@ -5854,11 +5858,16 @@ export async function flushAaisPersistentLrsOutbox(input: {
       continue;
     }
 
+    if (input.beforeDispatch) {
+      await input.beforeDispatch();
+    }
+
     const delivery = await deliverMaterializedAaisOutboxRows({
       rows: readyRows,
       config: input.config,
       fetchImpl: input.fetchImpl,
       runtime,
+      beforeDispatch: input.beforeDispatch,
     });
     batches += delivery.batches;
     if (delivery.uncertainRows.length) {
@@ -6644,6 +6653,7 @@ async function deliverMaterializedAaisOutboxRows(input: {
   } | null;
   fetchImpl?: typeof fetch;
   runtime: AaisProductLrsRuntimeBudget;
+  beforeDispatch?: () => Promise<void>;
 }): Promise<{
   sentRows: MaterializedAaisOutboxRow[];
   failedRows: MaterializedAaisOutboxRow[];
@@ -6681,6 +6691,9 @@ async function deliverMaterializedAaisOutboxRows(input: {
     sent: 0;
   };
   let acknowledgementUnknown = false;
+  if (input.beforeDispatch) {
+    await input.beforeDispatch();
+  }
   try {
     delivery = await sendAaisXapiStatementsToLrs(
       input.rows.map((item) => item.statement),
@@ -8096,6 +8109,22 @@ export async function probeAaisLearningStorage(input: {
          ) as active_admin_delete_trigger,
          to_regclass('public.aais_user_auth_tokens') as user_auth_tokens_table,
          to_regclass('public.aais_session_revocations') as session_revocations_table,
+         to_regclass('public.aais_runtime_leases') as runtime_leases_table,
+         (
+           select count(*) = 5
+             from information_schema.columns
+            where table_schema = 'public'
+              and table_name = 'aais_runtime_leases'
+              and column_name in ('lease_key', 'holder_id', 'generation', 'expires_at', 'updated_at')
+         ) as runtime_leases_columns,
+         to_regclass('public.aais_runtime_identity') as runtime_identity_table,
+         (
+           select count(*) = 3
+             from information_schema.columns
+            where table_schema = 'public'
+              and table_name = 'aais_runtime_identity'
+              and column_name in ('singleton', 'target_id', 'updated_at')
+         ) as runtime_identity_columns,
          to_regclass('public.aais_courses') as courses_table,
          to_regclass('public.aais_course_tasks') as course_tasks_table,
          to_regclass('public.aais_enrollments') as enrollments_table,
@@ -8138,6 +8167,10 @@ export async function probeAaisLearningStorage(input: {
       || row?.active_admin_delete_trigger !== true
       || row?.user_auth_tokens_table !== "aais_user_auth_tokens"
       || row?.session_revocations_table !== "aais_session_revocations"
+      || row?.runtime_leases_table !== "aais_runtime_leases"
+      || row?.runtime_leases_columns !== true
+      || row?.runtime_identity_table !== "aais_runtime_identity"
+      || row?.runtime_identity_columns !== true
       || row?.courses_table !== "aais_courses"
       || row?.course_tasks_table !== "aais_course_tasks"
       || row?.enrollments_table !== "aais_enrollments"
@@ -8157,6 +8190,70 @@ export async function probeAaisLearningStorage(input: {
       mode: "postgres",
       status: "failed",
     };
+  }
+}
+
+export async function probeAaisTrafficStorage(input: {
+  database?: AaisDatabaseClient;
+  expectedTargetId: string;
+}): Promise<{
+  mode: "postgres" | "file";
+  status: "connected" | "not_configured" | "failed";
+}> {
+  const expectedTargetId = input.expectedTargetId.trim();
+  if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{2,127}$/.test(expectedTargetId)) {
+    return { mode: "postgres", status: "failed" };
+  }
+  const database = input.database ?? getConfiguredDatabaseClient();
+  if (!database) {
+    return { mode: "file", status: "not_configured" };
+  }
+  try {
+    const result = await database.query(
+      `select identity.target_id,
+              current_database() as database_name,
+              pg_is_in_recovery() as in_recovery,
+              current_setting('transaction_read_only') = 'off' as transaction_writable,
+              has_table_privilege(current_user, 'public.aais_runtime_leases', 'INSERT')
+                and has_table_privilege(current_user, 'public.aais_runtime_leases', 'UPDATE')
+                and has_table_privilege(current_user, 'public.aais_runtime_leases', 'DELETE')
+                as runtime_lease_writable,
+              to_regclass('public.aais_learner_sessions') as learner_sessions_table,
+              to_regclass('public.aais_users') as users_table,
+              to_regclass('public.aais_runtime_leases') as runtime_leases_table,
+              to_regclass('public.aais_runtime_identity') as runtime_identity_table,
+              (
+                select exists (
+                  select 1
+                    from public.aais_schema_migrations
+                   where version = '0029'
+                )
+              ) as migration_current
+         from public.aais_runtime_identity identity
+        where identity.singleton = true
+          and identity.target_id = $1
+        limit 1`,
+      [expectedTargetId],
+    );
+    const row = result.rows[0];
+    if (
+      !row
+      || row.target_id !== expectedTargetId
+      || typeof row.database_name !== "string"
+      || row.in_recovery !== false
+      || row.transaction_writable !== true
+      || row.runtime_lease_writable !== true
+      || row.learner_sessions_table !== "aais_learner_sessions"
+      || row.users_table !== "aais_users"
+      || row.runtime_leases_table !== "aais_runtime_leases"
+      || row.runtime_identity_table !== "aais_runtime_identity"
+      || row.migration_current !== true
+    ) {
+      return { mode: "postgres", status: "failed" };
+    }
+    return { mode: "postgres", status: "connected" };
+  } catch {
+    return { mode: "postgres", status: "failed" };
   }
 }
 
@@ -8188,7 +8285,7 @@ function createConfiguredDatabaseClient(databaseUrl: string): AaisDatabaseClient
   if (shouldUseNeonServerlessDriver(databaseUrl)) {
     return createAaisNeonQueryClient(databaseUrl);
   }
-  return createAaisPostgresPool(databaseUrl) as AaisDatabaseClient;
+  return getAaisSharedPostgresPool(databaseUrl) as AaisDatabaseClient;
 }
 
 function shouldUseNeonServerlessDriver(databaseUrl: string) {
@@ -8216,6 +8313,7 @@ export function getAaisDatabaseConfiguration(): AaisDatabaseConfiguration | null
     "DATABASE_URL_UNPOOLED",
     "POSTGRES_URL_NON_POOLING",
   ];
+  assertUnambiguousProductionDatabaseUrls(candidates);
   for (const sourceEnv of candidates) {
     const url = process.env[sourceEnv]?.trim();
     if (url) {
@@ -8230,6 +8328,44 @@ export function getAaisDatabaseConfiguration(): AaisDatabaseConfiguration | null
     return rawPgConfig;
   }
   return null;
+}
+
+function assertUnambiguousProductionDatabaseUrls(candidates: AaisDatabaseSourceEnv[]) {
+  if (process.env.NODE_ENV !== "production" && process.env.VERCEL_ENV !== "production") {
+    return;
+  }
+  const configured = candidates.flatMap((sourceEnv) => {
+    const value = process.env[sourceEnv]?.trim();
+    return value ? [{ sourceEnv, normalized: normalizeDatabaseUrlForComparison(value) }] : [];
+  });
+  if (configured.length < 2) {
+    return;
+  }
+  if (new Set(configured.map(({ normalized }) => normalized)).size === 1) {
+    return;
+  }
+  throw new Error(
+    `AAIS production database configuration is ambiguous (${configured
+      .map(({ sourceEnv }) => sourceEnv)
+      .join(", ")}).`,
+  );
+}
+
+function normalizeDatabaseUrlForComparison(value: string) {
+  try {
+    const parsed = new URL(value);
+    const sortedParams = [...parsed.searchParams.entries()]
+      .sort(([leftKey, leftValue], [rightKey, rightValue]) =>
+        leftKey.localeCompare(rightKey) || leftValue.localeCompare(rightValue));
+    parsed.search = "";
+    for (const [key, parameterValue] of sortedParams) {
+      parsed.searchParams.append(key, parameterValue);
+    }
+    parsed.hash = "";
+    return parsed.toString();
+  } catch {
+    return value;
+  }
 }
 
 function getRawPgDatabaseConfiguration(): AaisDatabaseConfiguration | null {
