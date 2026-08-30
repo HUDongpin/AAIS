@@ -1,0 +1,127 @@
+name: Aliyun ACR post-run watchdog
+
+on:
+  workflow_run:
+    workflows: ["Aliyun container candidate"]
+    types: [completed]
+
+permissions:
+  actions: read
+  contents: read
+  id-token: write
+
+jobs:
+  reconcile:
+    name: Close the completed build run's ACR access
+    if: >-
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-24.04
+    environment: aliyun-watchdog
+    timeout-minutes: 10
+    env:
+      AAIS_ACR_TARGET_RUN_ID: ${{ github.event.workflow_run.id }}
+      AAIS_ACR_TARGET_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+
+    steps:
+      - name: Validate completed-run bindings
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$AAIS_ACR_TARGET_RUN_ID" =~ ^[0-9]+$ ]]
+          [[ "$AAIS_ACR_TARGET_RUN_ATTEMPT" =~ ^[0-9]+$ ]]
+          [[ "${{ github.event.workflow_run.head_sha }}" =~ ^[a-f0-9]{40}$ ]]
+
+      - name: Check out the exact trusted candidate reconciler
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - name: Download the pre-open watchdog handoff
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: aais-acr-watchdog-handoff-${{ github.event.workflow_run.id }}-${{ github.event.workflow_run.run_attempt }}
+          path: output/handoff
+          github-token: ${{ github.token }}
+          run-id: ${{ github.event.workflow_run.id }}
+
+      - name: Validate and bind the exact candidate handoff
+        shell: bash
+        run: |
+          set -euo pipefail
+          handoff=output/handoff/acr-watchdog-handoff.json
+          jq -e \
+            --arg gitSha "${{ github.event.workflow_run.head_sha }}" \
+            --arg candidateRunId "$AAIS_ACR_TARGET_RUN_ID" \
+            --arg candidateRunAttempt "$AAIS_ACR_TARGET_RUN_ATTEMPT" '
+              .schemaVersion == 1
+              and .gitSha == $gitSha
+              and .candidateRunId == $candidateRunId
+              and .candidateRunAttempt == $candidateRunAttempt
+              and .secrets == "redacted"
+            ' "$handoff" >/dev/null
+          instance_id="$(jq -er '.acrInstanceId | select(test("^cri-[a-z0-9-]+$"))' "$handoff")"
+          api_endpoint="$(jq -er '.acrApiEndpoint | select(test("^cr\\.[a-z0-9-]+\\.aliyuncs\\.com$"))' "$handoff")"
+          public_server="$(jq -er '.publicLoginServer | select(test("^[a-z0-9][a-z0-9.-]*\\.cr\\.aliyuncs\\.com$"))' "$handoff")"
+          {
+            printf 'ACR_INSTANCE_ID=%s\n' "$instance_id"
+            printf 'ACR_API_ENDPOINT=%s\n' "$api_endpoint"
+            printf 'ACR_PUBLIC_LOGIN_SERVER=%s\n' "$public_server"
+          } >> "$GITHUB_ENV"
+          unset instance_id api_endpoint public_server
+
+      - name: Exchange GitHub OIDC for the watchdog role
+        uses: aliyun/configure-aliyun-credentials-action@1e5248c8d5d93a8781ac344a68e19a43341e79e6 # v1.1.0
+        with:
+          oidc-provider-arn: ${{ vars.ALIYUN_OIDC_PROVIDER_ARN }}
+          role-to-assume: ${{ vars.ALIYUN_WATCHDOG_ROLE_ARN }}
+          role-session-name: aais-acr-watchdog-${{ github.run_id }}
+          role-session-expiration: 900
+          audience: github-actions
+
+      - name: Install pinned Alibaba Cloud CLI
+        uses: aliyun/setup-aliyun-cli-action@09a5f86915bb556e27bf050e9a5e339aeb073df5 # v1
+        with:
+          version: 3.4.11
+
+      - name: Reconcile only the completed run's ACL
+        shell: bash
+        run: deploy/aliyun/aais-acr-ci-endpoint.sh reconcile
+
+      - name: Write non-secret post-run receipt
+        shell: bash
+        run: |
+          set -euo pipefail
+          git_sha="${{ github.event.workflow_run.head_sha }}"
+          [[ "$git_sha" =~ ^[a-f0-9]{40}$ ]]
+          mkdir -p output/aliyun
+          jq -n \
+            --arg gitSha "$git_sha" \
+            --arg acrInstanceId "$ACR_INSTANCE_ID" \
+            --arg acrApiEndpoint "$ACR_API_ENDPOINT" \
+            --arg publicLoginServer "$ACR_PUBLIC_LOGIN_SERVER" \
+            --arg candidateRunId "${{ github.event.workflow_run.id }}" \
+            --arg candidateRunAttempt "${{ github.event.workflow_run.run_attempt }}" \
+            --arg watchdogRunId "${{ github.run_id }}" \
+            '{
+              schemaVersion: 1,
+              provider: "aliyun",
+              stage: "acr_postrun_cleanup",
+              gitSha: $gitSha,
+              acrInstanceId: $acrInstanceId,
+              acrApiEndpoint: $acrApiEndpoint,
+              publicLoginServer: $publicLoginServer,
+              candidateRunId: $candidateRunId,
+              candidateRunAttempt: $candidateRunAttempt,
+              watchdogRunId: $watchdogRunId,
+              publicEndpointReconciled: true,
+              secrets: "redacted"
+            }' > output/aliyun/acr-postrun-receipt.json
+
+      - name: Preserve post-run receipt
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: aais-aliyun-acr-postrun-${{ github.event.workflow_run.head_sha }}
+          path: output/aliyun/acr-postrun-receipt.json
+          if-no-files-found: error
+          retention-days: 30

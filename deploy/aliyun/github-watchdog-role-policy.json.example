@@ -1,0 +1,14 @@
+{
+  "Version": "1",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "cr:GetInstanceEndpoint",
+        "cr:DeleteInstanceEndpointAclPolicy",
+        "cr:UpdateInstanceEndpointStatus"
+      ],
+      "Resource": "acs:cr:REPLACE_REGION:REPLACE_ACCOUNT_ID:instance/REPLACE_INSTANCE_ID"
+    }
+  ]
+}

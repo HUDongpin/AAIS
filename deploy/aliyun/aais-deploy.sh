@@ -19,6 +19,7 @@ source "$deploy_config_file"
 : "${AAIS_ACR_INSTANCE_ID:?AAIS_ACR_INSTANCE_ID is required}"
 : "${AAIS_ACR_API_ENDPOINT:?AAIS_ACR_API_ENDPOINT is required}"
 : "${AAIS_ACR_LOGIN_SERVER:?AAIS_ACR_LOGIN_SERVER is required}"
+: "${AAIS_ACR_PUBLIC_LOGIN_SERVER:?AAIS_ACR_PUBLIC_LOGIN_SERVER is required}"
 : "${AAIS_ALIYUN_CLI:=/usr/local/bin/aliyun}"
 : "${AAIS_ALIYUN_CLI_PROFILE:=aais-ecs-role}"
 : "${AAIS_EXPECTED_MACHINE_ID_SHA256:?AAIS_EXPECTED_MACHINE_ID_SHA256 is required}"
@@ -51,6 +52,20 @@ if [[ "$AAIS_ACR_REPOSITORY" != "$AAIS_ACR_LOGIN_SERVER/"* ]]; then
   echo "AAIS ACR repository must use the configured Enterprise login server." >&2
   exit 1
 fi
+if [[ ! "$AAIS_ACR_INSTANCE_ID" =~ ^cri-[a-z0-9-]+$ \
+  || ! "$AAIS_ACR_API_ENDPOINT" =~ ^cr\.[a-z0-9-]+\.aliyuncs\.com$ \
+  || ! "$AAIS_ACR_LOGIN_SERVER" =~ ^[a-z0-9][a-z0-9.-]*\.cr\.aliyuncs\.com$ \
+  || "$AAIS_ACR_PUBLIC_LOGIN_SERVER" == "$AAIS_ACR_LOGIN_SERVER" \
+  || ! "$AAIS_ACR_PUBLIC_LOGIN_SERVER" =~ ^[a-z0-9][a-z0-9.-]*\.cr\.aliyuncs\.com$ ]]; then
+  echo "AAIS ACR public and VPC login-server bindings are invalid." >&2
+  exit 1
+fi
+aais_repository_path="${AAIS_ACR_REPOSITORY#"$AAIS_ACR_LOGIN_SERVER"/}"
+if [[ ! "$aais_repository_path" =~ ^[a-z0-9][a-z0-9._-]*/aais$ ]]; then
+  echo "AAIS ACR repository path is invalid." >&2
+  exit 1
+fi
+expected_public_push_repository="${AAIS_ACR_PUBLIC_LOGIN_SERVER}/${aais_repository_path}"
 if [[ ! "$AAIS_EXPECTED_MACHINE_ID_SHA256" =~ ^[a-f0-9]{64}$ ]]; then
   echo "AAIS expected machine fingerprint is invalid." >&2
   exit 1
@@ -116,6 +131,7 @@ if [[ ! "$release_sha" =~ ^[a-f0-9]{40}$ ]]; then
   exit 1
 fi
 candidate_source_receipt="${AAIS_CANDIDATE_RECEIPT_DIR}/${release_sha}.json"
+watchdog_source_receipt="${AAIS_CANDIDATE_RECEIPT_DIR}/${release_sha}.watchdog.json"
 candidate_receipt_mode="$(stat -c '%a' "$candidate_source_receipt" 2>/dev/null || true)"
 candidate_receipt_owner="$(stat -c '%u' "$candidate_source_receipt" 2>/dev/null || true)"
 if [[ "$candidate_receipt_owner" != "0" || "$candidate_receipt_mode" != "644" ]]; then
@@ -124,11 +140,64 @@ if [[ "$candidate_receipt_owner" != "0" || "$candidate_receipt_mode" != "644" ]]
 fi
 if ! jq -e \
   --arg gitSha "$release_sha" \
+  --arg acrInstanceId "$AAIS_ACR_INSTANCE_ID" \
+  --arg acrApiEndpoint "$AAIS_ACR_API_ENDPOINT" \
+  --arg publicLoginServer "$AAIS_ACR_PUBLIC_LOGIN_SERVER" \
   --arg imageRepository "$AAIS_ACR_REPOSITORY" \
+  --arg pushRepository "$expected_public_push_repository" \
   --arg imageDigest "sha256:${image_digest}" \
-  '.gitSha == $gitSha and .imageRepository == $imageRepository and .imageDigest == $imageDigest' \
+  '.schemaVersion == 1
+   and .provider == "aliyun"
+   and .stage == "acr_candidate"
+   and .gitSha == $gitSha
+   and .acrInstanceId == $acrInstanceId
+   and .acrApiEndpoint == $acrApiEndpoint
+   and .publicLoginServer == $publicLoginServer
+   and .imageRepository == $imageRepository
+   and .pushRepository == $pushRepository
+   and .imageDigest == $imageDigest
+   and .publicEndpointClosed == true
+   and .postRunWatchdogActive == true
+   and (.postRunWatchdogWorkflowId | type) == "number"' \
   "$candidate_source_receipt" >/dev/null; then
-  echo "AAIS candidate receipt does not bind the requested source and image." >&2
+  echo "AAIS candidate receipt does not bind the requested source/image or prove ACR closure." >&2
+  exit 1
+fi
+watchdog_receipt_mode="$(stat -c '%a' "$watchdog_source_receipt" 2>/dev/null || true)"
+watchdog_receipt_owner="$(stat -c '%u' "$watchdog_source_receipt" 2>/dev/null || true)"
+if [[ "$watchdog_receipt_owner" != "0" || "$watchdog_receipt_mode" != "644" ]]; then
+  echo "AAIS post-run watchdog receipt must be root-owned with mode 0644." >&2
+  exit 1
+fi
+candidate_run_id="$(jq -er '.githubRunId | select(type == "string")' \
+  "$candidate_source_receipt")"
+candidate_run_attempt="$(jq -er '.githubRunAttempt | select(type == "string")' \
+  "$candidate_source_receipt")"
+if [[ ! "$candidate_run_id" =~ ^[0-9]+$ || ! "$candidate_run_attempt" =~ ^[0-9]+$ ]]; then
+  echo "AAIS candidate receipt has an invalid GitHub run identity." >&2
+  exit 1
+fi
+if ! jq -e \
+  --arg gitSha "$release_sha" \
+  --arg acrInstanceId "$AAIS_ACR_INSTANCE_ID" \
+  --arg acrApiEndpoint "$AAIS_ACR_API_ENDPOINT" \
+  --arg publicLoginServer "$AAIS_ACR_PUBLIC_LOGIN_SERVER" \
+  --arg candidateRunId "$candidate_run_id" \
+  --arg candidateRunAttempt "$candidate_run_attempt" \
+  '.schemaVersion == 1
+   and .provider == "aliyun"
+   and .stage == "acr_postrun_cleanup"
+   and .gitSha == $gitSha
+   and .acrInstanceId == $acrInstanceId
+   and .acrApiEndpoint == $acrApiEndpoint
+   and .publicLoginServer == $publicLoginServer
+   and .candidateRunId == $candidateRunId
+   and .candidateRunAttempt == $candidateRunAttempt
+   and .publicEndpointReconciled == true
+   and (.watchdogRunId | type) == "string"
+   and (.watchdogRunId | test("^[0-9]+$"))' \
+  "$watchdog_source_receipt" >/dev/null; then
+  echo "AAIS post-run watchdog receipt does not match the candidate run." >&2
   exit 1
 fi
 if [[ ! -x "$AAIS_NGINX_BINARY" || ! -r "$AAIS_NGINX_CONFIG_FILE" ]]; then

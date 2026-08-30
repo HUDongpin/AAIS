@@ -56,7 +56,15 @@ describe("AAIS Aliyun deployment assets", () => {
     expect(deploy).toContain("org.opencontainers.image.revision");
     expect(deploy).toContain("image_revision");
     expect(deploy).toContain("candidate_source_receipt");
+    expect(deploy).toContain("watchdog_source_receipt");
     expect(deploy).toContain(".gitSha == $gitSha");
+    expect(deploy).toContain(".publicEndpointClosed == true");
+    expect(deploy).toContain(".postRunWatchdogActive == true");
+    expect(deploy).toContain(".publicEndpointReconciled == true");
+    expect(deploy).toContain(".acrInstanceId == $acrInstanceId");
+    expect(deploy).toContain(".publicLoginServer == $publicLoginServer");
+    expect(deploy).toContain(".pushRepository == $pushRepository");
+    expect(deploy).toContain("expected_public_push_repository");
     expect(deploy).toContain("AAIS_EXPECTED_MACHINE_ID_SHA256");
     expect(deploy).toContain("AAIS_EXPECTED_NGINX_VHOST_SHA256");
     expect(deploy).toContain("AAIS_EXPECTED_DATABASE_CA_SHA256");
@@ -171,6 +179,7 @@ describe("AAIS Aliyun deployment assets", () => {
       "deploy/aliyun/aais-maintenance.sh",
       "deploy/aliyun/aais-secrets-bootstrap.sh",
       "deploy/aliyun/aais-rotate-secrets.sh",
+      "deploy/aliyun/aais-acr-ci-endpoint.sh",
     ]) {
       expect(statSync(file).mode & 0o111, file).not.toBe(0);
     }
@@ -248,20 +257,68 @@ describe("AAIS Aliyun deployment assets", () => {
 
   it("uses pinned actions and OIDC-only temporary ACR credentials", () => {
     const workflow = readFileSync(".github/workflows/aliyun-container.yml", "utf8");
+    const endpoint = readFileSync("deploy/aliyun/aais-acr-ci-endpoint.sh", "utf8");
+    const buildPolicy = JSON.parse(
+      readFileSync("deploy/aliyun/github-build-role-policy.json.example", "utf8"),
+    );
 
     expect(workflow).toContain("id-token: write");
+    expect(workflow).toContain("product-gates:");
+    expect(workflow).toContain("name: Test without cloud identity");
+    expect(workflow).toContain("needs: product-gates");
+    expect(workflow).toContain("Run product gates without an OIDC token");
+    expect(workflow.match(/id-token: write/g)).toHaveLength(1);
+    expect(workflow.indexOf("product-gates:"))
+      .toBeLessThan(workflow.indexOf("id-token: write"));
+    const productGateJob = workflow.slice(
+      workflow.indexOf("  product-gates:"),
+      workflow.indexOf("  build-and-push:"),
+    );
+    expect(productGateJob).not.toContain("id-token");
+    expect(productGateJob).not.toContain("aliyun/");
+    expect(productGateJob).not.toContain("ACR_");
     expect(workflow).toContain("if: github.ref == 'refs/heads/main'");
-    expect(workflow).toContain("runs-on: [self-hosted, linux, x64, aais-aliyun-build]");
+    expect(workflow).toContain("runs-on: ubuntu-24.04");
+    expect(workflow).not.toContain("self-hosted");
+    expect(workflow).not.toContain("aais-aliyun-build");
     expect(workflow).toContain("aliyun/configure-aliyun-credentials-action@1e5248c8d5d93a8781ac344a68e19a43341e79e6");
+    expect(workflow).toContain("role-session-expiration: 3600");
+    expect(workflow).toContain("timeout-minutes: 45");
+    expect(workflow).toContain("timeout-minutes: 25");
     expect(workflow).toContain("aliyun/setup-aliyun-cli-action@09a5f86915bb556e27bf050e9a5e339aeb073df5");
     expect(workflow).toContain("cr GetAuthorizationToken");
     expect(workflow).toContain("--password-stdin");
     expect(workflow).toContain("DOCKER_CONFIG: ${{ runner.temp }}/aais-docker-${{ github.run_id }}");
+    expect(workflow).toContain("ALIYUN_ACR_PUBLIC_PUSH_REPOSITORY");
+    expect(workflow).toContain("ALIYUN_ACR_VPC_DEPLOYMENT_REPOSITORY");
+    expect(workflow).toContain("actions: read");
+    expect(workflow).toContain("aliyun-acr-postrun-watchdog.yml");
+    expect(workflow).toContain("Write non-secret watchdog handoff");
+    expect(workflow).toContain("Preserve watchdog handoff before opening ACR");
+    expect(workflow).toContain("aais-acr-watchdog-handoff-${{ github.run_id }}-${{ github.run_attempt }}");
+    expect(workflow).toContain("acrInstanceId: $acrInstanceId");
+    expect(workflow).toContain("acrApiEndpoint: $acrApiEndpoint");
+    expect(workflow).toContain("publicLoginServer: $publicLoginServer");
+    expect(workflow).toContain('test "$public_path" = "$vpc_path"');
+    expect(workflow).toContain('[[ "$public_path" =~ ^[a-z0-9][a-z0-9._-]*/aais$ ]]');
+    expect(workflow).toContain("aais-acr-ci-endpoint.sh open");
+    expect(workflow).toContain("aais-acr-ci-endpoint.sh close");
+    expect(workflow).toContain("AAIS_ACR_REQUIRE_STATE_ON_CLOSE");
+    expect(workflow.indexOf("Require the independent post-run watchdog"))
+      .toBeLessThan(workflow.indexOf("Open one-run ACR public push path"));
+    expect(workflow.indexOf("Preserve watchdog handoff before opening ACR"))
+      .toBeLessThan(workflow.indexOf("Open one-run ACR public push path"));
     expect(workflow).toContain("if: ${{ always() }}");
-    expect(workflow).toContain('docker logout "$ACR_LOGIN_SERVER"');
+    expect(workflow).toContain('docker logout "$ACR_PUBLIC_LOGIN_SERVER"');
+    expect(workflow.indexOf("aais-acr-ci-endpoint.sh close"))
+      .toBeLessThan(workflow.indexOf("Write non-secret candidate receipt"));
     expect(workflow).toContain('test "$(git rev-parse HEAD)" = "${{ github.sha }}"');
     expect(workflow).toContain("AAIS_BUILD_TIMESTAMP=${{ steps.source.outputs.build_timestamp }}");
-    expect(workflow).toContain("tags: ${{ vars.ALIYUN_ACR_REPOSITORY }}:${{ github.sha }}");
+    expect(workflow).toContain("tags: ${{ vars.ALIYUN_ACR_PUBLIC_PUSH_REPOSITORY }}:${{ github.sha }}");
+    expect(workflow).toContain('imageRepository "$ACR_VPC_DEPLOYMENT_REPOSITORY"');
+    expect(workflow).toContain("publicEndpointClosed: true");
+    expect(workflow).toContain("postRunWatchdogActive: true");
+    expect(workflow).toContain("acrInstanceId: $acrInstanceId");
     expect(workflow).toContain("NEXT_SERVER_ACTIONS_ENCRYPTION_KEY=${{ secrets.AAIS_NEXT_SERVER_ACTIONS_ENCRYPTION_KEY }}");
     const buildArguments = workflow.match(/build-args: \|\n((?:\s{12}.+\n)+)/)?.[1] ?? "";
     expect(buildArguments).not.toContain("NEXT_SERVER_ACTIONS_ENCRYPTION_KEY");
@@ -271,5 +328,106 @@ describe("AAIS Aliyun deployment assets", () => {
     expect(workflow).not.toContain("@v3");
     expect(workflow).not.toContain("@v4");
     expect(workflow).not.toContain("@v6");
+
+    expect(endpoint).toContain("CreateInstanceEndpointAclPolicy");
+    expect(endpoint).toContain("DeleteInstanceEndpointAclPolicy");
+    expect(endpoint).toContain("UpdateInstanceEndpointStatus");
+    expect(endpoint).toContain("GetInstanceEndpoint");
+    expect(endpoint).toContain("https://api.ipify.org");
+    expect(endpoint).toContain("https://checkip.amazonaws.com");
+    expect(endpoint).toContain('cidr="${ip_first}/32"');
+    expect(endpoint).toContain("ACR public access must be explicitly disabled without a non-default ACL");
+    expect(endpoint).toContain("wait_for_default_guard_after_open");
+    expect(endpoint).toContain("wait_for_closed_endpoint");
+    expect(endpoint).toContain("final_close_fence_sent");
+    expect(endpoint).toContain("closed_observations >= 5");
+    expect(endpoint).toContain("could not install its final close fence");
+    expect(endpoint).toContain("Expected ACR endpoint transaction state is missing.");
+    expect(endpoint.indexOf("--Enable true"))
+      .toBeLessThan(endpoint.indexOf("CreateInstanceEndpointAclPolicy"));
+    expect(endpoint.lastIndexOf("--Enable false"))
+      .toBeLessThan(endpoint.lastIndexOf("DeleteInstanceEndpointAclPolicy"));
+    expect(endpoint).toContain(".Enable == false");
+    expect(endpoint).toContain(".AclEnable == true");
+    expect(endpoint).not.toContain(".Enable != true");
+    expect(endpoint).not.toContain("0.0.0.0/0");
+    expect(endpoint).not.toMatch(/AccessKeyId|AccessKeySecret/);
+    expect(buildPolicy.Statement.flatMap((statement) => statement.Action)).toEqual([
+      "cr:GetAuthorizationToken",
+      "cr:PullRepository",
+      "cr:PushRepository",
+      "cr:GetInstanceEndpoint",
+      "cr:CreateInstanceEndpointAclPolicy",
+      "cr:DeleteInstanceEndpointAclPolicy",
+      "cr:UpdateInstanceEndpointStatus",
+    ]);
+    expect(buildPolicy.Statement[1].Resource).toContain(
+      "repository/REPLACE_INSTANCE_ID/REPLACE_NAMESPACE/aais",
+    );
+    expect(buildPolicy.Statement[2].Resource).toContain(
+      "instance/REPLACE_INSTANCE_ID",
+    );
+  });
+
+  it("uses an independent completed-run workflow as the ACR cleanup watchdog", () => {
+    const watchdog = readFileSync(
+      ".github/workflows/aliyun-acr-postrun-watchdog.yml",
+      "utf8",
+    );
+    const watchdogPolicy = JSON.parse(
+      readFileSync("deploy/aliyun/github-watchdog-role-policy.json.example", "utf8"),
+    );
+
+    expect(watchdog).toContain('workflows: ["Aliyun container candidate"]');
+    expect(watchdog).toContain("types: [completed]");
+    expect(watchdog).toContain("head_branch == 'main'");
+    expect(watchdog).toContain(
+      "head_repository.full_name == github.repository",
+    );
+    expect(watchdog).toContain("runs-on: ubuntu-24.04");
+    expect(watchdog).toContain("environment: aliyun-watchdog");
+    expect(watchdog).toContain("ref: ${{ github.event.workflow_run.head_sha }}");
+    expect(watchdog).not.toContain("ref: main");
+    expect(watchdog).toContain("actions: read");
+    expect(watchdog).toContain("Download the pre-open watchdog handoff");
+    expect(watchdog).toContain(
+      "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
+    );
+    expect(watchdog).toContain(
+      "aais-acr-watchdog-handoff-${{ github.event.workflow_run.id }}-${{ github.event.workflow_run.run_attempt }}",
+    );
+    expect(watchdog).toContain("run-id: ${{ github.event.workflow_run.id }}");
+    expect(watchdog).toContain(".gitSha == $gitSha");
+    expect(watchdog).toContain(".candidateRunId == $candidateRunId");
+    expect(watchdog).toContain(".candidateRunAttempt == $candidateRunAttempt");
+    expect(watchdog).toContain("ACR_INSTANCE_ID=%s");
+    expect(watchdog).toContain("ACR_API_ENDPOINT=%s");
+    expect(watchdog).toContain("ACR_PUBLIC_LOGIN_SERVER=%s");
+    expect(watchdog).not.toContain("vars.ALIYUN_ACR_INSTANCE_ID");
+    expect(watchdog).not.toContain("vars.ALIYUN_ACR_API_ENDPOINT");
+    expect(watchdog).not.toContain("vars.ALIYUN_ACR_PUBLIC_LOGIN_SERVER");
+    expect(watchdog).toContain("AAIS_ACR_TARGET_RUN_ID");
+    expect(watchdog).toContain("AAIS_ACR_TARGET_RUN_ATTEMPT");
+    expect(watchdog).toContain("aais-acr-ci-endpoint.sh reconcile");
+    expect(watchdog).toContain("acr_postrun_cleanup");
+    expect(watchdog).toContain("publicEndpointReconciled: true");
+    expect(watchdog).toContain("acrInstanceId: $acrInstanceId");
+    expect(watchdog).toContain("actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02");
+    expect(watchdog).toContain(
+      "aliyun/configure-aliyun-credentials-action@1e5248c8d5d93a8781ac344a68e19a43341e79e6",
+    );
+    expect(watchdogPolicy.Statement.flatMap((statement) => statement.Action)).toEqual([
+      "cr:GetInstanceEndpoint",
+      "cr:DeleteInstanceEndpointAclPolicy",
+      "cr:UpdateInstanceEndpointStatus",
+    ]);
+    expect(watchdogPolicy.Statement.flatMap((statement) => statement.Action)).not.toContain(
+      "cr:CreateInstanceEndpointAclPolicy",
+    );
+    const runbook = readFileSync("docs/aliyun-primary-runbook.md", "utf8");
+    expect(runbook).toContain("no required reviewers and no wait timer");
+    expect(runbook).toContain("interactive environment approval is forbidden");
+    expect(runbook).toContain("holds only `ALIYUN_OIDC_PROVIDER_ARN` and");
+    expect(runbook).toContain("has no build secret, ACR binding variable, or");
   });
 });

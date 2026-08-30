@@ -1,0 +1,30 @@
+{
+  "Version": "1",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "cr:GetAuthorizationToken"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "cr:PullRepository",
+        "cr:PushRepository"
+      ],
+      "Resource": "acs:cr:REPLACE_REGION:REPLACE_ACCOUNT_ID:repository/REPLACE_INSTANCE_ID/REPLACE_NAMESPACE/aais"
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "cr:GetInstanceEndpoint",
+        "cr:CreateInstanceEndpointAclPolicy",
+        "cr:DeleteInstanceEndpointAclPolicy",
+        "cr:UpdateInstanceEndpointStatus"
+      ],
+      "Resource": "acs:cr:REPLACE_REGION:REPLACE_ACCOUNT_ID:instance/REPLACE_INSTANCE_ID"
+    }
+  ]
+}

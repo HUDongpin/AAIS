@@ -34,9 +34,11 @@ npm run verify:postgres-restore -- --env-file ./.env.postgres-restore.local --ou
 
 ## Deploy
 
-The target provider shape is Aliyun Hong Kong primary plus a zero-extra-cost
-Vercel cold application backup. Vercel Static IPs are deliberately not enabled,
-so Vercel has no RDS or product-worker authority after migration. Provider
+The target provider shape is Aliyun Hong Kong primary plus a Vercel cold
+application backup with no Vercel Static IP add-on. Existing-plan included
+usage and overages still apply; no billing-changing Vercel feature is enabled
+without separate Owner approval. Because Static IPs are deliberately not
+enabled, Vercel has no RDS or product-worker authority after migration. Provider
 bootstrap, exact-digest deployment, RDS rehearsal/cutover, DNS,
 rollback, capacity, and failure-drill procedures are frozen in
 [docs/aliyun-primary-runbook.md](./docs/aliyun-primary-runbook.md). Compute and

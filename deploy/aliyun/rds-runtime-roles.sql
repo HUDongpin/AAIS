@@ -79,7 +79,7 @@ $runtime_functions$;
 alter default privileges for role aais_migrator in schema public
   revoke execute on functions from public;
 
--- Vercel is intentionally absent: the zero-extra-cost cold backup has no RDS
+-- Vercel is intentionally absent: the no-Static-IP cold backup has no RDS
 -- login or grant. Passwords are deliberately absent. The Owner must set each LOGIN role's
 -- password through a hidden provider/psql prompt and store it in the matching
 -- workload secret manager. Never add ALTER ROLE ... PASSWORD to this file.

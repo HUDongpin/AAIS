@@ -9,7 +9,9 @@ data, or change production DNS.
 
 - Canonical origin: `https://www.aais.site`.
 - Aliyun compute: the existing Alibaba Cloud Linux 3 ECS, using only
-  `127.0.0.1:3101` and `127.0.0.1:3102` for AAIS.
+  `127.0.0.1:3101` and `127.0.0.1:3102` for AAIS. It is the only application
+  server in this rollout: no build-runner ECS, replacement ECS, or second
+  application instance is purchased.
 - Database: one Hong Kong RDS PostgreSQL High-availability Edition instance.
 - Vercel: same Git SHA application build, with no direct production RDS access
   and no product cron schedule in the final deployed topology. The portability
@@ -34,7 +36,17 @@ Aliyun candidate does not prove production cutover.
 - `Dockerfile` and `.dockerignore`: Node 24 standalone image and secret-safe
   build context.
 - `.github/workflows/aliyun-container.yml`: exact-SHA CI, OIDC/STS, temporary
-  ACR login, immutable image digest, SBOM/provenance, and candidate receipt.
+  `/32` ACR public push path, temporary ACR login, immutable image digest,
+  SBOM/provenance, and candidate receipt.
+- `deploy/aliyun/aais-acr-ci-endpoint.sh`: fail-closed opening and cleanup of
+  the one-run ACR public endpoint used by the GitHub-hosted builder.
+- `.github/workflows/aliyun-acr-postrun-watchdog.yml`: an independent
+  completed-run cleanup that is still triggered when the build runner exits or
+  the candidate workflow is cancelled.
+- `deploy/aliyun/github-build-role-policy.json.example`: repository- and
+  instance-scoped permissions for that OIDC build role.
+- `deploy/aliyun/github-watchdog-role-policy.json.example`: instance-scoped
+  endpoint read/update/delete permissions for the independent cleanup workflow.
 - `deploy/aliyun/aais-deploy.sh`: capacity-gated blue/green promotion using only
   the configured ACR repository and a `sha256:` digest.
 - `deploy/aliyun/nginx-aais.conf.template`: isolated AAIS vhost with streaming
@@ -55,7 +67,8 @@ Aliyun candidate does not prove production cutover.
 
 ## Hard stop gates
 
-Stop before production RDS creation or migration when any of these is true:
+Stop before any billable provider action, production RDS creation, or migration
+when any of these is true:
 
 - `AAIS_DATABASE_URL` and a fallback production URL differ.
 - The source PostgreSQL major version, encoding, collation, extensions, or
@@ -72,10 +85,21 @@ Stop before production RDS creation or migration when any of these is true:
   immutable digest.
 - A production secret would enter Git, Docker build args, workflow logs,
   command arguments, chat, or a release receipt.
-- The exact monthly ACR Enterprise, RDS, backup, and temporary build-runner
-  prices have not been displayed to and approved by the Owner. A paid KMS
-  instance is not part of the default topology; it requires a separate price
-  approval if selected later.
+- The current estimate and metered items for the existing ECS snapshot
+  (storage and retention), ACR Enterprise (instance, storage, and transfer), RDS
+  (instance, storage, PITR, log/WAL, backup, cross-region backup, transfer, and
+  temporary restore instance), and GitHub Actions (minutes, cache, artifact
+  storage, and overages) have not been displayed to and approved by the Owner.
+  No second ECS is part of this rollout. A paid KMS instance is also excluded by
+  default and requires separate price approval.
+- The ACR Enterprise instance is shared with another workload, its public
+  endpoint cannot be enabled/disabled through the restricted build role, the
+  runner cannot be limited to one verified public IPv4 `/32`, or cleanup cannot
+  prove the endpoint disabled and its temporary ACL removed.
+- The independent post-run watchdog workflow is not active on default-branch
+  `main`, its `aliyun-watchdog` environment has a required reviewer or wait
+  timer, its OIDC trust/role is unavailable, or its completed-run cleanup has
+  not been tested against the same dedicated ACR instance.
 - The ECS system disk and snapshots that can contain Docker runtime metadata or
   `/etc/aais/secrets` do not have verified at-rest encryption.
 - `/run/aais` cannot be reconstructed from the audited root-only local secret
@@ -88,8 +112,10 @@ Stop before production RDS creation or migration when any of these is true:
    vhosts, and Docker health.
 3. Record status, TLS, response time, and 5xx baselines for the existing 3dENA,
    CAIS, and EduExpressAI domains.
-4. Create and verify an ECS system-disk snapshot before installing AAIS assets.
-   This pre-secret snapshot may follow the existing retention policy. Every
+4. After the console displays the snapshot storage estimate and retention rule
+   and the Owner explicitly approves them, create and verify one ECS system-disk
+   snapshot before installing AAIS assets. This pre-secret snapshot may follow
+   the approved retention policy. Every
    later snapshot that contains Docker runtime metadata or
    `/etc/aais/secrets/runtime.env` is a secret-bearing backup: restrict access
    and sharing, keep the shortest justified retention, and never copy it to an
@@ -115,26 +141,86 @@ Stop before production RDS creation or migration when any of these is true:
 3. Configure only non-secret GitHub environment variables:
    `ALIYUN_OIDC_PROVIDER_ARN`, `ALIYUN_BUILD_ROLE_ARN`,
    `ALIYUN_ACR_INSTANCE_ID`, `ALIYUN_ACR_API_ENDPOINT`,
-   `ALIYUN_ACR_LOGIN_SERVER`, and `ALIYUN_ACR_REPOSITORY`.
+   `ALIYUN_ACR_PUBLIC_LOGIN_SERVER`, `ALIYUN_ACR_PUBLIC_PUSH_REPOSITORY`,
+   `ALIYUN_ACR_VPC_LOGIN_SERVER`, and
+   `ALIYUN_ACR_VPC_DEPLOYMENT_REPOSITORY`. The public and VPC repository paths
+   after their login servers must be identical. The `aliyun-watchdog` GitHub
+   environment holds only `ALIYUN_OIDC_PROVIDER_ARN` and
+   `ALIYUN_WATCHDOG_ROLE_ARN`; it has no build secret, ACR binding variable, or
+   repository push permission. Before any ACR mutation, the candidate uploads
+   an exact run-ID/attempt/SHA handoff containing the non-secret ACR instance,
+   API endpoint, and public login server. The completed-run workflow downloads
+   and validates that exact artifact, so a second environment cannot silently
+   point cleanup at a different registry. Both receipts record the three ACR
+   bindings, and the ECS deploy wrapper compares them with each other and with
+   root-owned `deploy.env`.
    Configure `AAIS_NEXT_SERVER_ACTIONS_ENCRYPTION_KEY` separately as a protected
    GitHub environment secret and the matching Vercel value as an Owner-only
    build secret. It is passed to Docker through a BuildKit secret mount, never
-   a build argument. Both builds use the full Git SHA as their deployment ID.
-4. Provision a short-lived, separately sized GitHub self-hosted runner inside
-   the Aliyun VPC with labels `self-hosted,linux,x64,aais-aliyun-build`. Never
-   build on the shared production ECS and never open Enterprise ACR to GitHub's
-   dynamic public IP ranges. Validate its labels, VPC-only ACR reachability and
-   ephemeral destruction procedure, but do not merge or run the lease-aware
-   production workflow before Phase C's database gate.
-5. Attach a least-privilege ECS RAM role for ACR temporary authorization and
-   logging. Install the pinned Alibaba Cloud CLI and
+   a build argument. Both builds use the full Git SHA as the AAIS release ID and
+   provenance value; Vercel keeps its provider-owned `NEXT_DEPLOYMENT_ID`.
+4. Use the pinned GitHub-hosted `ubuntu-24.04` runner; never build on the shared
+   production ECS. Product gates run in a separate job whose permissions omit
+   `id-token: write`; package lifecycle scripts and tests therefore cannot mint
+   the Aliyun workload token. Only after that job passes does the publish job
+   receive OIDC permission and exchange it for a one-hour STS session scoped to
+   the one AAIS ACR repository and dedicated ACR instance. The publish job is
+   capped at 45 minutes and the image step at 25 minutes, so endpoint cleanup
+   retains a credential/time margin. The workflow verifies
+   the runner's public IPv4 through two independent HTTPS observations and
+   requires them to agree. It enables the public endpoint, waits for ACR's
+   automatic deny-all `127.0.0.1/32` guard with ACL enforcement on, then adds
+   only the runner `/32` and pushes by full-SHA tag.
+   Before obtaining cloud credentials or opening ACR, it uploads the redacted
+   watchdog handoff under an artifact name bound to the current GitHub run ID
+   and attempt. Failure to preserve that handoff is a pre-mutation hard stop.
+   It must not allow the complete GitHub Actions address ranges or any broad
+   CIDR. An `if: always()` cleanup logs Docker out, proves the endpoint exactly
+   disabled before deleting that `/32`, and queries ACR until closure without
+   the runner ACL is proven. It never deletes the default guard while the
+   endpoint is open.
+   The candidate receipt is generated only after cleanup succeeds. The build
+   role may not operate ECS, RDS, RAM, DNS, OSS, or another repository. Do not
+   merge or run the lease-aware production workflow before Phase C's database
+   gate. Instantiate `github-build-role-policy.json.example` only with the
+   approved region, account, dedicated instance, and AAIS namespace values;
+   never attach a broad Container Registry administrator policy.
+5. Attach a least-privilege ECS RAM role only for ACR temporary authorization,
+   the one-repository VPC pull, and logging. Do not grant the shared ECS endpoint
+   update, ACL create/delete, or repository push permissions. Install the pinned
+   Alibaba Cloud CLI and
    configure its `aais-ecs-role` profile to use `EcsRamRole`; the deploy wrapper
    obtains a short-lived ACR token, logs Docker in only for the pull, then logs
    out. Every operation uses a root-only `DOCKER_CONFIG` below `/run/aais`, so
    it cannot overwrite or remove another service's root Docker credentials.
    Test a deployment after token expiry and after ECS reboot. Do not create a
    human AccessKey or permanent registry password.
-6. Install repository scripts under `/opt/aais/bin` as root-owned mode `0755`,
+6. Create a separate OIDC watchdog role from
+   `github-watchdog-role-policy.json.example`, with no token, pull, push, create
+   ACL, ECS, RDS, RAM, or DNS permission. Activate
+   `aliyun-acr-postrun-watchdog.yml` on default-branch `main`. Configure the
+   `aliyun-watchdog` environment with no required reviewers and no wait timer;
+   restrict its deployment branch to `main`. Cleanup must start automatically,
+   so an interactive environment approval is forbidden. The candidate workflow
+   queries the GitHub Actions API and refuses to open ACR unless this independent
+   workflow is active. The post-run job checks out the exact triggering `main`
+   SHA, downloads only the exact pre-open handoff artifact from that run, and
+   validates its SHA, run ID, attempt, instance, API endpoint, and public server
+   before exchanging OIDC.
+   Scope the watchdog role resource itself to that one dedicated ACR instance.
+   Test successful, failed, cancelled, and runner-loss candidate runs, and
+   record the completed-event-to-cleanup-start delay. The completed-run event
+   must disable ACR before deleting only the exact `run_id/run_attempt` ACL, and
+   a disable failure must leave the ACL intact. This adds one short
+   GitHub-hosted cleanup job per image build, not another ECS; its Actions usage
+   remains inside the cost gate.
+   ACR exposes enable and disable through the same Update action, so RAM cannot
+   make that action literally close-only. Compensate by restricting OIDC trust
+   to this exact repository, workflow, `main`, and `aliyun-watchdog` environment,
+   protecting changes to the workflow file through branch/CODEOWNERS review
+   without adding a runtime approval or wait, and alerting in ActionTrail on any
+   watchdog-role call with `Enable=true`.
+7. Install repository scripts under `/opt/aais/bin` as root-owned mode `0755`,
    create the dedicated `aais-worker` system user/group, and install root-owned
    config under `/etc/aais` with mode `0600`. The no-KMS default has exactly one
    persistent secret source: regular, non-symlink, single-link
@@ -224,10 +310,17 @@ Stop before production RDS creation or migration when any of these is true:
    The production guard blocks the first lease-aware `main` build without it.
 2. Merge the reviewed portability commit to `main`. Let Git-connected Vercel
    and the Aliyun container workflow build the same full SHA while the two
-   existing Vercel schedules remain configured. Destroy the ephemeral runner
-   after the ACR job. Accept only a candidate receipt whose Git SHA and digest
-   match ACR, then deliver that non-secret receipt through the audited channel
-   as `/opt/aais/candidates/<full-sha>.json`, root-owned mode `0644`.
+   existing Vercel schedules remain configured. Accept only a candidate receipt
+   whose Git SHA and digest match ACR, whose `imageRepository` is the VPC
+   repository, whose `publicEndpointClosed` value is `true`, and which records
+   the active post-run watchdog workflow ID. Wait for that independent
+   completed-run watchdog job to succeed, then confirm ACR public access is
+   disabled and the run `/32` is absent. Deliver the candidate receipt as
+   `/opt/aais/candidates/<full-sha>.json` and the independent cleanup receipt as
+   `/opt/aais/candidates/<full-sha>.watchdog.json`, both root-owned mode `0644`;
+   the deploy wrapper requires their Git SHA, run ID, run attempt, ACR instance,
+   API endpoint, and public login server to match the pre-open handoff and its
+   local configuration.
 3. Deploy only by exact digest:
 
 ```bash
@@ -266,8 +359,9 @@ receive distinct receipts, so an exact-SHA rollback is supported.
 - The host keeps at least 2 GiB available memory and all existing sites remain
   within 10% of baseline p95 with no new 5xx.
 
-If the host gate fails, roll back AAIS and move it to a separate ECS. Do not
-stop or resize unrelated workloads to force co-hosting.
+If the host gate fails, roll back AAIS and keep Vercel as the live site. Do not
+stop or resize unrelated workloads to force co-hosting, and do not purchase or
+provision a second ECS without a new, explicit Owner decision.
 
 5. After the lease-aware Vercel build and Aliyun candidate are both ready,
    confirm both Aliyun timers are still disabled and record the prepared
@@ -296,7 +390,8 @@ stop or resize unrelated workloads to force co-hosting.
    require free space for source data plus indexes, restore/WAL/temp headroom,
    and growth; if 50 GiB does not meet that measured margin, increase it.
 2. Give ECS the private endpoint. Keep the RDS public endpoint disabled. Vercel
-   is not an approved database client in the zero-new-Vercel-cost topology.
+   is not an approved database client in this no-Static-IP-add-on topology;
+   normal Pro usage and overages remain governed by the existing Vercel plan.
    Enable RDS SSL, download the provider server CA through the Owner-controlled
    console, store it root-owned under `/etc/aais/tls/`, and pin its SHA-256 in
    `deploy.env`. Mount it read-only as `/etc/aais/rds-ca.pem`; the URL must use
@@ -307,9 +402,11 @@ stop or resize unrelated workloads to force co-hosting.
    mismatch is a traffic-readiness hard stop.
 3. Before any production write, enable and record RDS automatic data backups,
    log/WAL backups, 30-day PITR, deletion protection, storage/connection alerts,
-   and the explicitly approved cross-region-backup policy/cost. Restore an RDS
-   backup to a new temporary instance and run application and migration-ledger
-   verification; a logical dump alone is not the DR rehearsal.
+   and the explicitly approved cross-region-backup policy/cost. Only after a
+   separate Owner approval of its displayed hourly/storage estimate, restore an
+   RDS backup to a temporary RDS instance and run application and
+   migration-ledger verification; delete that instance immediately after the
+   evidence is complete. A logical dump alone is not the DR rehearsal.
 4. Restore a custom-format logical dump with `--no-owner --no-acl` into a
    rehearsal database.
 5. Apply all migrations, including `0028` and `0029`, bind a rehearsal-only
@@ -377,17 +474,20 @@ simple DNS/database flip to the stale source is forbidden.
 
 1. Monitor `/api/system/traffic-readiness` from multiple locations, but do not
    configure automatic Vercel failover because Vercel cannot reach RDS.
-2. Recovery is manual: restart or roll back only the AAIS container, or deploy
-   the recorded digest to a replacement ECS and reconnect it to private RDS.
+2. Recovery on the existing ECS is manual: restart or recreate only the AAIS
+   blue/green container from the recorded digest. Loss of the entire ECS has no
+   pre-purchased replacement compute in this rollout and therefore no promised
+   one-to-four-hour compute recovery target; it stops for a new Owner decision.
 
 ## Failure drill and evidence
 
 Never stop the whole shared ECS for a drill. Stop only the AAIS container and
-prove blue/green rollback without affecting another vhost. Separately rehearse
-restoring the recorded digest on a replacement candidate and reconnecting it
-to private RDS. Vercel may prove that the same SHA still builds and serves
-database-free public assets, but it must not be reported as writable failover.
-The target manual recovery window is one to four hours, not ten minutes.
+prove blue/green recreation and rollback on the existing ECS without affecting
+another vhost. Do not create a replacement candidate as part of this drill.
+Vercel may prove that the same SHA still builds and serves database-free public
+assets, but it must not be reported as writable failover. The one-to-four-hour
+target applies only to an AAIS container failure while the existing ECS and RDS
+remain available.
 
 The final receipt set must separately contain source SHA, ACR digest, Vercel
 cold-build deployment/SHA, ECS container/resource limits, migration ledger and backup ID,
