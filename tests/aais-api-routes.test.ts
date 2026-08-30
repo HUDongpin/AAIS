@@ -3304,23 +3304,24 @@ describe("AAIS learning API routes", () => {
     expect(new TextDecoder().decode(acknowledgement.value)).toContain("event: ack");
     await Promise.resolve();
 
-    expect(guideRoute.guideProviderMaximumRetryBudgetMs).toBe(240_000);
-    expect(guideRoute.guideRouteTotalDeadlineMs).toBe(
-      guideRoute.guideProviderMaximumRetryBudgetMs + 10_000,
+    const guideDeadlines = await import("@/lib/server/aais-guide-route-deadlines");
+    expect(guideDeadlines.guideProviderMaximumRetryBudgetMs).toBe(240_000);
+    expect(guideDeadlines.guideRouteTotalDeadlineMs).toBe(
+      guideDeadlines.guideProviderMaximumRetryBudgetMs + 10_000,
     );
-    expect(guideRoute.guideRouteTotalDeadlineMs).toBeLessThanOrEqual(
-      guideRoute.guideRouteMaximumDeadlineMs,
+    expect(guideDeadlines.guideRouteTotalDeadlineMs).toBeLessThanOrEqual(
+      guideDeadlines.guideRouteMaximumDeadlineMs,
     );
     expect(guideRoute.maxDuration * 1_000).toBeGreaterThan(
-      guideRoute.guideRouteTotalDeadlineMs,
+      guideDeadlines.guideRouteTotalDeadlineMs,
     );
 
-    await vi.advanceTimersByTimeAsync(guideRoute.guideProviderMaximumRetryBudgetMs);
+    await vi.advanceTimersByTimeAsync(guideDeadlines.guideProviderMaximumRetryBudgetMs);
     expect(graphSignal?.aborted).toBe(false);
 
     await vi.advanceTimersByTimeAsync(
-      guideRoute.guideRouteTotalDeadlineMs
-        - guideRoute.guideProviderMaximumRetryBudgetMs
+      guideDeadlines.guideRouteTotalDeadlineMs
+        - guideDeadlines.guideProviderMaximumRetryBudgetMs
         + 1,
     );
     expect(graphSignal?.aborted).toBe(true);

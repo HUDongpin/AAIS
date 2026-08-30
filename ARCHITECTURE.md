@@ -2,7 +2,13 @@
 
 ## Runtime Shape
 
-AAIS is a single Next.js App Router application deployed on Vercel. It uses:
+AAIS is a single Next.js App Router application. The repository supports an
+Aliyun Hong Kong container primary with Vercel as a same-SHA, writable warm
+backup. Both runtimes use the existing Neon PostgreSQL 17 database as the one
+authoritative production target; the Vercel Function and Neon database are both
+pinned to Singapore `sin1`. Until provider and domain acceptance closes,
+the live domain remains Vercel. This topology uses only the existing ECS and
+Neon database, Private GHCR, and the current Vercel project. It uses:
 
 - React client components for the learner cockpit, login, and teacher dashboard.
 - Next.js route handlers under `src/app/api/` for auth, learner sessions, AI guide turns, exports, analytics, LRS health, and readiness.
@@ -12,14 +18,23 @@ AAIS is a single Next.js App Router application deployed on Vercel. It uses:
 
 ```mermaid
 flowchart LR
-  User["Learner / Teacher / Admin"] --> Pages["Next.js App Router pages"]
+  GitHub["GitHub main"] --> Vercel["Vercel same SHA"]
+  GitHub --> GHCR["Private GHCR exact digest"]
+  GHCR --> Preload["Owner real-TTY preload"]
+  Preload --> Aliyun["Existing Hong Kong ECS"]
+  User["Learner / Teacher / Admin"] --> GTM["AliDNS / GTM"]
+  GTM -->|"primary"| Aliyun
+  GTM -->|"warm failover"| Vercel
+  Aliyun --> Pages["Next.js App Router pages"]
+  Vercel --> Pages
   Pages --> Api["Next.js route handlers under src/app/api"]
   Api --> Auth["Signed session cookie + CSRF + revocation"]
   Api --> Store["AAIS learning store"]
-  Store --> Postgres["Neon/Postgres tables"]
+  Store --> Postgres["Neon/Postgres tables; one authoritative target"]
   Store --> LocalFiles["Local .aais-data files in development"]
   Store --> LrsOutbox["aais_lrs_outbox"]
   LrsOutbox --> ExternalLrs["External LRS"]
+  LrsOutbox --> Lease["aais_runtime_leases fencing"]
   Api --> GuideGraph["LangGraph A1-A4 guide orchestration"]
   GuideGraph --> Provider["Live AI provider or deterministic fallback"]
   Api --> Sentry["Sentry monitoring when configured"]
@@ -64,6 +79,8 @@ Current production persistence is:
 - `aais_course_tasks`: ordered task catalog rows with localized titles, briefs, difficulty, lock rules, and expert traces.
 - `aais_enrollments`: user-to-course membership rows with cohort labels for real-account pilots.
 - `aais_schema_migrations`: migration ledger.
+- `aais_runtime_leases`: provider-neutral worker leadership and fencing generation. Aliyun timers and Vercel Cron remain enabled; each invocation uses a distinct holder id and only the current lease generation may dispatch.
+- `aais_runtime_identity`: one non-secret database-resident target identifier used by traffic readiness to reject a schema-compatible but incorrect production or rehearsal database.
 
 Schema changes must be made through `migrations/postgres/` and applied with `npm run db:migrate`. Runtime request handlers must not issue DDL.
 
@@ -95,6 +112,43 @@ Keep these stable unless a task explicitly changes them:
 - Session revocation: protected API routes and protected pages must check the server-side denylist before accepting a signed cookie.
 - Redacted logging: never log secrets, cookies, database URLs, raw provider replies, or learner text beyond the learner-owned storage path.
 - Production storage: fail closed if production lacks Postgres.
+- Production database boundary: Aliyun and Vercel use independent
+  least-privilege Neon roles but the same target ID. The session secret,
+  product-pseudonym secret, Server Actions encryption key, and canonical
+  `https://www.aais.site` origin must match across providers.
+- Integration transition boundary: removing managed Neon aliases before the new
+  Vercel build must not revoke or rotate the credential still used by the live
+  deployment. Provider side effects are inspected read-only first. If alias-only
+  removal cannot preserve the legacy credential, the transition requires a
+  maintenance/write freeze or stops for a redesigned two-stage cutover.
+- Vercel runtime boundary: Production uses provider `vercel`, Neon `pg`, pool
+  max 2, the bound target ID, and both research sentinels explicitly `false`.
+  Static `AAIS_RELEASE_ID` and `AAIS_DEPLOYMENT_GIT_COMMIT_SHA` are absent; the
+  system Git SHA is authoritative. Its strong Vercel-Cron-only `CRON_SECRET` is
+  distinct from both Aliyun worker tokens and is never evidence.
+- Server Actions key boundary: GitHub environment secret
+  `AAIS_NEXT_SERVER_ACTIONS_ENCRYPTION_KEY` maps to Docker BuildKit target
+  `NEXT_SERVER_ACTIONS_ENCRYPTION_KEY` and Vercel Production variable
+  `NEXT_SERVER_ACTIONS_ENCRYPTION_KEY`. Only non-sensitive fingerprints may be
+  compared across providers; the key value never enters logs or evidence.
+- Residual Neon exposure: both providers reach the Neon public endpoint with
+  full TLS hostname verification. This rollout has no source-IP allowlist, so a
+  leaked runtime database credential could be used from another network until
+  that provider-specific role is revoked or rotated. Separate roles, minimum
+  grants, connection budgets, secret redaction, monitoring, and restore drills
+  reduce but do not eliminate that risk.
+- Availability boundary: GTM targets application failover within ten minutes
+  only while Neon remains healthy. Neon is a shared database single point of
+  failure; a Neon outage, account suspension, region failure, or public-network
+  partition affecting both runtimes is not masked by Vercel failover.
+- Image-supply boundary: `main` automatically publishes an immutable private
+  GHCR candidate. The Owner alone uses a short-lived `read:packages` PAT in a
+  real TTY to preload it; the PAT is never a runtime or deploy environment
+  variable. Candidate/preload receipt agreement, local `RepoDigest`, and OCI
+  revision checks bind the image to the SHA. GitHub generates provenance, but
+  the ECS does not currently verify its attestation cryptographically, so this
+  is not host-side signature verification. Private GHCR is the only registry
+  path.
 - LRS outbox: keep retry/dead-letter behavior isolated from request handlers.
 - API errors: route handlers return stable `{ error: { code, message } }` envelopes. Unexpected exception details stay in redacted server logs/monitoring, not client JSON.
 - Monitoring: do not enable default PII or Session Replay without a separate privacy review.
@@ -108,6 +162,8 @@ These are planned but not current architecture:
 - Owner-run production account seeding and provider-side email/domain setup.
 - Runtime course/task reads still use `src/data/aais.ts`; the catalog tables are the migration target for moving course authoring out of source code.
 - Owner/provider privacy confirmations outside code: final legal basis, signed retention values, consent evidence workflow, processor DPAs, and external provider data-region proof.
+- Host-side cryptographic verification of the GHCR provenance attestation; the
+  current deployment verifies receipts, digest and OCI revision only.
 
 Do not add heavier infrastructure until a trigger is actually met:
 

@@ -10,6 +10,13 @@ import {
 import { isAaisAuthError, requireAaisSessionActor } from "@/lib/server/aais-request-auth";
 import { createAaisApiErrorResponse } from "@/lib/server/aais-api-error";
 import { isAaisStrongOpaqueSecret } from "@/lib/server/aais-opaque-secret";
+import {
+  acquireAaisRuntimeLease,
+  assertAaisRuntimeLeaseHeld,
+  isAaisRuntimeLeaseUnavailableError,
+  releaseAaisPrimaryHeartbeat,
+  releaseAaisRuntimeLease,
+} from "@/lib/server/aais-runtime-lease";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -56,9 +63,42 @@ async function handleFlushRequest(
   const limit = readFlushLimit(searchParams.get("limit"));
   let action = readRequestedOutboxActionName(searchParams.get("action"));
   let authorization: FlushAuthorization | null = null;
+  let lease: Awaited<ReturnType<typeof acquireAaisRuntimeLease>> | null = null;
+  let primaryHeartbeatHealthy = false;
   try {
     authorization = await authorizeFlushRequest(request, input);
     action = readOutboxAction(searchParams.get("action"), input);
+    lease = await acquireAaisRuntimeLease("lrs-outbox");
+    if (lease.status === "standby") {
+      recordOutboxAudit({
+        action,
+        authorization,
+        limit,
+        outcome: "failure",
+        result: {
+          status: "standby",
+          lease: "held_by_peer",
+          secrets: "redacted",
+        },
+      });
+      return NextResponse.json(
+        {
+          action,
+          authorization: sanitizeAuthorization(authorization),
+          outbox: {
+            status: "standby",
+            lease: "held_by_peer",
+            secrets: "redacted",
+          },
+          secrets: "redacted",
+        },
+        {
+          status: 202,
+          headers: { "cache-control": "private, no-store" },
+        },
+      );
+    }
+    await assertAaisRuntimeLeaseHeld(lease);
     if (action === "requeue-dead-letter") {
       const result = await requeueAaisPersistentLrsDeadLetters({
         limit,
@@ -76,6 +116,7 @@ async function handleFlushRequest(
         status: result.status,
         result: sanitizeRequeueResult(result),
       });
+      primaryHeartbeatHealthy = result.status !== "not_configured";
       return NextResponse.json(
         {
           action,
@@ -89,11 +130,12 @@ async function handleFlushRequest(
         },
       );
     }
-
     const result = await flushAaisPersistentLrsOutbox({
       limit,
+      beforeDispatch: () => assertAaisRuntimeLeaseHeld(lease!),
     });
     const flushFailed = isFlushResultFailure(result);
+    primaryHeartbeatHealthy = !flushFailed;
     recordOutboxAudit({
       action,
       authorization,
@@ -143,6 +185,13 @@ async function handleFlushRequest(
       });
     }
     return createAaisApiErrorResponse(getErrorResponseInput(error));
+  } finally {
+    if (lease?.status === "acquired") {
+      if (!primaryHeartbeatHealthy) {
+        await releaseAaisPrimaryHeartbeat(lease);
+      }
+      await releaseAaisRuntimeLease(lease);
+    }
   }
 }
 
@@ -268,6 +317,9 @@ function getErrorStatus(error: unknown) {
   if (error instanceof AaisOutboxFlushAuthorizationError || isAaisCsrfError(error)) {
     return 403;
   }
+  if (isAaisRuntimeLeaseUnavailableError(error)) {
+    return 503;
+  }
   return 500;
 }
 
@@ -293,6 +345,14 @@ function getErrorResponseInput(error: unknown) {
       code: "AAIS_LRS_OUTBOX_FORBIDDEN",
       message: "AAIS LRS outbox flush requires administrator authorization.",
       status: 403,
+      extra: { secrets: "redacted" },
+    };
+  }
+  if (isAaisRuntimeLeaseUnavailableError(error)) {
+    return {
+      code: "AAIS_LRS_OUTBOX_LEASE_NOT_READY",
+      message: "AAIS LRS outbox worker lease is not ready.",
+      status: 503,
       extra: { secrets: "redacted" },
     };
   }

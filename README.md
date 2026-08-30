@@ -37,15 +37,27 @@ Production Qwen uses a dated immutable snapshot and a signed, source-bound A1-A4
 
 ## Deploy
 
-AAIS should deploy from reviewed Git changes through Vercel, not from a laptop-only release path.
+AAIS targets the existing Hong Kong ECS as primary, Vercel as the same-SHA writable warm backup, and the existing Singapore Neon PostgreSQL 17 database as the single authority. It does not buy RDS, ACR, KMS, a second ECS, or the Vercel Static IP add-on. `aais.site` remains Vercel production until every provider, DNS/GTM, recovery, and Owner gate is separately evidenced.
 
-1. Merge a reviewed PR to `main`.
-2. Let Vercel create the preview or production deployment.
-3. Run the preview E2E workflow or `AAIS_E2E_BASE_URL=<url> npm run e2e`.
-4. Run `npm run smoke:prod` against staging first, then production.
-5. Before a real cohort pilot, run `npm run load:staging` against staging/preview with dedicated student accounts.
+1. Rehearse and apply migrations 0028/0029, bind the database target ID, create the two least-privilege runtime roles, and clean Vercel down to the canonical `AAIS_DATABASE_URL`.
+2. Merge the reviewed SHA to `main`; Vercel and `.github/workflows/ghcr-container.yml` build that same SHA, with Vercel Functions pinned to Neon-adjacent `sin1`.
+3. The Owner alone uses `aais-preload-ghcr-image.sh <full-sha>` in a real TTY with a short-lived `read:packages` PAT, then immediately revokes it.
+4. After the credential-clean preload receipt exists, non-credential automation deploys `ghcr.io/hudongpin/aais@sha256:<digest>` through the blue/green wrapper.
+5. Run preview/origin E2E, `npm run smoke:prod`, the 10-user soak, same-database parity, and the failover/failback drill before production acceptance.
 
-Production Vercel builds run `scripts/guard-vercel-production-deploy.mjs`, which requires Git metadata for `main` and fails local-style production uploads without it.
+The Vercel guard requires canonical Neon `pg`/`verify-full` configuration, exact product Crons, Git metadata, and the lease/target-identity evidence. Aliyun renews a 180-second primary worker heartbeat every minute; Vercel's two-minute schedules remain standby while it is healthy and target takeover about two to five minutes after it disappears or releases a failed heartbeat.
+
+Vercel Production deletes static `AAIS_RELEASE_ID` and `AAIS_DEPLOYMENT_GIT_COMMIT_SHA`, sets provider `vercel`, pool max 2, the bound target ID, and both research sentinels to `false`. Its strong `CRON_SECRET` belongs only to Vercel Cron and differs from both Aliyun worker tokens; no secret value enters evidence.
+
+The stable Server Actions mapping is GitHub environment secret `AAIS_NEXT_SERVER_ACTIONS_ENCRYPTION_KEY` → Docker BuildKit target `NEXT_SERVER_ACTIONS_ENCRYPTION_KEY` → Vercel Production `NEXT_SERVER_ACTIONS_ENCRYPTION_KEY`; the Owner compares only non-sensitive fingerprints.
+
+Before disconnecting the managed Neon integration, inspect its side effects
+read-only. Alias cleanup must not revoke or rotate the credential still used by
+the live Vercel deployment. If the provider cannot remove only aliases while
+preserving that credential, enter maintenance/write freeze for the transition
+or stop and redesign a two-stage cutover before continuing.
+
+Private GHCR is the only image registry in this topology. The ECS verifies receipts, the local `RepoDigest`, and OCI revision, but does not yet cryptographically verify the generated GitHub attestation. See [the Aliyun primary runbook](./docs/aliyun-primary-runbook.md) before preload, migration, provider mutation, or DNS change.
 
 Production trial accounts are learner-only smoke accounts. Teacher/admin access must use database users or OIDC identities.
 
@@ -81,6 +93,7 @@ Formal visit creation and event ingestion are runtime-gated by the approved acce
 - [OPERATIONS.md](./OPERATIONS.md): deploy, smoke, migration, rollback, restore, monitoring, and staging load sanity.
 - [CONTRIBUTING.md](./CONTRIBUTING.md): branch, review, verification, database, and secret rules.
 - [docs/release-checklist.md](./docs/release-checklist.md): one-page release checklist.
+- [docs/aliyun-primary-runbook.md](./docs/aliyun-primary-runbook.md): Aliyun primary, Private GHCR preload, existing-Neon single-database binding, Vercel writable warm backup without the Static IP add-on, GTM failover, rollback, cost-approval, and evidence gates.
 - [docs/research-data-governance.md](./docs/research-data-governance.md): enforceable research event, identity, access, retention, backup, export, and withdrawal contract.
 - [docs/mainland-caa-is-test-profile.md](./docs/mainland-caa-is-test-profile.md): lightweight adult, low-risk, mainland-only CAAIS rehearsal profile and its evidence limits.
 - [docs/teacher-recommendation-rules.md](./docs/teacher-recommendation-rules.md): teacher-facing recommendation policy.

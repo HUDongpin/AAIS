@@ -1099,7 +1099,9 @@ describe("AAIS trial account auth route", () => {
   it("clears signed and display cookies on logout", async () => {
     const { DELETE } = await import("@/app/api/auth/app-session/route");
 
-    const response = await DELETE();
+    const response = await DELETE(new Request("http://localhost/api/auth/app-session", {
+      method: "DELETE",
+    }));
     const body = await response.json();
     const setCookie = response.headers.get("set-cookie") ?? "";
 

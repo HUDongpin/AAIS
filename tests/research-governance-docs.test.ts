@@ -290,7 +290,7 @@ describe("AAIS research data governance documentation", () => {
     ]);
   });
 
-  it("uses only the explicit true value when research mode is enabled", () => {
+  it("documents only explicit true and fail-closed false research-mode values", () => {
     const documentedModeValues = [governance, privacyInventory, operations, readme, envExample]
       .flatMap((document) =>
         [...document.matchAll(/AAIS_RESEARCH_MODE=([A-Za-z0-9_-]+)/g)]
@@ -298,7 +298,7 @@ describe("AAIS research data governance documentation", () => {
       );
 
     expect(documentedModeValues.length).toBeGreaterThan(0);
-    expect(new Set(documentedModeValues)).toEqual(new Set(["true"]));
+    expect(new Set(documentedModeValues)).toEqual(new Set(["true", "false"]));
   });
 
   it("links and restates the contract from the privacy inventory, runbook, and README", () => {

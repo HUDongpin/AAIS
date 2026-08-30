@@ -349,19 +349,17 @@ async function authenticateAaisAccount(account: string, password: string) {
   return { status: "invalid" as const };
 }
 
-export async function DELETE(request?: Request) {
+export async function DELETE(request: Request) {
   try {
-    const token = request
-      ? readCookie(request.headers.get("cookie"), getAaisSessionCookieName())
-      : null;
+    const token = readCookie(request.headers.get("cookie"), getAaisSessionCookieName());
     const verified = verifyAaisSessionTokenWithMetadata(token);
     const authorizedActor = verified
       ? await verifyAaisRequestSessionToken(token)
       : null;
-    if (verified && request) {
+    if (verified) {
       requireAaisCsrf(request, verified.actor.id);
     }
-    const researchLogout = authorizedActor && request
+    const researchLogout = authorizedActor
       ? await readResearchLogoutContext(request)
       : null;
     const researchStore = researchLogout ? getAaisResearchStore() : null;

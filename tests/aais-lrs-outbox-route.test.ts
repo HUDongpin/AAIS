@@ -5,12 +5,35 @@ import { createAaisSessionToken } from "@/lib/server/aais-session";
 const flushMock = vi.fn();
 const requeueMock = vi.fn();
 const monitoringMock = vi.fn();
+const acquireLeaseMock = vi.fn();
+const assertLeaseMock = vi.fn();
+const releasePrimaryHeartbeatMock = vi.fn();
+const releaseLeaseMock = vi.fn();
 
 beforeEach(() => {
   process.env.AAIS_SESSION_SECRET = "test-session-secret-with-at-least-32-characters";
   flushMock.mockReset();
   requeueMock.mockReset();
   monitoringMock.mockReset();
+  acquireLeaseMock.mockReset();
+  assertLeaseMock.mockReset();
+  releasePrimaryHeartbeatMock.mockReset();
+  releaseLeaseMock.mockReset();
+  acquireLeaseMock.mockResolvedValue({
+    status: "acquired",
+    required: true,
+    leaseKey: "lrs-outbox",
+    holderId: "test:worker",
+    generation: 1,
+    primaryHeartbeat: {
+      leaseKey: "lrs-outbox:aliyun-primary",
+      holderId: "aliyun:test:heartbeat",
+      generation: 2,
+    },
+  });
+  assertLeaseMock.mockResolvedValue(undefined);
+  releasePrimaryHeartbeatMock.mockResolvedValue(undefined);
+  releaseLeaseMock.mockResolvedValue(undefined);
   vi.spyOn(console, "info").mockImplementation(() => undefined);
   vi.resetModules();
   vi.doMock("@/lib/server/aais-learning-store", () => ({
@@ -21,6 +44,13 @@ beforeEach(() => {
   vi.doMock("@/lib/server/aais-monitoring", () => ({
     recordAaisMonitoringIssue: monitoringMock,
   }));
+  vi.doMock("@/lib/server/aais-runtime-lease", () => ({
+    acquireAaisRuntimeLease: acquireLeaseMock,
+    assertAaisRuntimeLeaseHeld: assertLeaseMock,
+    releaseAaisPrimaryHeartbeat: releasePrimaryHeartbeatMock,
+    releaseAaisRuntimeLease: releaseLeaseMock,
+    isAaisRuntimeLeaseUnavailableError: () => false,
+  }));
 });
 
 afterEach(() => {
@@ -29,11 +59,50 @@ afterEach(() => {
   delete process.env.CRON_SECRET;
   vi.doUnmock("@/lib/server/aais-learning-store");
   vi.doUnmock("@/lib/server/aais-monitoring");
+  vi.doUnmock("@/lib/server/aais-runtime-lease");
   vi.unstubAllEnvs();
   vi.restoreAllMocks();
 });
 
 describe("AAIS LRS persistent outbox flush route", () => {
+  it("keeps the scheduled worker in standby while another provider holds the lease", async () => {
+    process.env.AAIS_LRS_OUTBOX_FLUSH_TOKEN = "scheduled-flush-token-with-at-least-32-characters";
+    acquireLeaseMock.mockResolvedValue({
+      status: "standby",
+      required: true,
+      leaseKey: "lrs-outbox",
+      holderId: "test:worker",
+      generation: null,
+      primaryHeartbeat: null,
+    });
+    const route = await import("@/app/api/learning/lrs/outbox/flush/route");
+
+    const response = await route.GET(new Request(
+      "http://localhost/api/learning/lrs/outbox/flush",
+      {
+        headers: {
+          authorization: `Bearer ${process.env.AAIS_LRS_OUTBOX_FLUSH_TOKEN}`,
+        },
+      },
+    ));
+
+    expect(response.status).toBe(202);
+    await expect(response.json()).resolves.toMatchObject({
+      action: "flush",
+      authorization: { mode: "bearer-token" },
+      outbox: {
+        status: "standby",
+        lease: "held_by_peer",
+        secrets: "redacted",
+      },
+      secrets: "redacted",
+    });
+    expect(flushMock).not.toHaveBeenCalled();
+    expect(assertLeaseMock).not.toHaveBeenCalled();
+    expect(releaseLeaseMock).not.toHaveBeenCalled();
+    expect(releasePrimaryHeartbeatMock).not.toHaveBeenCalled();
+  });
+
   it("rejects unauthenticated flush attempts", async () => {
     const route = await import("@/app/api/learning/lrs/outbox/flush/route");
 
@@ -130,7 +199,12 @@ describe("AAIS LRS persistent outbox flush route", () => {
     expect(route.revalidate).toBe(0);
     expect(route.runtime).toBe("nodejs");
     expect(route.maxDuration).toBe(120);
-    expect(flushMock).toHaveBeenCalledWith({ limit: 25 });
+    expect(flushMock).toHaveBeenCalledWith(expect.objectContaining({
+      limit: 25,
+      beforeDispatch: expect.any(Function),
+    }));
+    expect(releaseLeaseMock).toHaveBeenCalledOnce();
+    expect(releasePrimaryHeartbeatMock).not.toHaveBeenCalled();
     expect(body).toMatchObject({
       action: "flush",
       authorization: {
@@ -255,7 +329,10 @@ describe("AAIS LRS persistent outbox flush route", () => {
 
     expect(response.status).toBe(502);
     expect(response.headers.get("cache-control")).toBe("private, no-store");
-    expect(flushMock).toHaveBeenCalledWith({ limit: 200 });
+    expect(flushMock).toHaveBeenCalledWith(expect.objectContaining({
+      limit: 200,
+      beforeDispatch: expect.any(Function),
+    }));
     expect(body.authorization.mode).toBe("bearer-token");
     expect(body.outbox).toMatchObject({
       deferred: 7,
@@ -297,6 +374,7 @@ describe("AAIS LRS persistent outbox flush route", () => {
       },
     ]);
     expect(JSON.stringify(auditEvents)).not.toContain(process.env.AAIS_LRS_OUTBOX_FLUSH_TOKEN);
+    expect(releasePrimaryHeartbeatMock).toHaveBeenCalledOnce();
   });
 
   it("does not accept a weak configured worker bearer", async () => {
@@ -390,7 +468,10 @@ describe("AAIS LRS persistent outbox flush route", () => {
     const body = await response.json();
 
     expect(response.status).toBe(200);
-    expect(flushMock).toHaveBeenCalledWith({ limit: 50 });
+    expect(flushMock).toHaveBeenCalledWith(expect.objectContaining({
+      limit: 50,
+      beforeDispatch: expect.any(Function),
+    }));
     expect(body.authorization.mode).toBe("bearer-token");
     expect(JSON.stringify(body)).not.toContain(process.env.CRON_SECRET);
   });
@@ -473,7 +554,10 @@ describe("AAIS LRS persistent outbox flush route", () => {
 
     expect(response.status).toBe(200);
     expect(body.authorization.mode).toBe("admin-session");
-    expect(flushMock).toHaveBeenCalledWith({ limit: 50 });
+    expect(flushMock).toHaveBeenCalledWith(expect.objectContaining({
+      limit: 50,
+      beforeDispatch: expect.any(Function),
+    }));
     expect(monitoringMock).not.toHaveBeenCalled();
   });
 
@@ -515,6 +599,7 @@ describe("AAIS LRS persistent outbox flush route", () => {
         secrets: "redacted",
       }),
     }));
+    expect(releasePrimaryHeartbeatMock).toHaveBeenCalledOnce();
     expect(JSON.stringify(monitoringMock.mock.calls)).not.toContain("test-session-secret");
   });
 });

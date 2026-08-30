@@ -34,14 +34,161 @@ npm run verify:postgres-restore -- --env-file ./.env.postgres-restore.local --ou
 
 ## Deploy
 
+The target provider shape is an Aliyun Hong Kong primary plus a writable Vercel
+warm backup, both using the existing Neon PostgreSQL 17 database as one
+authoritative target, with Private GHCR as its sole registry. It adds no server,
+static-egress add-on, database service, registry, or network secret backend.
+Existing-plan included usage and overages still apply; no billing-changing
+provider feature is enabled without separate Owner approval. Provider
+bootstrap, exact-digest deployment, in-place Neon migration,
+DNS/GTM, rollback, capacity, and failure-drill procedures are frozen in
+[docs/aliyun-primary-runbook.md](./docs/aliyun-primary-runbook.md). Runtime
+secrets have exactly one supported persistent source: a root-only local file on
+the ECS, switched as one generation.
+
+The production Vercel Function region is pinned in `vercel.json` to Singapore
+`sin1`, the current Neon region. A deployment that remains on the previously
+observed Washington `iad1` setting is not accepted as the writable warm backup.
+
+Current read-only provider evidence shows that Vercel Production exposes
+`AAIS_DATABASE_URL` plus Neon-integration `DATABASE_URL*`, `POSTGRES_URL*`,
+`POSTGRES_PRISMA_URL`, and raw `PG*`/`POSTGRES_*` aliases. No values were read.
+Do not deploy the new production guard until the provider configuration is
+cleaned up and a name-only inventory proves that `AAIS_DATABASE_URL` is the
+only application database URL. Application code must not fall back to the raw
+provider aliases.
+
+Before disconnecting the managed Neon integration, perform a read-only
+provider-side impact check. Before the replacement Vercel deployment is
+verified, disconnect/alias cleanup must not revoke, rotate, disable, or delete
+the legacy database credential used by the live and immutable deployments. If
+the provider supports alias-only removal while preserving that credential,
+record that non-secret behavior and proceed. If disconnect necessarily mutates
+the credential, either put the site into maintenance with a complete write
+freeze for the bounded transition or stop and redesign an explicit two-stage
+cutover. Do not discover this behavior by disconnecting production first.
+
+The complete Vercel Production runtime contract is:
+
+- `AAIS_DEPLOYMENT_PROVIDER=vercel`.
+- `AAIS_DATABASE_DRIVER=pg`, `AAIS_DATABASE_PROVIDER=neon`,
+  `AAIS_DATABASE_POOL_MAX=2`, and the bound production
+  `AAIS_DATABASE_TARGET_ID`.
+- `AAIS_RESEARCH_MODE=false` and `AAIS_RESEARCH_REQUIRED=false`.
+- `AAIS_RUNTIME_LEASE_SCHEMA_CONFIRMED=true`.
+- No static `AAIS_RELEASE_ID` or `AAIS_DEPLOYMENT_GIT_COMMIT_SHA`; the runtime
+  derives release metadata from Vercel's system Git SHA.
+- A strong `CRON_SECRET` used only by Vercel Cron. It is 32–512 bytes, has no
+  whitespace or placeholder value, contains at least eight distinct characters,
+  and is pairwise distinct from
+  Aliyun's `AAIS_LRS_OUTBOX_FLUSH_TOKEN` and
+  `AAIS_AUTH_EMAIL_OUTBOX_FLUSH_TOKEN`, and its value is never logged, printed,
+  screenshot, or retained in evidence.
+
 The intended release path is Git-based:
 
-1. Merge a reviewed PR to `main`.
-2. Let Vercel deploy from Git.
-3. Confirm the deployment is ready in Vercel.
-4. Run the deployed smoke check against staging first, then production when appropriate.
+1. Close the Neon rehearsal, migration, role, and Vercel environment gates in
+   the runbook, then merge a reviewed PR to `main`.
+2. Let Vercel deploy from Git and let `ghcr-container.yml` publish the same SHA
+   to the private `ghcr.io/hudongpin/aais` package.
+3. Confirm both deployments, the private-package state, and the redacted GHCR
+   candidate receipt bind the same full SHA and immutable digest.
+4. Transfer only that non-secret receipt to
+   `/opt/aais/candidates/<full-sha>.json` as root-owned mode `0644`.
+5. The Owner preloads the private image through the real-TTY helper and revokes
+   the short-lived `read:packages` PAT; automation deploys only afterward.
+6. Run the deployed smoke check against staging first, then production when appropriate.
 
-Do not run `vercel deploy --prod` from a laptop. `vercel.json` runs `scripts/guard-vercel-production-deploy.mjs` before production builds; the guard requires `VERCEL_ENV=production` builds to carry Vercel Git metadata for the `main` branch. Provider-side Vercel project permissions and token cleanup still need to be enforced outside the repo.
+Do not run `vercel deploy --prod` from a laptop. `vercel.json` runs
+`scripts/guard-vercel-production-deploy.mjs` before production builds; the
+guard requires `VERCEL_ENV=production` builds to carry Vercel Git metadata for
+the `main` branch. Vercel derives its release ID from the system
+`VERCEL_GIT_COMMIT_SHA`; remove static Production `AAIS_RELEASE_ID` and
+`AAIS_DEPLOYMENT_GIT_COMMIT_SHA` instead of maintaining drift-prone copies. The
+portability commit retains the existing Vercel product Cron schedules so its
+lease-aware runtime can reach both providers first. The
+guard requires `AAIS_RUNTIME_LEASE_SCHEMA_CONFIRMED=true` after migrations
+0028/0029 and the bound target identity are verified in the existing
+authoritative Neon database, before that first lease-aware production build.
+The two exact Vercel product Cron schedules remain required: they are the warm
+backup worker wakeups, not a temporary migration bridge. Aliyun systemd timers
+and the two-minute Vercel schedules use separate invocation identities for the
+queue mutex and fencing generation. Aliyun also renews a distinct 180-second
+primary heartbeat every minute; Vercel cannot acquire the queue while that
+heartbeat is live. A failed Aliyun worker conditionally releases its heartbeat
+by holder and generation. If Aliyun disappears, heartbeat expiry plus the next
+Vercel Cron gives an approximately two-to-five-minute worker-takeover objective
+when Neon and Vercel remain healthy. Provider-side Vercel
+permissions and token cleanup still need to be enforced outside the repo.
+
+### Private GHCR preload and deployment
+
+Private GHCR is the only image path. It introduces no new fixed monthly
+registry subscription under the selected current plan, although ordinary
+GitHub Actions/Packages usage and future pricing remain subject to the cost
+gate. `ghcr-container.yml` runs automatically on `main`; there is no secondary
+registry path.
+
+The Server Actions encryption key has one exact cross-provider mapping:
+
+```text
+GitHub environment secret: AAIS_NEXT_SERVER_ACTIONS_ENCRYPTION_KEY
+  -> Docker BuildKit secret target: NEXT_SERVER_ACTIONS_ENCRYPTION_KEY
+  -> Vercel Production variable: NEXT_SERVER_ACTIONS_ENCRYPTION_KEY
+```
+
+The Owner verifies equality only by comparing non-sensitive fingerprints from
+the two provider configurations/build evidence. The key value itself must not
+be read, printed, copied into a receipt, or included in any fingerprint-evidence
+payload.
+
+Configure the root-owned `/etc/aais/deploy.env` with:
+
+```text
+AAIS_IMAGE_SOURCE=ghcr-preloaded
+AAIS_GHCR_REPOSITORY=ghcr.io/hudongpin/aais
+AAIS_GHCR_USERNAME=<owner-github-username>
+AAIS_PRELOADED_RECEIPT_DIR=/opt/aais/preloaded
+```
+
+The username is non-secret. Never store a PAT in this file, the runtime bundle,
+shell history, a command argument, chat, GitHub Actions, a receipt, or a Docker
+configuration that survives the preload. After the exact candidate receipt is
+installed, the Owner independently opens a real controlling TTY on the ECS and
+runs:
+
+```bash
+sudo /opt/aais/bin/aais-preload-ghcr-image.sh FULL_40_CHARACTER_GIT_SHA
+```
+
+Only the Owner enters the short-lived PAT with exactly `read:packages` at the
+script's hidden `/dev/tty` prompt. Codex and Computer Use must not type, read,
+capture, transmit, or store it. The helper pulls the candidate's exact digest,
+requires the local `RepoDigest` and `org.opencontainers.image.revision` label to
+match, logs out, removes the temporary root-only Docker configuration, and only
+then writes `/opt/aais/preloaded/<full-sha>.json`. The Owner revokes the PAT
+immediately after the helper succeeds or fails.
+
+After the redacted preload receipt reports `credentialsCleaned=true`, Codex or
+another non-credential automation may read the digest from the candidate
+receipt and run:
+
+```bash
+sudo /opt/aais/bin/aais-deploy.sh \
+  ghcr.io/hudongpin/aais@sha256:DIGEST \
+  FULL_40_CHARACTER_GIT_SHA
+```
+
+The deploy wrapper independently requires the root-owned candidate and preload
+receipts to agree on repository, run ID/attempt, SHA and digest, then rechecks
+the local `RepoDigest` and OCI revision before starting a container. GitHub also
+generates an SBOM and provenance attestation and records its ID in the candidate
+receipt. The current ECS path does not fetch or cryptographically verify that
+attestation. Do not label receipt validation, `RepoDigest` matching, or OCI
+revision matching as host-side attestation/signature verification.
+
+Adding another image registry would require a separately reviewed architecture
+change; it is not an operator fallback.
 
 ```bash
 AAIS_SMOKE_BASE_URL=https://www.aais.site \
@@ -224,11 +371,25 @@ Account provisioning is a data operation and must not trigger or substitute for 
 
 #### 4. Provision Production with create-only semantics
 
-Invoke every Production account command (`provision`, `verify`, and `disable`) through the single `npm run accounts:test-batch -- ...` entry below. That entry first executes the official `vercel --version` check against the exact package `vercel@59.7.0`, then internally launches the manager through `npx --yes vercel@59.7.0 env run -e production -- ...`; the manager rejects a missing or mismatched wrapper attestation. The wrapper never invokes `env pull` or writes an environment file. It independently requires both `VERCEL_ENV=production` and `VERCEL_TARGET_ENV=production`, and it fails closed if `AAIS_RESEARCH_MODE=true`, `AAIS_RESEARCH_REQUIRED=true`, or `AAIS_RESEARCH_ENVIRONMENT=research`; this batch is outside formal research and its page checks must not create research visits or study data. Record the attested CLI version and non-research isolation result in the aggregate operator receipt. Do not prepend a second Vercel command, invoke the internal manager directly, inject Production values locally, use a copied database URL or locally sourced secret file, or perform a direct Vercel deployment. If Vercel cannot provide a required Production-only sensitive integration value to the child process, stop at the resulting no-connection error; do not weaken the integration or substitute a stale local value.
+Invoke every Production account command (`provision`, `verify`, and `disable`) through the single `npm run accounts:test-batch -- ...` entry below. That entry first executes the official `vercel --version` check against the exact package `vercel@59.7.0`, then internally launches the manager through `npx --yes vercel@59.7.0 env run -e production -- ...`; the manager rejects a missing or mismatched wrapper attestation. The wrapper never invokes `env pull` or writes an environment file. It independently requires both `VERCEL_ENV=production` and `VERCEL_TARGET_ENV=production`, and it fails closed if `AAIS_RESEARCH_MODE=true`, `AAIS_RESEARCH_REQUIRED=true`, or `AAIS_RESEARCH_ENVIRONMENT=research`; this batch is outside formal research and its page checks must not create research visits or study data. Record the attested CLI version and non-research isolation result in the aggregate operator receipt. Do not prepend a second Vercel command, invoke the internal manager directly, inject Production values locally, use a copied database URL or locally sourced secret file, or perform a direct Vercel deployment. If Vercel cannot provide the canonical Production `AAIS_DATABASE_URL` to the child process, stop at the resulting no-connection error; do not reattach the managed integration, restore an alias, or substitute a stale local value.
 
 Before any database or authentication operation, the same entry uses pinned, read-only `vercel inspect https://www.aais.site --json` and the GitHub Deployment API. It requires the canonical alias to resolve to one `READY` Vercel `production` deployment and requires the matching immutable deployment URL to have a Vercel-bot-authored GitHub `Production` deployment status of `success` for the exact expected SHA. Local `HEAD`, tracking `origin/main`, and live `origin/main` must all equal that SHA. A pending, failed, superseded, differently aliased, or differently versioned deployment stops before opening a database connection or sending an authentication request; a locally inherited `VERCEL_GIT_COMMIT_SHA` is not accepted as deployment evidence. After the 42-account verifier has logged out every session, it repeats this complete attestation and requires the immutable Vercel deployment ID/URL, deployed SHA, and GitHub deployment/status IDs to remain unchanged; an alias movement or redeployment invalidates the run.
 
-Immediately before provisioning, use the Vercel project dashboard or an equivalently authoritative read-only project inspection to verify that the linked project is exactly `aais`, its Production Storage integration is named exactly `aais-neon`, and the Production database binding resolves to that Neon project. Record only the resource name and non-secret project/deployment identifiers in the private operator evidence. The CLI project-link gate does not prove the database resource name; if this independent resource check is missing or mismatched, stop before opening a database transaction. Never print or record the database URL while performing this check.
+Immediately before provisioning, use the Vercel project dashboard plus a
+redacted database-session attestation to verify that the project is exactly
+`aais`, `AAIS_DATABASE_URL` is the sole application database URL, its
+non-sensitive target fingerprint resolves to the authoritative Neon project,
+and the runtime role is exactly `aais_app_vercel`. Also require
+`AAIS_DATABASE_DRIVER=pg`, `AAIS_DATABASE_PROVIDER=neon`, TLS
+`verify-full`, and the bound production target ID. The managed `aais-neon`
+Storage integration may be—and normally is—disconnected to remove its injected
+aliases; its continued link is not an acceptance condition. Record only the
+target fingerprint, Neon project identity, role name, and non-secret
+project/deployment identifiers. If this evidence is missing or mismatched, stop
+before opening a write transaction. Never print or record the database URL.
+The provider transition must already have retired every safe dedicated legacy
+credential and terminated its sessions; an owner/shared legacy role remains a
+hard stop rather than authority to set it `NOLOGIN`.
 
 ```bash
 npm run accounts:test-batch -- provision \
@@ -301,7 +462,11 @@ After disablement, rerun `audit-git`, retain the aggregate disable receipt, and 
 - [ ] Pre-stage and post-stage `audit-git` results are zero, and the PR contains only non-secret source changes.
 - [ ] Focused tests, `git diff --check`, `npm run ci`, `npm run e2e`, GitHub `verify`, Vercel Preview, and any Owner-approved Preview E2E are green for the exact PR head.
 - [ ] Remote `main`, the merge commit, GitHub Production deployment, Vercel Production deployment, immutable URL, and `www.aais.site` aliases are bound to one exact SHA.
-- [ ] An independent authoritative read-only check records that linked project `aais` uses the Production Storage integration `aais-neon` and that its Production database binding resolves to that Neon project; the evidence contains no database URL.
+- [ ] Vercel derives that SHA from system Git metadata; static `AAIS_RELEASE_ID` and `AAIS_DEPLOYMENT_GIT_COMMIT_SHA` are absent. Provider is `vercel`, pool max is 2, the target ID is bound, and both research sentinels are explicitly `false`.
+- [ ] Independent provider/database evidence records that project `aais` has only canonical `AAIS_DATABASE_URL`, the authoritative Neon target fingerprint/project identity, bound target ID, `pg`/`neon`/`verify-full` settings, and dedicated `aais_app_vercel` role. No managed database aliases remain; the Storage integration is not required to stay linked, and the evidence contains no database URL.
+- [ ] The managed-integration disconnect impact was inspected read-only. Alias cleanup preserved the live legacy credential until the replacement deployment passed, or the transition used an approved maintenance/write freeze; a coupled destructive side effect caused a stop and two-stage redesign.
+- [ ] The Server Actions fingerprints match the GitHub environment → Docker BuildKit → Vercel mapping, and Vercel's strong Cron-only `CRON_SECRET` is distinct from both Aliyun worker tokens. No underlying value appears in evidence.
+- [ ] Every safe dedicated legacy Vercel/integration role is retired with zero sessions and old immutable deployments cannot read or write. Any owner/shared role stopped for an explicit ownership or consumer migration instead of being set `NOLOGIN`.
 - [ ] Production environment attestation proves this is a non-research run: research mode and research-required are not enabled, the environment is not `research`, and the 42/42 verifier will not create research visits or study data.
 - [ ] Production provisioning, verification, and disablement used the single npm entry whose receipt proves pinned Vercel CLI `59.7.0`, exact live Production deployment SHA/status/IDs, and canonical alias binding; verification also proves the same immutable deployment remained bound after all 42 logouts. No env pull, copied database URL, internal-manager bypass, or direct Production deploy was used.
 - [ ] Create-only receipt is `42/42` with zero updates/collisions, both database aggregates have the 40/2/0 role split, authenticated verification is `42/42` with the 40/2/0 role split and 42 logouts, all three negative cases set zero sessions, and final Git audit remains zero.
@@ -395,7 +560,7 @@ Required deployment configuration:
 - `AAIS_RESEARCH_LRS_OUTBOX_FLUSH_TOKEN` for the research-only delivery/deletion worker. Do not reuse product or MAIS operations tokens.
 - `AAIS_RESEARCH_EXPORT_ACTOR_IDS` for the signed per-event export grant. A generic `researcher` role without this allowlist is denied.
 - `AAIS_RESEARCH_RETENTION_TOKEN` for the scheduled research-retention worker. Do not reuse the LRS flush token or any browser session.
-- Three distinct external POST scheduler ids: `AAIS_RESEARCH_LRS_EVENT_FLUSH_SCHEDULE_ID`, `AAIS_RESEARCH_LRS_DELETION_SCHEDULE_ID`, and `AAIS_RESEARCH_RETENTION_SCHEDULE_ID`. The existing product Vercel GET cron is not a research scheduler.
+- Three distinct external POST scheduler ids: `AAIS_RESEARCH_LRS_EVENT_FLUSH_SCHEDULE_ID`, `AAIS_RESEARCH_LRS_DELETION_SCHEDULE_ID`, and `AAIS_RESEARCH_RETENTION_SCHEDULE_ID`. The two lease-aware product Vercel Cron schedules remain enabled for warm standby in the Aliyun-primary topology; neither is a research scheduler.
 - Fourteen pairwise-distinct SHA-256 evidence digests. The existing infrastructure/provider digests are `AAIS_RESEARCH_DATABASE_ISOLATION_RECEIPT_SHA256`, `AAIS_RESEARCH_LRS_ISOLATION_RECEIPT_SHA256`, `AAIS_RESEARCH_LRS_ZERO_BASELINE_RECEIPT_SHA256`, `AAIS_RESEARCH_LRS_PUT_DELETE_RECEIPT_SHA256`, `AAIS_RESEARCH_BACKUP_POLICY_RECEIPT_SHA256`, `AAIS_RESEARCH_RESTORE_RECEIPT_SHA256`, and `AAIS_RESEARCH_LEGACY_ARCHIVE_RECEIPT_SHA256`. The explicit governance/operations digests are `AAIS_RESEARCH_ACCESS_REGISTER_RECEIPT_SHA256`, `AAIS_RESEARCH_CONSENT_LEGAL_BASIS_RECEIPT_SHA256`, `AAIS_RESEARCH_DPA_RECEIPT_SHA256`, `AAIS_RESEARCH_DATA_REGION_RECEIPT_SHA256`, `AAIS_RESEARCH_DAILY_BACKUP_RECEIPT_SHA256`, `AAIS_RESEARCH_BACKUP_DESTRUCTION_RECEIPT_SHA256`, and `AAIS_RESEARCH_GOVERNANCE_MANIFEST_RECEIPT_SHA256`. Every source digest points to a different redacted, signed file in the restricted operations register; the manifest digest points to the verifier's sanitized successful report. Never reuse one receipt or digest for multiple gates.
 - Freshness values copied only from the successful governance verifier report: `AAIS_RESEARCH_GOVERNANCE_MANIFEST_VERIFIED_AT`, `AAIS_RESEARCH_GOVERNANCE_MANIFEST_VALID_UNTIL`, `AAIS_RESEARCH_DAILY_BACKUP_COMPLETED_AT`, and `AAIS_RESEARCH_BACKUP_DESTRUCTION_OBSERVED_AT`. Formal readiness requires verification and daily backup no more than 36 hours old, a still-current manifest, and 35-day destruction evidence no more than 45 days old.
 - `AAIS_APP_VERSION` and `VERCEL_GIT_COMMIT_SHA`; `AAIS_COMMIT_SHA` is allowed only as an approved non-Vercel fallback.
@@ -507,15 +672,28 @@ AAIS treats login and the learner cockpit as phone-width supported. The release 
 
 Application rollback:
 
-1. Redeploy the last known-good Vercel deployment from the Vercel dashboard.
-2. Re-run `npm run smoke:prod` with the target base URL.
-3. Record the incident, commit SHA, deployment URL, and smoke result.
+1. Keep the authoritative Neon target and `AAIS_DATABASE_TARGET_ID` unchanged.
+2. If the previous GHCR image, candidate receipt, and cleaned preload receipt
+   are still local, rerun the exact-digest blue/green wrapper. If not, the Owner
+   must repeat the real-TTY preload with a new short-lived `read:packages` PAT,
+   revoke it, and hand automation only the redacted receipt; never retain a PAT
+   for rollback and never start a stopped container with an old secret bundle.
+3. If the release itself is faulty, use a reviewed Git revert so Vercel and
+   Aliyun both reach one known-good full SHA. Do not use a dashboard-only Vercel
+   rollback that leaves the two production providers on different code.
+4. Re-run `npm run smoke:prod`, cross-provider session/read-write parity, and
+   worker lease/fencing checks before restoring the GTM primary pool.
+5. Record the incident, both provider deployment IDs/SHAs, image digest, GTM
+   state, target ID, and redacted smoke result.
 
 Database rollback:
 
 1. Prefer forward-fix migrations for small reversible mistakes.
 2. For destructive data issues, restore a Neon branch or snapshot first and inspect it.
-3. Only point production back to restored data after owner approval and a written impact note.
+3. Never point only one provider to a restored branch or dual-write. Promote a
+   restored target only through a separately approved recovery plan that binds
+   a new target ID on both providers, verifies counts/hashes/permissions, and
+   records a written impact note.
 
 ## Backups And Restore
 

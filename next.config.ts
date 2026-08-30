@@ -1,8 +1,11 @@
 import type { NextConfig } from "next";
 import { withSentryConfig } from "@sentry/nextjs";
+import { readAaisBuildDeploymentId } from "./src/lib/build/aais-next-deployment-id";
 export { createAaisContentSecurityPolicy } from "./src/lib/server/aais-csp";
 
 const nextConfig: NextConfig = {
+  output: "standalone",
+  deploymentId: readAaisBuildDeploymentId(),
   // Preserve the project-owned agents.md instead of letting Next dev rewrite it.
   agentRules: false,
   turbopack: {

@@ -8,6 +8,13 @@ import {
 import { isAaisStrongOpaqueSecret } from "@/lib/server/aais-opaque-secret";
 import { recordAaisAuditEvent } from "@/lib/server/aais-audit-log";
 import { recordAaisMonitoringIssue } from "@/lib/server/aais-monitoring";
+import {
+  acquireAaisRuntimeLease,
+  assertAaisRuntimeLeaseHeld,
+  isAaisRuntimeLeaseUnavailableError,
+  releaseAaisPrimaryHeartbeat,
+  releaseAaisRuntimeLease,
+} from "@/lib/server/aais-runtime-lease";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -37,9 +44,26 @@ async function handleFlush(request: Request) {
       { status: 401, headers: privateHeaders },
     );
   }
+  let lease: Awaited<ReturnType<typeof acquireAaisRuntimeLease>> | null = null;
+  let primaryHeartbeatHealthy = false;
   try {
-    const report = await flushAaisAuthEmailOutbox();
+    lease = await acquireAaisRuntimeLease("auth-email-outbox");
+    if (lease.status === "standby") {
+      return NextResponse.json(
+        {
+          status: "standby",
+          lease: "held_by_peer",
+          secrets: "redacted",
+        },
+        { status: 202, headers: privateHeaders },
+      );
+    }
+    await assertAaisRuntimeLeaseHeld(lease);
+    const report = await flushAaisAuthEmailOutbox({
+      beforeDispatch: () => assertAaisRuntimeLeaseHeld(lease!),
+    });
     const deliveryDegraded = report.retry > 0 || report.deadLetter > 0;
+    primaryHeartbeatHealthy = !deliveryDegraded;
     recordAaisAuditEvent({
       event: "auth.email_outbox.flush",
       actorId: "auth-email-worker",
@@ -83,6 +107,7 @@ async function handleFlush(request: Request) {
     if (
       isAaisAuthDeliveryConfigurationError(error)
       || isAaisAuthEmailOutboxStoreError(error)
+      || isAaisRuntimeLeaseUnavailableError(error)
     ) {
       recordAaisMonitoringIssue({
         event: "aais.auth_email_outbox.not_ready",
@@ -122,6 +147,13 @@ async function handleFlush(request: Request) {
       },
       { status: 500, headers: privateHeaders },
     );
+  } finally {
+    if (lease?.status === "acquired") {
+      if (!primaryHeartbeatHealthy) {
+        await releaseAaisPrimaryHeartbeat(lease);
+      }
+      await releaseAaisRuntimeLease(lease);
+    }
   }
 }
 

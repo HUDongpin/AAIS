@@ -4,7 +4,7 @@ import {
   getAaisDatabaseConfiguration,
   type AaisDatabaseClient,
 } from "@/lib/server/aais-learning-store";
-import { createAaisPostgresPool } from "@/lib/server/aais-postgres-pool";
+import { getAaisSharedPostgresPool } from "@/lib/server/aais-postgres-pool";
 import { requiresAaisDurableStorage } from "@/lib/server/aais-runtime";
 
 type AaisLoginRateLimitRecord = {
@@ -680,12 +680,9 @@ function resolveRateLimitDatabase(database: AaisDatabaseClient | null | undefine
     return undefined;
   }
   if (!cachedDatabase || cachedDatabase.url !== config.url) {
-    if (cachedDatabase?.client.end) {
-      void cachedDatabase.client.end().catch(() => undefined);
-    }
     cachedDatabase = {
       url: config.url,
-      client: createAaisPostgresPool(config.url) as AaisDatabaseClient,
+      client: getAaisSharedPostgresPool(config.url) as AaisDatabaseClient,
     };
   }
   return cachedDatabase.client;

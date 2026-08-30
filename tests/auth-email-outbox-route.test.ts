@@ -4,6 +4,10 @@ const mocks = vi.hoisted(() => ({
   flush: vi.fn(),
   audit: vi.fn(),
   monitoring: vi.fn(),
+  acquireLease: vi.fn(),
+  assertLease: vi.fn(),
+  releasePrimaryHeartbeat: vi.fn(),
+  releaseLease: vi.fn(),
 }));
 
 vi.mock("@/lib/server/aais-auth-delivery", () => ({
@@ -22,6 +26,14 @@ vi.mock("@/lib/server/aais-monitoring", () => ({
   recordAaisMonitoringIssue: mocks.monitoring,
 }));
 
+vi.mock("@/lib/server/aais-runtime-lease", () => ({
+  acquireAaisRuntimeLease: mocks.acquireLease,
+  assertAaisRuntimeLeaseHeld: mocks.assertLease,
+  releaseAaisPrimaryHeartbeat: mocks.releasePrimaryHeartbeat,
+  releaseAaisRuntimeLease: mocks.releaseLease,
+  isAaisRuntimeLeaseUnavailableError: () => false,
+}));
+
 const cronSecret = "cron-auth-email-outbox-secret-0123456789-ABCDEFG";
 const dedicatedSecret = "dedicated-auth-email-worker-0123456789-ABCDEFG";
 
@@ -29,6 +41,25 @@ beforeEach(() => {
   mocks.flush.mockReset();
   mocks.audit.mockReset();
   mocks.monitoring.mockReset();
+  mocks.acquireLease.mockReset();
+  mocks.assertLease.mockReset();
+  mocks.releasePrimaryHeartbeat.mockReset();
+  mocks.releaseLease.mockReset();
+  mocks.acquireLease.mockResolvedValue({
+    status: "acquired",
+    required: true,
+    leaseKey: "auth-email-outbox",
+    holderId: "test:worker",
+    generation: 1,
+    primaryHeartbeat: {
+      leaseKey: "auth-email-outbox:aliyun-primary",
+      holderId: "aliyun:test:heartbeat",
+      generation: 2,
+    },
+  });
+  mocks.assertLease.mockResolvedValue(undefined);
+  mocks.releasePrimaryHeartbeat.mockResolvedValue(undefined);
+  mocks.releaseLease.mockResolvedValue(undefined);
   mocks.flush.mockResolvedValue({
     status: "pass",
     claimed: 1,
@@ -41,6 +72,7 @@ beforeEach(() => {
     stoppedReason: "empty",
     secrets: "redacted",
   });
+
   vi.stubEnv("CRON_SECRET", cronSecret);
   vi.stubEnv("AAIS_AUTH_EMAIL_OUTBOX_FLUSH_TOKEN", dedicatedSecret);
 });
@@ -51,6 +83,34 @@ afterEach(() => {
 });
 
 describe("AAIS authentication email outbox worker route", () => {
+  it("returns standby without sending when another provider owns the lease", async () => {
+    mocks.acquireLease.mockResolvedValue({
+      status: "standby",
+      required: true,
+      leaseKey: "auth-email-outbox",
+      holderId: "test:worker",
+      generation: null,
+      primaryHeartbeat: null,
+    });
+    const { GET } = await import("@/app/api/auth/email-outbox/flush/route");
+
+    const response = await GET(new Request(
+      "https://aais.example.test/api/auth/email-outbox/flush",
+      { headers: { authorization: `Bearer ${cronSecret}` } },
+    ));
+
+    expect(response.status).toBe(202);
+    await expect(response.json()).resolves.toEqual({
+      status: "standby",
+      lease: "held_by_peer",
+      secrets: "redacted",
+    });
+    expect(mocks.flush).not.toHaveBeenCalled();
+    expect(mocks.assertLease).not.toHaveBeenCalled();
+    expect(mocks.releaseLease).not.toHaveBeenCalled();
+    expect(mocks.releasePrimaryHeartbeat).not.toHaveBeenCalled();
+  });
+
   it.each([
     ["GET", cronSecret],
     ["POST", dedicatedSecret],
@@ -72,6 +132,8 @@ describe("AAIS authentication email outbox worker route", () => {
       secrets: "redacted",
     });
     expect(mocks.flush).toHaveBeenCalledOnce();
+    expect(mocks.releaseLease).toHaveBeenCalledOnce();
+    expect(mocks.releasePrimaryHeartbeat).not.toHaveBeenCalled();
     expect(route.maxDuration).toBe(120);
   });
 
@@ -126,6 +188,7 @@ describe("AAIS authentication email outbox worker route", () => {
     expect(response.status).toBe(503);
     expect(response.headers.get("cache-control")).toBe("private, no-store");
     expect(JSON.stringify(await response.json())).not.toContain("provider detail");
+    expect(mocks.releasePrimaryHeartbeat).toHaveBeenCalledOnce();
   });
 
   it("returns a non-success status when the worker creates dead letters", async () => {
@@ -158,6 +221,7 @@ describe("AAIS authentication email outbox worker route", () => {
       deadLetter: 1,
       secrets: "redacted",
     });
+    expect(mocks.releasePrimaryHeartbeat).toHaveBeenCalledOnce();
   });
 
   it("reports retryable provider failures as degraded instead of false-green", async () => {
@@ -203,5 +267,6 @@ describe("AAIS authentication email outbox worker route", () => {
         secrets: "redacted",
       }),
     }));
+    expect(mocks.releasePrimaryHeartbeat).toHaveBeenCalledOnce();
   });
 });

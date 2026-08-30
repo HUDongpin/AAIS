@@ -1,0 +1,11 @@
+[Unit]
+Description=Run the AAIS authentication email outbox worker every minute
+
+[Timer]
+OnCalendar=*-*-* *:*:00
+AccuracySec=5s
+Persistent=true
+RandomizedDelaySec=5s
+
+[Install]
+WantedBy=timers.target

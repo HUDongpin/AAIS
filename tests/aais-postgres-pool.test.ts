@@ -19,7 +19,9 @@ vi.mock("@neondatabase/serverless", () => ({
 import {
   createAaisNeonQueryClient,
   createAaisPostgresPool,
+  getAaisPostgresPoolMax,
   getAaisPostgresPoolConfig,
+  getAaisSharedPostgresPool,
 } from "@/lib/server/aais-postgres-pool";
 
 describe("AAIS Postgres pool deadlines", () => {
@@ -33,6 +35,7 @@ describe("AAIS Postgres pool deadlines", () => {
 
     expect(config).toMatchObject({
       connectionString: "postgres://example.invalid/aais",
+      max: 5,
       connectionTimeoutMillis: expect.any(Number),
       statement_timeout: expect.any(Number),
       query_timeout: expect.any(Number),
@@ -42,6 +45,102 @@ describe("AAIS Postgres pool deadlines", () => {
     expect(Number(config.statement_timeout)).toBeGreaterThan(0);
     expect(Number(config.query_timeout)).toBeGreaterThan(Number(config.statement_timeout));
     expect(Number(config.idle_in_transaction_session_timeout)).toBeGreaterThan(0);
+  });
+
+  it("uses bounded provider defaults and validates an explicit pool limit", () => {
+    expect(getAaisPostgresPoolMax({})).toBe(5);
+    expect(getAaisPostgresPoolMax({ VERCEL: "1" })).toBe(2);
+    expect(getAaisPostgresPoolMax({ AAIS_DATABASE_POOL_MAX: "7" })).toBe(7);
+    expect(() => getAaisPostgresPoolMax({ AAIS_DATABASE_POOL_MAX: "0" }))
+      .toThrow("AAIS_DATABASE_POOL_MAX must be an integer between 1 and 20");
+    expect(() => getAaisPostgresPoolMax({ AAIS_DATABASE_POOL_MAX: "many" }))
+      .toThrow("AAIS_DATABASE_POOL_MAX must be an integer between 1 and 20");
+  });
+
+  it("requires Neon with system CA trust and hostname-verifying TLS for Aliyun production", () => {
+    const productionEnv = {
+      NODE_ENV: "production",
+      AAIS_DEPLOYMENT_PROVIDER: "aliyun",
+      AAIS_DATABASE_PROVIDER: "neon",
+    };
+
+    expect(() => getAaisPostgresPoolConfig(
+      "postgres://user:password@ep-example.ap-southeast-1.aws.neon.tech/aais?sslmode=require",
+      productionEnv,
+    )).toThrow("TLS verify-full");
+    expect(getAaisPostgresPoolConfig(
+      "postgres://user:password@ep-example.ap-southeast-1.aws.neon.tech/aais?sslmode=verify-full",
+      productionEnv,
+    ).max).toBe(5);
+    for (const downgrade of ["disable", "no-verify", "require"]) {
+      expect(() => getAaisPostgresPoolConfig(
+        `postgres://user:password@ep-example.ap-southeast-1.aws.neon.tech/aais?sslmode=verify-full&sslmode=${downgrade}`,
+        productionEnv,
+      )).toThrow("TLS verify-full");
+    }
+    expect(() => getAaisPostgresPoolConfig(
+      "postgres://user:password@ep-example.ap-southeast-1.aws.neon.tech/aais?sslmode=verify-full",
+      { ...productionEnv, NODE_TLS_REJECT_UNAUTHORIZED: "0" },
+    )).toThrow("TLS verify-full");
+    expect(() => getAaisPostgresPoolConfig(
+      "postgres://user:password@db.example.test/aais?sslmode=verify-full",
+      productionEnv,
+    )).toThrow("TLS verify-full");
+    expect(() => getAaisPostgresPoolConfig(
+      "postgres://user:password@ep-example.ap-southeast-1.aws.neon.tech/aais?sslmode=verify-full&sslrootcert=%2Fetc%2Faais%2Fcustom-ca.pem",
+      productionEnv,
+    )).toThrow("system CA trust");
+    expect(() => getAaisPostgresPoolConfig(
+      "postgres://user:password@ep-example.ap-southeast-1.aws.neon.tech/aais?sslmode=verify-full",
+      { ...productionEnv, AAIS_DATABASE_PROVIDER: "other" },
+    )).toThrow("AAIS_DATABASE_PROVIDER=neon");
+  });
+
+  it("requires a Neon hostname and verify-full TLS for Vercel production pg", () => {
+    const productionEnv = {
+      VERCEL_ENV: "production",
+      AAIS_DEPLOYMENT_PROVIDER: "vercel",
+      AAIS_DATABASE_PROVIDER: "neon",
+    };
+
+    expect(() => getAaisPostgresPoolConfig(
+      "postgres://user:secret@evil.example.test/aais?sslmode=verify-full",
+      productionEnv,
+    )).toThrow("neon.tech hostname");
+    expect(() => getAaisPostgresPoolConfig(
+      "postgres://user:secret@ep-example.us-east-1.aws.neon.tech/aais?sslmode=require",
+      productionEnv,
+    )).toThrow("TLS verify-full");
+    expect(getAaisPostgresPoolConfig(
+      "postgres://user:secret@ep-example.us-east-1.aws.neon.tech/aais?sslmode=verify-full",
+      productionEnv,
+    ).max).toBe(5);
+  });
+
+  it("keeps the separately governed research database outside the product-Neon binding", () => {
+    const researchUrl = "postgres://research:secret@research-db.example.test/aais_research";
+    const config = getAaisPostgresPoolConfig(researchUrl, {
+      NODE_ENV: "production",
+      AAIS_DATABASE_PROVIDER: "neon",
+      AAIS_RESEARCH_DATABASE_URL: researchUrl,
+    });
+
+    expect(config.connectionString).toBe(researchUrl);
+    expect(config.max).toBe(5);
+  });
+
+  it("reuses one process-level pool for the same product database and pool limit", () => {
+    const first = getAaisSharedPostgresPool(
+      "postgres://shared.example.invalid/aais",
+      { AAIS_DATABASE_POOL_MAX: "5" },
+    );
+    const second = getAaisSharedPostgresPool(
+      "postgres://shared.example.invalid/aais",
+      { AAIS_DATABASE_POOL_MAX: "5" },
+    );
+
+    expect(second).toBe(first);
+    expect(poolConstructor).toHaveBeenCalledOnce();
   });
 
   it("constructs every shared product and research pool with the bounded config", () => {
@@ -81,19 +180,46 @@ describe("AAIS Postgres pool deadlines", () => {
     );
   });
 
-  it("routes every auth and readiness Postgres pool through the bounded factory", () => {
+  it("rejects a non-Neon host or downgraded TLS before creating a production Neon client", () => {
+    const productionEnv = { NODE_ENV: "production" };
+
+    expect(() => createAaisNeonQueryClient(
+      "postgres://user:secret@evil.example.test/aais?sslmode=verify-full",
+      productionEnv,
+    )).toThrow("neon.tech URL with TLS verify-full");
+    expect(() => createAaisNeonQueryClient(
+      "postgres://user:secret@ep-example.us-east-1.aws.neon.tech/aais?sslmode=require",
+      productionEnv,
+    )).toThrow("neon.tech URL with TLS verify-full");
+    expect(() => createAaisNeonQueryClient(
+      "postgres://user:secret@ep-example.us-east-1.aws.neon.tech/aais?sslmode=verify-full&sslmode=require",
+      productionEnv,
+    )).toThrow("neon.tech URL with TLS verify-full");
+    expect(() => createAaisNeonQueryClient(
+      "postgres://user:secret@ep-example.us-east-1.aws.neon.tech/aais?sslmode=verify-full",
+      { ...productionEnv, NODE_TLS_REJECT_UNAUTHORIZED: "0" },
+    )).toThrow("neon.tech URL with TLS verify-full");
+    expect(() => createAaisNeonQueryClient(
+      "postgres://user:secret@ep-example.us-east-1.aws.neon.tech/aais?sslmode=verify-full",
+      productionEnv,
+    )).not.toThrow();
+  });
+
+  it("routes every product Postgres client through the shared bounded pool", () => {
     for (const file of [
       "src/lib/server/aais-auth-delivery.ts",
       "src/lib/server/aais-auth-rate-limit.ts",
       "src/lib/server/aais-learning-store.ts",
-      "src/lib/server/aais-readiness.ts",
       "src/lib/server/aais-session-revocations.ts",
       "src/lib/server/aais-users.ts",
     ]) {
       const source = readFileSync(file, "utf8");
       expect(source, file).not.toMatch(/new Pool\s*\(/);
-      expect(source, file).toContain("createAaisPostgresPool");
+      expect(source, file).toContain("getAaisSharedPostgresPool");
     }
+    const readinessSource = readFileSync("src/lib/server/aais-readiness.ts", "utf8");
+    expect(readinessSource).not.toMatch(/new Pool\s*\(/);
+    expect(readinessSource).toContain("createAaisPostgresPool");
     const helperSource = readFileSync("src/lib/server/aais-postgres-pool.ts", "utf8");
     expect(helperSource).toContain("AbortSignal.timeout(aaisNeonQueryTimeoutMs)");
     expect(helperSource).toContain("fetchOptions: { signal:");

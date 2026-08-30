@@ -1,13 +1,14 @@
 {
   "buildCommand": "node -- scripts/guard-vercel-production-deploy.mjs && npm run build",
+  "regions": ["sin1"],
   "crons": [
     {
       "path": "/api/learning/lrs/outbox/flush",
-      "schedule": "*/5 * * * *"
+      "schedule": "*/2 * * * *"
     },
     {
       "path": "/api/auth/email-outbox/flush",
-      "schedule": "*/5 * * * *"
+      "schedule": "*/2 * * * *"
     }
   ]
 }

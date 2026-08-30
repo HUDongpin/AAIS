@@ -291,6 +291,10 @@ vi.mock("pg", () => ({
               && databaseProbeMode !== "missing_admin_invariant",
             user_auth_tokens_table: databaseProbeMode === "missing_schema" ? null : "aais_user_auth_tokens",
             session_revocations_table: databaseProbeMode === "missing_schema" ? null : "aais_session_revocations",
+            runtime_leases_table: databaseProbeMode === "missing_schema" ? null : "aais_runtime_leases",
+            runtime_leases_columns: databaseProbeMode !== "missing_schema",
+            runtime_identity_table: databaseProbeMode === "missing_schema" ? null : "aais_runtime_identity",
+            runtime_identity_columns: databaseProbeMode !== "missing_schema",
             courses_table: databaseProbeMode === "missing_schema" ? null : "aais_courses",
             course_tasks_table: databaseProbeMode === "missing_schema" ? null : "aais_course_tasks",
             enrollments_table: databaseProbeMode === "missing_schema" ? null : "aais_enrollments",
@@ -326,6 +330,7 @@ const enterpriseEnv = [
   "AAIS_TRIAL_ACCOUNTS_JSON",
   "AAIS_TRIAL_SMOKE_ACCOUNTS_JSON",
   "AAIS_DATABASE_DRIVER",
+  "AAIS_DATABASE_PROVIDER",
   "AAIS_DATABASE_URL",
   "DATABASE_URL",
   "POSTGRES_URL",
@@ -407,6 +412,7 @@ const enterpriseEnv = [
   "QWEN_API_KEY",
   "QWEN_MODEL",
   "AAIS_RELEASE_ID",
+  "AAIS_DEPLOYMENT_PROVIDER",
   "AAIS_DEPLOYMENT_GIT_COMMIT_SHA",
   "AAIS_READINESS_MODE",
   "AAIS_READINESS_BEARER_TOKEN",
@@ -573,10 +579,14 @@ beforeEach(async () => {
     vi.stubEnv(key, "");
   }
   vi.stubEnv("AAIS_DATABASE_DRIVER", "pg");
+  vi.stubEnv("AAIS_DATABASE_PROVIDER", "neon");
   vi.stubEnv("AAIS_PRODUCT_PSEUDONYM_SECRET", productPseudonymSecret);
   vi.stubEnv("AAIS_APP_BASE_URL", "https://aais.example.test");
   vi.stubEnv("RESEND_API_KEY", "re_1234567890abcdefghijklmnopqrstuvwxyzABCD");
   vi.stubEnv("AAIS_AUTH_EMAIL_FROM", "AAIS <no-reply@example.test>");
+  vi.stubEnv("AAIS_DEPLOYMENT_PROVIDER", "vercel");
+  vi.stubEnv("AAIS_RELEASE_ID", "0123456789abcdef0123456789abcdef01234567");
+  vi.stubEnv("AAIS_DEPLOYMENT_GIT_COMMIT_SHA", "0123456789abcdef0123456789abcdef01234567");
   vi.stubEnv(
     "AAIS_AUTH_EMAIL_OUTBOX_FLUSH_TOKEN",
     "auth-email-outbox-token-with-at-least-32-characters",
@@ -694,7 +704,7 @@ describe("AAIS readiness route", () => {
     vi.stubEnv("AAIS_READINESS_MODE", "enterprise");
     vi.stubEnv("AAIS_SESSION_SECRET", "session-secret-that-must-not-leak");
     vi.stubEnv("AAIS_TRIAL_ACCOUNTS_JSON", trialAccountConfig);
-    vi.stubEnv("AAIS_DATABASE_URL", "postgres://aais:database-secret@ep-prod.us-east-1.aws.neon.tech/aais");
+    vi.stubEnv("AAIS_DATABASE_URL", "postgres://aais:database-secret@ep-prod.us-east-1.aws.neon.tech/aais?sslmode=verify-full");
     vi.stubEnv("LRS_ENDPOINT", "https://lrs.example.test/xapi");
     vi.stubEnv("LRS_USERNAME", "lrs-user");
     vi.stubEnv("LRS_PASSWORD", "lrs-password-that-must-not-leak");
@@ -735,8 +745,8 @@ describe("AAIS readiness route", () => {
       runtime: "production",
       readinessMode: "enterprise",
       release: {
-        id: "aais-2026-06-30-rc1",
-        source: "AAIS_RELEASE_ID",
+        id: "0123456789abcdef0123456789abcdef01234567",
+        source: "VERCEL_GIT_COMMIT_SHA",
         deployment: {
           provider: "vercel",
           gitCommit: {
@@ -964,7 +974,7 @@ describe("AAIS readiness route", () => {
     expect(serialized).not.toContain("aais-teachers");
     expect(serialized).not.toContain("ai-secret-that-must-not-leak");
     expect(serialized).not.toContain("enterprise-model");
-    expect(serialized).not.toContain("0123456789abcdef0123456789abcdef01234567");
+    expect(serialized).toContain("0123456789abcdef0123456789abcdef01234567");
     expect(body.issues).toEqual([]);
     expect(body.warnings).toEqual([]);
     expect(body.checks.research).toMatchObject({
@@ -1214,7 +1224,7 @@ describe("AAIS readiness route", () => {
     vi.stubEnv("AAIS_TRIAL_ACCOUNTS_JSON", trialAccountConfig);
     vi.stubEnv(
       "AAIS_DATABASE_URL",
-      "postgres://aais:database-secret@ep-prod.us-east-1.aws.neon.tech/aais",
+      "postgres://aais:database-secret@ep-prod.us-east-1.aws.neon.tech/aais?sslmode=verify-full",
     );
     stubMonitoringEnv();
     stubResearchEnv();
@@ -1810,7 +1820,7 @@ describe("AAIS readiness route", () => {
     // Admin authentication itself now requires the durable revocation store in
     // production. The file-level pg fake answers this URL without contacting a
     // database, allowing this test to remain focused on report redaction.
-    vi.stubEnv("AAIS_DATABASE_URL", "postgres://aais@db.example.test/aais");
+    vi.stubEnv("AAIS_DATABASE_URL", "postgres://aais@ep-test.us-east-1.aws.neon.tech/aais?sslmode=verify-full");
     vi.stubEnv("AAIS_RELEASE_ID", "aais-2026-06-30-rc1");
     vi.stubEnv("AAIS_OIDC_ISSUER", "https://idp.example.test");
     vi.stubEnv("AAIS_OIDC_CLIENT_ID", "aais-client");
@@ -1877,7 +1887,7 @@ describe("AAIS readiness route", () => {
   it("reports ready for SSO-only production when trial login is disabled", async () => {
     vi.stubEnv("AAIS_SESSION_SECRET", "session-secret-that-must-not-leak");
     vi.stubEnv("AAIS_TRIAL_LOGIN_ENABLED", "false");
-    vi.stubEnv("AAIS_DATABASE_URL", "postgres://aais:database-secret@example.test/aais");
+    vi.stubEnv("AAIS_DATABASE_URL", "postgres://aais:database-secret@ep-test.us-east-1.aws.neon.tech/aais?sslmode=verify-full");
     vi.stubEnv("LRS_ENDPOINT", "https://lrs.example.test/xapi");
     vi.stubEnv("LRS_USERNAME", "lrs-user");
     vi.stubEnv("LRS_PASSWORD", "lrs-password-that-must-not-leak");
@@ -1921,10 +1931,10 @@ describe("AAIS readiness route", () => {
     expect(JSON.stringify(body)).not.toContain("admin@example.test");
   });
 
-  it("accepts a standard Vercel Neon DATABASE_URL when AAIS_DATABASE_URL is not set", async () => {
+  it("fails closed when Vercel Production exposes DATABASE_URL without AAIS_DATABASE_URL", async () => {
     vi.stubEnv("AAIS_SESSION_SECRET", "session-secret-that-must-not-leak");
     vi.stubEnv("AAIS_TRIAL_LOGIN_ENABLED", "false");
-    vi.stubEnv("DATABASE_URL", "postgres://aais:database-secret@ep-prod.us-east-1.aws.neon.tech/aais");
+    vi.stubEnv("DATABASE_URL", "postgres://aais:database-secret@ep-prod.us-east-1.aws.neon.tech/aais?sslmode=verify-full");
     vi.stubEnv("LRS_ENDPOINT", "https://lrs.example.test/xapi");
     vi.stubEnv("LRS_USERNAME", "lrs-user");
     vi.stubEnv("LRS_PASSWORD", "lrs-password-that-must-not-leak");
@@ -1942,28 +1952,43 @@ describe("AAIS readiness route", () => {
     const response = await GET(createAuthorizedReadinessRequest());
     const body = await response.json();
 
-    expect(response.status).toBe(200);
+    expect(response.status).toBe(503);
     expect(body).toMatchObject({
-      status: "ready",
-      checks: {
-        storage: {
-          status: "ok",
-          mode: "postgres",
-          provider: "neon",
-          probe: "connected",
-          sourceEnv: "DATABASE_URL",
-        },
+      error: {
+        code: "AAIS_READINESS_UNAVAILABLE",
       },
+      secrets: "redacted",
     });
-    expect(body.issues).not.toContain("AAIS_DATABASE_URL");
     expect(JSON.stringify(body)).not.toContain("database-secret");
     expect(JSON.stringify(body)).not.toContain("aais-teachers");
+  });
+
+  it("fails closed before readiness checks when the production database provider is not Neon", async () => {
+    vi.stubEnv("AAIS_SESSION_SECRET", "session-secret-that-must-not-leak");
+    vi.stubEnv("AAIS_TRIAL_ACCOUNTS_JSON", trialAccountConfig);
+    vi.stubEnv(
+      "AAIS_DATABASE_URL",
+      "postgres://aais:database-secret@ep-prod.us-east-1.aws.neon.tech/aais?sslmode=verify-full",
+    );
+    vi.stubEnv("AAIS_DATABASE_PROVIDER", "");
+    const { GET } = await import("@/app/api/system/readiness/route");
+
+    const response = await GET(createAuthorizedReadinessRequest());
+    const body = await response.json();
+
+    expect(response.status).toBe(503);
+    expect(body).toMatchObject({
+      error: { code: "AAIS_READINESS_UNAVAILABLE" },
+      secrets: "redacted",
+    });
+    expect(JSON.stringify(body)).not.toContain("database-secret");
+    expect(JSON.stringify(body)).not.toContain("ep-prod.us-east-1.aws.neon.tech");
   });
 
   it("reports ready for current-stage trial auth production without OIDC provider variables", async () => {
     vi.stubEnv("AAIS_SESSION_SECRET", "session-secret-that-must-not-leak");
     vi.stubEnv("AAIS_TRIAL_ACCOUNTS_JSON", trialAccountConfig);
-    vi.stubEnv("DATABASE_URL", "postgres://aais:database-secret@ep-prod.us-east-1.aws.neon.tech/aais");
+    vi.stubEnv("AAIS_DATABASE_URL", "postgres://aais:database-secret@ep-prod.us-east-1.aws.neon.tech/aais?sslmode=verify-full");
     vi.stubEnv("LRS_ENDPOINT", "https://lrs.example.test/xapi");
     vi.stubEnv("LRS_USERNAME", "lrs-user");
     vi.stubEnv("LRS_PASSWORD", "lrs-password-that-must-not-leak");
@@ -1987,7 +2012,7 @@ describe("AAIS readiness route", () => {
           mode: "postgres",
           provider: "neon",
           probe: "connected",
-          sourceEnv: "DATABASE_URL",
+          sourceEnv: "AAIS_DATABASE_URL",
         },
         oidc: {
           status: "ok",
@@ -2005,19 +2030,19 @@ describe("AAIS readiness route", () => {
     expect(JSON.stringify(body)).not.toContain("database-secret");
   });
 
-  it("fails closed when the scheduled auth-email worker secret is missing in traffic mode", async () => {
+  it("accepts the dedicated auth-email worker token without requiring Vercel Cron", async () => {
     vi.stubEnv("AAIS_SESSION_SECRET", "session-secret-that-must-not-leak");
     vi.stubEnv("AAIS_TRIAL_ACCOUNTS_JSON", trialAccountConfig);
-    vi.stubEnv("DATABASE_URL", "postgres://aais:database-secret@ep-prod.us-east-1.aws.neon.tech/aais");
+    vi.stubEnv("AAIS_DATABASE_URL", "postgres://aais:database-secret@ep-prod.us-east-1.aws.neon.tech/aais?sslmode=verify-full");
     vi.stubEnv("AAIS_READINESS_MODE", "traffic");
     const { GET } = await import("@/app/api/system/readiness/route");
 
     const response = await GET(createAuthorizedReadinessRequest());
     const body = await response.json();
 
-    expect(response.status).toBe(503);
+    expect(response.status).toBe(200);
     expect(body).toMatchObject({
-      status: "not_ready",
+      status: "ready",
       readinessMode: "traffic",
       checks: {
         monitoring: {
@@ -2041,15 +2066,13 @@ describe("AAIS readiness route", () => {
           },
         },
         authDelivery: {
-          status: "invalid",
-          operatorAuthorized: false,
+          status: "ok",
+          operatorAuthorized: true,
           schema: "current",
         },
       },
     });
-    expect(body.issues).toEqual(expect.arrayContaining([
-      "AAIS_AUTH_EMAIL_OUTBOX_OPERATOR_SECRET",
-    ]));
+    expect(body.issues).not.toContain("AAIS_AUTH_EMAIL_OUTBOX_OPERATOR_SECRET");
     expect(body.warnings).toEqual(
       expect.arrayContaining([
         "LRS_ENDPOINT/LRS_USERNAME/LRS_PASSWORD",
@@ -2066,7 +2089,7 @@ describe("AAIS readiness route", () => {
   it("uses signed bundled evaluation evidence for the exact Qwen snapshot", async () => {
     vi.stubEnv("AAIS_SESSION_SECRET", "session-secret-that-must-not-leak");
     vi.stubEnv("AAIS_TRIAL_ACCOUNTS_JSON", trialAccountConfig);
-    vi.stubEnv("DATABASE_URL", "postgres://aais:database-secret@ep-prod.us-east-1.aws.neon.tech/aais");
+    vi.stubEnv("AAIS_DATABASE_URL", "postgres://aais:database-secret@ep-prod.us-east-1.aws.neon.tech/aais?sslmode=verify-full");
     vi.stubEnv("CRON_SECRET", "cron-secret-that-must-not-leak-2026");
     vi.stubEnv("AAIS_READINESS_MODE", "traffic");
     vi.stubEnv("AAIS_AI_PROVIDER", "qwen");
@@ -2107,7 +2130,7 @@ describe("AAIS readiness route", () => {
   it("rejects bundled Qwen 3.7 evaluation evidence for Qwen 3.8 Max", async () => {
     vi.stubEnv("AAIS_SESSION_SECRET", "session-secret-that-must-not-leak");
     vi.stubEnv("AAIS_TRIAL_ACCOUNTS_JSON", trialAccountConfig);
-    vi.stubEnv("DATABASE_URL", "postgres://aais:database-secret@ep-prod.us-east-1.aws.neon.tech/aais");
+    vi.stubEnv("AAIS_DATABASE_URL", "postgres://aais:database-secret@ep-prod.us-east-1.aws.neon.tech/aais?sslmode=verify-full");
     vi.stubEnv("CRON_SECRET", "cron-secret-that-must-not-leak");
     vi.stubEnv("AAIS_READINESS_MODE", "traffic");
     vi.stubEnv("AAIS_AI_PROVIDER", "qwen");
@@ -2145,7 +2168,7 @@ describe("AAIS readiness route", () => {
   it("does not let bundled evidence override an explicit failed Qwen evaluation", async () => {
     vi.stubEnv("AAIS_SESSION_SECRET", "session-secret-that-must-not-leak");
     vi.stubEnv("AAIS_TRIAL_ACCOUNTS_JSON", trialAccountConfig);
-    vi.stubEnv("DATABASE_URL", "postgres://aais:database-secret@ep-prod.us-east-1.aws.neon.tech/aais");
+    vi.stubEnv("AAIS_DATABASE_URL", "postgres://aais:database-secret@ep-prod.us-east-1.aws.neon.tech/aais?sslmode=verify-full");
     vi.stubEnv("CRON_SECRET", "cron-secret-that-must-not-leak");
     vi.stubEnv("AAIS_READINESS_MODE", "traffic");
     vi.stubEnv("AAIS_AI_PROVIDER", "qwen");
@@ -2183,7 +2206,7 @@ describe("AAIS readiness route", () => {
   it("blocks readiness when a configured production fallback lacks matching evaluation evidence", async () => {
     vi.stubEnv("AAIS_SESSION_SECRET", "session-secret-that-must-not-leak");
     vi.stubEnv("AAIS_TRIAL_ACCOUNTS_JSON", trialAccountConfig);
-    vi.stubEnv("DATABASE_URL", "postgres://aais:database-secret@ep-prod.us-east-1.aws.neon.tech/aais");
+    vi.stubEnv("AAIS_DATABASE_URL", "postgres://aais:database-secret@ep-prod.us-east-1.aws.neon.tech/aais?sslmode=verify-full");
     vi.stubEnv("CRON_SECRET", "cron-secret-that-must-not-leak");
     vi.stubEnv("AAIS_READINESS_MODE", "traffic");
     vi.stubEnv("AAIS_AI_PROVIDER", "qwen");
@@ -2217,7 +2240,7 @@ describe("AAIS readiness route", () => {
   it("does not require fallback evaluation evidence when stored fallback settings are explicitly disabled", async () => {
     vi.stubEnv("AAIS_SESSION_SECRET", "session-secret-that-must-not-leak");
     vi.stubEnv("AAIS_TRIAL_ACCOUNTS_JSON", trialAccountConfig);
-    vi.stubEnv("DATABASE_URL", "postgres://aais:database-secret@ep-prod.us-east-1.aws.neon.tech/aais");
+    vi.stubEnv("AAIS_DATABASE_URL", "postgres://aais:database-secret@ep-prod.us-east-1.aws.neon.tech/aais?sslmode=verify-full");
     vi.stubEnv("CRON_SECRET", "cron-secret-that-must-not-leak-2026");
     vi.stubEnv("AAIS_READINESS_MODE", "traffic");
     vi.stubEnv("AAIS_AI_PROVIDER", "qwen");
@@ -2253,7 +2276,7 @@ describe("AAIS readiness route", () => {
   it("accepts OIDC issuer discovery when explicit provider endpoints are not set", async () => {
     vi.stubEnv("AAIS_SESSION_SECRET", "session-secret-that-must-not-leak");
     vi.stubEnv("AAIS_TRIAL_LOGIN_ENABLED", "false");
-    vi.stubEnv("AAIS_DATABASE_URL", "postgres://aais:database-secret@example.test/aais");
+    vi.stubEnv("AAIS_DATABASE_URL", "postgres://aais:database-secret@ep-test.us-east-1.aws.neon.tech/aais?sslmode=verify-full");
     vi.stubEnv("LRS_ENDPOINT", "https://lrs.example.test/xapi");
     vi.stubEnv("LRS_USERNAME", "lrs-user");
     vi.stubEnv("LRS_PASSWORD", "lrs-password-that-must-not-leak");
@@ -2282,7 +2305,7 @@ describe("AAIS readiness route", () => {
   it("fails closed when production OIDC is configured without an allowed role mapping", async () => {
     vi.stubEnv("AAIS_SESSION_SECRET", "session-secret-that-must-not-leak");
     vi.stubEnv("AAIS_TRIAL_LOGIN_ENABLED", "false");
-    vi.stubEnv("AAIS_DATABASE_URL", "postgres://aais:database-secret@example.test/aais");
+    vi.stubEnv("AAIS_DATABASE_URL", "postgres://aais:database-secret@ep-test.us-east-1.aws.neon.tech/aais?sslmode=verify-full");
     vi.stubEnv("LRS_ENDPOINT", "https://lrs.example.test/xapi");
     vi.stubEnv("LRS_USERNAME", "lrs-user");
     vi.stubEnv("LRS_PASSWORD", "lrs-password-that-must-not-leak");
@@ -2332,7 +2355,7 @@ describe("AAIS readiness route", () => {
   it("fails closed when production OIDC explicit endpoints are partially configured", async () => {
     vi.stubEnv("AAIS_SESSION_SECRET", "session-secret-that-must-not-leak");
     vi.stubEnv("AAIS_TRIAL_LOGIN_ENABLED", "false");
-    vi.stubEnv("AAIS_DATABASE_URL", "postgres://aais:database-secret@example.test/aais");
+    vi.stubEnv("AAIS_DATABASE_URL", "postgres://aais:database-secret@ep-test.us-east-1.aws.neon.tech/aais?sslmode=verify-full");
     vi.stubEnv("LRS_ENDPOINT", "https://lrs.example.test/xapi");
     vi.stubEnv("LRS_USERNAME", "lrs-user");
     vi.stubEnv("LRS_PASSWORD", "lrs-password-that-must-not-leak");
@@ -2545,7 +2568,7 @@ describe("AAIS readiness route", () => {
   it("requires a verified AI evaluation manifest before production live AI is ready", async () => {
     vi.stubEnv("AAIS_SESSION_SECRET", "session-secret-that-must-not-leak");
     vi.stubEnv("AAIS_TRIAL_ACCOUNTS_JSON", trialAccountConfig);
-    vi.stubEnv("AAIS_DATABASE_URL", "postgres://aais:database-secret@example.test/aais");
+    vi.stubEnv("AAIS_DATABASE_URL", "postgres://aais:database-secret@ep-test.us-east-1.aws.neon.tech/aais?sslmode=verify-full");
     vi.stubEnv("LRS_ENDPOINT", "https://lrs.example.test/xapi");
     vi.stubEnv("LRS_USERNAME", "lrs-user");
     vi.stubEnv("LRS_PASSWORD", "lrs-password-that-must-not-leak");
@@ -2588,7 +2611,7 @@ describe("AAIS readiness route", () => {
   it("accepts a redacted inline AI evaluation manifest JSON for Vercel production", async () => {
     vi.stubEnv("AAIS_SESSION_SECRET", "session-secret-that-must-not-leak");
     vi.stubEnv("AAIS_TRIAL_ACCOUNTS_JSON", trialAccountConfig);
-    vi.stubEnv("AAIS_DATABASE_URL", "postgres://aais:database-secret@example.test/aais");
+    vi.stubEnv("AAIS_DATABASE_URL", "postgres://aais:database-secret@ep-test.us-east-1.aws.neon.tech/aais?sslmode=verify-full");
     vi.stubEnv("LRS_ENDPOINT", "https://lrs.example.test/xapi");
     vi.stubEnv("LRS_USERNAME", "lrs-user");
     vi.stubEnv("LRS_PASSWORD", "lrs-password-that-must-not-leak");
@@ -2626,7 +2649,7 @@ describe("AAIS readiness route", () => {
   it("rejects inline AI evaluation manifests with mismatched A1-A4 role coverage", async () => {
     vi.stubEnv("AAIS_SESSION_SECRET", "session-secret-that-must-not-leak");
     vi.stubEnv("AAIS_TRIAL_ACCOUNTS_JSON", trialAccountConfig);
-    vi.stubEnv("AAIS_DATABASE_URL", "postgres://aais:database-secret@example.test/aais");
+    vi.stubEnv("AAIS_DATABASE_URL", "postgres://aais:database-secret@ep-test.us-east-1.aws.neon.tech/aais?sslmode=verify-full");
     vi.stubEnv("LRS_ENDPOINT", "https://lrs.example.test/xapi");
     vi.stubEnv("LRS_USERNAME", "lrs-user");
     vi.stubEnv("LRS_PASSWORD", "lrs-password-that-must-not-leak");
@@ -2675,7 +2698,7 @@ describe("AAIS readiness route", () => {
   it("rejects AI evaluation manifests that report blocked samples", async () => {
     vi.stubEnv("AAIS_SESSION_SECRET", "session-secret-that-must-not-leak");
     vi.stubEnv("AAIS_TRIAL_ACCOUNTS_JSON", trialAccountConfig);
-    vi.stubEnv("AAIS_DATABASE_URL", "postgres://aais:database-secret@example.test/aais");
+    vi.stubEnv("AAIS_DATABASE_URL", "postgres://aais:database-secret@ep-test.us-east-1.aws.neon.tech/aais?sslmode=verify-full");
     vi.stubEnv("LRS_ENDPOINT", "https://lrs.example.test/xapi");
     vi.stubEnv("LRS_USERNAME", "lrs-user");
     vi.stubEnv("LRS_PASSWORD", "lrs-password-that-must-not-leak");
@@ -2716,7 +2739,7 @@ describe("AAIS readiness route", () => {
     databaseProbeMode = "error";
     vi.stubEnv("AAIS_SESSION_SECRET", "session-secret-that-must-not-leak");
     vi.stubEnv("AAIS_TRIAL_ACCOUNTS_JSON", trialAccountConfig);
-    vi.stubEnv("AAIS_DATABASE_URL", "postgres://aais:database-secret@example.test/aais");
+    vi.stubEnv("AAIS_DATABASE_URL", "postgres://aais:database-secret@ep-test.us-east-1.aws.neon.tech/aais?sslmode=verify-full");
     vi.stubEnv("LRS_ENDPOINT", "https://lrs.example.test/xapi");
     vi.stubEnv("LRS_USERNAME", "lrs-user");
     vi.stubEnv("LRS_PASSWORD", "lrs-password-that-must-not-leak");
@@ -2751,7 +2774,7 @@ describe("AAIS readiness route", () => {
 
   it("fails closed instead of reporting a zero backlog when outbox status is unavailable", async () => {
     databaseProbeMode = "outbox_error";
-    vi.stubEnv("AAIS_DATABASE_URL", "postgres://aais:database-secret@example.test/aais");
+    vi.stubEnv("AAIS_DATABASE_URL", "postgres://aais:database-secret@ep-test.us-east-1.aws.neon.tech/aais?sslmode=verify-full");
     vi.stubEnv("LRS_ENDPOINT", "https://lrs.example.test/xapi");
     vi.stubEnv("LRS_USERNAME", "lrs-user");
     vi.stubEnv("LRS_PASSWORD", "lrs-password-that-must-not-leak");
@@ -2774,7 +2797,7 @@ describe("AAIS readiness route", () => {
 
   it("fails closed when the product LRS outbox contains dead letters", async () => {
     databaseProbeMode = "lrs_dead_letter";
-    vi.stubEnv("AAIS_DATABASE_URL", "postgres://aais:database-secret@example.test/aais");
+    vi.stubEnv("AAIS_DATABASE_URL", "postgres://aais:database-secret@ep-test.us-east-1.aws.neon.tech/aais?sslmode=verify-full");
     vi.stubEnv("LRS_ENDPOINT", "https://lrs.example.test/xapi");
     vi.stubEnv("LRS_USERNAME", "lrs-user");
     vi.stubEnv("LRS_PASSWORD", "lrs-password-that-must-not-leak");
@@ -2803,7 +2826,7 @@ describe("AAIS readiness route", () => {
     "fails closed when authentication delivery queue health is %s",
     async (mode, metrics) => {
       databaseProbeMode = mode;
-      vi.stubEnv("AAIS_DATABASE_URL", "postgres://aais:database-secret@example.test/aais");
+      vi.stubEnv("AAIS_DATABASE_URL", "postgres://aais:database-secret@ep-test.us-east-1.aws.neon.tech/aais?sslmode=verify-full");
       const { GET } = await import("@/app/api/system/readiness/route");
 
       const response = await GET(createAuthorizedReadinessRequest());
@@ -2826,7 +2849,7 @@ describe("AAIS readiness route", () => {
   it("fails closed when production auth-email delivery configuration is incomplete", async () => {
     vi.stubEnv("AAIS_SESSION_SECRET", "session-secret-that-must-not-leak");
     vi.stubEnv("AAIS_TRIAL_ACCOUNTS_JSON", trialAccountConfig);
-    vi.stubEnv("AAIS_DATABASE_URL", "postgres://aais:database-secret@example.test/aais");
+    vi.stubEnv("AAIS_DATABASE_URL", "postgres://aais:database-secret@ep-test.us-east-1.aws.neon.tech/aais?sslmode=verify-full");
     vi.stubEnv("CRON_SECRET", "cron-secret-that-must-not-leak-2026");
     vi.stubEnv("AAIS_APP_BASE_URL", "http://localhost:3000");
     vi.stubEnv("RESEND_API_KEY", "");
@@ -2854,7 +2877,7 @@ describe("AAIS readiness route", () => {
     databaseProbeMode = "missing_auth_email_outbox";
     vi.stubEnv("AAIS_SESSION_SECRET", "session-secret-that-must-not-leak");
     vi.stubEnv("AAIS_TRIAL_ACCOUNTS_JSON", trialAccountConfig);
-    vi.stubEnv("AAIS_DATABASE_URL", "postgres://aais:database-secret@example.test/aais");
+    vi.stubEnv("AAIS_DATABASE_URL", "postgres://aais:database-secret@ep-test.us-east-1.aws.neon.tech/aais?sslmode=verify-full");
     vi.stubEnv("CRON_SECRET", "cron-secret-that-must-not-leak-2026");
     const { GET } = await import("@/app/api/system/readiness/route");
 
@@ -2876,7 +2899,7 @@ describe("AAIS readiness route", () => {
     databaseProbeMode = "missing_auth_email_reconciliation";
     vi.stubEnv("AAIS_SESSION_SECRET", "session-secret-that-must-not-leak");
     vi.stubEnv("AAIS_TRIAL_ACCOUNTS_JSON", trialAccountConfig);
-    vi.stubEnv("AAIS_DATABASE_URL", "postgres://aais:database-secret@example.test/aais");
+    vi.stubEnv("AAIS_DATABASE_URL", "postgres://aais:database-secret@ep-test.us-east-1.aws.neon.tech/aais?sslmode=verify-full");
     vi.stubEnv("CRON_SECRET", "cron-secret-that-must-not-leak-2026");
     const { GET } = await import("@/app/api/system/readiness/route");
 
@@ -2913,7 +2936,7 @@ describe("AAIS readiness route", () => {
     databaseProbeMode = mode;
     vi.stubEnv("AAIS_SESSION_SECRET", "session-secret-that-must-not-leak");
     vi.stubEnv("AAIS_TRIAL_ACCOUNTS_JSON", trialAccountConfig);
-    vi.stubEnv("AAIS_DATABASE_URL", "postgres://aais:database-secret@example.test/aais");
+    vi.stubEnv("AAIS_DATABASE_URL", "postgres://aais:database-secret@ep-test.us-east-1.aws.neon.tech/aais?sslmode=verify-full");
     vi.stubEnv("LRS_ENDPOINT", "https://lrs.example.test/xapi");
     vi.stubEnv("LRS_USERNAME", "lrs-user");
     vi.stubEnv("LRS_PASSWORD", "lrs-password-that-must-not-leak");
@@ -2947,7 +2970,7 @@ describe("AAIS readiness route", () => {
 
   it("fails closed when production trial accounts are not configured", async () => {
     vi.stubEnv("AAIS_SESSION_SECRET", "session-secret-that-must-not-leak");
-    vi.stubEnv("AAIS_DATABASE_URL", "postgres://aais:database-secret@example.test/aais");
+    vi.stubEnv("AAIS_DATABASE_URL", "postgres://aais:database-secret@ep-test.us-east-1.aws.neon.tech/aais?sslmode=verify-full");
     vi.stubEnv("LRS_ENDPOINT", "https://lrs.example.test/xapi");
     vi.stubEnv("LRS_USERNAME", "lrs-user");
     vi.stubEnv("LRS_PASSWORD", "lrs-password-that-must-not-leak");
@@ -2993,7 +3016,7 @@ describe("AAIS readiness route", () => {
         },
       },
     ]));
-    vi.stubEnv("AAIS_DATABASE_URL", "postgres://aais:database-secret@example.test/aais");
+    vi.stubEnv("AAIS_DATABASE_URL", "postgres://aais:database-secret@ep-test.us-east-1.aws.neon.tech/aais?sslmode=verify-full");
     vi.stubEnv("LRS_ENDPOINT", "https://lrs.example.test/xapi");
     vi.stubEnv("LRS_USERNAME", "lrs-user");
     vi.stubEnv("LRS_PASSWORD", "lrs-password-that-must-not-leak");
@@ -3035,7 +3058,7 @@ describe("AAIS readiness route", () => {
         password: createPasswordRecord("teacher-password-that-must-not-leak"),
       },
     ]));
-    vi.stubEnv("AAIS_DATABASE_URL", "postgres://aais:database-secret@example.test/aais");
+    vi.stubEnv("AAIS_DATABASE_URL", "postgres://aais:database-secret@ep-test.us-east-1.aws.neon.tech/aais?sslmode=verify-full");
     vi.stubEnv("LRS_ENDPOINT", "https://lrs.example.test/xapi");
     vi.stubEnv("LRS_USERNAME", "lrs-user");
     vi.stubEnv("LRS_PASSWORD", "lrs-password-that-must-not-leak");

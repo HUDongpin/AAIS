@@ -7,6 +7,7 @@ import {
   defaultAaisLocale,
   parseAaisLocale,
 } from "@/lib/aais-locale";
+import { shouldEnableAaisVercelAnalytics } from "@/lib/aais-vercel-analytics";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -34,12 +35,4 @@ export default async function RootLayout({
       </body>
     </html>
   );
-}
-
-export function shouldEnableAaisVercelAnalytics(
-  env: Record<string, string | undefined> = process.env,
-) {
-  return env.AAIS_RESEARCH_MODE?.trim().toLowerCase() !== "true"
-    && env.AAIS_RESEARCH_REQUIRED?.trim().toLowerCase() !== "true"
-    && env.AAIS_RESEARCH_ENVIRONMENT?.trim().toLowerCase() !== "research";
 }
