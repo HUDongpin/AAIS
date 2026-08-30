@@ -14,6 +14,9 @@ describe("AAIS Aliyun deployment assets", () => {
     expect(dockerfile).toContain("AAIS_REQUIRE_STABLE_SERVER_ACTIONS_KEY");
     expect(nextConfig).toContain('output: "standalone"');
     expect(nextConfig).toContain("deploymentId: readAaisBuildDeploymentId()");
+    expect(nextConfig).toContain(
+      'import { readAaisBuildDeploymentId } from "./src/lib/build/aais-next-deployment-id"',
+    );
   });
 
   it("excludes owner secrets, local data, and evidence from the Docker context", () => {
