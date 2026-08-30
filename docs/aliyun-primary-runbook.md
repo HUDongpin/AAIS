@@ -72,10 +72,14 @@ Stop before production RDS creation or migration when any of these is true:
   immutable digest.
 - A production secret would enter Git, Docker build args, workflow logs,
   command arguments, chat, or a release receipt.
-- The exact monthly ACR Enterprise, RDS, backup, KMS, and temporary build-runner
-  prices have not been displayed to and approved by the Owner.
-- `/run/aais` cannot be reconstructed from an audited Secrets Manager bootstrap
-  after an ECS reboot, or the bootstrap/rotation drill has not passed.
+- The exact monthly ACR Enterprise, RDS, backup, and temporary build-runner
+  prices have not been displayed to and approved by the Owner. A paid KMS
+  instance is not part of the default topology; it requires a separate price
+  approval if selected later.
+- The ECS system disk and snapshots that can contain Docker runtime metadata or
+  `/etc/aais/secrets` do not have verified at-rest encryption.
+- `/run/aais` cannot be reconstructed from the audited root-only local secret
+  source after an ECS reboot, or the bootstrap/rotation drill has not passed.
 
 ## Phase A: source and existing-host baseline
 
@@ -85,6 +89,11 @@ Stop before production RDS creation or migration when any of these is true:
 3. Record status, TLS, response time, and 5xx baselines for the existing 3dENA,
    CAIS, and EduExpressAI domains.
 4. Create and verify an ECS system-disk snapshot before installing AAIS assets.
+   This pre-secret snapshot may follow the existing retention policy. Every
+   later snapshot that contains Docker runtime metadata or
+   `/etc/aais/secrets/runtime.env` is a secret-bearing backup: restrict access
+   and sharing, keep the shortest justified retention, and never copy it to an
+   uncontrolled account or region.
 5. Inventory the exact current source database roles. Create a distinct,
    least-privilege temporary `aais_source_aliyun` role for the Aliyun candidate;
    never reuse the Vercel integration role. Prove that the Vercel role can be
@@ -117,8 +126,8 @@ Stop before production RDS creation or migration when any of these is true:
    dynamic public IP ranges. Validate its labels, VPC-only ACR reachability and
    ephemeral destruction procedure, but do not merge or run the lease-aware
    production workflow before Phase C's database gate.
-5. Attach a least-privilege ECS RAM role for ACR temporary authorization,
-   secret retrieval, and logging. Install the pinned Alibaba Cloud CLI and
+5. Attach a least-privilege ECS RAM role for ACR temporary authorization and
+   logging. Install the pinned Alibaba Cloud CLI and
    configure its `aais-ecs-role` profile to use `EcsRamRole`; the deploy wrapper
    obtains a short-lived ACR token, logs Docker in only for the pull, then logs
    out. Every operation uses a root-only `DOCKER_CONFIG` below `/run/aais`, so
@@ -127,8 +136,16 @@ Stop before production RDS creation or migration when any of these is true:
    human AccessKey or permanent registry password.
 6. Install repository scripts under `/opt/aais/bin` as root-owned mode `0755`,
    create the dedicated `aais-worker` system user/group, and install root-owned
-   config under `/etc/aais` with mode `0600`. An audited boot unit must retrieve the secret
-   bundle with the ECS RAM role and reconstruct
+   config under `/etc/aais` with mode `0600`. The no-KMS default has exactly one
+   persistent secret source: regular, non-symlink, single-link
+   `/etc/aais/secrets/runtime.env`, root-owned mode `0400` inside a root-owned
+   `0700` directory. It contains a unique, non-sensitive
+   `AAIS_SECRET_BUNDLE_VERSION`; the bootstrap derives worker.env from the same
+   in-memory snapshot rather than persisting a second source. The Owner creates
+   the initial file only through an independent hidden-input process; Codex
+   never reads its values. It contains only `KEY=VALUE` records, with no blank
+   lines or comments; `aais-runtime.env.example` is a reference, not a file to
+   copy directly. An audited boot unit reconstructs
    `/run/aais/current/runtime.env` (`0400`) and
    `/run/aais/current/worker.env` (`root:aais-worker`, `0440`) in one immutable
    generation, then atomically replace the `current` symlink before either AAIS
@@ -137,16 +154,38 @@ Stop before production RDS creation or migration when any of these is true:
    may restart with their already-bound environment, while the bootstrap makes
    the next exact-digest deployment and workers recoverable. Logs may contain
    only a secret version/fingerprint, never a value.
-   The KMS secret data is an Owner-created JSON object with non-secret
-   `bundleVersion` plus base64 fields `runtimeEnvBase64` and
-   `workerEnvBase64`; never place the decoded values in a command argument,
-   receipt, screenshot, or chat. Enable `aais-secrets-bootstrap.service`, then
+   Optional KMS retrieval remains implemented but disabled. It may be selected
+   only after the Owner separately approves its current base, key, secret, and
+   QPS charges; its JSON data uses non-secret `bundleVersion` plus base64 field
+   `runtimeEnvBase64`. Install the provided KMS systemd network drop-in only in
+   that explicitly approved mode. Never place either source's secret
+   values in a command argument, receipt, screenshot, or chat. Enable
+   `aais-secrets-bootstrap.service`, then
    prove one real reboot and one bundle rotation before production traffic.
-   Routine rotation must use `aais-rotate-secrets.sh`: it stops/drains both
-   timers, refreshes the bundle, recreates the inactive color from the active
-   exact digest with the new runtime env, promotes it, and only then restarts
-   timers. Bootstrap, rotation, and deploy use the same operation lock; the
-   runtime file, worker file, and bootstrap receipt switch as one generation.
+   For local-source rotation, the Owner writes the complete new source as
+   `/etc/aais/secrets/runtime.env.candidate`, root-owned mode `0400`, with a new
+   bundle version, and never truncates or edits the active source in place.
+   Invoke `aais-rotate-secrets.sh /etc/aais/secrets/runtime.env.candidate`; it
+   stops/drains both timers, writes the durable
+   `/opt/aais/state/secret-rotation.pending` marker, preserves a protected
+   previous source, atomically replaces the source on the same filesystem,
+   refreshes the bundle, recreates the inactive color from the active exact
+   digest, atomically records color/port/release/image/bundle in
+   `/opt/aais/state/active-deployment.env`, promotes it, verifies
+   the canonical TLS path, removes the marker, and only then restarts timers.
+   The marker records `prepared`, `previous-saved`, `source-promoted`,
+   `runtime-published`, or `container-promoted`, so a power loss can resume from
+   a proven phase. If rotation fails, the marker survives reboot, Nginx remains
+   in maintenance, and both workers fail closed. After correcting a transient
+   cause, use `aais-rotate-secrets.sh --resume`; use `--rollback` to restore the
+   protected previous source, or `--replace-pending` plus the exact candidate
+   path to replace a rejected pending source. Bootstrap, rotation, and deploy
+   use the same operation lock; the runtime file, derived worker file, and
+   bootstrap receipt switch as one generation. Before deleting the previous
+   source or restarting workers, rotation verifies the exact release first
+   through the loopback Nginx diagnostic and then through the canonical path
+   after removing the pending marker; any failure atomically restores a
+   `failed` marker.
    Restarting only the bootstrap service is forbidden because it would give the
    worker wrapper tokens that the old container does not authorize.
 7. Record `/etc/machine-id` and the main BaoTa Nginx configuration SHA-256 in
@@ -154,6 +193,10 @@ Stop before production RDS creation or migration when any of these is true:
    `server 127.0.0.1:3101;`, add only the AAIS vhost/include, and run the BaoTa
    Nginx config test before its shared/global reload. This reload is a shared
    control-plane operation, so pre/post smoke every existing vhost.
+   The vhost also binds a diagnostic TLS server only on `127.0.0.1:8443`; it
+   traverses the effective AAIS upstream without the public maintenance gate.
+   Never expose that port in an ECS security rule. Deployment uses it to prove
+   the loaded release before reconciling an interrupted promotion.
    The AAIS access format records `$uri` but no query string, Cookie,
    Authorization, Referer, User-Agent, or body; the vhost disables Nginx error
    logging because its fixed format can append the full request line. Prove the

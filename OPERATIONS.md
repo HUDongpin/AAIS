@@ -41,7 +41,10 @@ bootstrap, exact-digest deployment, RDS rehearsal/cutover, DNS,
 rollback, capacity, and failure-drill procedures are frozen in
 [docs/aliyun-primary-runbook.md](./docs/aliyun-primary-runbook.md). Compute and
 database cutovers are separate windows; production DNS must not change during
-the database restore window.
+the database restore window. Paid KMS is also excluded from the default budget:
+runtime secrets are restored from one encrypted-disk, root-only local source file
+and switched as one generation. KMS remains optional only after a separate
+current-price approval.
 
 The intended release path is Git-based:
 

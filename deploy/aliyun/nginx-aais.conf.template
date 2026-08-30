@@ -8,6 +8,33 @@ upstream aais_app {
     keepalive 16;
 }
 
+# Loopback-only diagnostic path. It traverses the effective Nginx upstream but
+# intentionally bypasses the public maintenance gate so interrupted promotions
+# can be reconciled without exposing a public bypass.
+server {
+    listen 127.0.0.1:8443 ssl;
+    server_name www.aais.site;
+    access_log /www/wwwlogs/aais.site.access.log aais_redacted;
+    error_log /dev/null crit;
+
+    ssl_certificate /etc/aais/tls/fullchain.pem;
+    ssl_certificate_key /etc/aais/tls/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+
+    location = /api/system/traffic-readiness {
+        proxy_http_version 1.1;
+        proxy_buffering off;
+        proxy_cache off;
+        proxy_read_timeout 30s;
+        proxy_set_header Connection "";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP 127.0.0.1;
+        proxy_set_header X-Forwarded-For 127.0.0.1;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_pass http://aais_app;
+    }
+}
+
 server {
     listen 80;
     listen [::]:80;
@@ -46,6 +73,11 @@ server {
     # The root-owned flag is checked for every request, so a database migration
     # write freeze does not depend on rebuilding or restarting the container.
     if (-f /opt/aais/state/maintenance.enabled) {
+        return 503;
+    }
+    # A failed secret rotation remains fail-closed across an ECS reboot until
+    # an exact-digest container and the active bundle state agree again.
+    if (-f /opt/aais/state/secret-rotation.pending) {
         return 503;
     }
 

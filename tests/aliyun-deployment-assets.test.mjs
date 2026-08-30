@@ -57,6 +57,14 @@ describe("AAIS Aliyun deployment assets", () => {
     expect(deploy).toContain("AAIS_EXPECTED_MACHINE_ID_SHA256");
     expect(deploy).toContain("AAIS_EXPECTED_NGINX_VHOST_SHA256");
     expect(deploy).toContain("AAIS_EXPECTED_DATABASE_CA_SHA256");
+    expect(deploy).toContain("active-deployment.env");
+    expect(deploy).toContain("AAIS_ACTIVE_SECRET_BUNDLE_VERSION");
+    expect(deploy).toContain("AAIS_ROTATION_PENDING_FILE");
+    expect(deploy).toContain("secretBundleVersion");
+    expect(deploy).toContain("commit_recovered_active_state");
+    expect(deploy).toContain("finalized a verified interrupted Nginx promotion");
+    expect(deploy).toContain("nginx_loaded_release_matches");
+    expect(deploy).toContain("www.aais.site:8443:127.0.0.1");
     expect(deploy).toContain("dst=/etc/aais/rds-ca.pem,readonly");
     expect(deploy).toContain("deploy configuration must be root-owned with mode 0600");
     expect(deploy).toContain("--resolve www.aais.site:443:127.0.0.1");
@@ -71,6 +79,8 @@ describe("AAIS Aliyun deployment assets", () => {
     expect(deploy).toContain("docker start \"$active_container\"");
     expect(deploy).not.toContain("docker build");
     expect(deploy).not.toContain("latest");
+    expect(deploy.indexOf('mv -Tf -- "$candidate_state" "$AAIS_STATE_FILE"'))
+      .toBeLessThan(deploy.indexOf('mv -Tf -- "$candidate_receipt" "$receipt_file"'));
   });
 
   it("keeps SSE unbuffered and overwrites the trusted client IP headers", () => {
@@ -92,6 +102,8 @@ describe("AAIS Aliyun deployment assets", () => {
     expect(nginx).not.toContain("$http_authorization");
     expect(nginx).toContain("error_log /dev/null crit");
     expect(nginx).toContain("/opt/aais/state/maintenance.enabled");
+    expect(nginx).toContain("/opt/aais/state/secret-rotation.pending");
+    expect(nginx).toContain("listen 127.0.0.1:8443 ssl");
     expect(nginx).toContain("Retry-After");
   });
 
@@ -163,20 +175,37 @@ describe("AAIS Aliyun deployment assets", () => {
     expect(maintenance).toContain("/opt/aais/state/maintenance.enabled");
     expect(maintenance).toContain("enable|disable|status");
     const bootstrap = readFileSync("deploy/aliyun/aais-secrets-bootstrap.sh", "utf8");
+    expect(bootstrap).toContain('AAIS_SECRET_SOURCE:=file');
+    expect(bootstrap).toContain("/etc/aais/secrets/runtime.env");
+    expect(bootstrap).not.toContain('local_worker_source=');
+    expect(bootstrap).not.toContain("AAIS_LOCAL_SECRET_BUNDLE_VERSION");
+    expect(bootstrap).toContain('local_secret_dir_mode" != "700"');
+    expect(bootstrap).toContain('local_secret_mode" != "400"');
+    expect(bootstrap).toContain('local_secret_links" != "1"');
+    expect(bootstrap).toContain("local_source_sha_before");
+    expect(bootstrap).toContain('> "$worker_candidate"');
     expect(bootstrap).toContain("kms GetSecretValue");
     expect(bootstrap).toContain("runtimeEnvBase64");
-    expect(bootstrap).toContain("workerEnvBase64");
+    expect(bootstrap).not.toContain("workerEnvBase64");
     expect(bootstrap).toContain("runtime and worker secret bundles do not match");
     expect(bootstrap).toContain("/run/aais/current");
     expect(bootstrap).toContain("generation_published");
     expect(bootstrap).toContain("AAIS_OPERATION_LOCK_FD");
     expect(bootstrap).toContain("AAIS_PRODUCT_PSEUDONYM_SECRET");
+    expect(bootstrap).toContain("AAIS_SECRET_BUNDLE_VERSION");
     expect(bootstrap).toContain("bootstrap configuration must be root-owned with mode 0600");
     expect(bootstrap).not.toMatch(/AccessKey|SecretData.*echo/);
     const unit = readFileSync("deploy/aliyun/aais-secrets-bootstrap.service", "utf8");
     expect(unit).toContain("Before=aais-email-outbox.service aais-lrs-outbox.service");
     expect(unit).not.toContain("Before=docker.service");
+    expect(unit).toContain("After=local-fs.target");
+    expect(unit).not.toContain("network-online.target");
     expect(unit).toContain("ReadWritePaths=/run/aais");
+    const kmsDropIn = readFileSync(
+      "deploy/aliyun/aais-secrets-bootstrap-kms.conf.example",
+      "utf8",
+    );
+    expect(kmsDropIn).toContain("network-online.target");
     const rotate = readFileSync("deploy/aliyun/aais-rotate-secrets.sh", "utf8");
     expect(rotate).toContain("systemctl stop");
     expect(rotate).toContain('"$bootstrap_wrapper"');
@@ -184,6 +213,34 @@ describe("AAIS Aliyun deployment assets", () => {
     expect(rotate).toContain("AAIS_OPERATION_LOCK_FD=9");
     expect(rotate).toContain('"$deploy_wrapper" "$image_ref" "$release_sha"');
     expect(rotate).toContain("worker timers remain stopped");
+    expect(rotate).toContain("secret-rotation.pending");
+    expect(rotate).toContain("runtime.env.candidate");
+    expect(rotate).toContain('"--resume"');
+    expect(rotate).toContain("active-deployment.env");
+    expect(rotate).toContain("write_rotation_phase");
+    expect(rotate).toContain("previous-saved");
+    expect(rotate).toContain("source-promoted");
+    expect(rotate).toContain('"--rollback"');
+    expect(rotate).toContain('"--replace-pending"');
+    expect(rotate.indexOf('--validate-file "$local_runtime_candidate"'))
+      .toBeLessThan(rotate.indexOf("write_rotation_phase prepared"));
+    expect(rotate).toContain("www.aais.site:8443:127.0.0.1");
+    expect(rotate).toContain("canonical path does not match the promoted release");
+    expect(rotate.lastIndexOf('rm -f -- "$rotation_pending_file"'))
+      .toBeLessThan(rotate.lastIndexOf('systemctl start "$email_timer"'));
+    expect(rotate.indexOf("canonical_probe="))
+      .toBeLessThan(rotate.indexOf('rm -f -- "$local_runtime_previous"'));
+    for (const service of [
+      "deploy/aliyun/aais-email-outbox.service",
+      "deploy/aliyun/aais-lrs-outbox.service",
+    ]) {
+      expect(readFileSync(service, "utf8")).toContain(
+        "ConditionPathExists=!/opt/aais/state/secret-rotation.pending",
+      );
+    }
+    const worker = readFileSync("deploy/aliyun/aais-worker.sh", "utf8");
+    expect(worker).toContain("active-deployment.env");
+    expect(worker).toContain("worker secret bundle does not match the active deployment");
   });
 
   it("uses pinned actions and OIDC-only temporary ACR credentials", () => {

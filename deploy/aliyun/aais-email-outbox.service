@@ -1,5 +1,6 @@
 [Unit]
 Description=AAIS authentication email outbox worker
+ConditionPathExists=!/opt/aais/state/secret-rotation.pending
 After=network-online.target docker.service
 Wants=network-online.target
 Requires=aais-secrets-bootstrap.service
@@ -17,3 +18,4 @@ ProtectHome=true
 ProtectSystem=strict
 ReadOnlyPaths=/opt/aais
 ReadOnlyPaths=/run/aais/current/worker.env
+ReadOnlyPaths=/opt/aais/state/active-deployment.env
