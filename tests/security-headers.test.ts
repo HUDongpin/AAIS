@@ -40,6 +40,42 @@ describe("AAIS Next security headers", () => {
     expect(headers["permissions-policy"]).toContain("microphone=()");
     expect(headers["content-security-policy"]).toBeUndefined();
     expect(headers["cross-origin-opener-policy"]).toBe("same-origin");
+    expect(headers["x-robots-tag"]).toBeUndefined();
+  });
+
+  it("marks only the backup host as noindex and nofollow", async () => {
+    expect(nextConfig.headers).toBeTypeOf("function");
+    const rules = await nextConfig.headers?.();
+    const backupRule = rules?.find((rule) =>
+      rule.has?.some((condition) => condition.type === "host"),
+    );
+
+    expect(backupRule).toEqual({
+      source: "/:path*",
+      has: [
+        {
+          type: "host",
+          value: "backup\\.aais\\.site",
+        },
+      ],
+      headers: [
+        {
+          key: "X-Robots-Tag",
+          value: "noindex, nofollow",
+        },
+      ],
+    });
+
+    const hostCondition = backupRule?.has?.find(
+      (condition) => condition.type === "host",
+    );
+    expect(hostCondition?.value).toBeTypeOf("string");
+    const hostPattern = new RegExp(`^(?:${hostCondition?.value})$`, "i");
+
+    expect(hostPattern.test("backup.aais.site")).toBe(true);
+    expect(hostPattern.test("www.aais.site")).toBe(false);
+    expect(hostPattern.test("aais.site")).toBe(false);
+    expect(hostPattern.test("backupXaaisXsite")).toBe(false);
   });
 
   it("creates nonce-based production CSP without unsafe inline or eval allowances", () => {
