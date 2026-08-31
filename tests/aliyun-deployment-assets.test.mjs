@@ -6,10 +6,20 @@ describe("AAIS Aliyun deployment assets", () => {
     const dockerfile = readFileSync("Dockerfile", "utf8");
     const nextConfig = readFileSync("next.config.ts", "utf8");
 
-    expect(dockerfile).toContain("FROM node:24-bookworm-slim");
+    expect(dockerfile).toContain("FROM node:24-bookworm-slim AS dependencies");
+    expect(dockerfile).toContain(
+      "FROM gcr.io/distroless/nodejs24-debian13@sha256:774b7d020b24214835769e24c3544835526cd0288f0b094eae48e8b2c2429a79 AS runtime",
+    );
     expect(dockerfile).toContain("/app/.next/standalone");
-    expect(dockerfile).toContain("RUN mkdir -p public");
+    expect(dockerfile).toContain("RUN mkdir -p public .aais-runtime-cache");
+    expect(dockerfile).toContain(
+      "COPY --from=builder --chown=10001:10001 /app/.aais-runtime-cache ./.next/cache",
+    );
     expect(dockerfile).toContain("USER 10001:10001");
+    expect(dockerfile).toContain('CMD ["/nodejs/bin/node", "-e"');
+    expect(dockerfile).toContain('CMD ["server.js"]');
+    expect(dockerfile).not.toContain("groupadd");
+    expect(dockerfile).not.toContain("useradd");
     expect(dockerfile).toContain("/api/system/live");
     expect(dockerfile).toContain("--mount=type=secret,id=NEXT_SERVER_ACTIONS_ENCRYPTION_KEY");
     expect(dockerfile).toContain("AAIS_REQUIRE_STABLE_SERVER_ACTIONS_KEY");

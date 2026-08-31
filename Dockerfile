@@ -11,7 +11,7 @@ ARG AAIS_GIT_SHA=unknown
 ARG AAIS_REQUIRE_STABLE_SERVER_ACTIONS_KEY=false
 ENV AAIS_DEPLOYMENT_GIT_COMMIT_SHA=${AAIS_GIT_SHA}
 COPY . .
-RUN mkdir -p public
+RUN mkdir -p public .aais-runtime-cache
 RUN --mount=type=secret,id=NEXT_SERVER_ACTIONS_ENCRYPTION_KEY \
   if [ -s /run/secrets/NEXT_SERVER_ACTIONS_ENCRYPTION_KEY ]; then \
     NEXT_SERVER_ACTIONS_ENCRYPTION_KEY="$(tr -d '\r\n' < /run/secrets/NEXT_SERVER_ACTIONS_ENCRYPTION_KEY)"; \
@@ -22,7 +22,7 @@ RUN --mount=type=secret,id=NEXT_SERVER_ACTIONS_ENCRYPTION_KEY \
   fi; \
   npm run build
 
-FROM node:24-bookworm-slim AS runtime
+FROM gcr.io/distroless/nodejs24-debian13@sha256:774b7d020b24214835769e24c3544835526cd0288f0b094eae48e8b2c2429a79 AS runtime
 ARG AAIS_GIT_SHA=unknown
 ARG AAIS_BUILD_TIMESTAMP=unknown
 LABEL org.opencontainers.image.title="AAIS" \
@@ -34,17 +34,14 @@ ENV NODE_ENV=production \
     HOSTNAME=0.0.0.0 \
     PORT=3000
 
-RUN groupadd --gid 10001 aais \
-  && useradd --uid 10001 --gid aais --no-create-home --home-dir /app --shell /usr/sbin/nologin aais
-
 WORKDIR /app
-COPY --from=builder --chown=aais:aais /app/public ./public
-COPY --from=builder --chown=aais:aais /app/.next/standalone ./
-COPY --from=builder --chown=aais:aais /app/.next/static ./.next/static
-RUN mkdir -p /app/.next/cache && chown -R aais:aais /app/.next/cache
+COPY --from=builder --chown=10001:10001 /app/public ./public
+COPY --from=builder --chown=10001:10001 /app/.next/standalone ./
+COPY --from=builder --chown=10001:10001 /app/.next/static ./.next/static
+COPY --from=builder --chown=10001:10001 /app/.aais-runtime-cache ./.next/cache
 
 USER 10001:10001
 EXPOSE 3000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-  CMD ["node", "-e", "fetch('http://127.0.0.1:3000/api/system/live',{signal:AbortSignal.timeout(4000)}).then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
-CMD ["node", "server.js"]
+  CMD ["/nodejs/bin/node", "-e", "fetch('http://127.0.0.1:3000/api/system/live',{signal:AbortSignal.timeout(4000)}).then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+CMD ["server.js"]
