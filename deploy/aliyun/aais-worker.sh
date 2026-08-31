@@ -1,11 +1,17 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
+set +x
 
 worker_kind="${1:-}"
 worker_env_file="${AAIS_WORKER_ENV_FILE:-/run/aais/current/worker.env}"
 active_deployment_file="${AAIS_STATE_FILE:-/opt/aais/state/active-deployment.env}"
 rotation_pending_file="${AAIS_ROTATION_PENDING_FILE:-/opt/aais/state/secret-rotation.pending}"
-if [[ -e "$rotation_pending_file" ]]; then
+rotation_canonical_check_file="$(dirname "$rotation_pending_file")/secret-rotation.canonical-check"
+rotation_invalid_file="$(dirname "$rotation_pending_file")/secret-rotation.invalid"
+if [[ -e "$rotation_pending_file" || -L "$rotation_pending_file" \
+  || -e "$rotation_canonical_check_file" \
+  || -L "$rotation_canonical_check_file" \
+  || -e "$rotation_invalid_file" || -L "$rotation_invalid_file" ]]; then
   echo "AAIS worker is blocked by a pending secret rotation." >&2
   exit 1
 fi
@@ -67,12 +73,13 @@ if (( ${#token} < 32 )); then
 fi
 
 response="$(printf 'header = "Authorization: Bearer %s"\n' "$token" \
-  | curl --config - \
+  | curl --disable --config - --noproxy '*' \
       --fail-with-body \
       --silent \
       --show-error \
       --connect-timeout 5 \
       --max-time 90 \
+      --max-filesize 65536 \
       --request POST \
       --resolve www.aais.site:443:127.0.0.1 \
       "https://www.aais.site${path}")"

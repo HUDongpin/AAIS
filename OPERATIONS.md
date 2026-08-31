@@ -95,6 +95,10 @@ The intended release path is Git-based:
    candidate receipt bind the same full SHA and immutable digest.
 4. Transfer only that non-secret receipt to
    `/opt/aais/candidates/<full-sha>.json` as root-owned mode `0644`.
+   Both `/opt/aais/candidates` and `/opt/aais/preloaded` must already be
+   canonical, root-owned, non-symlink directories with exact mode `0755`.
+   Receipt reads also require effective-UID ownership and exact file mode
+   `0600` or `0644` at `lstat`, open, and final descriptor verification.
 5. The Owner preloads the private image through the real-TTY helper and revokes
    the short-lived `read:packages` PAT; automation deploys only afterward.
 6. Run the deployed smoke check against staging first, then production when appropriate.
@@ -150,6 +154,69 @@ AAIS_GHCR_REPOSITORY=ghcr.io/hudongpin/aais
 AAIS_GHCR_USERNAME=<owner-github-username>
 AAIS_PRELOADED_RECEIPT_DIR=/opt/aais/preloaded
 ```
+
+Before any preload, deployment, or secret rotation, install the repository's
+`deploy/aliyun/aais-json-v1.py` at the fixed path
+`/opt/aais/libexec/aais-json-v1.py`. `/opt/aais/libexec` must be a root-owned,
+non-symlink directory with mode `0700`; the helper must be a root-owned,
+single-link, non-symlink regular file with mode `0500`. The three wrappers pin
+its SHA-256 and invoke only `/usr/bin/python3 -I -S -B` under an empty,
+fixed-locale environment. Run the Alibaba Cloud Linux system Python check as a
+separate read-only preflight. A missing or incompatible system Python is a hard
+stop: do not install or upgrade Python inside the AAIS deployment transaction.
+The wrappers no longer require `jq`.
+The same helper also canonically writes and round-trip validates the Aliyun
+deployment receipt before worker timers pause or Nginx changes.
+
+Secret rotation uses two mutually exclusive durable markers under
+`/opt/aais/state`: `secret-rotation.pending` closes public maintenance, while
+`secret-rotation.canonical-check` opens only the ordinary canonical route for
+verification but continues to block both outbox services and the worker
+wrapper. A separate root-owned regular `0600` `secret-rotation.invalid`
+sentinel closes Nginx and blocks both services and the wrapper when marker
+custody is malformed or conflicting. Its fixed content contains no secret;
+rotation never deletes it or rewrites/moves the invalid original markers.
+Startup stops the timers and requires manual reconciliation. Each phase marker
+records the exact phase plus the prior active state of both timers. After
+canonical success, `canonical-passed` remains in place while that
+timer intent and idempotent custody cleanup are reconciled; deleting the check
+marker is the final commit/unblock. A check-only `--resume` revalidates the
+active container/release/digest/bundle and skips bootstrap/deploy. Both markers
+at once arm the invalid sentinel and are a fail-closed manual-reconciliation
+state. Timer snapshots and target checks use one strict `systemctl show` query
+for exactly `LoadState` and `ActiveState`; the unit must be loaded, and a timer
+must be exactly `active` or `inactive`. Local readiness and worker calls put
+curl's `--disable` first, set `--noproxy '*'`, and retain response bounds and
+the worker's protected stdin header configuration. Replacement is allowed
+only in `prepared`, `previous-saved`, `source-promoted`, or
+`runtime-published`, always with a distinct bundle and usable previous custody
+before source overwrite; later phases require resume or rollback.
+`container-promoted` canonical-check may be atomically returned to pending by
+`--rollback`, but only after its durable phase becomes `rollback-requested`;
+ordinary rollback uses the same phase before any source overwrite. A later
+`--resume` completes that recorded intent. `canonical-passed` permits only
+idempotent `--resume` because
+previous custody may already have been removed.
+The recovery claim covers process SIGKILL and orderly reboot. The script does
+not call filesystem `fsync`; sudden power/hypervisor loss or another unclean
+host crash requires an on-host read-only marker/state/container/timer
+reconciliation before any resume and is not an automatic-recovery claim.
+
+After installing the reviewed helper bytes but before installing or invoking a
+wrapper, run its non-mutating self-test exactly as the wrappers do:
+
+```bash
+/usr/bin/env -i LC_ALL=C LANG=C HOME=/ TZ=UTC \
+  /usr/bin/python3 -I -S -B \
+  /opt/aais/libexec/aais-json-v1.py self-test
+```
+
+No output and exit status zero is the only functional pass result. This
+self-test is necessary but not sufficient: before activation, a separate
+read-only host receipt must bind `/usr/bin/python3`, its resolved interpreter,
+and the loaded standard-library files to reviewed Alibaba Cloud Linux RPM
+NEVRAs and show clean `rpm -V --noscripts` results. A local command, the OS
+name, or a working `dnf` does not prove that host integrity gate.
 
 The username is non-secret. Never store a PAT in this file, the runtime bundle,
 shell history, a command argument, chat, GitHub Actions, a receipt, or a Docker

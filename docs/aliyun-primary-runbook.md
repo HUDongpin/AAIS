@@ -235,14 +235,44 @@ change when any of these is true:
    redacted candidate receipt. Generation and an attestation ID in the receipt
    do not mean the ECS cryptographically verified that attestation.
 2. Install `aais-preload-ghcr-image.sh` and `aais-deploy.sh` under
-   `/opt/aais/bin` as root-owned executables. Create root-owned
-   `/opt/aais/candidates` and `/opt/aais/preloaded` without symlinks. Set these
+   `/opt/aais/bin` as root-owned executables. Install
+   `deploy/aliyun/aais-json-v1.py` at the fixed production path
+   `/opt/aais/libexec/aais-json-v1.py`: `/opt/aais/libexec` must be a
+   root-owned, non-symlink directory with mode `0700`, and the helper must be a
+   root-owned, single-link, non-symlink regular file with mode `0500`. Its
+   SHA-256 is pinned by all three wrappers. After installing these reviewed
+   helper bytes but before installing or invoking a wrapper, run this read-only
+   preflight on the ECS:
+
+   ```bash
+   /usr/bin/env -i LC_ALL=C LANG=C HOME=/ TZ=UTC \
+     /usr/bin/python3 -I -S -B \
+     /opt/aais/libexec/aais-json-v1.py self-test
+   ```
+
+   It must exit zero without output, proving only that the existing runtime is
+   CPython 3.6 or newer with the required isolation flags. This is necessary
+   but not sufficient. Before activation, a separate read-only receipt must
+   resolve `/usr/bin/python3`, identify the owner RPMs for the interpreter and
+   loaded standard-library files, record their reviewed full NEVRAs, and show
+   clean `rpm -V --noscripts` output. A local/CI pass, the OS name, or a working
+   `dnf` is not proof that the ECS passed this host-integrity gate. If either
+   check fails, stop and review the host separately—do not install or upgrade
+   system Python inside this deployment. No `jq` package is required. Create
+   canonical root-owned `/opt/aais/candidates` and `/opt/aais/preloaded`
+   directories with exact mode `0755` and no symlinks; the preload wrapper
+   refuses to create or repair them after startup. The JSON helper itself
+   requires every file it opens to remain owned by its effective UID with exact
+   mode `0600` or `0644` across both `lstat` and descriptor `fstat`. Set these
    non-secret controls in `/etc/aais/deploy.env`:
    `AAIS_IMAGE_SOURCE=ghcr-preloaded`,
    `AAIS_GHCR_REPOSITORY=ghcr.io/hudongpin/aais`, the Owner's non-secret
    `AAIS_GHCR_USERNAME`, and
    `AAIS_PRELOADED_RECEIPT_DIR=/opt/aais/preloaded`. Do not place a PAT or
    Docker auth document in this file, the runtime bundle, or persistent storage.
+   The deploy wrapper uses the same pinned helper to generate and round-trip
+   validate its canonical deployment receipt before pausing workers or changing
+   Nginx.
 3. Private GHCR is the sole registry path. A normal `main` push builds only the
    private GHCR candidate; there is no alternate registry path.
 4. Install the remaining repository scripts under `/opt/aais/bin` as root-owned mode `0755`,
@@ -273,28 +303,92 @@ change when any of these is true:
    `/etc/aais/secrets/runtime.env.candidate`, root-owned mode `0400`, with a new
    bundle version, and never truncates or edits the active source in place.
    Invoke `aais-rotate-secrets.sh /etc/aais/secrets/runtime.env.candidate`; it
-   stops/drains both timers, writes the durable
-   `/opt/aais/state/secret-rotation.pending` marker, preserves a protected
-   previous source, atomically replaces the source on the same filesystem,
-   refreshes the bundle, recreates the inactive color from the active exact
-   digest, atomically records color/port/release/image/bundle in
-   `/opt/aais/state/active-deployment.env`, promotes it, verifies
-   the canonical TLS path, removes the marker, and only then restarts timers.
-   The marker records `prepared`, `previous-saved`, `source-promoted`,
-   `runtime-published`, or `container-promoted`, so a power loss can resume from
-   a proven phase. If rotation fails, the marker survives reboot, Nginx remains
-   in maintenance, and both workers fail closed. After correcting a transient
-   cause, use `aais-rotate-secrets.sh --resume`; use `--rollback` to restore the
-   protected previous source, or `--replace-pending` plus the exact candidate
-   path to replace a rejected pending source. Bootstrap, rotation, and deploy
-   use the same operation lock; the runtime file, derived worker file, and
-   bootstrap receipt switch as one generation. Before deleting the previous
-   source or restarting workers, rotation verifies the exact release first
-   through the loopback Nginx diagnostic and then through the canonical path
-   after removing the pending marker; any failure atomically restores a
-   `failed` marker.
+   completes non-mutating preflight, records whether each timer was active in
+   the durable `/opt/aais/state/secret-rotation.pending` marker, and only then
+   stops/drains both timers. The marker blocks workers before the stop. Rotation
+   preserves a protected previous source, atomically replaces the source on the
+   same filesystem, refreshes the bundle, recreates the inactive color from the
+   active exact digest, records color/port/release/image/bundle in
+   `/opt/aais/state/active-deployment.env`, and promotes it.
+
+   Every marker has exactly `AAIS_ROTATION_PHASE`,
+   `AAIS_EMAIL_TIMER_WAS_ACTIVE`, and `AAIS_LRS_TIMER_WAS_ACTIVE`. The phase is
+   `prepared`, `previous-saved`, `rollback-requested`, `source-promoted`,
+   `runtime-published`, `container-promoted`, `canonical-passed`, or `failed`.
+   After the loopback
+   diagnostic passes, rotation atomically renames pending to the same-directory
+   `/opt/aais/state/secret-rotation.canonical-check` marker. Nginx checks
+   pending and the separate `secret-rotation.invalid` sentinel, not the valid
+   canonical-check marker, making the real port-443 path testable. Both oneshot
+   worker services and the worker wrapper check pending, canonical-check, and
+   invalid, so outbox work remains blocked.
+   Timer units deliberately have no marker condition: this permits restoration
+   of durable timer intent while their service dispatch stays blocked.
+   The first snapshot uses one successful
+   `systemctl show --property=LoadState --property=ActiveState UNIT` query. It
+   requires exactly those two unique fields, `LoadState=loaded`, and an exact
+   timer state of `active` or `inactive`. A missing/masked unit, `failed`,
+   `activating`, `deactivating`, `reloading`, `unknown`, an extra/duplicate
+   field, empty output, or a DBus error stops before marker or runtime mutation;
+   none may be silently persisted as inactive. After stop, both timer units
+   must report exact `inactive`; loaded worker services may drain through active
+   transitional states, but only two exact `inactive` states complete draining.
+
+   After canonical readiness passes, rotation atomically updates the check
+   marker to `canonical-passed`, restores and verifies exactly the timers that
+   were previously active, keeps originally inactive timers inactive, and
+   idempotently removes previous/staging custody. It pre-arms completion and
+   removes canonical-check only as the final atomic commit/unblock step.
+
+   A process SIGKILL or an orderly reboot while the check marker is
+   `container-promoted` or `canonical-passed` leaves the marker and timer intent
+   available for recovery. `--resume`
+   validates the marker plus active state, running color/port, exact release,
+   image digest, runtime bundle, container environment, and OCI revision; it
+   skips bootstrap/deploy and resumes at canonical verification. A
+   `canonical-passed` resume permits previous custody to be already absent,
+   repeats binding/canonical checks, reconciles timers and cleanup, and retries
+   the final marker commit. A normal pre-canonical error converts check back to
+   a failed pending marker. Invalid/nonregular marker custody or simultaneous
+   pending and canonical markers instead atomically arms the fixed, non-secret,
+   root-owned `0600` `/opt/aais/state/secret-rotation.invalid` sentinel. The
+   original marker paths and bytes plus previous/rollback staging are preserved;
+   Nginx returns 503 and workers remain blocked. Startup never clears the
+   sentinel and permits no automatic resume or rollback until an operator has
+   reconciled the evidence and explicitly removed it. Unknown timer intent is
+   never replaced with a synthesized value.
+   This protocol does not issue filesystem `fsync` and therefore does not prove
+   durability across sudden power loss, hypervisor loss, or an unclean host
+   crash. After such an event, do not auto-resume: first perform an on-host
+   read-only reconciliation of both marker paths, active state, source/previous
+   custody, running container, timer state, and canonical readiness.
+
+   While canonical-check still records `container-promoted`, `--rollback` is
+   also permitted: it first atomically rewrites canonical-check to
+   `rollback-requested` with unchanged timer flags, then renames check back to
+   pending and restores the protected previous source. A process death between
+   intent and source replacement therefore resumes the rollback instead of the
+   superseded forward phase. Once the marker is
+   `canonical-passed`, rollback is rejected because previous custody may already
+   be absent; only idempotent `--resume` may finish the marker-last commit.
+
+   Replacement is phase constrained. `prepared` retains the replacement
+   candidate and preserves previous custody before any overwrite;
+   `previous-saved` promotes normally; `source-promoted` and
+   `runtime-published` require a valid protected previous source before
+   atomically recording `previous-saved`; the standard candidate path then
+   deterministically promotes the replacement and records `source-promoted`.
+   `container-promoted`, `canonical-passed`, and `failed` reject replacement
+   and require `--resume` or `--rollback`. A replacement bundle must differ from
+   the active bundle. Bootstrap, rotation, and deploy use the same operation
+   lock; runtime and worker files switch as one generation.
    Restarting only the bootstrap service is forbidden because it would give the
    worker wrapper tokens that the old container does not authorize.
+   Both readiness probes invoke curl with `--disable` as its first option,
+   `--noproxy '*'`, and a 64-KiB response bound. The worker uses the same curl
+   config/proxy isolation while continuing to pass its Authorization header via
+   stdin; user curlrc and inherited proxy variables cannot redirect loopback
+   traffic.
 5. Record `/etc/machine-id` and the main BaoTa Nginx configuration SHA-256 in
    `/etc/aais/deploy.env`. Pre-create the stable bootstrap upstream file as
    `server 127.0.0.1:3101;`, add only the AAIS vhost/include, and run the BaoTa

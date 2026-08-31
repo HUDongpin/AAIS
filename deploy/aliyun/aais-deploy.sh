@@ -1,5 +1,68 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
+set +x
+
+readonly AAIS_JSON_HELPER_PATH="/opt/aais/libexec/aais-json-v1.py"
+readonly AAIS_JSON_HELPER_SHA256="b94a6a7485c8b760cdcf3275c7cf82199e82eafa099213e640152d86dea0dd03"
+
+aais_run_json_helper() {
+  /usr/bin/env -i LC_ALL=C LANG=C HOME=/ TZ=UTC \
+    /usr/bin/python3 -I -S -B "$AAIS_JSON_HELPER_PATH" "$@"
+}
+
+aais_require_json_helper() {
+  local helper_dir="/opt/aais/libexec"
+  local identity_before identity_after actual_sha256
+  if [[ ! -x /usr/bin/env || ! -x /usr/bin/python3 ]] \
+    || ! command -v stat >/dev/null 2>&1 \
+    || ! command -v readlink >/dev/null 2>&1 \
+    || ! command -v sha256sum >/dev/null 2>&1 \
+    || ! command -v awk >/dev/null 2>&1; then
+    echo "AAIS protected JSON runtime is unavailable." >&2
+    return 1
+  fi
+  if [[ ! -d "$helper_dir" || -L "$helper_dir" \
+    || "$(readlink -f "$helper_dir" 2>/dev/null || true)" != "$helper_dir" \
+    || "$(stat -c '%u' "$helper_dir" 2>/dev/null || true)" != "0" \
+    || "$(stat -c '%a' "$helper_dir" 2>/dev/null || true)" != "700" ]]; then
+    echo "AAIS protected JSON helper directory is invalid." >&2
+    return 1
+  fi
+  identity_before="$(stat -c '%d:%i' "$AAIS_JSON_HELPER_PATH" 2>/dev/null || true)"
+  if [[ ! -f "$AAIS_JSON_HELPER_PATH" || -L "$AAIS_JSON_HELPER_PATH" \
+    || "$(stat -c '%u' "$AAIS_JSON_HELPER_PATH" 2>/dev/null || true)" != "0" \
+    || "$(stat -c '%a' "$AAIS_JSON_HELPER_PATH" 2>/dev/null || true)" != "500" \
+    || "$(stat -c '%h' "$AAIS_JSON_HELPER_PATH" 2>/dev/null || true)" != "1" \
+    || -z "$identity_before" ]]; then
+    echo "AAIS protected JSON helper is invalid." >&2
+    return 1
+  fi
+  actual_sha256="$(sha256sum "$AAIS_JSON_HELPER_PATH" 2>/dev/null | awk '{ print $1 }')"
+  identity_after="$(stat -c '%d:%i' "$AAIS_JSON_HELPER_PATH" 2>/dev/null || true)"
+  if [[ "$actual_sha256" != "$AAIS_JSON_HELPER_SHA256" \
+    || "$identity_after" != "$identity_before" ]]; then
+    echo "AAIS protected JSON helper fingerprint does not match." >&2
+    return 1
+  fi
+  if ! aais_run_json_helper self-test >/dev/null; then
+    echo "AAIS protected JSON helper self-test failed." >&2
+    return 1
+  fi
+}
+
+aais_json_validate_live() {
+  aais_run_json_helper validate-live "$1"
+}
+
+aais_json_validate_traffic_ready() {
+  aais_run_json_helper validate-traffic-ready "$1"
+}
+
+aais_json_validate_public_ready() {
+  aais_run_json_helper validate-public-ready
+}
+
+aais_require_json_helper
 
 deploy_config_file="${AAIS_DEPLOY_CONFIG_FILE:-/etc/aais/deploy.env}"
 if [[ ! -r "$deploy_config_file" ]]; then
@@ -34,20 +97,45 @@ fi
 : "${AAIS_STATE_FILE:=/opt/aais/state/active-deployment.env}"
 : "${AAIS_OPERATION_LOCK_FILE:=$(dirname "$AAIS_STATE_FILE")/deploy.lock}"
 : "${AAIS_ROTATION_PENDING_FILE:=$(dirname "$AAIS_STATE_FILE")/secret-rotation.pending}"
+: "${AAIS_ROTATION_CANONICAL_CHECK_FILE:=$(dirname "$AAIS_STATE_FILE")/secret-rotation.canonical-check}"
+: "${AAIS_ROTATION_INVALID_FILE:=$(dirname "$AAIS_STATE_FILE")/secret-rotation.invalid}"
 : "${AAIS_RECEIPT_DIR:=/opt/aais/receipts}"
 
-for command_name in docker curl jq flock sha256sum stat awk df install mktemp systemctl ss readlink; do
+for command_name in docker curl flock sha256sum stat awk df install mktemp systemctl ss readlink; do
   if ! command -v "$command_name" >/dev/null 2>&1; then
     echo "AAIS deploy dependency is unavailable: ${command_name}." >&2
     exit 1
   fi
 done
 if [[ "$AAIS_GHCR_REPOSITORY" != "ghcr.io/hudongpin/aais" \
-  || "$AAIS_PRELOADED_RECEIPT_DIR" != /opt/aais/* \
-  || -L "$AAIS_PRELOADED_RECEIPT_DIR" ]]; then
+  || "$(dirname -- "$AAIS_CANDIDATE_RECEIPT_DIR")" != "/opt/aais" \
+  || "$(dirname -- "$AAIS_PRELOADED_RECEIPT_DIR")" != "/opt/aais" \
+  || "$(dirname -- "$AAIS_RECEIPT_DIR")" != "/opt/aais" ]]; then
   echo "AAIS preloaded GHCR bindings are invalid." >&2
   exit 1
 fi
+
+require_protected_receipt_directory() {
+  local directory="$1"
+  local canonical identity_after identity_before mode owner
+  identity_before="$(stat -c '%d:%i' "$directory" 2>/dev/null || true)"
+  canonical="$(readlink -f -- "$directory" 2>/dev/null || true)"
+  owner="$(stat -c '%u' "$directory" 2>/dev/null || true)"
+  mode="$(stat -c '%a' "$directory" 2>/dev/null || true)"
+  identity_after="$(stat -c '%d:%i' "$directory" 2>/dev/null || true)"
+  if [[ ! -d "$directory" || -L "$directory" || -z "$identity_before" \
+    || "$identity_after" != "$identity_before" || "$canonical" != "$directory" \
+    || "$owner" != "0" || "$mode" != "755" ]]; then
+    echo "AAIS protected receipt directory is invalid." >&2
+    return 1
+  fi
+}
+
+require_protected_receipt_directory /opt/aais || exit 1
+require_protected_receipt_directory "$AAIS_CANDIDATE_RECEIPT_DIR" || exit 1
+require_protected_receipt_directory "$AAIS_PRELOADED_RECEIPT_DIR" || exit 1
+require_protected_receipt_directory "$AAIS_RECEIPT_DIR" || exit 1
+
 image_repository="$AAIS_GHCR_REPOSITORY"
 if [[ ! "$AAIS_EXPECTED_MACHINE_ID_SHA256" =~ ^[a-f0-9]{64}$ ]]; then
   echo "AAIS expected machine fingerprint is invalid." >&2
@@ -96,37 +184,14 @@ if [[ ! -f "$candidate_source_receipt" || -L "$candidate_source_receipt" \
   echo "AAIS candidate source receipt must be root-owned with mode 0644." >&2
   exit 1
 fi
-candidate_run_id="$(jq -er '.githubRunId | select(type == "string")' \
-  "$candidate_source_receipt")"
-candidate_run_attempt="$(jq -er '.githubRunAttempt | select(type == "string")' \
-  "$candidate_source_receipt")"
-if [[ ! "$candidate_run_id" =~ ^[0-9]+$ || ! "$candidate_run_attempt" =~ ^[0-9]+$ ]]; then
-  echo "AAIS candidate receipt has an invalid GitHub run identity." >&2
+candidate_metadata="$(aais_run_json_helper candidate-metadata \
+  "$candidate_source_receipt" "$release_sha" "sha256:${image_digest}")" || {
+  echo "AAIS GHCR candidate receipt does not bind the requested private image." >&2
   exit 1
-fi
-if ! jq -e \
-  --arg gitSha "$release_sha" \
-  --arg imageRepository "$AAIS_GHCR_REPOSITORY" \
-  --arg imageTag "${AAIS_GHCR_REPOSITORY}:${release_sha}" \
-  --arg imageDigest "sha256:${image_digest}" \
-  --arg candidateRunId "$candidate_run_id" \
-  --arg candidateRunAttempt "$candidate_run_attempt" \
-  '.schemaVersion == 1
-   and .provider == "github"
-   and .stage == "ghcr_candidate"
-   and .gitSha == $gitSha
-   and .imageRepository == $imageRepository
-   and .imageTag == $imageTag
-   and .imageDigest == $imageDigest
-   and .githubRunId == $candidateRunId
-   and .githubRunAttempt == $candidateRunAttempt
-   and .packageVisibility == "private"
-   and .sbomGenerated == true
-   and .provenanceGenerated == true
-   and (.provenanceAttestationId | type) == "string"
-   and (.provenanceAttestationId | test("^[A-Za-z0-9._:-]+$"))
-   and .secrets == "redacted"' \
-  "$candidate_source_receipt" >/dev/null; then
+}
+IFS=$'\t' read -r validated_image_digest candidate_run_id candidate_run_attempt \
+  <<<"$candidate_metadata"
+if [[ "$validated_image_digest" != "sha256:${image_digest}" ]]; then
   echo "AAIS GHCR candidate receipt does not bind the requested private image." >&2
   exit 1
 fi
@@ -138,28 +203,9 @@ if [[ ! -f "$preloaded_source_receipt" || -L "$preloaded_source_receipt" \
   echo "AAIS GHCR preloaded receipt must be root-owned with mode 0644." >&2
   exit 1
 fi
-if ! jq -e \
-  --arg gitSha "$release_sha" \
-  --arg imageRepository "$AAIS_GHCR_REPOSITORY" \
-  --arg imageDigest "sha256:${image_digest}" \
-  --arg localRepoDigest "$image_ref" \
-  --arg candidateRunId "$candidate_run_id" \
-  --arg candidateRunAttempt "$candidate_run_attempt" \
-  '.schemaVersion == 1
-   and .provider == "github"
-   and .stage == "ghcr_preloaded"
-   and .gitSha == $gitSha
-   and .imageRepository == $imageRepository
-   and .imageDigest == $imageDigest
-   and .localRepoDigest == $localRepoDigest
-   and .imageRevision == $gitSha
-   and .candidateRunId == $candidateRunId
-   and .candidateRunAttempt == $candidateRunAttempt
-   and .credentialsCleaned == true
-   and (.pulledAt | type) == "string"
-   and (.pulledAt | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T"))
-   and .secrets == "redacted"' \
-  "$preloaded_source_receipt" >/dev/null; then
+if ! aais_run_json_helper validate-preloaded "$preloaded_source_receipt" \
+  "$release_sha" "sha256:${image_digest}" "$candidate_run_id" \
+  "$candidate_run_attempt"; then
   echo "AAIS GHCR preloaded receipt does not match the candidate run and digest." >&2
   exit 1
 fi
@@ -220,12 +266,17 @@ install -d -o root -g root -m 0755 \
   "$(dirname "$AAIS_OPERATION_LOCK_FILE")" "$AAIS_RECEIPT_DIR"
 if [[ "$AAIS_OPERATION_LOCK_FILE" != "$(dirname "$AAIS_STATE_FILE")/deploy.lock" \
   || "$AAIS_ROTATION_PENDING_FILE" != "$(dirname "$AAIS_STATE_FILE")/secret-rotation.pending" \
+  || "$AAIS_ROTATION_CANONICAL_CHECK_FILE" != "$(dirname "$AAIS_STATE_FILE")/secret-rotation.canonical-check" \
+  || "$AAIS_ROTATION_INVALID_FILE" != "$(dirname "$AAIS_STATE_FILE")/secret-rotation.invalid" \
   || -L "$AAIS_OPERATION_LOCK_FILE" || -L "$AAIS_STATE_FILE" \
-  || -L "$AAIS_ROTATION_PENDING_FILE" ]]; then
+  || -L "$AAIS_ROTATION_PENDING_FILE" \
+  || -L "$AAIS_ROTATION_CANONICAL_CHECK_FILE" \
+  || -L "$AAIS_ROTATION_INVALID_FILE" ]]; then
   echo "AAIS operation lock path is invalid." >&2
   exit 1
 fi
 inherited_operation_lock_fd="${AAIS_OPERATION_LOCK_FD:-}"
+rotation_lock_inherited="false"
 if [[ -n "$inherited_operation_lock_fd" ]]; then
   if [[ ! "$inherited_operation_lock_fd" =~ ^[3-9][0-9]*$ \
     || "$(readlink -f "/proc/$$/fd/${inherited_operation_lock_fd}" 2>/dev/null || true)" \
@@ -234,12 +285,100 @@ if [[ -n "$inherited_operation_lock_fd" ]]; then
     echo "AAIS inherited operation lock is invalid." >&2
     exit 1
   fi
+  rotation_lock_inherited="true"
 else
   exec 9>"$AAIS_OPERATION_LOCK_FILE"
   if ! flock -n 9; then
     echo "Another AAIS deployment or secret rotation is already running." >&2
     exit 1
   fi
+fi
+if [[ -e "$AAIS_ROTATION_CANONICAL_CHECK_FILE" ]]; then
+  echo "AAIS deployment is fenced during the canonical secret check." >&2
+  exit 1
+fi
+if [[ -e "$AAIS_ROTATION_INVALID_FILE" ]]; then
+  echo "AAIS deployment is fenced by an invalid secret rotation state." >&2
+  exit 1
+fi
+if [[ -e "$AAIS_ROTATION_PENDING_FILE" \
+  && "$rotation_lock_inherited" != "true" ]]; then
+  echo "AAIS secret rotation state requires the verified inherited operation lock." >&2
+  exit 1
+fi
+
+email_timer="aais-email-outbox.timer"
+lrs_timer="aais-lrs-outbox.timer"
+email_service="aais-email-outbox.service"
+lrs_service="aais-lrs-outbox.service"
+
+read_systemd_active_state() {
+  local unit="$1"
+  local active_state=""
+  local active_state_seen="false"
+  local line
+  local line_count=0
+  local load_state=""
+  local load_state_seen="false"
+  local output
+  if ! output="$(systemctl show --property=LoadState --property=ActiveState \
+    "$unit" 2>/dev/null)"; then
+    echo "AAIS systemd state query failed: ${unit}." >&2
+    return 1
+  fi
+  while IFS= read -r line; do
+    line_count=$((line_count + 1))
+    case "$line" in
+      LoadState=*)
+        if [[ "$load_state_seen" == "true" ]]; then
+          echo "AAIS systemd returned duplicate state fields: ${unit}." >&2
+          return 1
+        fi
+        load_state_seen="true"
+        load_state="${line#LoadState=}"
+        ;;
+      ActiveState=*)
+        if [[ "$active_state_seen" == "true" ]]; then
+          echo "AAIS systemd returned duplicate state fields: ${unit}." >&2
+          return 1
+        fi
+        active_state_seen="true"
+        active_state="${line#ActiveState=}"
+        ;;
+      *)
+        echo "AAIS systemd returned unexpected state fields: ${unit}." >&2
+        return 1
+        ;;
+    esac
+  done <<<"$output"
+  if [[ "$line_count" -ne 2 || "$load_state_seen" != "true" \
+    || "$active_state_seen" != "true" || "$load_state" != "loaded" \
+    || -z "$active_state" ]]; then
+    echo "AAIS systemd unit is unavailable or has an invalid state: ${unit}." >&2
+    return 1
+  fi
+  printf '%s\n' "$active_state"
+}
+
+email_timer_snapshot="$(read_systemd_active_state "$email_timer")" || exit 1
+lrs_timer_snapshot="$(read_systemd_active_state "$lrs_timer")" || exit 1
+if [[ "$email_timer_snapshot" != "active" \
+  && "$email_timer_snapshot" != "inactive" ]]; then
+  echo "AAIS email timer is not in a stable active/inactive state." >&2
+  exit 1
+fi
+if [[ "$lrs_timer_snapshot" != "active" \
+  && "$lrs_timer_snapshot" != "inactive" ]]; then
+  echo "AAIS LRS timer is not in a stable active/inactive state." >&2
+  exit 1
+fi
+email_timer_was_active="false"
+lrs_timer_was_active="false"
+if [[ "$email_timer_snapshot" == "active" ]]; then
+  email_timer_was_active="true"
+fi
+if [[ "$lrs_timer_snapshot" == "active" ]]; then
+  lrs_timer_was_active="true"
 fi
 
 normalized_upstream="$(tr -d '[:space:]' < "$AAIS_UPSTREAM_FILE")"
@@ -267,14 +406,12 @@ read_active_state_value() {
 
 nginx_loaded_release_matches() {
   local expected_release="$1"
-  local diagnostic
   for _ in $(seq 1 30); do
-    diagnostic="$(curl --fail --silent --show-error --max-time 10 \
+    if curl --disable --noproxy '*' --fail --silent --show-error --max-time 10 --max-filesize 65536 \
       --resolve www.aais.site:8443:127.0.0.1 \
-      https://www.aais.site:8443/api/system/traffic-readiness 2>/dev/null || true)"
-    if jq -e --arg release "$expected_release" \
-      '.status == "ready" and .provider == "aliyun" and .releaseId == $release' \
-      <<<"$diagnostic" >/dev/null 2>&1; then
+      https://www.aais.site:8443/api/system/traffic-readiness 2>/dev/null \
+      | aais_json_validate_traffic_ready "$expected_release" \
+        >/dev/null 2>&1; then
       return 0
     fi
     sleep 1
@@ -286,7 +423,7 @@ recovery_container_matches_request() {
   local color="$1"
   local port="$2"
   local container="aais-${color}"
-  local binding bundle database_target digest live release ready
+  local binding bundle database_target digest release
   [[ "$(docker inspect --format '{{.State.Running}}' "$container" 2>/dev/null || true)" == "true" ]] \
     || return 1
   binding="$(docker port "$container" 3000/tcp 2>/dev/null || true)"
@@ -299,16 +436,12 @@ recovery_container_matches_request() {
     && "$bundle" == "$expected_secret_bundle" \
     && "$release" == "$release_sha" \
     && "$digest" == "sha256:${image_digest}" ]] || return 1
-  live="$(curl --fail --silent --show-error --max-time 10 \
-    "http://127.0.0.1:${port}/api/system/live")" || return 1
-  ready="$(curl --fail --silent --show-error --max-time 10 \
-    "http://127.0.0.1:${port}/api/system/traffic-readiness")" || return 1
-  jq -e --arg release "$release_sha" \
-    '.status == "live" and .provider == "aliyun" and .releaseId == $release' \
-    <<<"$live" >/dev/null || return 1
-  jq -e --arg release "$release_sha" \
-    '.status == "ready" and .provider == "aliyun" and .releaseId == $release' \
-    <<<"$ready" >/dev/null
+  curl --disable --noproxy '*' --fail --silent --show-error --max-time 10 --max-filesize 65536 \
+    "http://127.0.0.1:${port}/api/system/live" \
+    | aais_json_validate_live "$release_sha" >/dev/null || return 1
+  curl --disable --noproxy '*' --fail --silent --show-error --max-time 10 --max-filesize 65536 \
+    "http://127.0.0.1:${port}/api/system/traffic-readiness" \
+    | aais_json_validate_traffic_ready "$release_sha" >/dev/null
 }
 
 commit_recovered_active_state() {
@@ -441,39 +574,56 @@ fi
 transaction_dir="$(mktemp -d "$(dirname "$AAIS_STATE_FILE")/deploy.XXXXXX")"
 previous_upstream="${transaction_dir}/previous-upstream"
 previous_state="${transaction_dir}/previous-state"
-candidate_upstream="${transaction_dir}/candidate-upstream"
 candidate_state="${transaction_dir}/candidate-state"
-candidate_receipt="${transaction_dir}/candidate-receipt"
+candidate_upstream="$(mktemp "$(dirname "$AAIS_UPSTREAM_FILE")/.aais-upstream.candidate.XXXXXX")"
+candidate_receipt="$(mktemp "${AAIS_RECEIPT_DIR}/.aais-deployment-receipt.candidate.XXXXXX")"
 cp "$AAIS_UPSTREAM_FILE" "$previous_upstream"
 if [[ -f "$AAIS_STATE_FILE" ]]; then
   cp "$AAIS_STATE_FILE" "$previous_state"
 fi
 
-nginx_switched="false"
-state_committed="false"
-receipt_committed="false"
+upstream_publish_attempted="false"
+nginx_reload_attempted="false"
+state_commit_attempted="false"
+receipt_publish_attempted="false"
 
-email_timer="aais-email-outbox.timer"
-lrs_timer="aais-lrs-outbox.timer"
-email_service="aais-email-outbox.service"
-lrs_service="aais-lrs-outbox.service"
-email_timer_was_active="false"
-lrs_timer_was_active="false"
 timers_paused="false"
 
 pause_worker_timers() {
+  local email_state lrs_state
   timers_paused="true"
-  if systemctl is-active --quiet "$email_timer"; then
-    email_timer_was_active="true"
+  if [[ "$email_timer_was_active" == "true" ]]; then
     systemctl stop "$email_timer"
   fi
-  if systemctl is-active --quiet "$lrs_timer"; then
-    lrs_timer_was_active="true"
+  if [[ "$lrs_timer_was_active" == "true" ]]; then
     systemctl stop "$lrs_timer"
   fi
+  email_state="$(read_systemd_active_state "$email_timer")" || return 1
+  lrs_state="$(read_systemd_active_state "$lrs_timer")" || return 1
+  if [[ "$email_state" != "inactive" || "$lrs_state" != "inactive" ]]; then
+    echo "AAIS worker timers did not reach the exact inactive state." >&2
+    return 1
+  fi
   for _ in $(seq 1 130); do
-    if ! systemctl is-active --quiet "$email_service" \
-      && ! systemctl is-active --quiet "$lrs_service"; then
+    email_state="$(read_systemd_active_state "$email_service")" || return 1
+    lrs_state="$(read_systemd_active_state "$lrs_service")" || return 1
+    case "$email_state" in
+      inactive) ;;
+      active|activating|deactivating|reloading) ;;
+      *)
+        echo "AAIS email worker entered an unsafe systemd state." >&2
+        return 1
+        ;;
+    esac
+    case "$lrs_state" in
+      inactive) ;;
+      active|activating|deactivating|reloading) ;;
+      *)
+        echo "AAIS LRS worker entered an unsafe systemd state." >&2
+        return 1
+        ;;
+    esac
+    if [[ "$email_state" == "inactive" && "$lrs_state" == "inactive" ]]; then
       return 0
     fi
     sleep 1
@@ -483,6 +633,7 @@ pause_worker_timers() {
 }
 
 resume_worker_timers() {
+  local email_state lrs_state
   local failed="false"
   if [[ "$timers_paused" != "true" ]]; then
     return 0
@@ -496,7 +647,32 @@ resume_worker_timers() {
   if [[ "$failed" == "true" ]]; then
     return 1
   fi
-  timers_paused="false"
+  for _ in $(seq 1 30); do
+    email_state="$(read_systemd_active_state "$email_timer")" || return 1
+    lrs_state="$(read_systemd_active_state "$lrs_timer")" || return 1
+    if [[ "$email_state" == "$email_timer_snapshot" \
+      && "$lrs_state" == "$lrs_timer_snapshot" ]]; then
+      timers_paused="false"
+      return 0
+    fi
+    case "${email_timer_snapshot}:${email_state}" in
+      active:activating|active:reloading|inactive:deactivating) ;;
+      *)
+        echo "AAIS email timer did not restore its exact snapshot state." >&2
+        return 1
+        ;;
+    esac
+    case "${lrs_timer_snapshot}:${lrs_state}" in
+      active:activating|active:reloading|inactive:deactivating) ;;
+      *)
+        echo "AAIS LRS timer did not restore its exact snapshot state." >&2
+        return 1
+        ;;
+    esac
+    sleep 1
+  done
+  echo "AAIS worker timers did not restore their snapshot states." >&2
+  return 1
 }
 
 cleanup_transaction_files() {
@@ -506,13 +682,19 @@ cleanup_transaction_files() {
   rmdir -- "$transaction_dir" >/dev/null 2>&1 || true
 }
 
+restore_previous_upstream_file() {
+  install -o root -g root -m 0644 "$previous_upstream" "$candidate_upstream" \
+    || return 1
+  mv -Tf -- "$candidate_upstream" "$AAIS_UPSTREAM_FILE"
+}
+
 container_matches_expected_runtime() {
   local container_name="$1"
   local container_port="$2"
   local expected_release="$3"
   local expected_digest="$4"
   local expected_bundle="$5"
-  local container_binding container_bundle container_digest container_release container_target live_response ready_response
+  local container_binding container_bundle container_digest container_release container_target
   if [[ "$(docker inspect --format '{{.State.Running}}' "$container_name" 2>/dev/null)" != "true" ]]; then
     return 1
   fi
@@ -532,35 +714,29 @@ container_matches_expected_runtime() {
     || "$container_digest" != "$expected_digest" ]]; then
     return 1
   fi
-  live_response="$(curl --fail --silent --show-error --max-time 10 \
-    "http://127.0.0.1:${container_port}/api/system/live")" || return 1
-  ready_response="$(curl --fail --silent --show-error --max-time 10 \
-    "http://127.0.0.1:${container_port}/api/system/traffic-readiness")" || return 1
-  jq -e --arg release "$expected_release" \
-    '.status == "live" and .provider == "aliyun" and .releaseId == $release' \
-    <<<"$live_response" >/dev/null || return 1
-  jq -e --arg release "$expected_release" \
-    '.status == "ready" and .provider == "aliyun" and .releaseId == $release' \
-    <<<"$ready_response" >/dev/null || return 1
+  curl --disable --noproxy '*' --fail --silent --show-error --max-time 10 --max-filesize 65536 \
+    "http://127.0.0.1:${container_port}/api/system/live" \
+    | aais_json_validate_live "$expected_release" >/dev/null || return 1
+  curl --disable --noproxy '*' --fail --silent --show-error --max-time 10 --max-filesize 65536 \
+    "http://127.0.0.1:${container_port}/api/system/traffic-readiness" \
+    | aais_json_validate_traffic_ready "$expected_release" >/dev/null || return 1
 }
 
 nginx_path_is_healthy() {
   local expected_release="$1"
-  local response status_code
+  local status_code
   nginx_loaded_release_matches "$expected_release" || return 1
   if [[ -f /opt/aais/state/maintenance.enabled \
     || -f "$AAIS_ROTATION_PENDING_FILE" ]]; then
-    status_code="$(curl --silent --output /dev/null --write-out '%{http_code}' --max-time 10 \
+    status_code="$(curl --disable --noproxy '*' --silent --output /dev/null --write-out '%{http_code}' --max-time 10 --max-filesize 65536 \
       --resolve www.aais.site:443:127.0.0.1 https://www.aais.site/)" || return 1
     [[ "$status_code" == "503" ]]
     return
   fi
-  response="$(curl --fail --silent --show-error --max-time 10 \
+  curl --disable --noproxy '*' --fail --silent --show-error --max-time 10 --max-filesize 65536 \
     --resolve www.aais.site:443:127.0.0.1 \
-    https://www.aais.site/api/system/traffic-readiness)" || return 1
-  jq -e --arg release "$expected_release" \
-    '.status == "ready" and .provider == "aliyun" and .releaseId == $release' \
-    <<<"$response" >/dev/null
+    https://www.aais.site/api/system/traffic-readiness \
+    | aais_json_validate_traffic_ready "$expected_release" >/dev/null
 }
 
 restore_previous_path() {
@@ -581,23 +757,46 @@ restore_previous_path() {
   container_matches_expected_runtime \
     "$active_container" "$active_port" "$active_release_sha" \
     "$active_image_digest" "$active_secret_bundle" || return 1
-  install -m 0644 "$previous_upstream" "$AAIS_UPSTREAM_FILE" || return 1
+  restore_previous_upstream_file || return 1
   "$AAIS_NGINX_BINARY" -t >/dev/null || return 1
   "$AAIS_NGINX_BINARY" -s reload >/dev/null || return 1
   nginx_path_is_healthy "$active_release_sha"
 }
 
+restore_previous_bootstrap_path() {
+  local current_sha previous_sha
+  restore_previous_upstream_file || return 1
+  "$AAIS_NGINX_BINARY" -t >/dev/null || return 1
+  "$AAIS_NGINX_BINARY" -s reload >/dev/null || return 1
+  previous_sha="$(sha256sum "$previous_upstream" | awk '{ print $1 }')" \
+    || return 1
+  current_sha="$(sha256sum "$AAIS_UPSTREAM_FILE" | awk '{ print $1 }')" \
+    || return 1
+  [[ "$current_sha" == "$previous_sha" ]]
+}
+
 drain_active_connections() {
+  local connection_state
   if [[ -z "$active_port" ]]; then
     return 0
   fi
   for _ in $(seq 1 330); do
-    if ! ss -Htn state established | awk -v port=":${active_port}" '
-      $4 ~ port "$" || $5 ~ port "$" { found = 1 }
-      END { exit(found ? 0 : 1) }
-    '; then
-      return 0
-    fi
+    connection_state="$(ss -Htn state established \
+      | awk -v port=":${active_port}" '
+        $4 ~ port "$" || $5 ~ port "$" { found = 1 }
+        END { print(found ? "true" : "false") }
+      ')" || {
+      echo "AAIS active connection state query failed." >&2
+      return 1
+    }
+    case "$connection_state" in
+      false) return 0 ;;
+      true) ;;
+      *)
+        echo "AAIS active connection state query returned invalid output." >&2
+        return 1
+        ;;
+    esac
     sleep 1
   done
   echo "AAIS old container still has active HTTP/SSE connections." >&2
@@ -608,10 +807,24 @@ rollback_on_error() {
   local status=$?
   local recovered="false"
   trap - EXIT
+  trap '' INT TERM HUP
   set +e
-  if [[ "$nginx_switched" == "true" ]]; then
-    if restore_previous_path; then
+  if [[ "$nginx_reload_attempted" == "true" ]]; then
+    if [[ -z "$active_container" ]] && restore_previous_bootstrap_path; then
       recovered="true"
+    elif [[ -n "$active_container" ]] && restore_previous_path; then
+      recovered="true"
+    fi
+  elif [[ "$upstream_publish_attempted" == "true" ]]; then
+    if restore_previous_upstream_file; then
+      if [[ -z "$active_container" ]]; then
+        recovered="true"
+      elif container_matches_expected_runtime \
+        "$active_container" "$active_port" "$active_release_sha" \
+        "$active_image_digest" "$active_secret_bundle" \
+        && nginx_path_is_healthy "$active_release_sha"; then
+        recovered="true"
+      fi
     fi
   elif [[ -z "$active_container" ]]; then
     recovered="true"
@@ -623,17 +836,16 @@ rollback_on_error() {
   fi
 
   if [[ "$recovered" == "true" ]]; then
-    if [[ "$state_committed" == "true" ]]; then
+    if [[ "$state_commit_attempted" == "true" ]]; then
       if [[ -f "$previous_state" ]]; then
-        chown root:root "$previous_state"
-        chmod 0644 "$previous_state"
-        mv -Tf -- "$previous_state" "$AAIS_STATE_FILE"
+        install -o root -g root -m 0644 "$previous_state" "$candidate_state"
+        mv -Tf -- "$candidate_state" "$AAIS_STATE_FILE"
       else
         rm -f -- "$AAIS_STATE_FILE"
       fi
     fi
     if resume_worker_timers; then
-      if [[ "$receipt_committed" == "true" ]]; then
+      if [[ "$receipt_publish_attempted" == "true" ]]; then
         rm -f -- "$receipt_file"
       fi
       docker rm -f "$target_container" >/dev/null 2>&1 || true
@@ -696,27 +908,27 @@ docker run --detach \
   "$image_ref" >/dev/null
 
 for _ in $(seq 1 60); do
-  if curl --fail --silent --show-error --max-time 10 \
+  if curl --disable --noproxy '*' --fail --silent --show-error --max-time 10 --max-filesize 65536 \
     "http://127.0.0.1:${target_port}/api/system/live" >/dev/null; then
     break
   fi
   sleep 1
 done
-live_report="$(curl --fail --silent --show-error --max-time 10 \
-  "http://127.0.0.1:${target_port}/api/system/live")"
-if [[ "$live_report" != *'"status":"live"'* || "$live_report" != *"\"releaseId\":\"${release_sha}\""* ]]; then
+if ! curl --disable --noproxy '*' --fail --silent --show-error --max-time 10 --max-filesize 65536 \
+  "http://127.0.0.1:${target_port}/api/system/live" \
+  | aais_json_validate_live "$release_sha" >/dev/null; then
   echo "AAIS candidate liveness provenance does not match." >&2
   exit 1
 fi
-traffic_report="$(curl --fail --silent --show-error --max-time 10 \
-  "http://127.0.0.1:${target_port}/api/system/traffic-readiness")"
-if [[ "$traffic_report" != *'"status":"ready"'* || "$traffic_report" != *"\"releaseId\":\"${release_sha}\""* ]]; then
+if ! curl --disable --noproxy '*' --fail --silent --show-error --max-time 10 --max-filesize 65536 \
+  "http://127.0.0.1:${target_port}/api/system/traffic-readiness" \
+  | aais_json_validate_traffic_ready "$release_sha" >/dev/null; then
   echo "AAIS candidate traffic readiness does not match." >&2
   exit 1
 fi
-full_readiness_report="$(curl --fail --silent --show-error --max-time 10 \
-  "http://127.0.0.1:${target_port}/api/system/readiness")"
-if ! jq -e '.status == "ready"' <<<"$full_readiness_report" >/dev/null; then
+if ! curl --disable --noproxy '*' --fail --silent --show-error --max-time 10 --max-filesize 65536 \
+  "http://127.0.0.1:${target_port}/api/system/readiness" \
+  | aais_json_validate_public_ready >/dev/null; then
   echo "AAIS candidate comprehensive readiness is not ready." >&2
   exit 1
 fi
@@ -738,32 +950,50 @@ printf 'AAIS_ACTIVE_COLOR=%s\nAAIS_ACTIVE_PORT=%s\nAAIS_ACTIVE_SECRET_BUNDLE_VER
   "$target_color" "$target_port" "$expected_secret_bundle" "$release_sha" "$image_digest" \
   > "$candidate_state"
 container_id="$(docker inspect --format '{{.Id}}' "$target_container")"
+if [[ ! "$container_id" =~ ^[a-f0-9]{64}$ ]]; then
+  echo "AAIS candidate container identity is invalid." >&2
+  exit 1
+fi
+container_id_short="${container_id:0:12}"
 upstream_sha="$(sha256sum "$candidate_upstream" | awk '{ print $1 }')"
 deployed_at="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
-printf '{"schemaVersion":1,"provider":"aliyun","imageSource":"%s","gitSha":"%s","imageDigest":"%s","secretBundleVersion":"%s","container":"%s","containerId":"%s","color":"%s","port":%s,"nginxUpstreamSha256":"%s","nginxVhostSha256":"%s","deployedAt":"%s","secrets":"redacted"}\n' \
-  "$AAIS_IMAGE_SOURCE" "$release_sha" "sha256:${image_digest}" "$expected_secret_bundle" "$target_container" "${container_id:0:12}" \
-  "$target_color" "$target_port" "$upstream_sha" "$actual_nginx_vhost_sha256" \
-  "$deployed_at" > "$candidate_receipt"
+if ! aais_run_json_helper write-deployment \
+  "$release_sha" "sha256:${image_digest}" "$expected_secret_bundle" \
+  "$target_color" "$target_port" "$container_id_short" "$upstream_sha" \
+  "$actual_nginx_vhost_sha256" "$deployed_at" > "$candidate_receipt"; then
+  echo "AAIS deployment receipt generation failed." >&2
+  exit 1
+fi
+if ! aais_run_json_helper validate-deployment "$candidate_receipt" \
+  "$release_sha" "sha256:${image_digest}" "$expected_secret_bundle" \
+  "$target_color" "$target_port" "$container_id_short" "$upstream_sha" \
+  "$actual_nginx_vhost_sha256" "$deployed_at"; then
+  echo "AAIS deployment receipt validation failed." >&2
+  exit 1
+fi
 
 pause_worker_timers
-install -m 0644 "$candidate_upstream" "$AAIS_UPSTREAM_FILE"
-nginx_switched="true"
+chown root:root "$candidate_upstream"
+chmod 0644 "$candidate_upstream"
+upstream_publish_attempted="true"
+mv -Tf -- "$candidate_upstream" "$AAIS_UPSTREAM_FILE"
 "$AAIS_NGINX_BINARY" -t >/dev/null
+nginx_reload_attempted="true"
 "$AAIS_NGINX_BINARY" -s reload >/dev/null
 
 if [[ -f /opt/aais/state/maintenance.enabled \
   || -f "$AAIS_ROTATION_PENDING_FILE" ]]; then
-  maintenance_status="$(curl --silent --output /dev/null --write-out '%{http_code}' --max-time 10 \
+  maintenance_status="$(curl --disable --noproxy '*' --silent --output /dev/null --write-out '%{http_code}' --max-time 10 --max-filesize 65536 \
     --resolve www.aais.site:443:127.0.0.1 https://www.aais.site/)"
   if [[ "$maintenance_status" != "503" ]]; then
     echo "AAIS maintenance proxy gate is not active." >&2
     exit 1
   fi
 else
-  nginx_report="$(curl --fail --silent --show-error --max-time 10 \
+  if ! curl --disable --noproxy '*' --fail --silent --show-error --max-time 10 --max-filesize 65536 \
     --resolve www.aais.site:443:127.0.0.1 \
-    https://www.aais.site/api/system/traffic-readiness)"
-  if [[ "$nginx_report" != *'"status":"ready"'* || "$nginx_report" != *"\"releaseId\":\"${release_sha}\""* ]]; then
+    https://www.aais.site/api/system/traffic-readiness \
+    | aais_json_validate_traffic_ready "$release_sha" >/dev/null; then
     echo "AAIS Nginx/TLS promotion check does not match." >&2
     exit 1
   fi
@@ -771,8 +1001,8 @@ fi
 
 chown root:root "$candidate_state"
 chmod 0644 "$candidate_state"
+state_commit_attempted="true"
 mv -Tf -- "$candidate_state" "$AAIS_STATE_FILE"
-state_committed="true"
 
 drain_active_connections
 if [[ -n "$active_container" && "$active_container_was_running" == "true" ]]; then
@@ -788,11 +1018,11 @@ if ! container_matches_expected_runtime \
 fi
 chown root:root "$candidate_receipt"
 chmod 0644 "$candidate_receipt"
+receipt_publish_attempted="true"
+trap '' INT TERM HUP
 mv -Tf -- "$candidate_receipt" "$receipt_file"
-receipt_committed="true"
 
 trap - EXIT
-trap - INT TERM HUP
 cleanup_transaction_files
 printf 'AAIS deployment promoted: %s %s %s\n' \
   "$release_sha" "sha256:${image_digest}" "$target_color"

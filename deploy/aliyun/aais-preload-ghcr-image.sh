@@ -2,12 +2,73 @@
 set -Eeuo pipefail
 set +x
 
+readonly AAIS_JSON_HELPER_PATH="/opt/aais/libexec/aais-json-v1.py"
+readonly AAIS_JSON_HELPER_SHA256="b94a6a7485c8b760cdcf3275c7cf82199e82eafa099213e640152d86dea0dd03"
+
 aais_stat_mode() {
   stat -c '%a' "$1" 2>/dev/null || stat -f '%Lp' "$1" 2>/dev/null
 }
 
 aais_stat_owner() {
   stat -c '%u' "$1" 2>/dev/null || stat -f '%u' "$1" 2>/dev/null
+}
+
+aais_stat_links() {
+  stat -c '%h' "$1" 2>/dev/null || stat -f '%l' "$1" 2>/dev/null
+}
+
+aais_stat_identity() {
+  stat -c '%d:%i' "$1" 2>/dev/null || stat -f '%d:%i' "$1" 2>/dev/null
+}
+
+aais_run_json_helper() {
+  local helper_path="$1"
+  shift
+  /usr/bin/env -i LC_ALL=C LANG=C HOME=/ TZ=UTC \
+    /usr/bin/python3 -I -S -B "$helper_path" "$@"
+}
+
+aais_require_json_helper() {
+  local helper_dir="/opt/aais/libexec"
+  local dir_mode dir_owner helper_mode helper_owner helper_links
+  local identity_before identity_after actual_sha256
+  if [[ ! -x /usr/bin/env || ! -x /usr/bin/python3 ]] \
+    || ! command -v stat >/dev/null 2>&1 \
+    || ! command -v readlink >/dev/null 2>&1 \
+    || ! command -v sha256sum >/dev/null 2>&1 \
+    || ! command -v awk >/dev/null 2>&1; then
+    echo "AAIS protected JSON runtime is unavailable." >&2
+    return 1
+  fi
+  dir_mode="$(aais_stat_mode "$helper_dir" || true)"
+  dir_owner="$(aais_stat_owner "$helper_dir" || true)"
+  if [[ ! -d "$helper_dir" || -L "$helper_dir" \
+    || "$(readlink -f "$helper_dir" 2>/dev/null || true)" != "$helper_dir" \
+    || "$dir_owner" != "0" || "$dir_mode" != "700" ]]; then
+    echo "AAIS protected JSON helper directory is invalid." >&2
+    return 1
+  fi
+  helper_mode="$(aais_stat_mode "$AAIS_JSON_HELPER_PATH" || true)"
+  helper_owner="$(aais_stat_owner "$AAIS_JSON_HELPER_PATH" || true)"
+  helper_links="$(aais_stat_links "$AAIS_JSON_HELPER_PATH" || true)"
+  identity_before="$(aais_stat_identity "$AAIS_JSON_HELPER_PATH" || true)"
+  if [[ ! -f "$AAIS_JSON_HELPER_PATH" || -L "$AAIS_JSON_HELPER_PATH" \
+    || "$helper_owner" != "0" || "$helper_mode" != "500" \
+    || "$helper_links" != "1" || -z "$identity_before" ]]; then
+    echo "AAIS protected JSON helper is invalid." >&2
+    return 1
+  fi
+  actual_sha256="$(sha256sum "$AAIS_JSON_HELPER_PATH" 2>/dev/null | awk '{ print $1 }')"
+  identity_after="$(aais_stat_identity "$AAIS_JSON_HELPER_PATH" || true)"
+  if [[ "$actual_sha256" != "$AAIS_JSON_HELPER_SHA256" \
+    || "$identity_after" != "$identity_before" ]]; then
+    echo "AAIS protected JSON helper fingerprint does not match." >&2
+    return 1
+  fi
+  if ! aais_run_json_helper "$AAIS_JSON_HELPER_PATH" self-test >/dev/null; then
+    echo "AAIS protected JSON helper self-test failed." >&2
+    return 1
+  fi
 }
 
 aais_require_owner_tty() {
@@ -40,65 +101,55 @@ aais_require_protected_file() {
   fi
 }
 
+aais_require_protected_directory() {
+  local directory="$1"
+  local expected_mode="$2"
+  local label="$3"
+  local expected_owner="${4:-0}"
+  local actual_mode actual_owner canonical_directory
+  actual_mode="$(aais_stat_mode "$directory" || true)"
+  actual_owner="$(aais_stat_owner "$directory" || true)"
+  canonical_directory="$(readlink -f "$directory" 2>/dev/null || true)"
+  if [[ ! -d "$directory" || -L "$directory" \
+    || "$canonical_directory" != "$directory" \
+    || "$actual_owner" != "$expected_owner" \
+    || "$actual_mode" != "$expected_mode" ]]; then
+    echo "${label} must be a protected canonical directory owned by the expected user with mode 0${expected_mode}." >&2
+    return 1
+  fi
+}
+
 aais_validate_ghcr_candidate_receipt() {
   local receipt="$1"
   local release_sha="$2"
-  local image_repository="$3"
-  local image_digest="$4"
-  jq -e \
-    --arg gitSha "$release_sha" \
-    --arg imageRepository "$image_repository" \
-    --arg imageTag "${image_repository}:${release_sha}" \
-    --arg imageDigest "$image_digest" '
-      .schemaVersion == 1
-      and .provider == "github"
-      and .stage == "ghcr_candidate"
-      and .gitSha == $gitSha
-      and .imageRepository == $imageRepository
-      and .imageTag == $imageTag
-      and .imageDigest == $imageDigest
-      and .packageVisibility == "private"
-      and .sbomGenerated == true
-      and .provenanceGenerated == true
-      and (.provenanceAttestationId | type) == "string"
-      and (.provenanceAttestationId | test("^[A-Za-z0-9._:-]+$"))
-      and (.githubRunId | type) == "string"
-      and (.githubRunId | test("^[0-9]+$"))
-      and (.githubRunAttempt | type) == "string"
-      and (.githubRunAttempt | test("^[0-9]+$"))
-      and .secrets == "redacted"
-    ' "$receipt" >/dev/null
+  local expected_digest="$3"
+  local helper_path="${4:-$AAIS_JSON_HELPER_PATH}"
+  aais_run_json_helper "$helper_path" candidate-metadata \
+    "$receipt" "$release_sha" "$expected_digest"
 }
 
 aais_validate_ghcr_preloaded_receipt() {
   local receipt="$1"
   local release_sha="$2"
-  local image_repository="$3"
-  local image_digest="$4"
-  local candidate_run_id="$5"
-  local candidate_run_attempt="$6"
-  jq -e \
-    --arg gitSha "$release_sha" \
-    --arg imageRepository "$image_repository" \
-    --arg imageDigest "$image_digest" \
-    --arg localRepoDigest "${image_repository}@${image_digest}" \
-    --arg candidateRunId "$candidate_run_id" \
-    --arg candidateRunAttempt "$candidate_run_attempt" '
-      .schemaVersion == 1
-      and .provider == "github"
-      and .stage == "ghcr_preloaded"
-      and .gitSha == $gitSha
-      and .imageRepository == $imageRepository
-      and .imageDigest == $imageDigest
-      and .localRepoDigest == $localRepoDigest
-      and .imageRevision == $gitSha
-      and .candidateRunId == $candidateRunId
-      and .candidateRunAttempt == $candidateRunAttempt
-      and .credentialsCleaned == true
-      and (.pulledAt | type) == "string"
-      and (.pulledAt | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T"))
-      and .secrets == "redacted"
-    ' "$receipt" >/dev/null
+  local image_digest="$3"
+  local candidate_run_id="$4"
+  local candidate_run_attempt="$5"
+  local helper_path="${6:-$AAIS_JSON_HELPER_PATH}"
+  aais_run_json_helper "$helper_path" validate-preloaded \
+    "$receipt" "$release_sha" "$image_digest" \
+    "$candidate_run_id" "$candidate_run_attempt"
+}
+
+aais_write_ghcr_preloaded_receipt() {
+  local release_sha="$1"
+  local image_digest="$2"
+  local candidate_run_id="$3"
+  local candidate_run_attempt="$4"
+  local pulled_at="$5"
+  local helper_path="${6:-$AAIS_JSON_HELPER_PATH}"
+  aais_run_json_helper "$helper_path" write-preloaded \
+    "$release_sha" "$image_digest" "$candidate_run_id" \
+    "$candidate_run_attempt" "$pulled_at"
 }
 
 aais_validate_local_image_provenance() {
@@ -151,6 +202,9 @@ aais_cleanup_ghcr_credentials() {
 aais_preload_docker_config_dir=""
 aais_preload_credential_parent=""
 aais_preload_credentials_present="false"
+aais_preload_receipt_candidate=""
+aais_preload_receipt_parent=""
+aais_preload_receipt_release_sha=""
 
 aais_preload_exit_cleanup() {
   local status=$?
@@ -162,6 +216,15 @@ aais_preload_exit_cleanup() {
     aais_cleanup_ghcr_credentials "$aais_preload_docker_config_dir" \
       "$aais_preload_credential_parent" ghcr.io || cleanup_status=1
     aais_preload_credentials_present="false"
+  fi
+  if [[ -n "$aais_preload_receipt_candidate" ]]; then
+    case "$aais_preload_receipt_candidate" in
+      "$aais_preload_receipt_parent"/.preloaded-"$aais_preload_receipt_release_sha".*)
+        rm -f -- "$aais_preload_receipt_candidate" || cleanup_status=1
+        ;;
+      *) cleanup_status=1 ;;
+    esac
+    aais_preload_receipt_candidate=""
   fi
   if [[ "$cleanup_status" -ne 0 && "$status" -eq 0 ]]; then
     status=1
@@ -188,6 +251,7 @@ aais_preload_main() {
     return 1
   fi
   local release_sha="$1"
+  aais_require_json_helper
   local deploy_config_file="${AAIS_DEPLOY_CONFIG_FILE:-/etc/aais/deploy.env}"
   aais_require_protected_file "$deploy_config_file" 600 \
     "AAIS deploy configuration"
@@ -201,17 +265,19 @@ aais_preload_main() {
   : "${AAIS_PRELOADED_RECEIPT_DIR:=/opt/aais/preloaded}"
   if [[ "$AAIS_IMAGE_SOURCE" != "ghcr-preloaded" \
     || "$AAIS_GHCR_REPOSITORY" != "ghcr.io/hudongpin/aais" \
-    || "$AAIS_CANDIDATE_RECEIPT_DIR" != /opt/aais/* \
-    || "$AAIS_PRELOADED_RECEIPT_DIR" != /opt/aais/* \
-    || -L "$AAIS_CANDIDATE_RECEIPT_DIR" \
-    || -L "$AAIS_PRELOADED_RECEIPT_DIR" ]]; then
+    || "$AAIS_CANDIDATE_RECEIPT_DIR" != "/opt/aais/candidates" \
+    || "$AAIS_PRELOADED_RECEIPT_DIR" != "/opt/aais/preloaded" ]]; then
     echo "AAIS GHCR preload bindings are invalid." >&2
     return 1
   fi
   aais_validate_ghcr_username "$AAIS_GHCR_USERNAME"
+  aais_require_protected_directory "$AAIS_CANDIDATE_RECEIPT_DIR" 755 \
+    "AAIS GHCR candidate receipt directory"
+  aais_require_protected_directory "$AAIS_PRELOADED_RECEIPT_DIR" 755 \
+    "AAIS GHCR preloaded receipt directory"
 
   local required_command
-  for required_command in chmod chown date docker find getent install jq mktemp \
+  for required_command in chmod chown date docker find getent install mktemp \
     mv readlink rmdir stat; do
     if ! command -v "$required_command" >/dev/null 2>&1; then
       echo "AAIS GHCR preload dependency is unavailable: ${required_command}." >&2
@@ -222,21 +288,29 @@ aais_preload_main() {
   local candidate_receipt="${AAIS_CANDIDATE_RECEIPT_DIR}/${release_sha}.json"
   aais_require_protected_file "$candidate_receipt" 644 \
     "AAIS GHCR candidate receipt"
-  local image_digest
-  image_digest="$(jq -er '.imageDigest | select(test("^sha256:[a-f0-9]{64}$"))' \
-    "$candidate_receipt")"
-  aais_validate_ghcr_candidate_receipt "$candidate_receipt" "$release_sha" \
-    "$AAIS_GHCR_REPOSITORY" "$image_digest" || {
+  local candidate_metadata image_digest candidate_run_id candidate_run_attempt
+  candidate_metadata="$(aais_validate_ghcr_candidate_receipt \
+    "$candidate_receipt" "$release_sha" -)" || {
       echo "AAIS GHCR candidate receipt does not match the requested release." >&2
       return 1
     }
-  local candidate_run_id candidate_run_attempt
-  candidate_run_id="$(jq -er '.githubRunId' "$candidate_receipt")"
-  candidate_run_attempt="$(jq -er '.githubRunAttempt' "$candidate_receipt")"
+  IFS=$'\t' read -r image_digest candidate_run_id candidate_run_attempt \
+    <<<"$candidate_metadata"
   local image_ref="${AAIS_GHCR_REPOSITORY}@${image_digest}"
 
+  local preloaded_receipt="${AAIS_PRELOADED_RECEIPT_DIR}/${release_sha}.json"
+  if [[ -e "$preloaded_receipt" || -L "$preloaded_receipt" ]]; then
+    aais_require_protected_file "$preloaded_receipt" 644 \
+      "AAIS existing preloaded receipt"
+    if ! aais_validate_ghcr_preloaded_receipt "$preloaded_receipt" \
+      "$release_sha" "$image_digest" "$candidate_run_id" \
+      "$candidate_run_attempt"; then
+      echo "AAIS existing preloaded receipt does not match the candidate." >&2
+      return 1
+    fi
+  fi
+
   aais_require_owner_tty
-  install -d -o root -g root -m 0755 "$AAIS_PRELOADED_RECEIPT_DIR"
   local runtime_parent="/run/aais"
   if [[ -L "$runtime_parent" ]]; then
     echo "AAIS runtime directory cannot be a symlink." >&2
@@ -300,43 +374,25 @@ aais_preload_main() {
   aais_preload_credentials_present="false"
   aais_preload_docker_config_dir=""
 
-  local preloaded_receipt="${AAIS_PRELOADED_RECEIPT_DIR}/${release_sha}.json"
-  if [[ -e "$preloaded_receipt" || -L "$preloaded_receipt" ]]; then
-    aais_require_protected_file "$preloaded_receipt" 644 \
-      "AAIS existing preloaded receipt"
-  fi
-  local receipt_candidate pulled_at
-  receipt_candidate="$(mktemp \
+  local pulled_at
+  aais_preload_receipt_parent="$AAIS_PRELOADED_RECEIPT_DIR"
+  aais_preload_receipt_release_sha="$release_sha"
+  aais_preload_receipt_candidate="$(mktemp \
     "${AAIS_PRELOADED_RECEIPT_DIR}/.preloaded-${release_sha}.XXXXXX")"
   pulled_at="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
-  jq -n \
-    --arg gitSha "$release_sha" \
-    --arg imageRepository "$AAIS_GHCR_REPOSITORY" \
-    --arg imageDigest "$image_digest" \
-    --arg localRepoDigest "$image_ref" \
-    --arg imageRevision "$image_revision" \
-    --arg candidateRunId "$candidate_run_id" \
-    --arg candidateRunAttempt "$candidate_run_attempt" \
-    --arg pulledAt "$pulled_at" '
-      {
-        schemaVersion: 1,
-        provider: "github",
-        stage: "ghcr_preloaded",
-        gitSha: $gitSha,
-        imageRepository: $imageRepository,
-        imageDigest: $imageDigest,
-        localRepoDigest: $localRepoDigest,
-        imageRevision: $imageRevision,
-        candidateRunId: $candidateRunId,
-        candidateRunAttempt: $candidateRunAttempt,
-        pulledAt: $pulledAt,
-        credentialsCleaned: true,
-        secrets: "redacted"
-      }
-    ' > "$receipt_candidate"
-  chown root:root "$receipt_candidate"
-  chmod 0644 "$receipt_candidate"
-  mv -Tf -- "$receipt_candidate" "$preloaded_receipt"
+  aais_write_ghcr_preloaded_receipt "$release_sha" "$image_digest" \
+    "$candidate_run_id" "$candidate_run_attempt" "$pulled_at" \
+    > "$aais_preload_receipt_candidate"
+  if ! aais_validate_ghcr_preloaded_receipt "$aais_preload_receipt_candidate" \
+    "$release_sha" "$image_digest" "$candidate_run_id" \
+    "$candidate_run_attempt"; then
+    echo "AAIS generated preloaded receipt failed its validation round trip." >&2
+    return 1
+  fi
+  chown root:root "$aais_preload_receipt_candidate"
+  chmod 0644 "$aais_preload_receipt_candidate"
+  mv -Tf -- "$aais_preload_receipt_candidate" "$preloaded_receipt"
+  aais_preload_receipt_candidate=""
   trap - EXIT INT TERM HUP
   printf 'AAIS GHCR image preloaded: %s %s\n' "$release_sha" "$image_digest"
 }

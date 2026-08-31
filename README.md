@@ -41,7 +41,9 @@ AAIS targets the existing Hong Kong ECS as primary, Vercel as the same-SHA writa
 
 1. Rehearse and apply migrations 0028/0029, bind the database target ID, create the two least-privilege runtime roles, and clean Vercel down to the canonical `AAIS_DATABASE_URL`.
 2. Merge the reviewed SHA to `main`; Vercel and `.github/workflows/ghcr-container.yml` build that same SHA, with Vercel Functions pinned to Neon-adjacent `sin1`.
-3. The Owner alone uses `aais-preload-ghcr-image.sh <full-sha>` in a real TTY with a short-lived `read:packages` PAT, then immediately revokes it.
+3. Install jq-free `aais-json-v1.py` at `/opt/aais/libexec/aais-json-v1.py` under root `0700`, with the helper root-owned, single-linked, non-symlink, and mode `0500`.
+   Require the documented isolated-runtime and vendor-RPM integrity preflight for system `/usr/bin/python3`; never infer it from the OS name or install/upgrade Python in the AAIS transaction.
+   The Owner then runs `aais-preload-ghcr-image.sh <full-sha>` in a real TTY with a short-lived `read:packages` PAT and immediately revokes it. ECS does not require `jq`.
 4. After the credential-clean preload receipt exists, non-credential automation deploys `ghcr.io/hudongpin/aais@sha256:<digest>` through the blue/green wrapper.
 5. Run preview/origin E2E, `npm run smoke:prod`, the 10-user soak, same-database parity, and the failover/failback drill before production acceptance.
 

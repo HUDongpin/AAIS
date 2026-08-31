@@ -4,7 +4,9 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -112,7 +114,15 @@ describe("AAIS private GHCR preload helper", () => {
       'install -d -o root -g root -m 0700 "$aais_preload_credential_parent"',
     );
     expect(source).toContain("aais_cleanup_ghcr_credentials");
-    expect(source).toContain("credentialsCleaned: true");
+    expect(source).toContain("write-preloaded");
+    expect(source).toContain("validate-preloaded");
+    expect(source).toContain(
+      'readonly AAIS_JSON_HELPER_PATH="/opt/aais/libexec/aais-json-v1.py"',
+    );
+    expect(source).toContain(
+      "/usr/bin/python3 -I -S -B \"$helper_path\"",
+    );
+    expect(source).not.toMatch(/\bjq\b/);
     expect(source).toContain(
       "Usage: aais-preload-ghcr-image.sh <full-40-character-git-sha>",
     );
@@ -158,6 +168,44 @@ describe("AAIS private GHCR preload helper", () => {
     expect(result.stderr).toContain("mode 0644");
   });
 
+  it("requires canonical non-symlink receipt directories with exact mode 0755", () => {
+    const directory = temporaryDirectory();
+    const receipts = join(directory, "receipts");
+    const link = join(directory, "receipts-link");
+    mkdirSync(receipts, { mode: 0o755 });
+    chmodSync(receipts, 0o755);
+    symlinkSync(receipts, link);
+    const canonicalReceipts = realpathSync(receipts);
+
+    const valid = runFunction(
+      'aais_require_protected_directory "$2" 755 "test directory" "$3"',
+      [canonicalReceipts, String(process.getuid())],
+    );
+    expect(valid.status).toBe(0);
+    const wrongOwner = runFunction(
+      'aais_require_protected_directory "$2" 755 "test directory" "$3"',
+      [canonicalReceipts, String(process.getuid() + 1)],
+    );
+    expect(wrongOwner.status).not.toBe(0);
+
+    for (const rejected of [`${canonicalReceipts}/.`, link]) {
+      const result = runFunction(
+        'aais_require_protected_directory "$2" 755 "test directory" "$3"',
+        [rejected, String(process.getuid())],
+      );
+      expect(result.status, rejected).not.toBe(0);
+    }
+
+    for (const mode of [0o775, 0o757, 0o777]) {
+      chmodSync(receipts, mode);
+      const result = runFunction(
+        'aais_require_protected_directory "$2" 755 "test directory" "$3"',
+        [canonicalReceipts, String(process.getuid())],
+      );
+      expect(result.status, mode.toString(8)).not.toBe(0);
+    }
+  });
+
   it("rejects candidate and preload receipt mismatches", () => {
     const directory = temporaryDirectory();
     const candidate = join(directory, "candidate.json");
@@ -167,21 +215,77 @@ describe("AAIS private GHCR preload helper", () => {
 
     const validCandidate = runFunction(
       'aais_validate_ghcr_candidate_receipt "$2" "$3" "$4" "$5"',
-      [candidate, releaseSha, repository, imageDigest],
+      [candidate, releaseSha, imageDigest, join(process.cwd(), "deploy/aliyun/aais-json-v1.py")],
     );
     expect(validCandidate.status).toBe(0);
+    expect(validCandidate.stdout).toBe(`${imageDigest}\t123\t1\n`);
 
     const wrongCandidateDigest = runFunction(
       'aais_validate_ghcr_candidate_receipt "$2" "$3" "$4" "$5"',
-      [candidate, releaseSha, repository, `sha256:${"c".repeat(64)}`],
+      [
+        candidate,
+        releaseSha,
+        `sha256:${"c".repeat(64)}`,
+        join(process.cwd(), "deploy/aliyun/aais-json-v1.py"),
+      ],
     );
     expect(wrongCandidateDigest.status).not.toBe(0);
 
     const wrongCandidateRun = runFunction(
       'aais_validate_ghcr_preloaded_receipt "$2" "$3" "$4" "$5" "$6" "$7"',
-      [preloaded, releaseSha, repository, imageDigest, "999", "1"],
+      [
+        preloaded,
+        releaseSha,
+        imageDigest,
+        "999",
+        "1",
+        join(process.cwd(), "deploy/aliyun/aais-json-v1.py"),
+      ],
     );
     expect(wrongCandidateRun.status).not.toBe(0);
+  });
+
+  it("validates an existing preload before any TTY, login, or pull", () => {
+    const source = readFileSync(helper, "utf8");
+    const candidateDirectoryValidation = source.indexOf(
+      'aais_require_protected_directory "$AAIS_CANDIDATE_RECEIPT_DIR" 755',
+    );
+    const preloadedDirectoryValidation = source.indexOf(
+      'aais_require_protected_directory "$AAIS_PRELOADED_RECEIPT_DIR" 755',
+    );
+    const candidateReceiptValidation = source.indexOf(
+      'candidate_metadata="$(aais_validate_ghcr_candidate_receipt',
+    );
+    const existingReceiptValidation = source.indexOf(
+      'aais_validate_ghcr_preloaded_receipt "$preloaded_receipt"',
+    );
+
+    expect(candidateDirectoryValidation).toBeGreaterThan(-1);
+    expect(preloadedDirectoryValidation).toBeGreaterThan(-1);
+    expect(candidateDirectoryValidation).toBeLessThan(candidateReceiptValidation);
+    expect(preloadedDirectoryValidation).toBeLessThan(candidateReceiptValidation);
+    expect(existingReceiptValidation).toBeGreaterThan(-1);
+    expect(existingReceiptValidation).toBeLessThan(
+      source.lastIndexOf("aais_require_owner_tty"),
+    );
+    expect(existingReceiptValidation).toBeLessThan(source.indexOf("docker login ghcr.io"));
+    expect(existingReceiptValidation).toBeLessThan(source.indexOf('docker pull "$image_ref"'));
+    expect(source).toContain("aais_preload_receipt_candidate");
+    expect(source.indexOf("write-preloaded")).toBeLessThan(
+      source.lastIndexOf('mv -Tf -- "$aais_preload_receipt_candidate"'),
+    );
+    expect(source.lastIndexOf("validate-preloaded")).toBeLessThan(
+      source.lastIndexOf('mv -Tf -- "$aais_preload_receipt_candidate"'),
+    );
+    expect(source).toContain(
+      '"$AAIS_CANDIDATE_RECEIPT_DIR" != "/opt/aais/candidates"',
+    );
+    expect(source).toContain(
+      '"$AAIS_PRELOADED_RECEIPT_DIR" != "/opt/aais/preloaded"',
+    );
+    expect(source).not.toContain(
+      'install -d -o root -g root -m 0755 "$AAIS_PRELOADED_RECEIPT_DIR"',
+    );
   });
 
   it("rejects a local RepoDigest mismatch even when the revision matches", () => {

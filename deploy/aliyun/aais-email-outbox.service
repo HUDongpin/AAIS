@@ -1,6 +1,8 @@
 [Unit]
 Description=AAIS authentication email outbox worker
 ConditionPathExists=!/opt/aais/state/secret-rotation.pending
+ConditionPathExists=!/opt/aais/state/secret-rotation.canonical-check
+ConditionPathExists=!/opt/aais/state/secret-rotation.invalid
 After=network-online.target docker.service
 Wants=network-online.target
 Requires=aais-secrets-bootstrap.service

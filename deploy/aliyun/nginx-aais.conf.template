@@ -80,6 +80,11 @@ server {
     if (-f /opt/aais/state/secret-rotation.pending) {
         return 503;
     }
+    # Invalid or conflicting rotation custody is never auto-cleared. This
+    # regular root-owned sentinel keeps public traffic closed for manual repair.
+    if (-f /opt/aais/state/secret-rotation.invalid) {
+        return 503;
+    }
 
     location @aais_maintenance {
         add_header Cache-Control "no-store" always;

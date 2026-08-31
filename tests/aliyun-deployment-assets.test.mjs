@@ -1,7 +1,121 @@
+import { createHash } from "node:crypto";
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 describe("AAIS Aliyun deployment assets", () => {
+  it("pins one protected jq-free JSON helper before mutation or credential input", () => {
+    const helperBytes = readFileSync("deploy/aliyun/aais-json-v1.py");
+    const helperHash = createHash("sha256").update(helperBytes).digest("hex");
+    const scripts = [
+      "deploy/aliyun/aais-preload-ghcr-image.sh",
+      "deploy/aliyun/aais-deploy.sh",
+      "deploy/aliyun/aais-rotate-secrets.sh",
+    ];
+
+    for (const path of scripts) {
+      const source = readFileSync(path, "utf8");
+      const guardCall = source.lastIndexOf("aais_require_json_helper");
+      expect(source, path).toContain(
+        'readonly AAIS_JSON_HELPER_PATH="/opt/aais/libexec/aais-json-v1.py"',
+      );
+      expect(source, path).toContain(
+        `readonly AAIS_JSON_HELPER_SHA256="${helperHash}"`,
+      );
+      expect(source, path).toContain(
+        "/usr/bin/env -i LC_ALL=C LANG=C HOME=/ TZ=UTC",
+      );
+      expect(source, path).toContain("/usr/bin/python3 -I -S -B");
+      expect(source, path).toContain("! -x /usr/bin/python3");
+      expect(source, path).toContain('-L "$AAIS_JSON_HELPER_PATH"');
+      if (path.endsWith("aais-preload-ghcr-image.sh")) {
+        expect(source, path).toContain('"$helper_owner" != "0"');
+        expect(source, path).toContain('"$helper_mode" != "500"');
+        expect(source, path).toContain('"$helper_links" != "1"');
+      } else {
+        expect(source, path).toContain(
+          'stat -c \'%u\' "$AAIS_JSON_HELPER_PATH"',
+        );
+        expect(source, path).toContain(
+          'stat -c \'%a\' "$AAIS_JSON_HELPER_PATH"',
+        );
+        expect(source, path).toContain(
+          'stat -c \'%h\' "$AAIS_JSON_HELPER_PATH"',
+        );
+      }
+      expect(source, path).toContain("self-test");
+      expect(source, path).not.toMatch(/\bjq\b/);
+      expect(source, path).not.toContain("${AAIS_JSON_HELPER_PATH:-");
+      expect(guardCall, path).toBeGreaterThan(-1);
+      expect(guardCall, path).toBeLessThan(source.indexOf("install -d"));
+    }
+
+    const preload = readFileSync("deploy/aliyun/aais-preload-ghcr-image.sh", "utf8");
+    const deploy = readFileSync("deploy/aliyun/aais-deploy.sh", "utf8");
+    const rotate = readFileSync("deploy/aliyun/aais-rotate-secrets.sh", "utf8");
+    expect(preload.lastIndexOf("aais_require_json_helper"))
+      .toBeLessThan(preload.lastIndexOf("aais_require_owner_tty"));
+    expect(deploy.lastIndexOf("aais_require_json_helper"))
+      .toBeLessThan(deploy.indexOf('exec 9>"$AAIS_OPERATION_LOCK_FILE"'));
+    expect(rotate.lastIndexOf("aais_require_json_helper"))
+      .toBeLessThan(rotate.indexOf('exec 9>"$operation_lock_file"'));
+    expect(rotate.lastIndexOf("aais_require_json_helper"))
+      .toBeLessThan(rotate.indexOf("systemctl stop"));
+
+    const preloadCandidateGate = preload.indexOf(
+      'candidate_metadata="$(aais_validate_ghcr_candidate_receipt',
+    );
+    const preloadExistingGate = preload.indexOf(
+      'aais_validate_ghcr_preloaded_receipt "$preloaded_receipt"',
+    );
+    for (const mutation of [
+      preload.lastIndexOf("aais_require_owner_tty"),
+      preload.indexOf("docker login ghcr.io"),
+      preload.indexOf('docker pull "$image_ref"'),
+    ]) {
+      expect(preloadCandidateGate).toBeLessThan(mutation);
+      expect(preloadExistingGate).toBeLessThan(mutation);
+    }
+    expect(preload).toContain('rm -f -- "$aais_preload_receipt_candidate"');
+
+    const deployCandidateGate = deploy.indexOf(
+      'candidate_metadata="$(aais_run_json_helper candidate-metadata',
+    );
+    const deployPreloadedGate = deploy.indexOf(
+      "aais_run_json_helper validate-preloaded",
+    );
+    for (const mutation of [
+      deploy.indexOf("docker network create aais-net"),
+      deploy.indexOf('docker rm -f "$target_container"'),
+      deploy.indexOf("\npause_worker_timers\n"),
+      deploy.indexOf('"$AAIS_NGINX_BINARY" -s reload'),
+    ]) {
+      expect(deployCandidateGate).toBeLessThan(mutation);
+      expect(deployPreloadedGate).toBeLessThan(mutation);
+    }
+    const candidateStart = deploy.indexOf("docker run --detach");
+    const runtimeGates = [
+      deploy.indexOf('aais_json_validate_live "$release_sha"', candidateStart),
+      deploy.indexOf('aais_json_validate_traffic_ready "$release_sha"', candidateStart),
+      deploy.indexOf("aais_json_validate_public_ready", candidateStart),
+    ];
+    for (const gate of runtimeGates) {
+      expect(gate).toBeGreaterThan(candidateStart);
+      expect(gate).toBeLessThan(deploy.indexOf("\npause_worker_timers\n"));
+    }
+    expect(deploy.match(/--max-filesize 65536/g)?.length).toBeGreaterThanOrEqual(10);
+    expect(deploy).not.toMatch(
+      /(?:live|traffic|full_readiness|nginx)_report="\$\(curl/,
+    );
+    expect(rotate.match(/--max-filesize 65536/g)).toHaveLength(2);
+    expect(rotate).not.toMatch(/(?:diagnostic|canonical)_probe="\$\(curl/);
+    const deploymentWrite = deploy.indexOf("write-deployment");
+    const deploymentRoundTrip = deploy.indexOf("validate-deployment");
+    expect(deploymentWrite).toBeGreaterThan(candidateStart);
+    expect(deploymentWrite).toBeLessThan(deploymentRoundTrip);
+    expect(deploymentRoundTrip).toBeLessThan(deploy.indexOf("\npause_worker_timers\n"));
+    expect(deploy).not.toContain("printf '{\"schemaVersion\":1");
+  });
+
   it("builds a Node 24 standalone image with a non-root runtime", () => {
     const dockerfile = readFileSync("Dockerfile", "utf8");
     const nextConfig = readFileSync("next.config.ts", "utf8");
@@ -82,18 +196,35 @@ describe("AAIS Aliyun deployment assets", () => {
     expect(deploy).toContain("AAIS_IMAGE_SOURCE must be ghcr-preloaded");
     expect(deploy).toContain('AAIS_GHCR_REPOSITORY');
     expect(deploy).toContain('preloaded_source_receipt');
-    expect(deploy).toContain('.stage == "ghcr_preloaded"');
-    expect(deploy).toContain('.credentialsCleaned == true');
+    expect(deploy).toContain("candidate-metadata");
+    expect(deploy).toContain("validate-preloaded");
+    expect(deploy).toContain("validate-live");
+    expect(deploy).toContain("validate-traffic-ready");
+    expect(deploy).toContain("validate-public-ready");
+    expect(deploy).toContain("write-deployment");
+    expect(deploy).toContain("validate-deployment");
     expect(deploy).toContain('image_repo_digest_matches');
     expect(deploy).toContain('local image RepoDigest or OCI revision');
-    expect(deploy).toContain(".gitSha == $gitSha");
+    expect(deploy).not.toMatch(/\bjq\b/);
+    expect(deploy).not.toMatch(/\*['"]status|status['"]\*/);
+    expect(deploy).not.toMatch(/\*.*releaseId|releaseId.*\*/);
+    expect(deploy).toContain(
+      'readonly AAIS_JSON_HELPER_PATH="/opt/aais/libexec/aais-json-v1.py"',
+    );
+    expect(deploy).toMatch(
+      /readonly AAIS_JSON_HELPER_SHA256="[a-f0-9]{64}"/,
+    );
+    expect(deploy).toContain(
+      "/usr/bin/python3 -I -S -B \"$AAIS_JSON_HELPER_PATH\"",
+    );
     expect(deploy).not.toMatch(/\bACR\b|acrInstanceId|publicLoginServer|pushRepository/);
     expect(deploy).toContain("AAIS_EXPECTED_MACHINE_ID_SHA256");
     expect(deploy).toContain("AAIS_EXPECTED_NGINX_VHOST_SHA256");
     expect(deploy).toContain("active-deployment.env");
     expect(deploy).toContain("AAIS_ACTIVE_SECRET_BUNDLE_VERSION");
     expect(deploy).toContain("AAIS_ROTATION_PENDING_FILE");
-    expect(deploy).toContain("secretBundleVersion");
+    expect(readFileSync("deploy/aliyun/aais-json-v1.py", "utf8"))
+      .toContain('"secretBundleVersion"');
     expect(deploy).toContain("commit_recovered_active_state");
     expect(deploy).toContain("finalized a verified interrupted Nginx promotion");
     expect(deploy).toContain("nginx_loaded_release_matches");
@@ -136,6 +267,8 @@ describe("AAIS Aliyun deployment assets", () => {
     expect(nginx).toContain("error_log /dev/null crit");
     expect(nginx).toContain("/opt/aais/state/maintenance.enabled");
     expect(nginx).toContain("/opt/aais/state/secret-rotation.pending");
+    expect(nginx).toContain("/opt/aais/state/secret-rotation.invalid");
+    expect(nginx).not.toContain("secret-rotation.canonical-check");
     expect(nginx).toContain("listen 127.0.0.1:8443 ssl");
     expect(nginx).toContain("Retry-After");
   });
@@ -148,10 +281,11 @@ describe("AAIS Aliyun deployment assets", () => {
       expect(readFileSync(timer, "utf8")).toContain("OnCalendar=*-*-* *:*:00");
     }
     const worker = readFileSync("deploy/aliyun/aais-worker.sh", "utf8");
-    expect(worker).toContain("curl --config -");
+    expect(worker).toContain("curl --disable --config - --noproxy '*'");
     expect(worker).not.toContain("--header \"Authorization:");
     expect(worker).toContain("--connect-timeout 5");
     expect(worker).toContain("--max-time 90");
+    expect(worker).toContain("--max-filesize 65536");
     expect(worker).toContain("mode 0440");
     expect(worker).toContain('"status":"standby"');
     for (const service of [
@@ -315,6 +449,24 @@ describe("AAIS Aliyun deployment assets", () => {
     ]) {
       expect(statSync(file).mode & 0o111, file).not.toBe(0);
     }
+    expect(statSync("deploy/aliyun/aais-json-v1.py").mode & 0o111).not.toBe(0);
+    for (const secretScript of [
+      "deploy/aliyun/aais-worker.sh",
+      "deploy/aliyun/aais-secrets-bootstrap.sh",
+      "deploy/aliyun/aais-rotate-secrets.sh",
+    ]) {
+      expect(readFileSync(secretScript, "utf8").split("\n").slice(0, 3))
+        .toEqual(["#!/usr/bin/env bash", "set -Eeuo pipefail", "set +x"]);
+    }
+    const jsonHelper = readFileSync("deploy/aliyun/aais-json-v1.py", "utf8");
+    expect(jsonHelper).toContain("MAX_JSON_BYTES = 64 * 1024");
+    expect(jsonHelper).toContain("object_pairs_hook=unique_object");
+    expect(jsonHelper).toContain("parse_constant=reject_constant");
+    expect(jsonHelper).toContain("os.O_NOFOLLOW");
+    expect(jsonHelper).toContain("allow_nan=False");
+    expect(jsonHelper).toContain("DEPLOYMENT_KEYS");
+    expect(jsonHelper).toContain('argv[1] == "write-deployment"');
+    expect(jsonHelper).toContain('argv[1] == "validate-deployment"');
     const maintenance = readFileSync("deploy/aliyun/aais-maintenance.sh", "utf8");
     expect(maintenance).toContain("/opt/aais/state/maintenance.enabled");
     expect(maintenance).toContain("enable|disable|status");
@@ -360,12 +512,26 @@ describe("AAIS Aliyun deployment assets", () => {
     const rotate = readFileSync("deploy/aliyun/aais-rotate-secrets.sh", "utf8");
     expect(rotate).not.toMatch(/\bKMS\b|AAIS_KMS_/);
     expect(rotate).toContain("systemctl stop");
+    expect(rotate).not.toMatch(/\bjq\b/);
+    expect(rotate).toContain("validate-traffic-ready");
+    expect(rotate.indexOf("aais_require_json_helper"))
+      .toBeLessThan(rotate.indexOf("systemctl stop"));
+    expect(rotate).toContain(
+      'readonly AAIS_JSON_HELPER_PATH="/opt/aais/libexec/aais-json-v1.py"',
+    );
+    expect(rotate).toContain(
+      "/usr/bin/python3 -I -S -B \"$AAIS_JSON_HELPER_PATH\"",
+    );
     expect(rotate).toContain('"$bootstrap_wrapper"');
     expect(rotate).toContain("flock -n 9");
     expect(rotate).toContain("AAIS_OPERATION_LOCK_FD=9");
     expect(rotate).toContain('"$deploy_wrapper" "$image_ref" "$release_sha"');
     expect(rotate).toContain("worker timers remain stopped");
     expect(rotate).toContain("secret-rotation.pending");
+    expect(rotate).toContain("secret-rotation.canonical-check");
+    expect(rotate).toContain("AAIS_EMAIL_TIMER_WAS_ACTIVE");
+    expect(rotate).toContain("AAIS_LRS_TIMER_WAS_ACTIVE");
+    expect(rotate).toContain("canonical-passed");
     expect(rotate).toContain("runtime.env.candidate");
     expect(rotate).toContain('"--resume"');
     expect(rotate).toContain("active-deployment.env");
@@ -378,9 +544,17 @@ describe("AAIS Aliyun deployment assets", () => {
       .toBeLessThan(rotate.indexOf("write_rotation_phase prepared"));
     expect(rotate).toContain("www.aais.site:8443:127.0.0.1");
     expect(rotate).toContain("canonical path does not match the promoted release");
-    expect(rotate.lastIndexOf('rm -f -- "$rotation_pending_file"'))
+    expect(rotate).not.toContain('rm -f -- "$rotation_pending_file"');
+    expect(rotate.indexOf(
+      'mv -Tf -- "$rotation_pending_file" "$rotation_canonical_check_file"',
+    )).toBeLessThan(
+      rotate.indexOf("https://www.aais.site/api/system/traffic-readiness"),
+    );
+    expect(rotate.lastIndexOf("write_canonical_phase canonical-passed"))
       .toBeLessThan(rotate.lastIndexOf('systemctl start "$email_timer"'));
-    expect(rotate.indexOf("canonical_probe="))
+    expect(rotate.lastIndexOf('rm -f -- "$local_runtime_previous"'))
+      .toBeLessThan(rotate.lastIndexOf('rm -f -- "$rotation_canonical_check_file"'));
+    expect(rotate.indexOf("https://www.aais.site/api/system/traffic-readiness"))
       .toBeLessThan(rotate.indexOf('rm -f -- "$local_runtime_previous"'));
     for (const service of [
       "deploy/aliyun/aais-email-outbox.service",
@@ -389,9 +563,23 @@ describe("AAIS Aliyun deployment assets", () => {
       expect(readFileSync(service, "utf8")).toContain(
         "ConditionPathExists=!/opt/aais/state/secret-rotation.pending",
       );
+      expect(readFileSync(service, "utf8")).toContain(
+        "ConditionPathExists=!/opt/aais/state/secret-rotation.canonical-check",
+      );
+      expect(readFileSync(service, "utf8")).toContain(
+        "ConditionPathExists=!/opt/aais/state/secret-rotation.invalid",
+      );
+    }
+    for (const timer of [
+      "deploy/aliyun/aais-email-outbox.timer",
+      "deploy/aliyun/aais-lrs-outbox.timer",
+    ]) {
+      expect(readFileSync(timer, "utf8")).not.toContain("ConditionPathExists=");
     }
     const worker = readFileSync("deploy/aliyun/aais-worker.sh", "utf8");
     expect(worker).toContain("active-deployment.env");
+    expect(worker).toContain("secret-rotation.canonical-check");
+    expect(worker).toContain("secret-rotation.invalid");
     expect(worker).toContain("worker secret bundle does not match the active deployment");
   });
 
