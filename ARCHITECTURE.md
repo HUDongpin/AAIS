@@ -1,5 +1,12 @@
 # AAIS Architecture
 
+> **Candidate note (2026-09-01):** The Neon/Vercel warm-backup topology below is
+> retained as a frozen historical reference. The selected deployment candidate
+> uses an empty PostgreSQL 17 database on the existing Aliyun ECS; its canonical
+> socket, role, migration and rollback contract is
+> [docs/aliyun-postgres-empty-runbook.md](./docs/aliyun-postgres-empty-runbook.md).
+> Do not activate the historical topology from this document.
+
 ## Runtime Shape
 
 AAIS is a single Next.js App Router application. The repository supports an

@@ -1,5 +1,12 @@
 # AAIS Operations
 
+> **Candidate note (2026-09-01):** Most of this document records the frozen
+> Neon/Vercel warm-backup path. For the selected empty-database candidate, use
+> [docs/aliyun-postgres-empty-runbook.md](./docs/aliyun-postgres-empty-runbook.md)
+> as the canonical PostgreSQL/socket/migration procedure. Do not infer that a
+> Neon receipt, Vercel `READY`, or an old warm-backup checklist authorizes the
+> new ECS database.
+
 ## Local Setup
 
 ```bash

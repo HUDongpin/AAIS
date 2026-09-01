@@ -227,6 +227,26 @@ if [[ "$runtime_owner" != "0" || ( "$runtime_mode" != "400" && "$runtime_mode" !
   echo "AAIS runtime environment file must be root-owned with mode 0400 or 0600." >&2
   exit 1
 fi
+runtime_database_provider="$(awk -F= '$1 == "AAIS_DATABASE_PROVIDER" { count += 1; value=$2 } END { if (count != 1) exit 1; print value }' "$AAIS_RUNTIME_ENV_FILE")"
+runtime_database_transport="$(awk -F= '$1 == "AAIS_DATABASE_TRANSPORT" { count += 1; value=$2 } END { if (count != 1) exit 1; print value }' "$AAIS_RUNTIME_ENV_FILE")"
+if [[ "$runtime_database_provider" != "aliyun-postgres" \
+  || "$runtime_database_transport" != "unix" ]]; then
+  echo "AAIS runtime database must be bound to the Aliyun PostgreSQL Unix socket." >&2
+  exit 1
+fi
+postgres_socket_dir="/run/aais/postgresql"
+postgres_socket_identity_before="$(stat -c '%d:%i' "$postgres_socket_dir" 2>/dev/null || true)"
+postgres_socket_identity_after="$(stat -c '%d:%i' "$postgres_socket_dir" 2>/dev/null || true)"
+postgres_socket_canonical="$(readlink -f -- "$postgres_socket_dir" 2>/dev/null || true)"
+postgres_socket_mode="$(stat -c '%a' "$postgres_socket_dir" 2>/dev/null || true)"
+if [[ ! -d "$postgres_socket_dir" || -L "$postgres_socket_dir" \
+  || -z "$postgres_socket_identity_before" \
+  || "$postgres_socket_identity_after" != "$postgres_socket_identity_before" \
+  || "$postgres_socket_canonical" != "$postgres_socket_dir" \
+  || "$postgres_socket_mode" != "770" ]]; then
+  echo "AAIS self-managed PostgreSQL socket directory is invalid." >&2
+  exit 1
+fi
 expected_database_target="$(awk -F= '
   index($0, "AAIS_DATABASE_TARGET_ID=") == 1 {
     count += 1
@@ -897,6 +917,7 @@ docker run --detach \
   --security-opt no-new-privileges \
   --cap-drop ALL \
   --restart unless-stopped \
+  --volume /run/aais/postgresql:/run/aais/postgresql:ro \
   --env-file "$AAIS_RUNTIME_ENV_FILE" \
   --env NODE_OPTIONS=--max-old-space-size=768 \
   --env AAIS_DEPLOYMENT_PROVIDER=aliyun \

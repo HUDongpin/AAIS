@@ -9,6 +9,7 @@ const aaisNeonQueryTimeoutMs = 35_000;
 const aaisPostgresDefaultPoolMax = 5;
 const aaisPostgresVercelPoolMax = 2;
 const aaisPostgresMaximumPoolMax = 20;
+const aaisAliyunPostgresSocketPath = "/run/aais/postgresql";
 const sharedPostgresPools = new Map<string, Pool>();
 
 export function getAaisPostgresPoolMax(
@@ -35,7 +36,7 @@ export function getAaisPostgresPoolConfig(
   if (!connectionString.trim()) {
     throw new Error("AAIS Postgres connection string is required.");
   }
-  assertAaisProductionPostgresTls(connectionString, env);
+  assertAaisProductionPostgresTransport(connectionString, env);
   return {
     connectionString,
     max: getAaisPostgresPoolMax(env),
@@ -46,7 +47,7 @@ export function getAaisPostgresPoolConfig(
   };
 }
 
-function assertAaisProductionPostgresTls(
+function assertAaisProductionPostgresTransport(
   connectionString: string,
   env: Record<string, string | undefined>,
 ) {
@@ -67,20 +68,40 @@ function assertAaisProductionPostgresTls(
     const sslModes = parsed.searchParams.getAll("sslmode");
     const databaseProvider = env.AAIS_DATABASE_PROVIDER?.trim().toLowerCase();
     const rootCertificates = parsed.searchParams.getAll("sslrootcert");
-    if (
-      !["postgres:", "postgresql:"].includes(parsed.protocol)
-      || databaseProvider !== "neon"
-      || !parsed.hostname.toLowerCase().endsWith(".neon.tech")
-      || sslModes.length !== 1
-      || sslModes[0]?.toLowerCase() !== "verify-full"
+    if (!["postgres:", "postgresql:"].includes(parsed.protocol)
       || rootCertificates.length !== 0
-      || env.NODE_TLS_REJECT_UNAUTHORIZED === "0"
-    ) {
+      || env.NODE_TLS_REJECT_UNAUTHORIZED === "0") {
       throw new Error();
     }
+    if (databaseProvider === "neon") {
+      if (
+        !parsed.hostname.toLowerCase().endsWith(".neon.tech")
+        || sslModes.length !== 1
+        || sslModes[0]?.toLowerCase() !== "verify-full"
+      ) {
+        throw new Error();
+      }
+      return;
+    }
+    if (databaseProvider === "aliyun-postgres") {
+      const socketHosts = parsed.searchParams.getAll("host");
+      const transport = env.AAIS_DATABASE_TRANSPORT?.trim().toLowerCase();
+      if (
+        transport !== "unix"
+        || parsed.hostname.toLowerCase() !== "localhost"
+        || socketHosts.length !== 1
+        || socketHosts[0] !== aaisAliyunPostgresSocketPath
+        || sslModes.length !== 1
+        || sslModes[0]?.toLowerCase() !== "disable"
+      ) {
+        throw new Error();
+      }
+      return;
+    }
+    throw new Error();
   } catch {
     throw new Error(
-      "AAIS production Postgres requires AAIS_DATABASE_PROVIDER=neon, a neon.tech hostname, system CA trust, and TLS verify-full.",
+      "AAIS production Postgres requires AAIS_DATABASE_PROVIDER=neon, a neon.tech hostname, system CA trust, and TLS verify-full, or AAIS_DATABASE_PROVIDER=aliyun-postgres with AAIS_DATABASE_TRANSPORT=unix and the AAIS local PostgreSQL socket.",
     );
   }
 }

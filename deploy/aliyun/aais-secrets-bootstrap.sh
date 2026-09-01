@@ -183,6 +183,8 @@ if ! awk -F= -v expected_bundle="$bundle_version" '
   !/^[A-Z][A-Z0-9_]*=/ { exit 1 }
   { if (seen[$1]++) exit 1; values[$1]=substr($0, index($0, "=") + 1) }
   END {
+    database_provider = tolower(values["AAIS_DATABASE_PROVIDER"])
+    database_transport = tolower(values["AAIS_DATABASE_TRANSPORT"])
     database_url_remainder = values["AAIS_DATABASE_URL"]
     database_sslmode_count = 0
     while (match(database_url_remainder, /[?&]sslmode=[^&#]*/)) {
@@ -214,16 +216,22 @@ if ! awk -F= -v expected_bundle="$bundle_version" '
         values["NODE_ENV"] != "production" ||
         values["AAIS_DEPLOYMENT_PROVIDER"] != "aliyun" ||
         values["AAIS_DATABASE_DRIVER"] != "pg" ||
-        values["AAIS_DATABASE_PROVIDER"] != "neon" ||
+        (database_provider != "neon" && database_provider != "aliyun-postgres") ||
         values["AAIS_DATABASE_POOL_MAX"] != "5" ||
         values["AAIS_SECRET_BUNDLE_VERSION"] != expected_bundle ||
         values["AAIS_RESEARCH_MODE"] != "false" ||
         values["AAIS_RESEARCH_REQUIRED"] != "false" ||
         values["AAIS_DATABASE_URL"] !~ /^postgres(ql)?:\/\/aais_app_aliyun:/ ||
-        values["AAIS_DATABASE_URL"] !~ /@[^\/?#]*\.neon\.tech([:\/?]|$)/ ||
-        values["AAIS_DATABASE_URL"] !~ /[?&]sslmode=verify-full(&|$)/ ||
         database_sslmode_count != 1 ||
         database_sslrootcert_count != 0 ||
+        ((database_provider == "neon" &&
+          (values["AAIS_DATABASE_URL"] !~ /@[^\/?#]*\.neon\.tech([:\/?]|$)/ ||
+           values["AAIS_DATABASE_URL"] !~ /[?&]sslmode=verify-full(&|$)/)) ||
+         (database_provider == "aliyun-postgres" &&
+          (database_transport != "unix" ||
+           values["AAIS_DATABASE_URL"] !~ /@localhost([:\/?]|$)/ ||
+           values["AAIS_DATABASE_URL"] !~ /[?&]host=%2Frun%2Faais%2Fpostgresql(&|$)/ ||
+           values["AAIS_DATABASE_URL"] !~ /[?&]sslmode=disable(&|$)/))) ||
         (seen["NODE_TLS_REJECT_UNAUTHORIZED"] &&
           values["NODE_TLS_REJECT_UNAUTHORIZED"] == "0") ||
         values["AAIS_DATABASE_TARGET_ID"] !~ /^[A-Za-z0-9][A-Za-z0-9._:-]+$/ ||

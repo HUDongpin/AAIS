@@ -117,6 +117,31 @@ describe("AAIS Postgres pool deadlines", () => {
     ).max).toBe(5);
   });
 
+  it("allows only the protected local Unix socket for the Aliyun self-managed database", () => {
+    const productionEnv = {
+      NODE_ENV: "production",
+      AAIS_DEPLOYMENT_PROVIDER: "aliyun",
+      AAIS_DATABASE_PROVIDER: "aliyun-postgres",
+      AAIS_DATABASE_TRANSPORT: "unix",
+    };
+    const localSocketUrl =
+      "postgresql://aais_app_aliyun:password@localhost/aais?host=%2Frun%2Faais%2Fpostgresql&sslmode=disable";
+
+    expect(getAaisPostgresPoolConfig(localSocketUrl, productionEnv).max).toBe(5);
+    expect(() => getAaisPostgresPoolConfig(
+      "postgresql://aais_app_aliyun:password@127.0.0.1/aais?host=%2Frun%2Faais%2Fpostgresql&sslmode=disable",
+      productionEnv,
+    )).toThrow("AAIS_DATABASE_TRANSPORT=unix");
+    expect(() => getAaisPostgresPoolConfig(
+      "postgresql://aais_app_aliyun:password@db.internal/aais?sslmode=disable",
+      productionEnv,
+    )).toThrow("AAIS_DATABASE_TRANSPORT=unix");
+    expect(() => getAaisPostgresPoolConfig(
+      localSocketUrl,
+      { ...productionEnv, AAIS_DATABASE_TRANSPORT: "tcp" },
+    )).toThrow("AAIS_DATABASE_TRANSPORT=unix");
+  });
+
   it("keeps the separately governed research database outside the product-Neon binding", () => {
     const researchUrl = "postgres://research:secret@research-db.example.test/aais_research";
     const config = getAaisPostgresPoolConfig(researchUrl, {

@@ -382,6 +382,38 @@ describe("AAIS Aliyun deployment assets", () => {
     expect(lockdown).toContain("public_function_execute_revoked");
   });
 
+  it("ships the self-managed empty-database role and socket contract", () => {
+    const roles = readFileSync("deploy/aliyun/postgres-runtime-roles.sql", "utf8");
+    const openMigrator = readFileSync(
+      "deploy/aliyun/postgres-open-migrator.sql",
+      "utf8",
+    );
+    const closeMigrator = readFileSync(
+      "deploy/aliyun/postgres-close-migrator.sql",
+      "utf8",
+    );
+    const runtime = readFileSync("deploy/aliyun/aais-runtime.env.example", "utf8");
+    const deploy = readFileSync("deploy/aliyun/aais-deploy.sh", "utf8");
+
+    expect(roles).toContain("aais_app_aliyun");
+    expect(roles).toContain("aais_migrator");
+    expect(roles).not.toContain("aais_app_vercel");
+    expect(roles).toContain("connection limit 10");
+    expect(roles).toContain("connection limit 5");
+    expect(roles).toContain("from pg_auth_members membership");
+    expect(roles).toContain("AAIS runtime roles must not belong to another role");
+    expect(roles).toContain("public.aais_runtime_identity");
+    expect(roles).not.toMatch(/alter role[^;]*password/i);
+    expect(openMigrator).toContain("grant usage, create on schema public");
+    expect(closeMigrator).toContain("alter role aais_migrator nologin");
+    expect(closeMigrator).toContain("migrator_active_sessions");
+    expect(runtime).toContain("AAIS_DATABASE_PROVIDER=aliyun-postgres");
+    expect(runtime).toContain("AAIS_DATABASE_TRANSPORT=unix");
+    expect(runtime).toContain("%2Frun%2Faais%2Fpostgresql");
+    expect(deploy).toContain("/run/aais/postgresql:/run/aais/postgresql:ro");
+    expect(deploy).toContain("self-managed PostgreSQL socket directory is invalid");
+  });
+
   it("ships no RDS, ACR, or KMS fallback operation assets", () => {
     for (const directory of [".github/workflows", "deploy/aliyun", "tests"]) {
       expect(
@@ -488,7 +520,9 @@ describe("AAIS Aliyun deployment assets", () => {
     expect(bootstrap).toContain("AAIS_OPERATION_LOCK_FD");
     expect(bootstrap).toContain("AAIS_PRODUCT_PSEUDONYM_SECRET");
     expect(bootstrap).toContain('values["AAIS_DATABASE_DRIVER"] != "pg"');
-    expect(bootstrap).toContain('values["AAIS_DATABASE_PROVIDER"] != "neon"');
+    expect(bootstrap).toContain('database_provider != "neon" && database_provider != "aliyun-postgres"');
+    expect(bootstrap).toContain('database_transport != "unix"');
+    expect(bootstrap).toContain("host=%2Frun%2Faais%2Fpostgresql");
     expect(bootstrap).toContain('values["AAIS_DATABASE_POOL_MAX"] != "5"');
     expect(bootstrap).toContain('values["AAIS_RESEARCH_REQUIRED"] != "false"');
     expect(bootstrap).toContain("database_sslrootcert_count != 0");

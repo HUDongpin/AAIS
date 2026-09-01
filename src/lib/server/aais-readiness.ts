@@ -1691,8 +1691,11 @@ function isSafeHttpsUrl(value: string | undefined) {
 
 function getDatabaseProvider(databaseUrl: string | undefined): "neon" | "postgres" {
   const configuredProvider = process.env.AAIS_DATABASE_PROVIDER?.trim().toLowerCase();
-  if (configuredProvider === "neon" || configuredProvider === "postgres") {
-    return configuredProvider;
+  if (configuredProvider === "neon") {
+    return "neon";
+  }
+  if (configuredProvider === "aliyun-postgres" || configuredProvider === "postgres") {
+    return "postgres";
   }
   try {
     const hostname = new URL(databaseUrl ?? "").hostname.toLowerCase();
