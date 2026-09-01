@@ -60,7 +60,11 @@ flowchart LR
    --version`、数据目录、磁盘文件系统和 `pg_config --configure`。
 2. 创建空数据库 `aais`。如果数据库已经存在且包含任何业务行，停止并将本次
    运行标记为 `BLOCKED_NONEMPTY_DATABASE`；不要清空或 `DROP DATABASE`。
-3. 为 PostgreSQL 准备专用运行目录 `/run/aais/postgresql`：目录必须由
+3. 创建一个仅供 AAIS 容器使用、数值 GID 为 `10001` 的专用主机组
+   `aais-runtime`，并安装
+   `deploy/aliyun/aais-postgresql-socket.tmpfiles` 到
+   `/etc/tmpfiles.d/aais-postgresql.conf`。为 PostgreSQL 准备专用运行目录
+   `/run/aais/postgresql`：目录必须由
    `postgres` 所有、组为仅供 AAIS 容器使用的数值 GID（容器 GID 为 `10001`）、
    模式 `0770`，不能是符号链接。若该 GID 已被不相关服务使用，停止而不是
    复用。

@@ -1,0 +1,6 @@
+# Install as /etc/tmpfiles.d/aais-postgresql.conf and run
+# systemd-tmpfiles --create /etc/tmpfiles.d/aais-postgresql.conf.
+# The aais-runtime group must be a dedicated host group with numeric GID 10001,
+# matching only the AAIS container user; do not reuse an unrelated group.
+d /run/aais 0750 root aais-worker -
+d /run/aais/postgresql 0770 postgres aais-runtime -

@@ -394,6 +394,10 @@ describe("AAIS Aliyun deployment assets", () => {
     );
     const runtime = readFileSync("deploy/aliyun/aais-runtime.env.example", "utf8");
     const deploy = readFileSync("deploy/aliyun/aais-deploy.sh", "utf8");
+    const tmpfiles = readFileSync(
+      "deploy/aliyun/aais-postgresql-socket.tmpfiles",
+      "utf8",
+    );
 
     expect(roles).toContain("aais_app_aliyun");
     expect(roles).toContain("aais_migrator");
@@ -412,6 +416,8 @@ describe("AAIS Aliyun deployment assets", () => {
     expect(runtime).toContain("%2Frun%2Faais%2Fpostgresql");
     expect(deploy).toContain("/run/aais/postgresql:/run/aais/postgresql:ro");
     expect(deploy).toContain("self-managed PostgreSQL socket directory is invalid");
+    expect(tmpfiles).toContain("/run/aais/postgresql 0770 postgres aais-runtime");
+    expect(tmpfiles).toContain("numeric GID 10001");
   });
 
   it("ships no RDS, ACR, or KMS fallback operation assets", () => {
