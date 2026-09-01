@@ -111,6 +111,12 @@ flowchart LR
 6. 以数据库 Owner 执行 `database-target-identity.sql`，传入一个新的、非秘密的
    `TARGET_ID`（例如 `aais-aliyun-postgres-20260901`）。读取回来的
    `target_id` 必须逐字相同；该 ID 不得与 Neon 旧目标或其他环境复用。
+7. 以数据库 Owner 执行 `postgres-empty-preflight.sql -v TARGET_ID=<同一 ID>`。
+   该只读预检必须确认数据库名、PostgreSQL 17、socket、无公网监听、29 个迁移、
+   target identity、角色边界、成员关系、运行时 allowlist，并确认所有业务/学习/
+   事件/outbox/study 表均为空；迁移刻意生成的课程 catalog、admin-lock singleton
+   和一条 legacy-archive metadata row 必须精确匹配基线。预检失败时保持
+   `BLOCKED_NONEMPTY_DATABASE` 或其他对应错误，不得以手工截图覆盖。
 
 ### 3.3 运行时绑定与应用启动
 

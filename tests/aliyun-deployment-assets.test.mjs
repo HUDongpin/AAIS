@@ -398,6 +398,10 @@ describe("AAIS Aliyun deployment assets", () => {
       "deploy/aliyun/aais-postgresql-socket.tmpfiles",
       "utf8",
     );
+    const preflight = readFileSync(
+      "deploy/aliyun/postgres-empty-preflight.sql",
+      "utf8",
+    );
 
     expect(roles).toContain("aais_app_aliyun");
     expect(roles).toContain("aais_migrator");
@@ -418,6 +422,12 @@ describe("AAIS Aliyun deployment assets", () => {
     expect(deploy).toContain("self-managed PostgreSQL socket directory is invalid");
     expect(tmpfiles).toContain("/run/aais/postgresql 0770 postgres aais-runtime");
     expect(tmpfiles).toContain("numeric GID 10001");
+    expect(preflight).toContain("current_setting('server_version_num')::integer >= 170000");
+    expect(preflight).toContain("current_setting('listen_addresses') = ''");
+    expect(preflight).toContain("aais_runtime_identity");
+    expect(preflight).toContain("aais_app_aliyun");
+    expect(preflight).toContain("application_tables_empty");
+    expect(preflight).toContain("raise exception 'AAIS empty database baseline failed");
   });
 
   it("ships no RDS, ACR, or KMS fallback operation assets", () => {
