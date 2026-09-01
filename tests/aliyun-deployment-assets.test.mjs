@@ -402,6 +402,10 @@ describe("AAIS Aliyun deployment assets", () => {
       "deploy/aliyun/postgres-empty-preflight.sql",
       "utf8",
     );
+    const preflightWrapper = readFileSync(
+      "deploy/aliyun/aais-postgres-preflight.sh",
+      "utf8",
+    );
 
     expect(roles).toContain("aais_app_aliyun");
     expect(roles).toContain("aais_migrator");
@@ -428,6 +432,10 @@ describe("AAIS Aliyun deployment assets", () => {
     expect(preflight).toContain("aais_app_aliyun");
     expect(preflight).toContain("application_tables_empty");
     expect(preflight).toContain("raise exception 'AAIS empty database baseline failed");
+    expect(preflightWrapper).toContain("runuser -u postgres");
+    expect(preflightWrapper).toContain("PGHOST=\"$socket_dir\"");
+    expect(preflightWrapper).toContain("psql --no-password");
+    expect(preflightWrapper).not.toMatch(/PGPASSWORD|password=|AccessKey|SecretData/);
   });
 
   it("ships no RDS, ACR, or KMS fallback operation assets", () => {
