@@ -107,7 +107,7 @@ function deployment(overrides = {}) {
     container: "aais-blue",
     containerId,
     color: "blue",
-    port: 3101,
+    port: 3111,
     nginxUpstreamSha256: upstreamSha,
     nginxVhostSha256: vhostSha,
     deployedAt,
@@ -348,8 +348,8 @@ describe("AAIS strict ECS JSON helper", () => {
   });
 
   it.each([
-    ["blue", "3101", "aais-blue", 3101],
-    ["green", "3102", "aais-green", 3102],
+    ["blue", "3111", "aais-blue", 3111],
+    ["green", "3112", "aais-green", 3112],
   ])("canonically writes and validates one exact %s deployment receipt", (
     color,
     portText,
@@ -396,12 +396,12 @@ describe("AAIS strict ECS JSON helper", () => {
   });
 
   it.each([
-    ["mismatched color and port", ["blue", "3102", containerId, upstreamSha, vhostSha, deployedAt]],
-    ["uppercase container id", ["blue", "3101", "C".repeat(12), upstreamSha, vhostSha, deployedAt]],
-    ["short container id", ["blue", "3101", "c".repeat(11), upstreamSha, vhostSha, deployedAt]],
-    ["wrong upstream SHA", ["blue", "3101", containerId, "d".repeat(63), vhostSha, deployedAt]],
-    ["wrong vhost SHA", ["blue", "3101", containerId, upstreamSha, "E".repeat(64), deployedAt]],
-    ["invalid timestamp", ["blue", "3101", containerId, upstreamSha, vhostSha, "2026-02-30T00:00:00Z"]],
+    ["mismatched color and port", ["blue", "3112", containerId, upstreamSha, vhostSha, deployedAt]],
+    ["uppercase container id", ["blue", "3111", "C".repeat(12), upstreamSha, vhostSha, deployedAt]],
+    ["short container id", ["blue", "3111", "c".repeat(11), upstreamSha, vhostSha, deployedAt]],
+    ["wrong upstream SHA", ["blue", "3111", containerId, "d".repeat(63), vhostSha, deployedAt]],
+    ["wrong vhost SHA", ["blue", "3111", containerId, upstreamSha, "E".repeat(64), deployedAt]],
+    ["invalid timestamp", ["blue", "3111", containerId, upstreamSha, vhostSha, "2026-02-30T00:00:00Z"]],
   ])("rejects deployment writer with %s", (_label, values) => {
     expectGenericFailure(run([
       "write-deployment",
@@ -420,7 +420,7 @@ describe("AAIS strict ECS JSON helper", () => {
     }],
     ["extra key", () => deployment({ extra: "rejected" })],
     ["boolean port", () => deployment({ port: true })],
-    ["string port", () => deployment({ port: "3101" })],
+    ["string port", () => deployment({ port: "3111" })],
     ["wrong container", () => deployment({ container: "aais-green" })],
   ])("rejects deployment receipt with %s", (_label, createValue) => {
     const path = writeJson(createValue());
@@ -431,7 +431,7 @@ describe("AAIS strict ECS JSON helper", () => {
       digest,
       bundle,
       "blue",
-      "3101",
+      "3111",
       containerId,
       upstreamSha,
       vhostSha,

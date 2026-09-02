@@ -23,7 +23,7 @@
 
 ```mermaid
 flowchart LR
-  ECS["现有阿里云 ECS"] --> App["AAIS Docker 容器\n127.0.0.1:3101/3102"]
+  ECS["现有阿里云 ECS"] --> App["AAIS Docker 容器\n127.0.0.1:3111/3112"]
   App --> Socket["/run/aais/postgresql\nUnix socket"]
   Socket --> PG["PostgreSQL 17\n数据库 aais（空库）"]
   PG --> Backup["本地加密备份\n可选 OSS（需批准）"]

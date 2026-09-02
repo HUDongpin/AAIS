@@ -326,10 +326,10 @@ def validate_public_ready(value):
 
 
 def deployment_identity(color, port_text):
-    if color == "blue" and port_text == "3101":
-        return "aais-blue", 3101
-    if color == "green" and port_text == "3102":
-        return "aais-green", 3102
+    if color == "blue" and port_text == "3111":
+        return "aais-blue", 3111
+    if color == "green" and port_text == "3112":
+        return "aais-green", 3112
     fail()
 
 

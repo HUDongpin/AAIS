@@ -3,7 +3,7 @@ set -Eeuo pipefail
 set +x
 
 readonly AAIS_JSON_HELPER_PATH="/opt/aais/libexec/aais-json-v1.py"
-readonly AAIS_JSON_HELPER_SHA256="b94a6a7485c8b760cdcf3275c7cf82199e82eafa099213e640152d86dea0dd03"
+readonly AAIS_JSON_HELPER_SHA256="897a71ebfcc9d48a86a90e4e2ca6bfebdcd4a48bd9f7d9a0e52383c43ea88135"
 
 aais_run_json_helper() {
   /usr/bin/env -i LC_ALL=C LANG=C HOME=/ TZ=UTC \
@@ -402,12 +402,12 @@ if [[ "$lrs_timer_snapshot" == "active" ]]; then
 fi
 
 normalized_upstream="$(tr -d '[:space:]' < "$AAIS_UPSTREAM_FILE")"
-if [[ "$normalized_upstream" == "server127.0.0.1:3101;" ]]; then
+if [[ "$normalized_upstream" == "server127.0.0.1:3111;" ]]; then
   upstream_color="blue"
-  upstream_port="3101"
-elif [[ "$normalized_upstream" == "server127.0.0.1:3102;" ]]; then
+  upstream_port="3111"
+elif [[ "$normalized_upstream" == "server127.0.0.1:3112;" ]]; then
   upstream_color="green"
-  upstream_port="3102"
+  upstream_port="3112"
 else
   echo "AAIS Nginx upstream state is invalid." >&2
   exit 1
@@ -518,15 +518,15 @@ fi
 
 if [[ "$active_color" == "blue" ]]; then
   target_color="green"
-  target_port="3102"
-  active_port="3101"
+  target_port="3112"
+  active_port="3111"
 elif [[ "$active_color" == "green" ]]; then
   target_color="blue"
-  target_port="3101"
-  active_port="3102"
+  target_port="3111"
+  active_port="3112"
 elif [[ -z "$active_color" ]]; then
   target_color="blue"
-  target_port="3101"
+  target_port="3111"
   active_port=""
 else
   echo "AAIS active color state is invalid." >&2

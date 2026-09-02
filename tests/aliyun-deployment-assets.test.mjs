@@ -169,8 +169,8 @@ describe("AAIS Aliyun deployment assets", () => {
   it("binds blue-green containers only to loopback with hard resource limits", () => {
     const deploy = readFileSync("deploy/aliyun/aais-deploy.sh", "utf8");
 
-    expect(deploy).toContain('target_port="3101"');
-    expect(deploy).toContain('target_port="3102"');
+    expect(deploy).toContain('target_port="3111"');
+    expect(deploy).toContain('target_port="3112"');
     expect(deploy).toContain('--publish "127.0.0.1:${target_port}:3000"');
     expect(deploy).toContain("--cpus 1.25");
     expect(deploy).toContain("--memory 1280m");

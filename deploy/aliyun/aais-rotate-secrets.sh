@@ -3,7 +3,7 @@ set -Eeuo pipefail
 set +x
 
 readonly AAIS_JSON_HELPER_PATH="/opt/aais/libexec/aais-json-v1.py"
-readonly AAIS_JSON_HELPER_SHA256="b94a6a7485c8b760cdcf3275c7cf82199e82eafa099213e640152d86dea0dd03"
+readonly AAIS_JSON_HELPER_SHA256="897a71ebfcc9d48a86a90e4e2ca6bfebdcd4a48bd9f7d9a0e52383c43ea88135"
 
 aais_run_json_helper() {
   /usr/bin/env -i LC_ALL=C LANG=C HOME=/ TZ=UTC \
@@ -722,8 +722,8 @@ validate_canonical_resume_binding() {
   local container="aais-${color}"
   local binding container_bundle container_release container_digest
   local configured_image image_revision runtime_bundle runtime_owner runtime_mode runtime_links
-  if [[ ( "$color" == "blue" && "$port" != "3101" ) \
-    || ( "$color" == "green" && "$port" != "3102" ) \
+  if [[ ( "$color" == "blue" && "$port" != "3111" ) \
+    || ( "$color" == "green" && "$port" != "3112" ) \
     || ( "$color" != "blue" && "$color" != "green" ) \
     || ! "$bundle" =~ ^[A-Za-z0-9][A-Za-z0-9._:-]{2,127}$ \
     || ! "$expected_release" =~ ^[a-f0-9]{40}$ \

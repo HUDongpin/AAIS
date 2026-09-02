@@ -3,7 +3,7 @@ set -Eeuo pipefail
 set +x
 
 readonly AAIS_JSON_HELPER_PATH="/opt/aais/libexec/aais-json-v1.py"
-readonly AAIS_JSON_HELPER_SHA256="b94a6a7485c8b760cdcf3275c7cf82199e82eafa099213e640152d86dea0dd03"
+readonly AAIS_JSON_HELPER_SHA256="897a71ebfcc9d48a86a90e4e2ca6bfebdcd4a48bd9f7d9a0e52383c43ea88135"
 
 aais_stat_mode() {
   stat -c '%a' "$1" 2>/dev/null || stat -f '%Lp' "$1" 2>/dev/null

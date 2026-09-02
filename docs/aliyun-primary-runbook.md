@@ -9,7 +9,7 @@ data, or change production DNS.
 
 - Canonical origin: `https://www.aais.site`.
 - Aliyun compute: the existing Alibaba Cloud Linux 3 ECS, using only
-  `127.0.0.1:3101` and `127.0.0.1:3102` for AAIS. It is the only application
+  `127.0.0.1:3111` and `127.0.0.1:3112` for AAIS. It is the only application
   server in this rollout: no build-runner ECS, replacement ECS, or second
   application instance is purchased.
 - Database: the existing Neon PostgreSQL 17 database remains the single
@@ -391,7 +391,7 @@ change when any of these is true:
    traffic.
 5. Record `/etc/machine-id` and the main BaoTa Nginx configuration SHA-256 in
    `/etc/aais/deploy.env`. Pre-create the stable bootstrap upstream file as
-   `server 127.0.0.1:3101;`, add only the AAIS vhost/include, and run the BaoTa
+   `server 127.0.0.1:3111;`, add only the AAIS vhost/include, and run the BaoTa
    Nginx config test before its shared/global reload. This reload is a shared
    control-plane operation, so pre/post smoke every existing vhost.
    The vhost also binds a diagnostic TLS server only on `127.0.0.1:8443`; it

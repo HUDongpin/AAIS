@@ -117,9 +117,9 @@ if [[ "$1" == "inspect" ]]; then
 fi
 if [[ "$1" == "port" ]]; then
   if [[ "$2" == "aais-blue" ]]; then
-    printf '127.0.0.1:3101\n'
+    printf '127.0.0.1:3111\n'
   else
-    printf '127.0.0.1:3102\n'
+    printf '127.0.0.1:3112\n'
   fi
   exit 0
 fi
@@ -197,11 +197,11 @@ else
   echo "curl target was not pinned to the loopback test path" >&2
   exit 94
 fi
-if [[ "$url" == *"127.0.0.1:3101"* ]]; then
+if [[ "$url" == *"127.0.0.1:3111"* ]]; then
   container="aais-blue"
-elif [[ "$url" == *"127.0.0.1:3102"* ]]; then
+elif [[ "$url" == *"127.0.0.1:3112"* ]]; then
   container="aais-green"
-elif grep -q '3102' "${FAKE_STATE}/loaded-upstream"; then
+elif grep -q '3112' "${FAKE_STATE}/loaded-upstream"; then
   container="aais-green"
 else
   container="aais-blue"
@@ -340,14 +340,14 @@ if [[ "$1" == "-t" ]]; then
 fi
 if [[ "$1" == "-s" && "$2" == "reload" ]]; then
   if [[ "$FIRST_DEPLOY" != "true" ]] \
-    && grep -q '3102' "$UPSTREAM_FILE" \
+    && grep -q '3112' "$UPSTREAM_FILE" \
     && [[ "$FAULT_CASE" == "fail-nginx-reload" ]] \
     && [[ ! -f "${FAKE_STATE}/fault-injected" ]]; then
     : > "${FAKE_STATE}/fault-injected"
     exit 75
   fi
   cp "$UPSTREAM_FILE" "${FAKE_STATE}/loaded-upstream"
-  if { grep -q '3102' "$UPSTREAM_FILE" \
+  if { grep -q '3112' "$UPSTREAM_FILE" \
       && [[ "$FAULT_CASE" == "after-nginx-reload" ]]; } \
     || { [[ "$FIRST_DEPLOY" == "true" ]] \
       && [[ "$FAULT_CASE" == "first-after-nginx-reload" ]]; }; then
@@ -402,12 +402,12 @@ EOF
 
   write_fake_commands
 
-  printf 'server 127.0.0.1:3101;\n' > /opt/aais/nginx/upstream-active.conf
+  printf 'server 127.0.0.1:3111;\n' > /opt/aais/nginx/upstream-active.conf
   cp /opt/aais/nginx/upstream-active.conf "${FAKE_STATE}/loaded-upstream"
   cp /opt/aais/nginx/upstream-active.conf "${FAKE_STATE}/expected-upstream"
   cat > /opt/aais/state/active-deployment.env <<EOF
 AAIS_ACTIVE_COLOR=blue
-AAIS_ACTIVE_PORT=3101
+AAIS_ACTIVE_PORT=3111
 AAIS_ACTIVE_SECRET_BUNDLE_VERSION=${BUNDLE}
 AAIS_ACTIVE_RELEASE_SHA=${OLD_RELEASE}
 AAIS_ACTIVE_IMAGE_DIGEST=sha256:${OLD_DIGEST}
@@ -550,7 +550,7 @@ assert_recovered() {
 assert_committed() {
   local fault_case="$1"
   local receipt_count
-  grep -q '3102' /opt/aais/nginx/upstream-active.conf \
+  grep -q '3112' /opt/aais/nginx/upstream-active.conf \
     || { echo "${fault_case}: candidate upstream was not committed" >&2; return 1; }
   cmp -s /opt/aais/nginx/upstream-active.conf "${FAKE_STATE}/loaded-upstream" \
     || { echo "${fault_case}: loaded Nginx path is not the committed path" >&2; return 1; }
