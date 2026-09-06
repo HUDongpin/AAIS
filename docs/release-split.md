@@ -46,6 +46,7 @@ workflow_dispatch 工作流存在于默认分支，之后才能从指定分支�
 
 已另行准备 [启动器方案与非敏感测试](owner-launcher-design.md)。该方案和测试模型
 不会解除下述封堵，不代表已实现或已审计的凭据流程。
+另有独立的 [原生无凭据 launch-check](launch-check.md)，仅供 Owner 来源诊断，结果不授权执行。
 
 现有 ECS 脚本只检查 TTY，无法从 SSH 服务端证明本地 macOS Terminal.app
 的完整启动来源。AAIS 专用受审计 Owner 启动器及其验证契约尚未提供。
