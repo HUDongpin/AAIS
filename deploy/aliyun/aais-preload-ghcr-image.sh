@@ -78,6 +78,16 @@ aais_require_owner_tty() {
   fi
 }
 
+aais_require_audited_owner_launcher() {
+  # A server-side TTY (including sshd ancestry) cannot prove that its client
+  # originated in the Owner's independent macOS Terminal.app. Do not invent
+  # an environment flag, unsigned receipt, or alternate credential path.
+  # Keep the credential entry point closed until the exact AAIS audited
+  # launcher and its end-to-end verification contract have been supplied.
+  echo "BLOCKED_AAIS_AUDITED_OWNER_LAUNCHER_BINDING_MISSING" >&2
+  return 1
+}
+
 aais_validate_ghcr_username() {
   local username="$1"
   if [[ ! "$username" =~ ^[A-Za-z0-9][A-Za-z0-9-]{0,38}$ ]]; then
@@ -233,6 +243,7 @@ aais_preload_exit_cleanup() {
 }
 
 aais_preload_main() {
+  aais_require_audited_owner_launcher || return 1
   if [[ "$EUID" -ne 0 ]]; then
     echo "AAIS GHCR preload must run as root." >&2
     return 1

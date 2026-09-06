@@ -82,6 +82,20 @@ function preloadedReceipt(overrides = {}) {
 }
 
 describe("AAIS private GHCR preload helper", () => {
+  it("closes credential entry until the exact audited Owner launcher is bound", () => {
+    const source = readFileSync(helper, "utf8");
+    const main = source.slice(source.indexOf("aais_preload_main() {"));
+    expect(main.indexOf("aais_require_audited_owner_launcher || return 1"))
+      .toBeLessThan(main.indexOf('source "$deploy_config_file"'));
+    expect(main.indexOf("aais_require_audited_owner_launcher || return 1"))
+      .toBeLessThan(main.indexOf("read -r -s ghcr_token"));
+    // Only this inert refusal function is exercised, not the launcher/main.
+    const result = runFunction("aais_require_audited_owner_launcher");
+    expect(result.status).toBe(1);
+    expect(result.stderr.trim()).toBe("BLOCKED_AAIS_AUDITED_OWNER_LAUNCHER_BINDING_MISSING");
+    expect(result.stdout).toBe("");
+  });
+
   it("accepts the token only through hidden controlling-TTY input", () => {
     const source = readFileSync(helper, "utf8");
     const bootstrap = readFileSync(

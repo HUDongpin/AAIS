@@ -1,9 +1,12 @@
 name: AAIS private GHCR candidate
 
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
+    inputs:
+      expected_sha:
+        description: Reviewed full SHA of the protected Aliyun candidate branch
+        required: true
+        type: string
 
 permissions: {}
 
@@ -17,7 +20,7 @@ env:
 jobs:
   product-gates:
     name: Test without package or cloud write access
-    if: github.ref == 'refs/heads/main'
+    if: github.repository == 'HUDongpin/AAIS' && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/codex/aais-aliyun-postgres-empty'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
@@ -26,13 +29,19 @@ jobs:
     steps:
       - name: Check out exact source
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
 
       - name: Verify immutable source and repository
+        env:
+          AAIS_EXPECTED_SHA: ${{ inputs.expected_sha }}
         shell: bash
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "${{ github.sha }}"
           test "${GITHUB_REPOSITORY,,}" = "hudongpin/aais"
+          node scripts/verify-aais-ghcr-source.mjs
 
       - name: Set up Node 24
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
@@ -47,10 +56,13 @@ jobs:
           npm run hygiene:check
           npm run ci
 
+      - name: Verify Linux socket ACL reconstruction without touching live paths
+        run: sudo bash tests/aliyun-postgres-cold-start.sh
+
   publish-private-image:
     name: Publish immutable private GHCR image
     needs: product-gates
-    if: github.ref == 'refs/heads/main'
+    if: github.repository == 'HUDongpin/AAIS' && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/codex/aais-aliyun-postgres-empty'
     runs-on: ubuntu-24.04
     environment: aliyun-production
     timeout-minutes: 35
@@ -65,15 +77,21 @@ jobs:
     steps:
       - name: Check out exact source
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
 
       - name: Record immutable source metadata
         id: source
+        env:
+          AAIS_EXPECTED_SHA: ${{ inputs.expected_sha }}
         shell: bash
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "${{ github.sha }}"
           test "${GITHUB_REPOSITORY,,}" = "hudongpin/aais"
           test "$AAIS_GHCR_REPOSITORY" = "ghcr.io/hudongpin/aais"
+          node scripts/verify-aais-ghcr-source.mjs
           printf 'build_timestamp=%s\n' "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> "$GITHUB_OUTPUT"
 
       - name: Refuse an existing public package

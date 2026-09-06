@@ -1,14 +1,18 @@
 {
-  "buildCommand": "node -- scripts/guard-vercel-production-deploy.mjs && npm run build",
-  "regions": ["sin1"],
+  "buildCommand": "node -- scripts/guard-aais-aliyun-only.mjs && npm run build",
   "crons": [
     {
       "path": "/api/learning/lrs/outbox/flush",
-      "schedule": "*/2 * * * *"
+      "schedule": "*/5 * * * *"
     },
     {
       "path": "/api/auth/email-outbox/flush",
-      "schedule": "*/2 * * * *"
+      "schedule": "*/5 * * * *"
     }
-  ]
+  ],
+  "git": {
+    "deploymentEnabled": {
+      "codex/aais-aliyun-postgres-empty": false
+    }
+  }
 }

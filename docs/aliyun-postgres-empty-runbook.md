@@ -1,5 +1,9 @@
 # AAIS 阿里云自托管 PostgreSQL（空数据库）运行手册
 
+当前发布隔离及阻塞以 [release-split.md](release-split.md) 为准。GHCR 仅允许
+手动发布精确候选分支；本候选不得合入 Vercel 生产分支。Owner 凭据入口在
+精确受审计启动器完成绑定之前始终拒绝，不能通过环境开关或 TTY 模拟放行。
+
 本手册是 `codex/aais-aliyun-postgres-empty` 候选分支的数据库路线。它只
 准备本地代码、SQL 和操作证据，不创建 ECS、RDS、OSS、KMS、HSM、SLB 或
 任何其他收费资源，也不读取或保存 Owner 凭据。
@@ -68,6 +72,9 @@ flowchart LR
    `postgres` 所有、组为仅供 AAIS 容器使用的数值 GID（容器 GID 为 `10001`）、
    模式 `0770`，不能是符号链接。若该 GID 已被不相关服务使用，停止而不是
    复用。
+   tmpfiles 同时为父目录 `/run/aais` 设置 `u:postgres:--x` ACL，只允许穿越，
+   不授予读取 worker secret generation 的权限。安装后用 `getfacl` 验证，
+   并验证 bootstrap 再运行后 ACL 仍在。不要将 postgres 加入可读取 secret 的组。
 4. 在 PostgreSQL 配置中设置 `unix_socket_directories='/run/aais/postgresql'`、
    `listen_addresses=''`、`password_encryption='scram-sha-256'`；在
    `pg_hba.conf` 中只允许本 socket 上的 `aais` 数据库和 AAIS 角色使用
@@ -83,6 +90,8 @@ flowchart LR
 
 1. 以数据库 Owner 身份在 `aais` 库执行 `postgres-open-migrator.sql`，并以
    `-v DBNAME=aais` 提供数据库名。此时只打开迁移窗口，不启动 AAIS。
+   窗口显式授予数据库 `CONNECT, CREATE, TEMPORARY`：0009 创建新 schema，
+   迁移入口需要 `pg_temp`。关闭脚本对称撤销这三项，不依赖 PUBLIC 默认权限。
 2. 以 `aais_migrator` 身份运行现有迁移入口：
 
    ```text

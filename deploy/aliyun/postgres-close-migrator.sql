@@ -10,7 +10,7 @@ select pg_terminate_backend(pid)
  where usename = 'aais_migrator'
    and pid <> pg_backend_pid();
 
-revoke connect, temporary on database :"DBNAME" from aais_migrator;
+revoke connect, create, temporary on database :"DBNAME" from aais_migrator;
 revoke all privileges on schema public from aais_migrator;
 revoke all privileges on all tables in schema public from aais_migrator;
 revoke all privileges on all sequences in schema public from aais_migrator;

@@ -1,8 +1,21 @@
 import { createHash } from "node:crypto";
+import { spawnSync } from "node:child_process";
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 describe("AAIS Aliyun deployment assets", () => {
+  it("parses every secret bootstrap awk program with the system awk", () => {
+    const source = readFileSync("deploy/aliyun/aais-secrets-bootstrap.sh", "utf8");
+    const programs = [...source.matchAll(/\bawk\b[^'\n]*'([\s\S]*?)'/g)];
+    expect(programs.length).toBeGreaterThan(0);
+    for (const [, program] of programs) {
+      const result = spawnSync("awk", [program], { input: "", encoding: "utf8" });
+      expect(result.error).toBeUndefined();
+      expect(result.stderr).toBe("");
+      expect([0, 1]).toContain(result.status);
+    }
+  });
+
   it("pins one protected jq-free JSON helper before mutation or credential input", () => {
     const helperBytes = readFileSync("deploy/aliyun/aais-json-v1.py");
     const helperHash = createHash("sha256").update(helperBytes).digest("hex");
@@ -297,15 +310,15 @@ describe("AAIS Aliyun deployment assets", () => {
       expect(unit).toContain("TimeoutStartSec=100");
     }
     const vercel = JSON.parse(readFileSync("vercel.json", "utf8"));
-    expect(vercel.regions).toEqual(["sin1"]);
+    expect(vercel.regions).toBeUndefined();
     expect(vercel.crons).toEqual([
       {
         path: "/api/learning/lrs/outbox/flush",
-        schedule: "*/2 * * * *",
+        schedule: "*/5 * * * *",
       },
       {
         path: "/api/auth/email-outbox/flush",
-        schedule: "*/2 * * * *",
+        schedule: "*/5 * * * *",
       },
     ]);
   });
@@ -417,6 +430,8 @@ describe("AAIS Aliyun deployment assets", () => {
     expect(roles).toContain("public.aais_runtime_identity");
     expect(roles).not.toMatch(/alter role[^;]*password/i);
     expect(openMigrator).toContain("grant usage, create on schema public");
+    expect(openMigrator).toContain('grant connect, create, temporary on database :"DBNAME" to aais_migrator');
+    expect(closeMigrator).toContain('revoke connect, create, temporary on database :"DBNAME" from aais_migrator');
     expect(closeMigrator).toContain("alter role aais_migrator nologin");
     expect(closeMigrator).toContain("migrator_active_sessions");
     expect(runtime).toContain("AAIS_DATABASE_PROVIDER=aliyun-postgres");
@@ -426,6 +441,9 @@ describe("AAIS Aliyun deployment assets", () => {
     expect(deploy).toContain("self-managed PostgreSQL socket directory is invalid");
     expect(tmpfiles).toContain("/run/aais/postgresql 0770 postgres aais-runtime");
     expect(tmpfiles).toContain("numeric GID 10001");
+    expect(tmpfiles).toContain("a+ /run/aais - - - - u:postgres:--x");
+    expect(readFileSync("deploy/aliyun/aais-secrets-bootstrap.service", "utf8"))
+      .toContain("After=local-fs.target systemd-tmpfiles-setup.service");
     expect(preflight).toContain("current_setting('server_version_num')::integer >= 170000");
     expect(preflight).toContain("current_setting('listen_addresses') = ''");
     expect(preflight).toContain("aais_runtime_identity");
@@ -653,8 +671,14 @@ describe("AAIS Aliyun deployment assets", () => {
     );
     const publishJob = workflow.slice(workflow.indexOf("  publish-private-image:"));
 
-    expect(triggerBlock).toContain("push:");
-    expect(triggerBlock).toContain("branches: [main]");
+    expect(triggerBlock).not.toContain("push:");
+    expect(triggerBlock).toContain("workflow_dispatch:");
+    expect(triggerBlock).toContain("expected_sha:");
+    for (const job of [productGateJob, publishJob]) {
+      expect(job).toContain("github.ref == 'refs/heads/codex/aais-aliyun-postgres-empty'");
+      expect(job).toContain("node scripts/verify-aais-ghcr-source.mjs");
+      expect(job).toContain("persist-credentials: false");
+    }
     expect(workflow).toContain("permissions: {}");
     expect(productGateJob).toContain("contents: read");
     expect(productGateJob).not.toContain("packages: write");

@@ -189,19 +189,13 @@ if ! awk -F= -v expected_bundle="$bundle_version" '
     database_sslmode_count = 0
     while (match(database_url_remainder, /[?&]sslmode=[^&#]*/)) {
       database_sslmode_count += 1
-      database_url_remainder = substr(
-        database_url_remainder,
-        RSTART + RLENGTH
-      )
+      database_url_remainder = substr(database_url_remainder, RSTART + RLENGTH)
     }
     database_url_remainder = values["AAIS_DATABASE_URL"]
     database_sslrootcert_count = 0
     while (match(database_url_remainder, /[?&]sslrootcert=[^&#]*/)) {
       database_sslrootcert_count += 1
-      database_url_remainder = substr(
-        database_url_remainder,
-        RSTART + RLENGTH
-      )
+      database_url_remainder = substr(database_url_remainder, RSTART + RLENGTH)
     }
     if (!seen["NODE_ENV"] || !seen["AAIS_DATABASE_URL"] ||
         !seen["AAIS_DATABASE_DRIVER"] || !seen["AAIS_DATABASE_POOL_MAX"] ||
@@ -249,8 +243,8 @@ if ! awk -F= -v expected_bundle="$bundle_version" '
         values["AAIS_PRODUCT_PSEUDONYM_SECRET"] == values["AAIS_LRS_OUTBOX_FLUSH_TOKEN"] ||
         values["AAIS_PRODUCT_PSEUDONYM_SECRET"] == values["AAIS_AUTH_EMAIL_OUTBOX_FLUSH_TOKEN"]) exit 1
     session_secret = values["AAIS_SESSION_SECRET"]
-    for (index = 1; index <= length(session_secret); index += 1) {
-      session_character = substr(session_secret, index, 1)
+    for (character_index = 1; character_index <= length(session_secret); character_index += 1) {
+      session_character = substr(session_secret, character_index, 1)
       if (!(session_character in session_characters)) {
         session_characters[session_character] = 1
         session_character_count += 1

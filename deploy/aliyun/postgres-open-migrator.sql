@@ -26,7 +26,9 @@ $membership$;
 
 alter role aais_migrator login nosuperuser nocreatedb nocreaterole noinherit noreplication nobypassrls
   connection limit 5;
-grant connect on database :"DBNAME" to aais_migrator;
+-- 0009 creates a separate schema; the migration runner also uses pg_temp.
+-- Neither capability is granted to the application role.
+grant connect, create, temporary on database :"DBNAME" to aais_migrator;
 grant usage, create on schema public to aais_migrator;
 grant all privileges on all tables in schema public to aais_migrator;
 grant all privileges on all sequences in schema public to aais_migrator;

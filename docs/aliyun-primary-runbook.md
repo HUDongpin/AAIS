@@ -1,5 +1,11 @@
 # AAIS Aliyun Primary / Vercel Writable Warm-Standby Runbook
 
+> Deferred topology reference, not the active empty-PostgreSQL release path.
+> Follow [release-split.md](release-split.md) for the current candidate. The old
+> automatic main publication and direct Owner preload commands below are not
+> current activation instructions. The credential entry point remains closed
+> pending the exact audited AAIS launcher and its verification contract.
+
 This runbook implements the provider-neutral application and release controls
 for an Aliyun Hong Kong primary on the existing shared ECS. It does not itself
 authorize a billable purchase, read an Owner credential, migrate production
