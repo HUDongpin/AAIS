@@ -21,7 +21,7 @@ it("runs the same native decision core against offline fixtures", () => {
   expect(compilation.status, compilation.stderr).toBe(0);
   const result = run(binary, []);
   expect(result.status, result.stderr).toBe(0);
-  expect(result.stdout).toContain("AAIS_NATIVE_CORE_CHECKS=56");
+  expect(result.stdout).toContain("AAIS_NATIVE_CORE_CHECKS=75");
 });
 
 it("keeps the collector separate from credentials and live authorization", () => {

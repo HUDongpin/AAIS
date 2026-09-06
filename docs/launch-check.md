@@ -9,12 +9,18 @@ Keychain、SSH、Docker、签名注册、API 调用或部署功能。现有预�
 - 原生 C 可执行文件，不依赖 Node/npm、脚本解释器或子进程执行采集逻辑。
 - `libproc` 采集自身及祖先的 PID/PPID、实际/有效 UID、启动时间、进程组和控制终端。
   最多 32 层；不扫描其他进程，不读取进程参数、环境变量、命令历史、用户文件或终端输入。
-- 本机 macOS 26.5.2 对 PID 1 的扩展 libproc 查询返回 EPERM。仅对 PID 1，程序允许使用
-  `sysctl(KERN_PROC_PID)` 的只读内核摘要；可执行路径必要时由 Security 返回实际运行代码的
-  路径。不猜测、不填充假节点、不请求 sudo；任一必要信息仍不可读取即报告不完整。
+- 本机 macOS 26.5.2 对 PID 1 和提权系统 login 的扩展 libproc 查询可能返回 EPERM。
+  程序仅对 PID 1 或处于已验证 Owner shell 父节点位置、精确路径为 `/usr/bin/login` 的
+  候选读取 `sysctl(KERN_PROC_PID)` 的只读摘要。login 摘要还必须是有效 UID 0、实际 UID
+  为本次 Owner；其他节点没有此读取路径。摘要是待验证证据，不是接受结论。
+  可执行路径必要时由 Security 返回实际运行代码路径，不猜测、不填充假节点、不请求 sudo。
+  必须继续通过动态签名、UID 规则、父子关系和双快照检查；任一失败仍拒绝。
 - 用运行中 PID 对应的 `SecCode` 验证代码身份。系统 shell/login/Terminal/launchd 必须同时
   匹配精确系统路径、代码标识及 `anchor apple`，不接受仅改名的假 Terminal。
-- 同 UID 的系统 zsh/bash → 可选同 UID login → 系统 Terminal → PID 1 才属于允许形态。
+- 同 UID 的系统 zsh/bash → 可选系统 login → 同 UID 系统 Terminal → PID 1 才属于允许形态。
+  login 可为同 UID，或仅在完整五节点链中为“实际 UID=Owner、有效 UID=0”的系统转换节点；
+  后者要求 login、其直接子 shell、其直接父 Terminal 均通过精确路径/Apple 代码身份验证，
+  shell/Terminal 的实际及有效 UID 均为 Owner，邻接 PID 必须相符。不允许其他 root 祖先。
   Codex/ChatGPT/Electron/IDE/Node/npm/npx/tsx/Deno/Bun/sshd/tmux/screen 及未知祖先均拒绝。
   其他合法 macOS 形态不自动放行；应根据 Owner 的脱敏实测另行审查。
 - 每个 PID 在代码查询前后核对身份，整条链再采集第二次；时间/PID/PPID/UID/路径摘要/
@@ -90,10 +96,16 @@ hardened runtime。ad-hoc 签名不等于已注册或受信任的 Owner 签名�
 ## 本轮证据与参考
 
 本机 macOS 26.5.2：原生编译和 ad-hoc 签名校验成功；真实自动化父链运行返回 denied，
-完整链采集成功且 PID 1 代码验证通过；C fixture 56 项断言通过；网络两方向策略均拒绝。
+完整链采集成功且 PID 1 代码验证通过；C fixture 75 项断言通过；网络两方向策略均拒绝。
 四个相关测试文件共 69/69 通过；lint、类型检查、Clang 静态分析及差异格式检查通过。
 本轮未重新执行完整应用 CI/生产构建，也未修改凭据入口、GHCR 工作流或 launcher 注册字段。
-Owner 独立 Terminal 的正向实测尚未发生，不得以 fixture 的允许结果替代。
+旧版本的 Owner 手动结果确认所有 TTY 条件通过，但在 root-effective 系统 login 处被拒绝。
+新增回归先复现旧版本失败，再验证受限修复；另用测试专用只读适配器检查了 Owner 提供的
+现存 shell 及其 login/Terminal 父节点：扩展查询不可用、摘要读取成功、实际 UID 匹配、
+有效 UID 为 root、Apple 签名和 Terminal 父关系均已验证。该适配器不控制 Terminal，
+不执行采集器主入口，不链接到交付二进制，其结果不授权任何执行。
+**新版本仍等待 Owner 再次亲自在独立 Terminal 运行**，不能把只读适配器或 fixture 结果
+当作这次完整的正向验收，也不能绕过其余启动器安全门。
 
 依据：本机 SDK 的 `libproc.h`/`sys/proc_info.h`/`sys/sysctl.h`/`sandbox.h`/Security 头文件；
 [Apple 代码签名要求](https://developer.apple.com/library/archive/documentation/Security/Conceptual/CodeSigningGuide/RequirementLang/RequirementLang.html)、

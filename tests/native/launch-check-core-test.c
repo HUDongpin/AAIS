@@ -59,6 +59,27 @@ int main(void) {
     a = fixture(); a.count = 5; a.processes[4] = a.processes[3]; a.processes[3] = a.processes[2];
     a.processes[2] = a.processes[1]; a.processes[2].pid = 27; a.processes[2].role = AAIS_LOGIN;
     a.processes[1].ppid = 27; b = a; CHECK(aais_evaluate(&a,&b) == 0);
+    // Owner-observed macOS login: real UID is Owner, effective UID is root.
+    a.processes[2].uid = 0; b = a; CHECK(aais_evaluate(&a,&b) == 0);
+    AaisSnapshot login_chain = a;
+    a = login_chain; a.processes[2].ruid = 0; b = a; CHECK(aais_evaluate(&a,&b) & AAIS_UID);
+    a = login_chain; a.processes[2].ruid = 502; b = a; CHECK(aais_evaluate(&a,&b) & AAIS_UID);
+    a = login_chain; a.processes[2].uid = 502; b = a; CHECK(aais_evaluate(&a,&b) & AAIS_UID);
+    a = login_chain; a.processes[2].signature_valid = false; b = a; CHECK(aais_evaluate(&a,&b) & AAIS_CODE);
+    a = login_chain; a.processes[2].role = aais_classify("/tmp/login", false); b = a; CHECK(aais_evaluate(&a,&b) & AAIS_UID);
+    a = login_chain; a.processes[1].role = AAIS_FORBIDDEN; b = a; CHECK(aais_evaluate(&a,&b) & AAIS_FORBIDDEN_ORIGIN);
+    a = login_chain; a.processes[1].uid = 0; b = a; CHECK(aais_evaluate(&a,&b) & AAIS_UID);
+    a = login_chain; a.processes[1].ppid = 22; b = a; CHECK(aais_evaluate(&a,&b) & AAIS_CHAIN);
+    a = login_chain; a.processes[3].uid = 0; b = a; CHECK(aais_evaluate(&a,&b) & AAIS_UID);
+    a = login_chain; a.processes[3].role = AAIS_UNKNOWN; b = a; CHECK(aais_evaluate(&a,&b) & AAIS_CHAIN);
+    a = login_chain; a.processes[3].signature_valid = false; b = a; CHECK(aais_evaluate(&a,&b) & AAIS_CODE);
+    a = login_chain; a.processes[2].ppid = 1; b = a; CHECK(aais_evaluate(&a,&b) & AAIS_CHAIN);
+    a = login_chain; a.complete = false; b = a; CHECK(aais_evaluate(&a,&b) & AAIS_INCOMPLETE);
+    a = login_chain; b = a; b.processes[2].uid = 501; CHECK(aais_evaluate(&a,&b) & AAIS_CHANGED);
+    a = login_chain; b = a; b.processes[2].started_usec++; CHECK(aais_evaluate(&a,&b) & AAIS_CHANGED);
+    CHECK(aais_classify("/usr/bin/login", false) == AAIS_LOGIN);
+    CHECK(strstr(aais_requirement(AAIS_LOGIN, "/usr/bin/login"), "com.apple.login") != NULL);
+    CHECK(strstr(aais_requirement(AAIS_LOGIN, "/usr/bin/login"), "anchor apple") != NULL);
     puts("Native core fixtures only: no real Terminal or authorization.");
     printf("AAIS_NATIVE_CORE_CHECKS=%u\n", checks);
     return 0;

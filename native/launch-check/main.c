@@ -55,16 +55,19 @@ static bool signature(pid_t pid, const char *requirement_text, char cdhash[65]) 
     return valid;
 }
 
-static bool process_info(pid_t pid, struct proc_bsdinfo *info) {
+static bool process_info(pid_t pid, struct proc_bsdinfo *info, bool login_candidate) {
     if (proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, info, sizeof(*info)) == sizeof(*info)) return true;
-    // macOS can restrict libproc's extended PID 1 record to root. Query only
-    // its public kernel summary, never args/environment or a guessed root node.
-    if (pid != 1) return false;
-    int mib[] = { CTL_KERN, KERN_PROC, KERN_PROC_PID, 1 };
+    // Read untrusted evidence only for PID 1 or the exact-path login candidate
+    // in shell-parent position. Reading is not acceptance: dynamic signature,
+    // UID transition, adjacency and the full double snapshot are still required.
+    if (pid != 1 && !login_candidate) return false;
+    int mib[] = { CTL_KERN, KERN_PROC, KERN_PROC_PID, pid };
     struct kinfo_proc record = {0};
     size_t length = sizeof(record);
     if (sysctl(mib, 4, &record, &length, NULL, 0) != 0 || length != sizeof(record)
-        || record.kp_proc.p_pid != 1) return false;
+        || record.kp_proc.p_pid != pid) return false;
+    if (pid != 1 && (record.kp_eproc.e_ucred.cr_uid != 0
+        || record.kp_eproc.e_pcred.p_ruid != getuid())) return false;
     memset(info, 0, sizeof(*info));
     info->pbi_pid = (uint32_t)record.kp_proc.p_pid;
     info->pbi_ppid = (uint32_t)record.kp_eproc.e_ppid;
@@ -78,10 +81,10 @@ static bool process_info(pid_t pid, struct proc_bsdinfo *info) {
     return true;
 }
 
-static bool process_path(pid_t pid, char path[PROC_PIDPATHINFO_MAXSIZE]) {
+static bool process_path(pid_t pid, char path[PROC_PIDPATHINFO_MAXSIZE], bool login_position) {
     if (proc_pidpath(pid, path, PROC_PIDPATHINFO_MAXSIZE) > 0) return true;
-    if (pid != 1) return false;
-    // Security resolves the actual running code; do not substitute /sbin/launchd.
+    if (pid != 1 && !login_position) return false;
+    // Resolve actual running code, never substitute launchd or login paths.
     CFNumberRef number = CFNumberCreate(NULL, kCFNumberIntType, &pid);
     if (!number) return false;
     const void *keys[] = { kSecGuestAttributePid }, *values[] = { number };
@@ -120,23 +123,32 @@ static void collect(AaisSnapshot *snapshot) {
         char path[PROC_PIDPATHINFO_MAXSIZE] = {0}, path_after[PROC_PIDPATHINFO_MAXSIZE] = {0};
         snapshot->failure_pid = (uint32_t)pid;
         errno = 0;
-        if (!process_info(pid, &before)) {
-            snapshot->failure_stage = 1; snapshot->failure_errno = (unsigned)errno; return;
-        }
-        if (!process_path(pid, path)) {
+        bool login_position = index == 2 && snapshot->count == 2
+            && snapshot->processes[1].role == AAIS_SHELL && snapshot->processes[1].signature_valid
+            && snapshot->processes[1].uid == snapshot->uid && snapshot->processes[1].ruid == snapshot->uid
+            && snapshot->processes[1].ppid == (uint32_t)pid;
+        if (!process_path(pid, path, login_position)) {
             snapshot->failure_stage = 2; snapshot->failure_errno = (unsigned)errno; return;
         }
+        AaisRole role = aais_classify(path, index == 0);
+        bool login_candidate = login_position && role == AAIS_LOGIN;
+        if (!process_info(pid, &before, login_candidate)) {
+            snapshot->failure_stage = 1; snapshot->failure_errno = (unsigned)errno; return;
+        }
+        char cdhash[65] = {0};
+        bool code_valid = signature(pid, aais_requirement(role, path), cdhash);
         AaisProcess p = { .pid = before.pbi_pid, .ppid = before.pbi_ppid,
             .uid = before.pbi_uid, .ruid = before.pbi_ruid, .pgid = before.pbi_pgid,
             .tty_device = before.e_tdev, .tty_pgid = before.e_tpgid,
             .started_sec = before.pbi_start_tvsec, .started_usec = before.pbi_start_tvusec };
-        p.role = aais_classify(path, index == 0);
+        p.role = role;
         unsigned char digest[CC_SHA256_DIGEST_LENGTH];
         CC_SHA256(path, (CC_LONG)strlen(path), digest);
         hex_bytes(digest, sizeof(digest), p.path_digest);
-        p.signature_valid = signature(pid, aais_requirement(p.role, path), p.cdhash);
+        p.signature_valid = code_valid;
+        memcpy(p.cdhash, cdhash, sizeof(cdhash));
         // Fence PID reuse, reparenting and exec changes around signature lookup.
-        if (!process_info(pid, &after) || !process_path(pid, path_after)
+        if (!process_info(pid, &after, login_candidate) || !process_path(pid, path_after, login_position)
             || strcmp(path, path_after) || before.pbi_pid != after.pbi_pid
             || before.pbi_ppid != after.pbi_ppid || before.pbi_uid != after.pbi_uid
             || before.pbi_ruid != after.pbi_ruid || before.pbi_start_tvsec != after.pbi_start_tvsec
