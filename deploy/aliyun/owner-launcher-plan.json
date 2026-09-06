@@ -1,0 +1,34 @@
+{
+  "schemaVersion": 1,
+  "status": "design-only",
+  "executionEnabled": false,
+  "project": "AAIS",
+  "proposedOperation": "preload-private-ghcr-digest-only",
+  "intendedTarget": {
+    "region": "cn-hongkong",
+    "instanceId": "i-j6ceyx0s8nb3p6np317g",
+    "host": "47.83.162.150",
+    "repository": "ghcr.io/hudongpin/aais",
+    "evidence": "prior task target; live identity must be reverified before enrollment"
+  },
+  "requiredBindings": {
+    "ownerUid": null,
+    "launcherCodeRequirement": null,
+    "launcherSha256": null,
+    "nativeCollectorSha256": null,
+    "sshHostKeyFingerprint": null,
+    "serverHelperSha256": null,
+    "enrolledSigningPublicKeyFingerprint": null,
+    "releaseSha": null,
+    "imageDigest": null,
+    "ownerReviewReceipt": null
+  },
+  "unresolvedGates": [
+    "native-macos-origin-and-user-presence-validation",
+    "signing-key-access-control-and-enrollment",
+    "ssh-host-key-and-channel-binding",
+    "server-replay-persistence-and-restricted-operation",
+    "non-secret-owner-launch-check",
+    "independent-security-review"
+  ]
+}
