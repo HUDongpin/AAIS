@@ -22,3 +22,4 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     console.error("AAIS_GHCR_SOURCE_BINDING_REJECTED");
     process.exitCode = 1;
   }
+}
