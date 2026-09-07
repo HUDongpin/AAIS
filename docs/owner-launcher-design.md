@@ -1,5 +1,8 @@
 # AAIS Owner 启动器方案与非敏感测试
 
+现有后续原型：[本次原生确认与一次性签名](confirmation-check.md)；
+[ECS 接收端只读审查](ecs-owner-receiver-review.md)。均不解除生产凭据入口封堵。
+
 后续已单独实现 [无凭据原生 launch-check](launch-check.md)。本页保留方案/离线模型阶段
 的范围与证据，不表示原生采集器已取得 Owner 正向验收或完整凭据启动器已经实现。
 
