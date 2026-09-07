@@ -2,7 +2,7 @@ diff --git a/.github/workflows/ghcr-container.yml b/.github/workflows/ghcr-conta
 new file mode 100644
 --- /dev/null
 +++ b/.github/workflows/ghcr-container.yml
-@@ -0,0 +1,253 @@
+@@ -0,0 +1,256 @@
 +name: AAIS private GHCR candidate
 +
 +on:
@@ -76,9 +76,6 @@ new file mode 100644
 +      packages: write
 +      attestations: write
 +      id-token: write
-+    env:
-+      DOCKER_CONFIG: ${{ runner.temp }}/aais-ghcr-docker-${{ github.run_id }}-${{ github.run_attempt }}
-+
 +    steps:
 +      - name: Check out exact source
 +        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -130,8 +127,12 @@ new file mode 100644
 +          rm -f -- "$response_file"
 +
 +      - name: Create isolated Docker credential directory
++        env:
++          DOCKER_CONFIG: ${{ runner.temp }}/aais-ghcr-docker-${{ github.run_id }}-${{ github.run_attempt }}
 +        shell: bash
-+        run: install -d -m 0700 "$DOCKER_CONFIG"
++        run: |
++          install -d -m 0700 "$DOCKER_CONFIG"
++          printf 'DOCKER_CONFIG=%s\n' "$DOCKER_CONFIG" >> "$GITHUB_ENV"
 +
 +      - name: Log in with the repository-scoped workflow token
 +        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
@@ -241,6 +242,8 @@ new file mode 100644
 +
 +      - name: Remove workflow registry credentials
 +        if: ${{ always() }}
++        env:
++          DOCKER_CONFIG: ${{ runner.temp }}/aais-ghcr-docker-${{ github.run_id }}-${{ github.run_attempt }}
 +        shell: bash
 +        run: |
 +          set -uo pipefail
@@ -260,7 +263,7 @@ diff --git a/scripts/verify-aais-ghcr-source.mjs b/scripts/verify-aais-ghcr-sour
 new file mode 100644
 --- /dev/null
 +++ b/scripts/verify-aais-ghcr-source.mjs
-@@ -0,0 +1,24 @@
+@@ -0,0 +1,25 @@
 +import { execFileSync } from "node:child_process";
 +import { pathToFileURL } from "node:url";
 +

@@ -71,9 +71,6 @@ jobs:
       packages: write
       attestations: write
       id-token: write
-    env:
-      DOCKER_CONFIG: ${{ runner.temp }}/aais-ghcr-docker-${{ github.run_id }}-${{ github.run_attempt }}
-
     steps:
       - name: Check out exact source
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -125,8 +122,12 @@ jobs:
           rm -f -- "$response_file"
 
       - name: Create isolated Docker credential directory
+        env:
+          DOCKER_CONFIG: ${{ runner.temp }}/aais-ghcr-docker-${{ github.run_id }}-${{ github.run_attempt }}
         shell: bash
-        run: install -d -m 0700 "$DOCKER_CONFIG"
+        run: |
+          install -d -m 0700 "$DOCKER_CONFIG"
+          printf 'DOCKER_CONFIG=%s\n' "$DOCKER_CONFIG" >> "$GITHUB_ENV"
 
       - name: Log in with the repository-scoped workflow token
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
@@ -236,6 +237,8 @@ jobs:
 
       - name: Remove workflow registry credentials
         if: ${{ always() }}
+        env:
+          DOCKER_CONFIG: ${{ runner.temp }}/aais-ghcr-docker-${{ github.run_id }}-${{ github.run_attempt }}
         shell: bash
         run: |
           set -uo pipefail
