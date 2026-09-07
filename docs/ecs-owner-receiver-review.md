@@ -1,5 +1,10 @@
 # ECS Owner 接收端只读审查
 
+> 2026-09-08：本页签名 challenge 路线是历史方案审查；当前转向
+> [无生物识别的本机操作确认设计](owner-terminal-confirmation-design.md)，尚未选择或
+> 实施生产服务认证替代路线。本机普通确认不能替代接收端身份和权限验证。
+> 不因为 Touch ID 不可用而解除任何凭据封堵或跳过真实服务认证。
+
 范围：当前本地候选中的 `deploy/aliyun/aais-preload-ghcr-image.sh`、`aais-json-v1.py`
 及 Owner 设计。没有登录 ECS、查看当前云端身份、运行 helper、配置 SSH 或安装密钥。
 

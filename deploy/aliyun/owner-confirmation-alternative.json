@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "status": "design-reviewed-not-activated",
+  "executionEnabled": false,
+  "credentialEntryEnabled": false,
+  "biometricPrototype": {
+    "status": "inactive-experiment",
+    "ownerHardwareAvailable": false,
+    "retainSourceAndTests": true,
+    "automaticFallbackEnabled": false
+  },
+  "proposedConfirmation": {
+    "method": "explicit-terminal-operation-confirmation",
+    "implementationStatus": "not-implemented",
+    "requiresFreshNativeOriginCheck": true,
+    "requiresImmutableDisplayedOperation": true,
+    "acceptsEnvironmentApproval": false,
+    "acceptsPriorJsonReceipt": false,
+    "producesServerAuthorization": false,
+    "provesHardwareIdentity": false,
+    "provesSigningKeyProtection": false
+  },
+  "review": {
+    "localDesign": "reviewed-with-open-gates",
+    "independentSecurityReview": "not-performed",
+    "productionApproval": false,
+    "unresolved": [
+      "native-nonsecret-confirmation-implementation-and-tests",
+      "owner-manual-accept-cancel-timeout-validation",
+      "server-identity-and-least-privilege-authentication",
+      "credential-transport-and-recovery-review",
+      "exact-production-action-authorization"
+    ]
+  }
+}

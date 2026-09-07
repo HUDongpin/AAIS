@@ -1,5 +1,11 @@
 # 原生本次确认与一次性签名能力原型
 
+> 2026-09-08 状态：**未启用的实验原型，停止推进 Touch ID 路线。** Owner 无 Touch ID
+> 设备，已返回 biometrics-unavailable。保留源码/二进制/测试，不再要求运行本页演示。
+> 不修改生物识别程序让其自动通过，也没有密码或文本确认 fallback。
+> 当前另行审查 [不依赖生物识别的终端确认方案](owner-terminal-confirmation-design.md)，
+> 该方案尚未实施；下面操作说明仅保留为实验历史，不是当前待执行步骤。
+
 本阶段交付 **可编译的原生离线演示 + 非敏感自动化测试**。不是已保护的生产签名器，
 不是 Owner 凭据启动器，不接收真实发布目标，不连接 ECS/GHCR，不持久保存或注册密钥。
 不解除 `BLOCKED_AAIS_AUDITED_OWNER_LAUNCHER_BINDING_MISSING`。

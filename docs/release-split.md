@@ -44,6 +44,10 @@ workflow_dispatch 工作流存在于默认分支，之后才能从指定分支�
 
 ## D. Owner 启动器：安全封堵已加入，功能接通仍阻塞
 
+2026-09-08：停止推进 Touch ID 演示并保留为未启用实验；
+[不依赖生物识别的 Owner 确认方案](owner-terminal-confirmation-design.md) 已本地审查，
+尚未实现/激活。普通操作确认不证明硬件身份、签名密钥保护或服务器权限。
+
 已另行准备 [启动器方案与非敏感测试](owner-launcher-design.md)。该方案和测试模型
 不会解除下述封堵，不代表已实现或已审计的凭据流程。
 另有独立的 [原生无凭据 launch-check](launch-check.md)，仅供 Owner 来源诊断，结果不授权执行。

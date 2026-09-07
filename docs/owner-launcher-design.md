@@ -1,5 +1,10 @@
 # AAIS Owner 启动器方案与非敏感测试
 
+> 2026-09-08：Touch ID 原型保留为未启用实验。当前方案方向见
+> [独立终端明确确认的替代方案与审查](owner-terminal-confirmation-design.md)。
+> 本页原签名/用户在场架构保留为历史设计，不自动成为替代方案的必选实现；
+> 生产入口仍关闭，真实身份/权限与凭据边界不变。
+
 现有后续原型：[本次原生确认与一次性签名](confirmation-check.md)；
 [ECS 接收端只读审查](ecs-owner-receiver-review.md)。均不解除生产凭据入口封堵。
 
