@@ -4,14 +4,14 @@ import { describe, expect, it } from "vitest";
 
 const read = (path) => readFileSync(path, "utf8");
 describe("non-biometric Owner confirmation design remains inactive", () => {
-  it("separates an inactive experiment from an unimplemented alternative", () => {
+  it("separates the inactive biometric experiment from the offline terminal prototype", () => {
     const plan = JSON.parse(read("deploy/aliyun/owner-confirmation-alternative.json"));
     expect(plan.executionEnabled).toBe(false);
     expect(plan.credentialEntryEnabled).toBe(false);
     expect(plan.biometricPrototype).toEqual({ status: "inactive-experiment", ownerHardwareAvailable: false,
       retainSourceAndTests: true, automaticFallbackEnabled: false });
     expect(plan.proposedConfirmation).toEqual({ method: "explicit-terminal-operation-confirmation",
-      implementationStatus: "not-implemented", requiresFreshNativeOriginCheck: true,
+      implementationStatus: "offline-prototype-awaiting-owner-validation", requiresFreshNativeOriginCheck: true,
       requiresImmutableDisplayedOperation: true, acceptsEnvironmentApproval: false,
       acceptsPriorJsonReceipt: false, producesServerAuthorization: false,
       provesHardwareIdentity: false, provesSigningKeyProtection: false });

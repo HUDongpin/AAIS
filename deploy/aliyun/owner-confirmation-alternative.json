@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "status": "design-reviewed-not-activated",
+  "status": "offline-prototype-implemented-production-inactive",
   "executionEnabled": false,
   "credentialEntryEnabled": false,
   "biometricPrototype": {
@@ -11,7 +11,7 @@
   },
   "proposedConfirmation": {
     "method": "explicit-terminal-operation-confirmation",
-    "implementationStatus": "not-implemented",
+    "implementationStatus": "offline-prototype-awaiting-owner-validation",
     "requiresFreshNativeOriginCheck": true,
     "requiresImmutableDisplayedOperation": true,
     "acceptsEnvironmentApproval": false,
@@ -25,7 +25,6 @@
     "independentSecurityReview": "not-performed",
     "productionApproval": false,
     "unresolved": [
-      "native-nonsecret-confirmation-implementation-and-tests",
       "owner-manual-accept-cancel-timeout-validation",
       "server-identity-and-least-privilege-authentication",
       "credential-transport-and-recovery-review",
