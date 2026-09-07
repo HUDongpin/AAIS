@@ -9,5 +9,10 @@
       "path": "/api/auth/email-outbox/flush",
       "schedule": "*/5 * * * *"
     }
-  ]
+  ],
+  "git": {
+    "deploymentEnabled": {
+      "codex/aais-aliyun-postgres-empty": false
+    }
+  }
 }

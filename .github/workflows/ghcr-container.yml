@@ -1,0 +1,253 @@
+name: AAIS private GHCR candidate
+
+on:
+  workflow_dispatch:
+    inputs:
+      expected_sha:
+        description: Reviewed full SHA of the protected Aliyun candidate branch
+        required: true
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: aais-private-ghcr-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  AAIS_GHCR_REPOSITORY: ghcr.io/hudongpin/aais
+
+jobs:
+  product-gates:
+    name: Test without package or cloud write access
+    if: github.repository == 'HUDongpin/AAIS' && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/codex/aais-aliyun-postgres-empty'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+
+    steps:
+      - name: Check out exact source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Verify immutable source and repository
+        env:
+          AAIS_EXPECTED_SHA: ${{ inputs.expected_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${{ github.sha }}"
+          test "${GITHUB_REPOSITORY,,}" = "hudongpin/aais"
+          node scripts/verify-aais-ghcr-source.mjs
+
+      - name: Set up Node 24
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Run product gates without registry credentials
+        run: |
+          npm ci
+          npm audit --audit-level=high
+          npm run hygiene:check
+          npm run ci
+
+      - name: Verify Linux socket ACL reconstruction without touching live paths
+        run: sudo bash tests/aliyun-postgres-cold-start.sh
+
+  publish-private-image:
+    name: Publish immutable private GHCR image
+    needs: product-gates
+    if: github.repository == 'HUDongpin/AAIS' && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/codex/aais-aliyun-postgres-empty'
+    runs-on: ubuntu-24.04
+    environment: aliyun-production
+    timeout-minutes: 35
+    permissions:
+      contents: read
+      packages: write
+      attestations: write
+      id-token: write
+    env:
+      DOCKER_CONFIG: ${{ runner.temp }}/aais-ghcr-docker-${{ github.run_id }}-${{ github.run_attempt }}
+
+    steps:
+      - name: Check out exact source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Record immutable source metadata
+        id: source
+        env:
+          AAIS_EXPECTED_SHA: ${{ inputs.expected_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${{ github.sha }}"
+          test "${GITHUB_REPOSITORY,,}" = "hudongpin/aais"
+          test "$AAIS_GHCR_REPOSITORY" = "ghcr.io/hudongpin/aais"
+          node scripts/verify-aais-ghcr-source.mjs
+          printf 'build_timestamp=%s\n' "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> "$GITHUB_OUTPUT"
+
+      - name: Refuse an existing public package
+        env:
+          GHCR_PACKAGE_API: ${{ github.api_url }}/users/${{ github.repository_owner }}/packages/container/aais
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          response_file="$RUNNER_TEMP/aais-ghcr-package-before.json"
+          status="$(curl --silent --show-error --max-time 20 \
+            --output "$response_file" --write-out '%{http_code}' \
+            --header 'Accept: application/vnd.github+json' \
+            --header "Authorization: Bearer $GH_TOKEN" \
+            --header 'X-GitHub-Api-Version: 2022-11-28' \
+            "$GHCR_PACKAGE_API")"
+          case "$status" in
+            200)
+              jq -e \
+                --arg repository "${GITHUB_REPOSITORY,,}" \
+                '.visibility == "private"
+                 and (.repository.full_name | ascii_downcase) == $repository' \
+                "$response_file" >/dev/null
+              ;;
+            404) ;;
+            *)
+              echo "Unable to prove the pre-publish GHCR package state." >&2
+              exit 1
+              ;;
+          esac
+          rm -f -- "$response_file"
+
+      - name: Create isolated Docker credential directory
+        shell: bash
+        run: install -d -m 0700 "$DOCKER_CONFIG"
+
+      - name: Log in with the repository-scoped workflow token
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+
+      - name: Build and push the exact-SHA image with OCI attestations
+        id: image
+        timeout-minutes: 25
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ${{ env.AAIS_GHCR_REPOSITORY }}:${{ github.sha }}
+          build-args: |
+            AAIS_GIT_SHA=${{ github.sha }}
+            AAIS_BUILD_TIMESTAMP=${{ steps.source.outputs.build_timestamp }}
+            AAIS_REQUIRE_STABLE_SERVER_ACTIONS_KEY=true
+          secrets: |
+            NEXT_SERVER_ACTIONS_ENCRYPTION_KEY=${{ secrets.AAIS_NEXT_SERVER_ACTIONS_ENCRYPTION_KEY }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          provenance: mode=max
+          sbom: true
+          cache-from: type=gha,scope=aais-private-ghcr
+          cache-to: type=gha,mode=max,scope=aais-private-ghcr
+
+      - name: Attest the immutable image provenance
+        id: provenance
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
+        with:
+          subject-name: ${{ env.AAIS_GHCR_REPOSITORY }}
+          subject-digest: ${{ steps.image.outputs.digest }}
+          push-to-registry: true
+
+      - name: Prove the package remains private
+        env:
+          GHCR_PACKAGE_API: ${{ github.api_url }}/users/${{ github.repository_owner }}/packages/container/aais
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          response_file="$RUNNER_TEMP/aais-ghcr-package-after.json"
+          curl --fail --silent --show-error --max-time 20 \
+            --output "$response_file" \
+            --header 'Accept: application/vnd.github+json' \
+            --header "Authorization: Bearer $GH_TOKEN" \
+            --header 'X-GitHub-Api-Version: 2022-11-28' \
+            "$GHCR_PACKAGE_API"
+          jq -e \
+            --arg repository "${GITHUB_REPOSITORY,,}" \
+            '.visibility == "private"
+             and (.repository.full_name | ascii_downcase) == $repository' \
+            "$response_file" >/dev/null
+          rm -f -- "$response_file"
+
+      - name: Write non-secret GHCR candidate receipt
+        env:
+          IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
+          PROVENANCE_ATTESTATION_ID: ${{ steps.provenance.outputs.attestation-id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$IMAGE_DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]]
+          [[ "$PROVENANCE_ATTESTATION_ID" =~ ^[A-Za-z0-9._:-]+$ ]]
+          mkdir -p output/aliyun
+          jq -n \
+            --arg gitSha "${{ github.sha }}" \
+            --arg imageRepository "$AAIS_GHCR_REPOSITORY" \
+            --arg imageTag "$AAIS_GHCR_REPOSITORY:${{ github.sha }}" \
+            --arg imageDigest "$IMAGE_DIGEST" \
+            --arg runId "${{ github.run_id }}" \
+            --arg runAttempt "${{ github.run_attempt }}" \
+            --arg provenanceAttestationId "$PROVENANCE_ATTESTATION_ID" \
+            '{
+              schemaVersion: 1,
+              provider: "github",
+              stage: "ghcr_candidate",
+              gitSha: $gitSha,
+              imageRepository: $imageRepository,
+              imageTag: $imageTag,
+              imageDigest: $imageDigest,
+              githubRunId: $runId,
+              githubRunAttempt: $runAttempt,
+              packageVisibility: "private",
+              sbomGenerated: true,
+              provenanceGenerated: true,
+              provenanceAttestationId: $provenanceAttestationId,
+              secrets: "redacted"
+            }' > output/aliyun/ghcr-candidate-receipt.json
+
+      - name: Preserve GHCR candidate receipt
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: aais-private-ghcr-${{ github.sha }}
+          path: output/aliyun/ghcr-candidate-receipt.json
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Remove workflow registry credentials
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -uo pipefail
+          cleanup_status=0
+          docker logout ghcr.io >/dev/null 2>&1 || cleanup_status=1
+          case "$DOCKER_CONFIG" in
+            "$RUNNER_TEMP"/aais-ghcr-docker-*) ;;
+            *) exit 1 ;;
+          esac
+          if [[ -d "$DOCKER_CONFIG" && ! -L "$DOCKER_CONFIG" ]]; then
+            find "$DOCKER_CONFIG" -mindepth 1 -delete || cleanup_status=1
+            rmdir "$DOCKER_CONFIG" || cleanup_status=1
+          fi
+          unset DOCKER_CONFIG
+          exit "$cleanup_status"
