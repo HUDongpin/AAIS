@@ -2,6 +2,7 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { verifyAaisGhcrResumeProof } from "../scripts/verify-aais-ghcr-source.mjs";
 
@@ -128,7 +129,7 @@ function buildProof() {
     run: { id: 1001, run_attempt: 1, repository: { full_name: "HUDongpin/AAIS" },
       head_sha: sha, head_branch: "codex/aais-aliyun-postgres-empty",
       path: ".github/workflows/ghcr-container.yml", event: "workflow_dispatch", status: "completed" },
-    jobs: { total_count: 1, jobs: [{ name: "Publish immutable private GHCR image", run_id: 1001,
+    jobs: { total_count: 1, jobs: [{ id: 2001, name: "Publish immutable private GHCR image", run_id: 1001,
       run_attempt: 1, head_sha: sha, status: "completed", conclusion: "failure",
       steps: ["Record immutable source metadata", "Build and push the exact-SHA image with OCI attestations",
         "Record immutable build output"].map((name) => ({ name, conclusion: "success" })) }] },
@@ -138,7 +139,7 @@ function buildProof() {
 
 describe("recovery from provider-recorded build output", () => {
   it("accepts a proved build even when a later publication step failed", () => {
-    expect(verifyAaisGhcrResumeProof(buildProof())).toEqual({ status: "verified", digest,
+    expect(verifyAaisGhcrResumeProof(buildProof())).toMatchObject({ status: "verified", digest,
       buildRunId: "1001", buildRunAttempt: "1" });
   });
 
@@ -156,6 +157,7 @@ describe("recovery from provider-recorded build output", () => {
       (p) => { p.jobs.jobs[0].head_sha = "c".repeat(40); },
       (p) => { p.jobs.jobs[0].run_id = 1002; },
       (p) => { p.jobs.jobs[0].run_attempt = 2; },
+      (p) => { p.jobs.jobs[0].id = "invalid"; },
     ]) {
       const proof = buildProof(); change(proof);
       expect(() => verifyAaisGhcrResumeProof(proof)).toThrow("AAIS_GHCR_RESUME_PROOF_REJECTED");
@@ -176,5 +178,79 @@ describe("recovery from provider-recorded build output", () => {
       const proof = buildProof(); change(proof);
       expect(() => verifyAaisGhcrResumeProof(proof)).toThrow("AAIS_GHCR_RESUME_PROOF_REJECTED");
     }
+  });
+
+  it("signs recovery evidence with the original builder and a distinct recovery invocation", () => {
+    const directory = mkdtempSync(path.join(tmpdir(), "aais-ghcr-recovery-predicate-"));
+    try {
+      const proof = buildProof();
+      for (const [name, value] of [["run.json", JSON.stringify(proof.run)],
+        ["jobs.json", JSON.stringify(proof.jobs)], ["build.log", proof.log]]) {
+        writeFileSync(path.join(directory, `aais-ghcr-resume-${name}`), value);
+      }
+      const block = workflow.split("      - name: Verify the original build before resuming an existing digest\n")[1]
+        .split("\n      - name:")[0];
+      const code = block.split("node --input-type=module <<'NODE'\n")[1].split("          NODE")[0]
+        .split("\n").map((line) => line.replace(/^ {10}/, "")).join("\n");
+      const result = spawnSync(process.execPath, ["--input-type=module", "-e", code], {
+        encoding: "utf8", env: { ...process.env, RUNNER_TEMP: directory,
+          GITHUB_REPOSITORY: "HUDongpin/AAIS", GITHUB_SHA: sha, GITHUB_RUN_ID: "1002", GITHUB_RUN_ATTEMPT: "2",
+          AAIS_RESUME_DIGEST: digest, AAIS_RESUME_RUN_ID: "1001", AAIS_RESUME_RUN_ATTEMPT: "1" },
+      });
+      expect(result.status, result.stderr).toBe(0);
+      const predicate = JSON.parse(readFileSync(path.join(directory, "aais-ghcr-resume-predicate.json"), "utf8"));
+      expect(predicate).toMatchObject({ operation: "recover-publication-without-rebuild",
+        originalBuild: { buildRunId: "1001", buildRunAttempt: "1", buildJobId: "2001", gitSha: sha, digest,
+          buildLogSha256: createHash("sha256").update(proof.log).digest("hex"),
+          outputRecord: { imageDigest: digest, runId: "1001", runAttempt: "1" } },
+        recovery: { runId: "1002", runAttempt: "2", gitSha: sha },
+      });
+      const ordinary = workflow.split("      - name: Attest the immutable image provenance\n")[1].split("\n      - name:")[0];
+      expect(ordinary).toContain("if: env.AAIS_RESUME_DIGEST == ''");
+      const recovery = workflow.split("      - name: Attest recovery with the verified original build evidence\n")[1].split("\n      - name:")[0];
+      expect(recovery).toContain("if: env.AAIS_RESUME_DIGEST != ''");
+      expect(recovery).toContain("predicate-path: ${{ runner.temp }}/aais-ghcr-resume-predicate.json");
+      expect(recovery).toContain("/attestations/ghcr-publication-recovery/v1");
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("published receipt compatibility", () => {
+  it.each([false, true])("keeps the strict ECS receipt contract when recovery is %s", (resuming) => {
+    const directory = mkdtempSync(path.join(tmpdir(), "aais-ghcr-receipt-"));
+    try {
+      const block = workflow.split("      - name: Write non-secret GHCR candidate receipt\n")[1]
+        .split("\n      - name:")[0];
+      const code = block.split("        run: |\n")[1].split("\n")
+        .map((line) => line.replace(/^ {10}/, "")).join("\n")
+        .replaceAll("${{ github.sha }}", sha)
+        .replaceAll("${{ github.run_id }}", "1002")
+        .replaceAll("${{ github.run_attempt }}", "2");
+      expect(code).not.toContain("${{");
+      const result = spawnSync("bash", ["-c", code], {
+        cwd: directory, encoding: "utf8",
+        env: { ...process.env, GITHUB_SHA: sha, GITHUB_RUN_ID: "1002", GITHUB_RUN_ATTEMPT: "2",
+          IMAGE_DIGEST: digest, AAIS_GHCR_REPOSITORY: "ghcr.io/hudongpin/aais",
+          PROVENANCE_ATTESTATION_ID: "12345", AAIS_RESUME_DIGEST: resuming ? digest : "",
+          AAIS_RESUME_RUN_ID: resuming ? "1001" : "", AAIS_RESUME_RUN_ATTEMPT: resuming ? "1" : "" },
+      });
+      expect(result.status, result.stderr).toBe(0);
+      const receipt = path.join(directory, "output/aliyun/ghcr-candidate-receipt.json");
+      const validation = spawnSync("python3", [path.resolve("deploy/aliyun/aais-json-v1.py"),
+        "candidate-metadata", receipt, sha, digest], { encoding: "utf8" });
+      expect(validation.status, validation.stderr).toBe(0);
+      const linkage = JSON.parse(readFileSync(path.join(directory, "output/aliyun/ghcr-build-linkage.json"), "utf8"));
+      expect(linkage).toMatchObject({ gitSha: sha, imageDigest: digest, resumedExistingDigest: resuming,
+        publicationGithubRunId: "1002", imageBuildGithubRunId: resuming ? "1001" : "1002" });
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("does not export secret-bearing build layers to repository Actions caches", () => {
+    const publish = workflow.slice(workflow.indexOf("  publish-private-image:"));
+    expect(publish).not.toMatch(/cache-(?:from|to):\s*type=gha/);
   });
 });
