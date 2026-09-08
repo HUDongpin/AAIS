@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { pathToFileURL } from "node:url";
 
 export function verifyAaisGhcrSource(env, actualSha) {
@@ -29,7 +30,8 @@ export function verifyAaisGhcrResumeProof({ run, jobs, log, expectedSha, digest,
   const matches = jobs.jobs.filter((job) => job.name === "Publish immutable private GHCR image");
   if (matches.length !== 1) reject();
   const job = matches[0];
-  if (String(job.run_id) !== runId || String(job.run_attempt) !== runAttempt
+  if (!/^[1-9][0-9]*$/.test(String(job.id))
+    || String(job.run_id) !== runId || String(job.run_attempt) !== runAttempt
     || job.head_sha !== expectedSha || job.status !== "completed" || !Array.isArray(job.steps)) reject();
   for (const name of ["Record immutable source metadata",
     "Build and push the exact-SHA image with OCI attestations", "Record immutable build output"]) {
@@ -43,7 +45,10 @@ export function verifyAaisGhcrResumeProof({ run, jobs, log, expectedSha, digest,
   if (record?.schemaVersion !== 1 || record.gitSha !== expectedSha || record.imageDigest !== digest
     || record.imageRepository !== "ghcr.io/hudongpin/aais"
     || record.runId !== runId || record.runAttempt !== runAttempt) reject();
-  return { status: "verified", digest, buildRunId: runId, buildRunAttempt: runAttempt };
+  return { status: "verified", digest, buildRunId: runId, buildRunAttempt: runAttempt,
+    buildJobId: String(job.id), gitSha: expectedSha, repository: run.repository.full_name,
+    workflowPath: run.path, outputRecord: record,
+    buildLogSha256: createHash("sha256").update(log).digest("hex") };
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
