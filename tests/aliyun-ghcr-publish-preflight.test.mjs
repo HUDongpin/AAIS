@@ -62,8 +62,11 @@ process.stdout.write(String(response.status));
 }
 
 describe("actual GHCR publication preflight shell", () => {
-  it("permits the first package and rejects ambiguous package access failures", () => {
-    expect(runPreflight([{ status: 404, body: {} }]).status).toBe(0);
+  it("requires an existing private package before any credential-bearing image is built", () => {
+    const missing = runPreflight([{ status: 404, body: {} }]);
+    expect(missing.status).not.toBe(0);
+    expect(missing.stderr).toContain("AAIS_GHCR_PRIVATE_PACKAGE_REQUIRED");
+    expect(missing.calls).toHaveLength(1);
     expect(runPreflight([{ status: 403, body: {} }]).status).not.toBe(0);
   });
 
@@ -252,5 +255,17 @@ describe("published receipt compatibility", () => {
   it("does not export secret-bearing build layers to repository Actions caches", () => {
     const publish = workflow.slice(workflow.indexOf("  publish-private-image:"));
     expect(publish).not.toMatch(/cache-(?:from|to):\s*type=gha/);
+  });
+
+  it("exports GitHub attestations without relying on credentials in the runner home", () => {
+    for (const name of ["Attest the immutable image provenance", "Attest recovery with the verified original build evidence"]) {
+      const block = workflow.split(`      - name: ${name}\n`)[1].split("\n      - name:")[0];
+      expect(block).toContain("push-to-registry: false");
+    }
+    expect(workflow).toContain("output/aliyun/ghcr-github-provenance.bundle.json");
+    expect(workflow).toContain("provenance: mode=max");
+    expect(workflow).toContain("sbom: true");
+    expect(workflow.indexOf("      - name: Prove the package remains private"))
+      .toBeLessThan(workflow.indexOf("      - name: Attest the immutable image provenance"));
   });
 });

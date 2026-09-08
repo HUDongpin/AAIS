@@ -696,7 +696,7 @@ describe("AAIS Aliyun deployment assets", () => {
     expect(publishJob).toContain('.visibility == "private"');
     expect(publishJob).toContain("provenance: mode=max");
     expect(publishJob).toContain("sbom: true");
-    expect(publishJob).toContain("push-to-registry: true");
+    expect(publishJob).toContain("push-to-registry: false");
     expect(publishJob).toContain("ghcr-candidate-receipt.json");
     expect(publishJob).toContain("AAIS_REQUIRE_STABLE_SERVER_ACTIONS_KEY=true");
     expect(publishJob).toContain(
