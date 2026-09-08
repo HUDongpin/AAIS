@@ -2,7 +2,7 @@ diff --git a/.github/workflows/ghcr-container.yml b/.github/workflows/ghcr-conta
 new file mode 100644
 --- /dev/null
 +++ b/.github/workflows/ghcr-container.yml
-@@ -0,0 +1,253 @@
+@@ -0,0 +1,458 @@
 +name: AAIS private GHCR candidate
 +
 +on:
@@ -11,6 +11,21 @@ new file mode 100644
 +      expected_sha:
 +        description: Reviewed full SHA of the protected Aliyun candidate branch
 +        required: true
++        type: string
++      resume_digest:
++        description: Optional existing sha256 digest; resume post-push work without rebuilding
++        required: false
++        default: ""
++        type: string
++      resume_run_id:
++        description: Original GitHub run that successfully built this digest
++        required: false
++        default: ""
++        type: string
++      resume_run_attempt:
++        description: Original successful build attempt number
++        required: false
++        default: ""
 +        type: string
 +
 +permissions: {}
@@ -74,11 +89,13 @@ new file mode 100644
 +    permissions:
 +      contents: read
 +      packages: write
++      actions: read
 +      attestations: write
 +      id-token: write
 +    env:
-+      DOCKER_CONFIG: ${{ runner.temp }}/aais-ghcr-docker-${{ github.run_id }}-${{ github.run_attempt }}
-+
++      AAIS_RESUME_DIGEST: ${{ inputs.resume_digest }}
++      AAIS_RESUME_RUN_ID: ${{ inputs.resume_run_id }}
++      AAIS_RESUME_RUN_ATTEMPT: ${{ inputs.resume_run_attempt }}
 +    steps:
 +      - name: Check out exact source
 +        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -99,13 +116,22 @@ new file mode 100644
 +          node scripts/verify-aais-ghcr-source.mjs
 +          printf 'build_timestamp=%s\n' "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> "$GITHUB_OUTPUT"
 +
-+      - name: Refuse an existing public package
++      - name: Verify private package and refuse an existing SHA tag
 +        env:
 +          GHCR_PACKAGE_API: ${{ github.api_url }}/users/${{ github.repository_owner }}/packages/container/aais
 +          GH_TOKEN: ${{ github.token }}
 +        shell: bash
 +        run: |
 +          set -euo pipefail
++          jq --version >/dev/null
++          if [[ -n "${AAIS_RESUME_DIGEST:-}" ]]; then
++            [[ "$AAIS_RESUME_DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]] || exit 1
++            [[ "${AAIS_RESUME_RUN_ID:-}" =~ ^[1-9][0-9]{0,19}$ ]] || exit 1
++            [[ "${AAIS_RESUME_RUN_ATTEMPT:-}" =~ ^[1-9][0-9]{0,9}$ ]] || exit 1
++          else
++            [[ -z "${AAIS_RESUME_RUN_ID:-}" && -z "${AAIS_RESUME_RUN_ATTEMPT:-}" ]] || exit 1
++          fi
++          resume_tag_found=false
 +          response_file="$RUNNER_TEMP/aais-ghcr-package-before.json"
 +          status="$(curl --silent --show-error --max-time 20 \
 +            --output "$response_file" --write-out '%{http_code}' \
@@ -116,10 +142,46 @@ new file mode 100644
 +          case "$status" in
 +            200)
 +              jq -e \
-+                --arg repository "${GITHUB_REPOSITORY,,}" \
++                --arg repository "hudongpin/aais" \
 +                '.visibility == "private"
 +                 and (.repository.full_name | ascii_downcase) == $repository' \
-+                "$response_file" >/dev/null
++                "$response_file" >/dev/null || exit 1
++              for page in {1..100}; do
++                status="$(curl --silent --show-error --max-time 20 --max-filesize 1048576 \
++                  --output "$response_file" --write-out '%{http_code}' \
++                  --header 'Accept: application/vnd.github+json' \
++                  --header "Authorization: Bearer $GH_TOKEN" \
++                  --header 'X-GitHub-Api-Version: 2022-11-28' \
++                  "$GHCR_PACKAGE_API/versions?per_page=100&page=$page")"
++                if [[ "$status" != 200 ]]; then
++                  echo "Unable to prove the existing GHCR SHA tags." >&2
++                  exit 1
++                fi
++                jq -e 'type == "array" and length <= 100
++                  and all(.[]; (.metadata.container.tags |
++                    type == "array" and all(.[]; type == "string")))' \
++                  "$response_file" >/dev/null || exit 1
++                tag_count="$(jq --arg tag "$GITHUB_SHA" \
++                  '[.[] | select(.metadata.container.tags | index($tag))] | length' "$response_file")"
++                if [[ "$tag_count" -gt 0 ]]; then
++                  if [[ -z "${AAIS_RESUME_DIGEST:-}" ]]; then
++                    echo "AAIS_GHCR_SHA_TAG_ALREADY_EXISTS" >&2
++                    exit 1
++                  fi
++                  [[ "$tag_count" -eq 1 && "$resume_tag_found" == false ]] || exit 1
++                  existing_digest="$(jq -r --arg tag "$GITHUB_SHA" \
++                    '.[] | select(.metadata.container.tags | index($tag)) | .name' "$response_file")"
++                  [[ "$existing_digest" == "$AAIS_RESUME_DIGEST" ]] || exit 1
++                  resume_tag_found=true
++                fi
++                if [[ "$(jq length "$response_file")" -lt 100 ]]; then
++                  break
++                fi
++                if [[ "$page" -eq 100 ]]; then
++                  echo "GHCR version pagination exceeded the verification limit." >&2
++                  exit 1
++                fi
++              done
 +              ;;
 +            404) ;;
 +            *)
@@ -127,11 +189,19 @@ new file mode 100644
 +              exit 1
 +              ;;
 +          esac
++          if [[ -n "${AAIS_RESUME_DIGEST:-}" && "$resume_tag_found" != true ]]; then
++            echo "AAIS_GHCR_RESUME_TAG_MISSING" >&2
++            exit 1
++          fi
 +          rm -f -- "$response_file"
 +
 +      - name: Create isolated Docker credential directory
++        env:
++          DOCKER_CONFIG: ${{ runner.temp }}/aais-ghcr-docker-${{ github.run_id }}-${{ github.run_attempt }}
 +        shell: bash
-+        run: install -d -m 0700 "$DOCKER_CONFIG"
++        run: |
++          install -d -m 0700 "$DOCKER_CONFIG"
++          printf 'DOCKER_CONFIG=%s\n' "$DOCKER_CONFIG" >> "$GITHUB_ENV"
 +
 +      - name: Log in with the repository-scoped workflow token
 +        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
@@ -143,7 +213,61 @@ new file mode 100644
 +      - name: Set up Docker Buildx
 +        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
 +
++      - name: Verify the original build before resuming an existing digest
++        if: env.AAIS_RESUME_DIGEST != ''
++        env:
++          GH_TOKEN: ${{ github.token }}
++        shell: bash
++        run: |
++          set -euo pipefail
++          umask 077
++          gh api "repos/HUDongpin/AAIS/actions/runs/$AAIS_RESUME_RUN_ID/attempts/$AAIS_RESUME_RUN_ATTEMPT" > "$RUNNER_TEMP/aais-ghcr-resume-run.json"
++          gh api "repos/HUDongpin/AAIS/actions/runs/$AAIS_RESUME_RUN_ID/attempts/$AAIS_RESUME_RUN_ATTEMPT/jobs?per_page=100" > "$RUNNER_TEMP/aais-ghcr-resume-jobs.json"
++          job_id="$(jq -er '.jobs[] | select(.name == "Publish immutable private GHCR image") | .id' "$RUNNER_TEMP/aais-ghcr-resume-jobs.json")"
++          [[ "$job_id" =~ ^[1-9][0-9]{0,19}$ ]]
++          gh api "repos/HUDongpin/AAIS/actions/jobs/$job_id/logs" > "$RUNNER_TEMP/aais-ghcr-resume-build.log"
++          node --input-type=module <<'NODE'
++          import { readFileSync, statSync, writeFileSync } from "node:fs";
++          import path from "node:path";
++          import { verifyAaisGhcrResumeProof } from "./scripts/verify-aais-ghcr-source.mjs";
++          try {
++            const file = (name) => path.join(process.env.RUNNER_TEMP, `aais-ghcr-resume-${name}`);
++            if (statSync(file("build.log")).size > 8 * 1024 * 1024) throw new Error();
++            const proof = verifyAaisGhcrResumeProof({
++              run: JSON.parse(readFileSync(file("run.json"), "utf8")),
++              jobs: JSON.parse(readFileSync(file("jobs.json"), "utf8")),
++              log: readFileSync(file("build.log"), "utf8"),
++              expectedSha: process.env.GITHUB_SHA,
++              digest: process.env.AAIS_RESUME_DIGEST,
++              runId: process.env.AAIS_RESUME_RUN_ID,
++              runAttempt: process.env.AAIS_RESUME_RUN_ATTEMPT,
++            });
++            writeFileSync(file("predicate.json"), JSON.stringify({
++              schemaVersion: 1,
++              operation: "recover-publication-without-rebuild",
++              originalBuild: proof,
++              recovery: {
++                repository: process.env.GITHUB_REPOSITORY,
++                gitSha: process.env.GITHUB_SHA,
++                runId: process.env.GITHUB_RUN_ID,
++                runAttempt: process.env.GITHUB_RUN_ATTEMPT,
++              },
++            }));
++          } catch {
++            console.error("AAIS_GHCR_RESUME_PROOF_REJECTED");
++            process.exitCode = 1;
++          }
++          NODE
++          image="$AAIS_GHCR_REPOSITORY@$AAIS_RESUME_DIGEST"
++          docker pull --quiet --platform linux/amd64 "$image" >/dev/null
++          [[ "$(docker image inspect --format '{{.Architecture}}/{{.Os}}' "$image")" == "amd64/linux" ]]
++          docker image inspect --format '{{json .Config.Labels}}' "$image" \
++            | jq -e --arg sha "$GITHUB_SHA" \
++              '."org.opencontainers.image.revision" == $sha
++               and ."org.opencontainers.image.source" == "https://github.com/HUDongpin/AAIS"' >/dev/null
++
 +      - name: Build and push the exact-SHA image with OCI attestations
++        if: env.AAIS_RESUME_DIGEST == ''
 +        id: image
 +        timeout-minutes: 25
 +        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
@@ -164,15 +288,50 @@ new file mode 100644
 +            org.opencontainers.image.revision=${{ github.sha }}
 +          provenance: mode=max
 +          sbom: true
-+          cache-from: type=gha,scope=aais-private-ghcr
-+          cache-to: type=gha,mode=max,scope=aais-private-ghcr
++
++      - name: Record immutable build output
++        if: env.AAIS_RESUME_DIGEST == ''
++        env:
++          IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
++        shell: bash
++        run: |
++          set -euo pipefail
++          [[ "$IMAGE_DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]]
++          record="$(jq -nc --arg sha "$GITHUB_SHA" --arg digest "$IMAGE_DIGEST" \
++            --arg repository "$AAIS_GHCR_REPOSITORY" --arg runId "$GITHUB_RUN_ID" \
++            --arg attempt "$GITHUB_RUN_ATTEMPT" \
++            '{schemaVersion:1,gitSha:$sha,imageDigest:$digest,imageRepository:$repository,runId:$runId,runAttempt:$attempt}')"
++          printf 'AAIS_GHCR_BUILD_OUTPUT=%s\n' "$record"
++
++      - name: Select verified immutable image digest
++        id: immutable
++        env:
++          BUILT_IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
++        shell: bash
++        run: |
++          set -euo pipefail
++          digest="${AAIS_RESUME_DIGEST:-$BUILT_IMAGE_DIGEST}"
++          [[ "$digest" =~ ^sha256:[a-f0-9]{64}$ ]]
++          printf 'digest=%s\n' "$digest" >> "$GITHUB_OUTPUT"
 +
 +      - name: Attest the immutable image provenance
++        if: env.AAIS_RESUME_DIGEST == ''
 +        id: provenance
 +        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
 +        with:
 +          subject-name: ${{ env.AAIS_GHCR_REPOSITORY }}
-+          subject-digest: ${{ steps.image.outputs.digest }}
++          subject-digest: ${{ steps.immutable.outputs.digest }}
++          push-to-registry: true
++
++      - name: Attest recovery with the verified original build evidence
++        if: env.AAIS_RESUME_DIGEST != ''
++        id: recovery
++        uses: actions/attest@daf44fb950173508f38bd2406030372c1d1162b1 # v3.0.0
++        with:
++          subject-name: ${{ env.AAIS_GHCR_REPOSITORY }}
++          subject-digest: ${{ steps.immutable.outputs.digest }}
++          predicate-type: https://github.com/HUDongpin/AAIS/attestations/ghcr-publication-recovery/v1
++          predicate-path: ${{ runner.temp }}/aais-ghcr-resume-predicate.json
 +          push-to-registry: true
 +
 +      - name: Prove the package remains private
@@ -196,10 +355,36 @@ new file mode 100644
 +            "$response_file" >/dev/null
 +          rm -f -- "$response_file"
 +
++      - name: Export the image SBOM and provenance
++        env:
++          IMAGE_DIGEST: ${{ steps.immutable.outputs.digest }}
++          PROVENANCE_BUNDLE_PATH: ${{ steps.provenance.outputs.bundle-path || steps.recovery.outputs.bundle-path }}
++        shell: bash
++        run: |
++          set -euo pipefail
++          mkdir -p output/aliyun
++          image="$AAIS_GHCR_REPOSITORY@$IMAGE_DIGEST"
++          docker buildx imagetools inspect "$AAIS_GHCR_REPOSITORY:$GITHUB_SHA" \
++            --format '{{json .Manifest}}' > output/aliyun/ghcr-image-inspection.json
++          jq -e --arg digest "$IMAGE_DIGEST" \
++            '.digest == $digest and any(.manifests[];
++              .platform.os == "linux" and .platform.architecture == "amd64")' \
++            output/aliyun/ghcr-image-inspection.json >/dev/null
++          docker buildx imagetools inspect "$image" --format '{{json .SBOM}}' > output/aliyun/ghcr-sbom.json
++          docker buildx imagetools inspect "$image" --format '{{json .Provenance}}' > output/aliyun/ghcr-buildkit-provenance.json
++          jq -e '[.. | objects | .spdxVersion? // empty] | any(.[]; startswith("SPDX-"))' output/aliyun/ghcr-sbom.json >/dev/null
++          jq -e '[.. | objects | .buildType? // empty] | any(.[]; type == "string" and length > 0)' output/aliyun/ghcr-buildkit-provenance.json >/dev/null
++          [[ -f "$PROVENANCE_BUNDLE_PATH" && ! -L "$PROVENANCE_BUNDLE_PATH" ]]
++          cp "$PROVENANCE_BUNDLE_PATH" output/aliyun/ghcr-github-provenance.bundle.json
++          jq -e --arg digest "${IMAGE_DIGEST#sha256:}" \
++            '.dsseEnvelope.payload | @base64d | fromjson | any(.subject[];
++              .name == "ghcr.io/hudongpin/aais" and .digest.sha256 == $digest)' \
++            output/aliyun/ghcr-github-provenance.bundle.json >/dev/null
++
 +      - name: Write non-secret GHCR candidate receipt
 +        env:
-+          IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
-+          PROVENANCE_ATTESTATION_ID: ${{ steps.provenance.outputs.attestation-id }}
++          IMAGE_DIGEST: ${{ steps.immutable.outputs.digest }}
++          PROVENANCE_ATTESTATION_ID: ${{ steps.provenance.outputs.attestation-id || steps.recovery.outputs.attestation-id }}
 +        shell: bash
 +        run: |
 +          set -euo pipefail
@@ -230,17 +415,34 @@ new file mode 100644
 +              provenanceAttestationId: $provenanceAttestationId,
 +              secrets: "redacted"
 +            }' > output/aliyun/ghcr-candidate-receipt.json
++          jq -n --arg sha "$GITHUB_SHA" --arg digest "$IMAGE_DIGEST" \
++            --arg buildRunId "${AAIS_RESUME_RUN_ID:-$GITHUB_RUN_ID}" \
++            --arg buildRunAttempt "${AAIS_RESUME_RUN_ATTEMPT:-$GITHUB_RUN_ATTEMPT}" \
++            --arg publicationRunId "$GITHUB_RUN_ID" --arg publicationRunAttempt "$GITHUB_RUN_ATTEMPT" \
++            --arg resumedDigest "$AAIS_RESUME_DIGEST" \
++            '{schemaVersion:1,gitSha:$sha,imageDigest:$digest,
++              imageBuildGithubRunId:$buildRunId,imageBuildGithubRunAttempt:$buildRunAttempt,
++              publicationGithubRunId:$publicationRunId,publicationGithubRunAttempt:$publicationRunAttempt,
++              resumedExistingDigest:($resumedDigest != "")}' > output/aliyun/ghcr-build-linkage.json
 +
 +      - name: Preserve GHCR candidate receipt
 +        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
 +        with:
 +          name: aais-private-ghcr-${{ github.sha }}
-+          path: output/aliyun/ghcr-candidate-receipt.json
++          path: |
++            output/aliyun/ghcr-candidate-receipt.json
++            output/aliyun/ghcr-build-linkage.json
++            output/aliyun/ghcr-image-inspection.json
++            output/aliyun/ghcr-sbom.json
++            output/aliyun/ghcr-buildkit-provenance.json
++            output/aliyun/ghcr-github-provenance.bundle.json
 +          if-no-files-found: error
 +          retention-days: 30
 +
 +      - name: Remove workflow registry credentials
 +        if: ${{ always() }}
++        env:
++          DOCKER_CONFIG: ${{ runner.temp }}/aais-ghcr-docker-${{ github.run_id }}-${{ github.run_attempt }}
 +        shell: bash
 +        run: |
 +          set -uo pipefail
@@ -255,13 +457,17 @@ new file mode 100644
 +            rmdir "$DOCKER_CONFIG" || cleanup_status=1
 +          fi
 +          unset DOCKER_CONFIG
++          rm -f -- "$RUNNER_TEMP/aais-ghcr-resume-run.json" \
++            "$RUNNER_TEMP/aais-ghcr-resume-jobs.json" "$RUNNER_TEMP/aais-ghcr-resume-build.log" \
++            "$RUNNER_TEMP/aais-ghcr-resume-predicate.json" || cleanup_status=1
 +          exit "$cleanup_status"
 diff --git a/scripts/verify-aais-ghcr-source.mjs b/scripts/verify-aais-ghcr-source.mjs
 new file mode 100644
 --- /dev/null
 +++ b/scripts/verify-aais-ghcr-source.mjs
-@@ -0,0 +1,24 @@
+@@ -0,0 +1,62 @@
 +import { execFileSync } from "node:child_process";
++import { createHash } from "node:crypto";
 +import { pathToFileURL } from "node:url";
 +
 +export function verifyAaisGhcrSource(env, actualSha) {
@@ -275,6 +481,42 @@ new file mode 100644
 +    throw new Error("AAIS_GHCR_SOURCE_BINDING_REJECTED");
 +  }
 +  return { status: "pass", repository: "HUDongpin/AAIS", ref: env.GITHUB_REF, sha: actualSha };
++}
++
++export function verifyAaisGhcrResumeProof({ run, jobs, log, expectedSha, digest, runId, runAttempt }) {
++  const reject = () => { throw new Error("AAIS_GHCR_RESUME_PROOF_REJECTED"); };
++  if (!/^[a-f0-9]{40}$/.test(expectedSha ?? "")
++    || !/^sha256:[a-f0-9]{64}$/.test(digest ?? "")
++    || !/^[1-9][0-9]*$/.test(runId ?? "") || !/^[1-9][0-9]*$/.test(runAttempt ?? "")
++    || String(run?.id) !== runId || String(run?.run_attempt) !== runAttempt
++    || run?.repository?.full_name !== "HUDongpin/AAIS"
++    || run?.head_sha !== expectedSha || run?.head_branch !== "codex/aais-aliyun-postgres-empty"
++    || run?.path !== ".github/workflows/ghcr-container.yml"
++    || run?.event !== "workflow_dispatch" || run?.status !== "completed"
++    || !Array.isArray(jobs?.jobs) || jobs.jobs.length !== jobs.total_count
++    || typeof log !== "string" || log.length > 8 * 1024 * 1024) reject();
++  const matches = jobs.jobs.filter((job) => job.name === "Publish immutable private GHCR image");
++  if (matches.length !== 1) reject();
++  const job = matches[0];
++  if (!/^[1-9][0-9]*$/.test(String(job.id))
++    || String(job.run_id) !== runId || String(job.run_attempt) !== runAttempt
++    || job.head_sha !== expectedSha || job.status !== "completed" || !Array.isArray(job.steps)) reject();
++  for (const name of ["Record immutable source metadata",
++    "Build and push the exact-SHA image with OCI attestations", "Record immutable build output"]) {
++    const steps = job.steps.filter((step) => step.name === name);
++    if (steps.length !== 1 || steps[0].conclusion !== "success") reject();
++  }
++  const records = [...log.matchAll(/^\d{4}-\S+Z AAIS_GHCR_BUILD_OUTPUT=(\{[^\r\n]*\})\r?$/gm)];
++  if (records.length !== 1) reject();
++  let record;
++  try { record = JSON.parse(records[0][1]); } catch { reject(); }
++  if (record?.schemaVersion !== 1 || record.gitSha !== expectedSha || record.imageDigest !== digest
++    || record.imageRepository !== "ghcr.io/hudongpin/aais"
++    || record.runId !== runId || record.runAttempt !== runAttempt) reject();
++  return { status: "verified", digest, buildRunId: runId, buildRunAttempt: runAttempt,
++    buildJobId: String(job.id), gitSha: expectedSha, repository: run.repository.full_name,
++    workflowPath: run.path, outputRecord: record,
++    buildLogSha256: createHash("sha256").update(log).digest("hex") };
 +}
 +
 +if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
