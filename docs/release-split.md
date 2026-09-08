@@ -31,6 +31,10 @@ workflow_dispatch 工作流存在于默认分支，之后才能从指定分支�
 - `vercel.json` 禁止该分支自动部署，且候选专用 build guard 拒绝全部 Vercel 构建，
   包括 CLI 或意外合入 main。不要为构建镜像而降低 Vercel 保护。
 - SHA/digest、私有包、SBOM、provenance、凭据清理与 ECS 收据验证保持独立。
+- 构建前必须确认 GHCR 包已经存在、可见性为 private 且关联此仓库；404 直接拒绝，
+  不依赖首次推送时的默认可见性。构建后再次检查私有状态，再处理 GitHub 证明。
+- BuildKit 的 SBOM/provenance 保留在镜像中；签名 GitHub provenance 保存在 GitHub
+  及交付 artifact 中，不要求证明 action 从 runner 的默认 Docker 目录读取凭据。
 
 ## C. Vercel 热备变更（只保留，不激活）
 
