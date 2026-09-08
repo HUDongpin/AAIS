@@ -178,7 +178,10 @@ jobs:
                 fi
               done
               ;;
-            404) ;;
+            404)
+              echo "AAIS_GHCR_PRIVATE_PACKAGE_REQUIRED" >&2
+              exit 1
+              ;;
             *)
               echo "Unable to prove the pre-publish GHCR package state." >&2
               exit 1
@@ -309,26 +312,6 @@ jobs:
           [[ "$digest" =~ ^sha256:[a-f0-9]{64}$ ]]
           printf 'digest=%s\n' "$digest" >> "$GITHUB_OUTPUT"
 
-      - name: Attest the immutable image provenance
-        if: env.AAIS_RESUME_DIGEST == ''
-        id: provenance
-        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
-        with:
-          subject-name: ${{ env.AAIS_GHCR_REPOSITORY }}
-          subject-digest: ${{ steps.immutable.outputs.digest }}
-          push-to-registry: true
-
-      - name: Attest recovery with the verified original build evidence
-        if: env.AAIS_RESUME_DIGEST != ''
-        id: recovery
-        uses: actions/attest@daf44fb950173508f38bd2406030372c1d1162b1 # v3.0.0
-        with:
-          subject-name: ${{ env.AAIS_GHCR_REPOSITORY }}
-          subject-digest: ${{ steps.immutable.outputs.digest }}
-          predicate-type: https://github.com/HUDongpin/AAIS/attestations/ghcr-publication-recovery/v1
-          predicate-path: ${{ runner.temp }}/aais-ghcr-resume-predicate.json
-          push-to-registry: true
-
       - name: Prove the package remains private
         env:
           GHCR_PACKAGE_API: ${{ github.api_url }}/users/${{ github.repository_owner }}/packages/container/aais
@@ -349,6 +332,28 @@ jobs:
              and (.repository.full_name | ascii_downcase) == $repository' \
             "$response_file" >/dev/null
           rm -f -- "$response_file"
+
+      - name: Attest the immutable image provenance
+        if: env.AAIS_RESUME_DIGEST == ''
+        id: provenance
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
+        with:
+          subject-name: ${{ env.AAIS_GHCR_REPOSITORY }}
+          subject-digest: ${{ steps.immutable.outputs.digest }}
+          # BuildKit provenance and SBOM remain attached to the image. The signed
+          # GitHub provenance is stored in GitHub and exported with the receipt.
+          push-to-registry: false
+
+      - name: Attest recovery with the verified original build evidence
+        if: env.AAIS_RESUME_DIGEST != ''
+        id: recovery
+        uses: actions/attest@daf44fb950173508f38bd2406030372c1d1162b1 # v3.0.0
+        with:
+          subject-name: ${{ env.AAIS_GHCR_REPOSITORY }}
+          subject-digest: ${{ steps.immutable.outputs.digest }}
+          predicate-type: https://github.com/HUDongpin/AAIS/attestations/ghcr-publication-recovery/v1
+          predicate-path: ${{ runner.temp }}/aais-ghcr-resume-predicate.json
+          push-to-registry: false
 
       - name: Export the image SBOM and provenance
         env:
