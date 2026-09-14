@@ -347,7 +347,7 @@ jobs:
       - name: Attest recovery with the verified original build evidence
         if: env.AAIS_RESUME_DIGEST != ''
         id: recovery
-        uses: actions/attest@daf44fb950173508f38bd2406030372c1d1162b1 # v3.0.0
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-name: ${{ env.AAIS_GHCR_REPOSITORY }}
           subject-digest: ${{ steps.immutable.outputs.digest }}
