@@ -38,17 +38,17 @@
     "accounts:test-batch": "node -- scripts/manage-aais-test-accounts.mjs"
   },
   "dependencies": {
-    "@langchain/langgraph": "^1.4.10",
-    "@neondatabase/serverless": "^1.1.0",
+    "@langchain/langgraph": "^1.4.18",
+    "@neondatabase/serverless": "^1.2.0",
     "@phosphor-icons/react": "^2.1.10",
     "@sentry/nextjs": "^10.70.0",
     "@vercel/analytics": "^2.0.1",
     "fflate": "0.8.3",
-    "jose": "^6.2.9",
-    "katex": "0.18.4",
+    "jose": "^6.2.12",
+    "katex": "0.19.0",
     "next": "16.3.0",
-    "pdfjs-dist": "^6.1.200",
-    "pg": "^8.23.0",
+    "pdfjs-dist": "^6.3.289",
+    "pg": "^8.23.1",
     "react": "19.2.8",
     "react-dom": "19.2.8"
   },
